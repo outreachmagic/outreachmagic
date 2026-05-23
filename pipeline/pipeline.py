@@ -20,6 +20,7 @@ Usage:
   pipeline.py history --email j@acme.com    # Look up by email
   pipeline.py history --name "Jane"         # Look up by name (partial)
   pipeline.py stats                         # Quick stats
+  pipeline.py campaigns                   # Counts by campaign name
   pipeline.py update                        # Refresh skill scripts from GitHub
 """
 
@@ -289,6 +290,14 @@ CREATE TABLE IF NOT EXISTS leads (
     next_action_at  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS campaigns (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL UNIQUE,
+    description     TEXT,
+    status          TEXT NOT NULL DEFAULT 'active',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
@@ -298,14 +307,7 @@ CREATE TABLE IF NOT EXISTS events (
     subject         TEXT,
     body_preview    TEXT,
     metadata_json   TEXT DEFAULT '{}',
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS campaigns (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    name            TEXT NOT NULL,
-    description     TEXT,
-    status          TEXT NOT NULL DEFAULT 'active',
+    campaign_id     INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -320,6 +322,7 @@ CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage);
 CREATE INDEX IF NOT EXISTS idx_leads_updated ON leads(updated_at);
 CREATE INDEX IF NOT EXISTS idx_events_lead ON events(lead_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
+CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 
 CREATE TABLE IF NOT EXISTS relay_ingested (
@@ -344,20 +347,38 @@ def get_conn():
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA_SQL)
-    # Migrate existing databases that predate newer columns
+    migrate_db(conn)
+    conn.close()
+    return True
+
+
+def migrate_db(conn=None):
+    """Apply incremental schema changes and backfill campaign data."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     for col, col_type in [("industry", "TEXT"), ("headcount", "TEXT"), ("email_domain", "TEXT")]:
         try:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
-            pass  # column already exists
+            pass
     conn.execute(
         """UPDATE leads SET email_domain = lower(substr(email, instr(email, '@') + 1))
            WHERE email LIKE '%@%' AND (email_domain IS NULL OR email_domain = '')"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_email_domain ON leads(email_domain)")
-    conn.commit()
-    conn.close()
-    return True
+    try:
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL"
+        )
+    except sqlite3.OperationalError:
+        pass
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_name ON campaigns(name)")
+    backfill_campaigns_from_events(conn)
+    if own_conn:
+        conn.commit()
+        conn.close()
 
 
 def email_domain(email: Optional[str]) -> Optional[str]:
@@ -464,14 +485,58 @@ def update_lead_stage(lead_id, stage, next_action=None):
     conn.commit()
     conn.close()
 
-def log_event(lead_id, event_type, direction="outbound", channel="email",
-              subject=None, body_preview=None, metadata=None):
-    conn = get_conn()
+def ensure_campaign(conn, name: str, lead_id: int) -> int:
+    """Return campaign id, creating the row and campaign_leads link if needed."""
+    row = conn.execute("SELECT id FROM campaigns WHERE name = ?", (name,)).fetchone()
+    if row:
+        campaign_id = row["id"]
+    else:
+        campaign_id = conn.execute("INSERT INTO campaigns (name) VALUES (?)", (name,)).lastrowid
     conn.execute(
-        """INSERT INTO events (lead_id, event_type, direction, channel, subject, body_preview, metadata_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        "INSERT OR IGNORE INTO campaign_leads (campaign_id, lead_id) VALUES (?, ?)",
+        (campaign_id, lead_id),
+    )
+    return campaign_id
+
+
+def backfill_campaigns_from_events(conn=None):
+    """Populate campaigns from event metadata_json for rows missing campaign_id."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    rows = conn.execute(
+        """SELECT id, lead_id, metadata_json FROM events
+           WHERE campaign_id IS NULL AND metadata_json IS NOT NULL AND metadata_json != '{}'"""
+    ).fetchall()
+    for row in rows:
+        try:
+            meta = json.loads(row["metadata_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        campaign = meta.get("campaign")
+        if not campaign or not str(campaign).strip():
+            continue
+        campaign_id = ensure_campaign(conn, str(campaign).strip(), row["lead_id"])
+        conn.execute("UPDATE events SET campaign_id = ? WHERE id = ?", (campaign_id, row["id"]))
+    if own_conn:
+        conn.commit()
+        conn.close()
+
+
+def log_event(lead_id, event_type, direction="outbound", channel="email",
+              subject=None, body_preview=None, metadata=None, campaign=None):
+    meta = dict(metadata or {})
+    campaign_name = campaign or meta.get("campaign")
+    conn = get_conn()
+    campaign_id = None
+    if campaign_name and str(campaign_name).strip():
+        campaign_id = ensure_campaign(conn, str(campaign_name).strip(), lead_id)
+    conn.execute(
+        """INSERT INTO events (lead_id, event_type, direction, channel, subject, body_preview,
+                               metadata_json, campaign_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (lead_id, event_type, direction, channel, subject, (body_preview or "")[:200],
-         json.dumps(metadata or {})),
+         json.dumps(meta), campaign_id),
     )
     conn.execute(
         "UPDATE leads SET updated_at = datetime('now'), last_contact_at = datetime('now') WHERE id = ?",
@@ -517,6 +582,23 @@ def get_stage_counts():
     conn.close()
     return {r["stage"]: r["count"] for r in rows}
 
+def get_campaign_stats():
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT c.name AS campaign,
+                  (SELECT COUNT(*) FROM events e WHERE e.campaign_id = c.id) AS event_count,
+                  (SELECT COUNT(*) FROM campaign_leads cl WHERE cl.campaign_id = c.id) AS lead_count
+           FROM campaigns c
+           ORDER BY event_count DESC, c.name"""
+    ).fetchall()
+    no_campaign_events = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE campaign_id IS NULL"
+    ).fetchone()[0]
+    conn.close()
+    campaigns = [dict(r) for r in rows]
+    return {"campaigns": campaigns, "no_campaign_events": no_campaign_events}
+
+
 def get_stats():
     conn = get_conn()
     total = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
@@ -525,9 +607,11 @@ def get_stats():
     active = sum(v for k, v in stage_counts.items() if k not in ("won", "lost"))
     recent = conn.execute("SELECT COUNT(*) FROM events WHERE created_at > datetime('now', '-7 days')").fetchone()[0]
     conn.close()
-    return {"total_leads": total, "total_events": events, "active_pipeline": active,
-            "won": stage_counts.get("won", 0), "lost": stage_counts.get("lost", 0),
-            "events_7d": recent, "stages": stage_counts}
+    stats = {"total_leads": total, "total_events": events, "active_pipeline": active,
+             "won": stage_counts.get("won", 0), "lost": stage_counts.get("lost", 0),
+             "events_7d": recent, "stages": stage_counts}
+    stats.update(get_campaign_stats())
+    return stats
 
 def get_lead_by_email(email):
     conn = get_conn()
@@ -839,12 +923,38 @@ def format_pipeline_table(leads):
     return "\n".join(lines)
 
 def format_stats(stats):
-    return (
+    lines = [
         f"Pipeline: {stats['active_pipeline']} active | {stats['won']} won | "
-        f"{stats['lost']} lost | {stats['total_leads']} total leads\n"
-        f"Events: {stats['total_events']} total | {stats['events_7d']} in last 7 days\n"
-        f"Breakdown: " + ", ".join(f"{s}={c}" for s, c in stats.get("stages", {}).items())
-    )
+        f"{stats['lost']} lost | {stats['total_leads']} total leads",
+        f"Events: {stats['total_events']} total | {stats['events_7d']} in last 7 days",
+        "Breakdown: " + ", ".join(f"{s}={c}" for s, c in stats.get("stages", {}).items()),
+    ]
+    campaign_lines = format_campaign_stats(stats, include_header=True)
+    if campaign_lines:
+        lines.append("")
+        lines.extend(campaign_lines)
+    return "\n".join(lines)
+
+
+def format_campaign_stats(stats, include_header=False):
+    campaigns = stats.get("campaigns") or []
+    no_campaign = stats.get("no_campaign_events", 0)
+    if not campaigns and not no_campaign:
+        return []
+    lines = []
+    if include_header:
+        lines.append("Campaigns:")
+    name_w = max((len(c["campaign"]) for c in campaigns), default=12)
+    name_w = max(name_w, len("(no campaign)"), 12)
+    lines.append(f"{'Campaign':<{name_w}}  {'Events':>7}  {'Leads':>6}")
+    lines.append("-" * (name_w + 18))
+    for row in campaigns:
+        lines.append(
+            f"{row['campaign']:<{name_w}}  {row['event_count']:>7}  {row['lead_count']:>6}"
+        )
+    if no_campaign:
+        lines.append(f"{'(no campaign)':<{name_w}}  {no_campaign:>7}")
+    return lines
 
 def format_event_timeline(lead, events):
     """Format a lead's event history as a timeline."""
@@ -911,6 +1021,9 @@ def main():
 
     stats_p = sub.add_parser("stats", help="Pipeline statistics")
     stats_p.add_argument("--json", action="store_true")
+
+    camp_p = sub.add_parser("campaigns", help="Event and lead counts by campaign name")
+    camp_p.add_argument("--json", action="store_true")
 
     add_p = sub.add_parser("add-lead", help="Add a lead")
     add_p.add_argument("--name", required=True)
@@ -990,6 +1103,8 @@ def main():
         print("Database not initialized. Run: pipeline.py init")
         sys.exit(1)
 
+    migrate_db()
+
     if args.command == "connect":
         connect(args.key)
         return
@@ -1041,7 +1156,14 @@ def main():
         print(json.dumps(leads, indent=2) if getattr(args, "json", False) else format_pipeline_table(leads))
     elif args.command == "stats":
         stats = get_stats()
-        print(json.dumps(stats, indent=2) if getattr(args, "json", False) else format_stats(stats))
+        print(json.dumps(stats, indent=0) if getattr(args, "json", False) else format_stats(stats))
+    elif args.command == "campaigns":
+        stats = get_campaign_stats()
+        if getattr(args, "json", False):
+            print(json.dumps(stats, indent=2))
+        else:
+            lines = format_campaign_stats(stats, include_header=False)
+            print("\n".join(lines) if lines else "No campaign data yet.")
     elif args.command == "add-lead":
         tags = json.loads(args.tags) if args.tags else None
         print(json.dumps(add_lead(name=args.name, company=args.company, title=args.title,

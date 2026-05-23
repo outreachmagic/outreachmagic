@@ -1,7 +1,7 @@
 ---
 name: outreachmagic
 description: "Use when sending outreach (email, LinkedIn, WhatsApp), researching prospects, showing the pipeline, or connecting sequencer webhooks (paid). Auto-logs actions to local SQLite."
-version: 1.3.1
+version: 1.3.2
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -38,9 +38,19 @@ The `version:` line in this file is synced from `scripts/VERSION` on install/upd
 - The user says "track this" followed by outreach details
 - The user wants to connect a sequencer (paid — requires token)
 
+- The user asks for campaign breakdowns or counts by campaign name
+
+## Agent Behavior Rules (Important)
+
+- Always run `pull` first before showing pipeline data, history, stats, or campaigns.
+- After any pull, explicitly report the exact number of new records imported.
+- When the user asks about version, read the frontmatter of SKILL.md (version line).
+- When the user asks for message content, use the `history` command on the specific lead.
+- For campaign counts, use `pipeline.py campaigns` (or `stats`, which includes a campaign section). Do not write raw SQL.
+
 ## MANDATORY: Always Pull First
 
-**Before showing any pipeline data (show, stats, history, or any query), you MUST run `pull` first.**
+**Before showing any pipeline data (show, stats, campaigns, history, or any query), you MUST run `pull` first.**
 
 ```bash
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py pull
@@ -71,7 +81,19 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --id 1
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --email j@acme.com
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py stats
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py campaigns
 ```
+
+### Campaign breakdown
+
+Relay imports auto-populate campaign names from webhook payloads (Smartlead, PlusVibe, etc.).
+
+```bash
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py campaigns
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py campaigns --json
+```
+
+`stats` also includes a campaign section. Use `campaigns` when the user only wants counts by campaign name.
 
 ## Core Workflow
 

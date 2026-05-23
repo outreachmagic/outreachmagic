@@ -264,6 +264,8 @@ STAGE_EMOJI = {
     "interested": "\u2605", "proposal": "\u25a0", "won": "\u2714", "lost": "\u2716",
 }
 
+ATTRIBUTE_INSIGHT_FIELDS = ("title", "industry", "headcount")
+
 # Personal inboxes — skip domain-wide company sync (would touch unrelated leads)
 SHARED_EMAIL_DOMAINS = frozenset({
     "126.com", "163.com", "aim.com", "alice.it", "aol.com", "ameritech.net", "att.net",
@@ -1944,6 +1946,171 @@ def get_copy_insights(
         "best_template": ranked_templates[0] if ranked_templates else None,
     }
 
+def _normalize_segment_value(value: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def _parse_segment_fields(raw_fields: Optional[str]) -> list[str]:
+    if not raw_fields:
+        return list(ATTRIBUTE_INSIGHT_FIELDS)
+    out: list[str] = []
+    for chunk in raw_fields.split(","):
+        key = (chunk or "").strip().lower()
+        if not key:
+            continue
+        if key not in ATTRIBUTE_INSIGHT_FIELDS:
+            raise ValueError(
+                f"invalid field '{key}'. Allowed: {', '.join(ATTRIBUTE_INSIGHT_FIELDS)}"
+            )
+        if key not in out:
+            out.append(key)
+    if not out:
+        raise ValueError("no valid fields provided")
+    return out
+
+
+def get_segment_insights(
+    *,
+    positive_lead_status: Optional[str] = "interested",
+    positive_sentiment: Optional[str] = None,
+    fields: Optional[str] = None,
+    min_sent: int = 2,
+    top: int = 12,
+    workspace: Optional[str] = None,
+) -> dict:
+    """Find best converting lead segments (title/industry/headcount)."""
+    if min_sent < 1:
+        raise ValueError("min_sent must be >= 1")
+    if top < 1:
+        raise ValueError("top must be >= 1")
+    selected_fields = _parse_segment_fields(fields)
+
+    conn = get_conn()
+    workspace_row = resolve_workspace_identity(conn, workspace)
+    if workspace and not workspace_row:
+        conn.close()
+        raise ValueError(f"workspace not found: {workspace}")
+
+    workspace_join = ""
+    workspace_filter_sql = ""
+    workspace_params: list = []
+    if workspace_row:
+        workspace_join = "INNER JOIN workspace_leads wl ON wl.lead_id = l.id"
+        workspace_filter_sql = " AND wl.workspace_id = ?"
+        workspace_params.append(workspace_row["id"])
+
+    field_select = ", ".join(f"l.{field} AS {field}" for field in selected_fields)
+    sent_rows = conn.execute(
+        f"""SELECT DISTINCT l.id, {field_select}
+            FROM leads l
+            {workspace_join}
+            WHERE EXISTS (
+                SELECT 1
+                FROM events e
+                WHERE e.lead_id = l.id
+                  AND lower(e.channel) = 'email'
+                  AND lower(e.direction) = 'outbound'
+                  AND lower(e.event_type) = 'email_sent'
+            ){workspace_filter_sql}""",
+        workspace_params,
+    ).fetchall()
+
+    positive_clauses: list[str] = []
+    positive_params: list = []
+    if positive_lead_status:
+        positive_clauses.append("lower(COALESCE(rs.current_lead_status_raw, '')) = lower(?)")
+        positive_params.append(positive_lead_status)
+    if positive_sentiment:
+        positive_clauses.append("lower(COALESCE(rs.current_sentiment, '')) = lower(?)")
+        positive_params.append(positive_sentiment)
+    if not positive_clauses:
+        positive_clauses.append("1 = 1")
+    positive_where_sql = " AND ".join(positive_clauses)
+
+    positive_id_rows = conn.execute(
+        _LATEST_STATUS_CTE
+        + f"""
+        SELECT DISTINCT rs.lead_id
+        FROM ranked_status rs
+        JOIN leads l ON l.id = rs.lead_id
+        {workspace_join}
+        WHERE rs.rn = 1
+          AND {positive_where_sql}
+          {workspace_filter_sql}
+        """,
+        positive_params + workspace_params,
+    ).fetchall()
+    conn.close()
+
+    positive_ids = {int(row["lead_id"]) for row in positive_id_rows}
+    sent_ids = {int(row["id"]) for row in sent_rows}
+    positive_sent_ids = sent_ids.intersection(positive_ids)
+
+    insights_by_field: dict[str, list[dict]] = {}
+    for field in selected_fields:
+        buckets: dict[str, dict] = {}
+        for row in sent_rows:
+            lead_id = int(row["id"])
+            value = _normalize_segment_value(row[field])
+            if not value:
+                continue
+            key = value.lower()
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "value": value,
+                    "sent_leads": 0,
+                    "positive_leads": 0,
+                    "conversion_rate": 0.0,
+                },
+            )
+            bucket["sent_leads"] += 1
+            if lead_id in positive_ids:
+                bucket["positive_leads"] += 1
+
+        ranked: list[dict] = []
+        for item in buckets.values():
+            sent_total = int(item["sent_leads"] or 0)
+            if sent_total < min_sent:
+                continue
+            positive_total = int(item["positive_leads"] or 0)
+            item["conversion_rate"] = round(positive_total / sent_total, 4)
+            ranked.append(item)
+
+        ranked.sort(
+            key=lambda item: (
+                float(item["conversion_rate"]),
+                int(item["positive_leads"]),
+                int(item["sent_leads"]),
+                (item["value"] or "").lower(),
+            ),
+            reverse=True,
+        )
+        insights_by_field[field] = ranked[:top]
+
+    recommended_titles = [
+        row["value"] for row in insights_by_field.get("title", []) if row.get("value")
+    ]
+
+    return {
+        "filter": {
+            "positive_lead_status": positive_lead_status,
+            "positive_sentiment": positive_sentiment,
+            "fields": selected_fields,
+            "min_sent": min_sent,
+            "top": top,
+            "workspace": workspace,
+        },
+        "counts": {
+            "sent_leads": len(sent_ids),
+            "positive_leads_matching_filter": len(positive_ids),
+            "positive_leads_with_sent_email": len(positive_sent_ids),
+        },
+        "insights_by_field": insights_by_field,
+        "recommended_job_titles": recommended_titles,
+    }
+
+
 # Events that carry lead status / sentiment / auto-reply for current-state filters.
 _STATUS_METADATA_PREDICATE = """(
     json_extract(e.metadata_json, '$.lead_status_sentiment') IS NOT NULL
@@ -3402,6 +3569,41 @@ def format_copy_insights(insights: dict) -> str:
     return "\n".join(lines)
 
 
+def format_segment_insights(insights: dict) -> str:
+    counts = insights.get("counts") or {}
+    lines = [
+        f"Sent leads (at least one outbound email): {counts.get('sent_leads', 0)}",
+        f"Positive leads matching filter: {counts.get('positive_leads_matching_filter', 0)}",
+        f"Positive leads with sent email: {counts.get('positive_leads_with_sent_email', 0)}",
+        "",
+    ]
+
+    insights_by_field = insights.get("insights_by_field") or {}
+    for field in insights.get("filter", {}).get("fields") or []:
+        rows = insights_by_field.get(field) or []
+        lines.append(f"Best converting {field} values:")
+        lines.append("-" * 95)
+        if not rows:
+            lines.append("No rows met your min-sent threshold.")
+            lines.append("")
+            continue
+        for row in rows:
+            rate = round(100 * float(row.get("conversion_rate") or 0), 1)
+            lines.append(
+                f"{row.get('value') or '—'}: {row.get('positive_leads', 0)}/{row.get('sent_leads', 0)} positive ({rate}%)"
+            )
+        lines.append("")
+
+    titles = insights.get("recommended_job_titles") or []
+    if titles:
+        lines.append("Recommended job titles to source next:")
+        lines.append("-" * 95)
+        for title in titles[:10]:
+            lines.append(f"- {title}")
+
+    return "\n".join(lines).rstrip()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────
@@ -3531,6 +3733,30 @@ def main():
     copy_p.add_argument("--limit", type=int, default=200, help="Max positive leads to include")
     copy_p.add_argument("--workspace", help="Filter by workspace name or slug")
     copy_p.add_argument("--json", action="store_true")
+
+    segment_p = sub.add_parser(
+        "segment-insights",
+        help="Rank best converting title/industry/headcount segments from positive leads",
+    )
+    segment_p.add_argument(
+        "--positive-lead-status",
+        default="interested",
+        help="Current lead status to treat as positive (default: interested)",
+    )
+    segment_p.add_argument(
+        "--positive-sentiment",
+        choices=("positive", "negative", "neutral", "invalid"),
+        help="Optional sentiment to combine with --positive-lead-status",
+    )
+    segment_p.add_argument(
+        "--fields",
+        default="title,industry,headcount",
+        help="Comma-separated segment fields (title,industry,headcount)",
+    )
+    segment_p.add_argument("--min-sent", type=int, default=2, help="Minimum sent leads per value")
+    segment_p.add_argument("--top", type=int, default=12, help="Top values per field")
+    segment_p.add_argument("--workspace", help="Filter by workspace name or slug")
+    segment_p.add_argument("--json", action="store_true")
 
     ws_p = sub.add_parser("workspace", help="List or create workspaces")
     ws_sub = ws_p.add_subparsers(dest="workspace_cmd")
@@ -3822,6 +4048,20 @@ def main():
             print(str(e))
             sys.exit(1)
         print(json.dumps(insights, indent=2) if args.json else format_copy_insights(insights))
+    elif args.command == "segment-insights":
+        try:
+            insights = get_segment_insights(
+                positive_lead_status=args.positive_lead_status,
+                positive_sentiment=args.positive_sentiment,
+                fields=args.fields,
+                min_sent=args.min_sent,
+                top=args.top,
+                workspace=getattr(args, "workspace", None),
+            )
+        except ValueError as e:
+            print(str(e))
+            sys.exit(1)
+        print(json.dumps(insights, indent=2) if args.json else format_segment_insights(insights))
     elif args.command == "workspace":
         if args.workspace_cmd == "create":
             print(json.dumps(create_workspace(args.name, args.slug), indent=2))

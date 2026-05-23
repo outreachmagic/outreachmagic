@@ -55,6 +55,7 @@ On first connect, Outreach Magic will automatically pull any existing events and
 | `pipeline.py history --email j@a.com` | Look up + timeline by email |
 | `pipeline.py history --name "Jane"` | Look up + timeline by name |
 | `pipeline.py stats` | Quick stats |
+| `pipeline.py segment-insights` | Rank best converting titles/industries/headcount from sent vs positive leads |
 | `pipeline.py add-lead --name "..."` | Add a lead |
 | `pipeline.py log-event --lead-id 1 --type ...` | Log outreach |
 | `pipeline.py update-stage --id 1 --stage ...` | Move deal forward |
@@ -68,6 +69,16 @@ On first connect, Outreach Magic will automatically pull any existing events and
 | `pipeline.py pull --full` | Re-import all relay events after DB reset |
 | `pipeline.py update` | Download latest skill scripts (checks remote `VERSION`) |
 | `pipeline.py webhook-url` | Show webhook URLs |
+
+To source new leads from what already converts:
+
+```bash
+# 1) Analyze what converts best (positive / sent) by title, industry, headcount
+pipeline.py segment-insights --positive-lead-status interested --min-sent 2 --top 10
+
+# 2) Pull full copy from current positives to reuse winning messaging
+pipeline.py copy-insights --lead-status interested
+```
 
 ## Keeping the skill up to date
 

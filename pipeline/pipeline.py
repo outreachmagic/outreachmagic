@@ -56,9 +56,11 @@ from workspace_routing import (
     assign_campaign_map,
     collect_identities_from_event,
     ensure_default_org_workspace,
+    ensure_organization,
     extract_campaign_context,
     find_lead_by_identity,
     format_unmapped_campaign_message,
+    MULTI_WORKSPACE_HOLD_MESSAGE,
     get_org_routing_config,
     quarantine_event,
     replay_quarantine_item,
@@ -707,15 +709,9 @@ def migrate_db(conn=None):
 
 
 def backfill_workspace_routing(conn: sqlite3.Connection):
-    """Ensure default org/workspace, identity aliases, and workspace_leads for existing leads."""
-    ensure_default_org_workspace(conn)
-    default_ws = conn.execute(
-        "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
-        (DEFAULT_ORG_ID, "default"),
-    ).fetchone()
-    if not default_ws:
-        return
-    workspace_id = default_ws["id"]
+    """Identity aliases for all leads; workspace_leads/maps only in single-workspace mode."""
+    ensure_organization(conn)
+    config = get_org_routing_config(conn, DEFAULT_ORG_ID)
 
     leads = conn.execute(
         "SELECT id, email, linkedin_normalized FROM leads"
@@ -742,11 +738,17 @@ def backfill_workspace_routing(conn: sqlite3.Connection):
                    )""",
                 (f"id_li_{lid}", DEFAULT_ORG_ID, lid, lead["linkedin_normalized"]),
             )
+
+    if config.mode == WORKSPACE_ROUTING_MULTI:
+        return
+
+    workspace_id = config.default_workspace_id or ensure_default_org_workspace(conn)
+    for lead in leads:
+        lid = lead["id"]
         stage_row = conn.execute("SELECT stage FROM leads WHERE id = ?", (lid,)).fetchone()
         status = stage_row["stage"] if stage_row else "prospecting"
         upsert_workspace_lead(conn, DEFAULT_ORG_ID, workspace_id, lid, status=status)
 
-    # Seed campaign maps from existing campaigns table into default workspace
     platforms = ("smartlead", "heyreach", "instantly", "plusvibe", "emailbison", "clay", "prosp")
     campaigns = conn.execute("SELECT name FROM campaigns").fetchall()
     for row in campaigns:
@@ -1979,17 +1981,29 @@ def list_workspaces(org_id: str = DEFAULT_ORG_ID) -> list[dict]:
 def get_workspace_routing(org_id: str = DEFAULT_ORG_ID) -> dict:
     conn = get_conn()
     config = get_org_routing_config(conn, org_id)
-    ws = conn.execute(
-        "SELECT id, name, slug FROM workspaces WHERE id = ?",
-        (config.default_workspace_id,),
-    ).fetchone()
+    ws = None
+    if config.mode == WORKSPACE_ROUTING_SINGLE and config.default_workspace_id:
+        ws = conn.execute(
+            "SELECT id, name, slug FROM workspaces WHERE id = ?",
+            (config.default_workspace_id,),
+        ).fetchone()
+    pending = conn.execute(
+        """SELECT COUNT(*) AS n FROM unmapped_campaign_queue
+           WHERE org_id = ? AND status = 'pending'""",
+        (org_id,),
+    ).fetchone()["n"]
     conn.close()
-    return {
+    out = {
         "mode": config.mode,
-        "default_workspace_id": config.default_workspace_id,
-        "default_workspace_slug": ws["slug"] if ws else None,
-        "default_workspace_name": ws["name"] if ws else None,
+        "pending_quarantine": pending,
     }
+    if config.mode == WORKSPACE_ROUTING_SINGLE:
+        out["default_workspace_id"] = config.default_workspace_id
+        out["default_workspace_slug"] = ws["slug"] if ws else None
+        out["default_workspace_name"] = ws["name"] if ws else None
+    else:
+        out["message"] = MULTI_WORKSPACE_HOLD_MESSAGE
+    return out
 
 
 def set_workspace_routing(
@@ -2005,18 +2019,21 @@ def set_workspace_routing(
             "error": f"mode must be one of: {', '.join(VALID_WORKSPACE_ROUTING_MODES)}",
         }
     conn = get_conn()
-    ensure_default_org_workspace(conn)
-    ws_id = get_org_routing_config(conn, org_id).default_workspace_id
-    if workspace_slug:
-        ws = conn.execute(
-            "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
-            (org_id, workspace_slug),
-        ).fetchone()
-        if not ws:
-            conn.close()
-            return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
-        ws_id = ws["id"]
+    ensure_organization(conn, org_id)
+    ws_id: Optional[str] = None
     if mode == WORKSPACE_ROUTING_SINGLE:
+        ws_id = get_org_routing_config(conn, org_id).default_workspace_id
+        if workspace_slug:
+            ws = conn.execute(
+                "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
+                (org_id, workspace_slug),
+            ).fetchone()
+            if not ws:
+                conn.close()
+                return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
+            ws_id = ws["id"]
+        if not ws_id:
+            ws_id = ensure_default_org_workspace(conn)
         conn.execute(
             """UPDATE organizations
                SET workspace_routing_mode = ?, default_workspace_id = ? WHERE id = ?""",
@@ -2024,13 +2041,16 @@ def set_workspace_routing(
         )
     else:
         conn.execute(
-            "UPDATE organizations SET workspace_routing_mode = ? WHERE id = ?",
+            """UPDATE organizations
+               SET workspace_routing_mode = ?, default_workspace_id = NULL WHERE id = ?""",
             (mode, org_id),
         )
     conn.commit()
     conn.close()
     result = get_workspace_routing(org_id)
     result["status"] = "ok"
+    if mode == WORKSPACE_ROUTING_MULTI:
+        result["notice"] = MULTI_WORKSPACE_HOLD_MESSAGE
     return result
 
 
@@ -2038,7 +2058,7 @@ def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAUL
     slug = slug or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "workspace"
     ws_id = f"ws_{slug}"
     conn = get_conn()
-    ensure_default_org_workspace(conn)
+    ensure_organization(conn, org_id)
     try:
         conn.execute(
             """INSERT INTO workspaces (id, org_id, name, slug, created_at, updated_at)
@@ -2459,6 +2479,16 @@ def sync_from_relay(
         after_id = result.get("max_id") or 0
 
     set_last_pull(datetime.now(timezone.utc).isoformat())
+    if not quiet:
+        routing = get_workspace_routing()
+        pending = routing.get("pending_quarantine") or 0
+        if routing.get("mode") == WORKSPACE_ROUTING_MULTI and pending:
+            print(MULTI_WORKSPACE_HOLD_MESSAGE, file=sys.stderr)
+            print(
+                f"{pending} event(s) waiting in quarantine — run: "
+                "pipeline.py quarantine list",
+                file=sys.stderr,
+            )
     return imported, skipped
 
 
@@ -2533,6 +2563,28 @@ def ingest_relay_event(
                    "plusvibe": "email", "clay": "email"}
     channel = channel_map.get(platform, "email")
 
+    campaign_ctx = extract_campaign_context(platform, event_fields, raw)
+    workspace_id = force_workspace_id
+    if not workspace_id:
+        conn = get_conn()
+        routing = resolve_workspace_for_ingest(conn, DEFAULT_ORG_ID, campaign_ctx)
+        if not routing:
+            quarantine_event(
+                conn,
+                DEFAULT_ORG_ID,
+                campaign_ctx,
+                reason="no_campaign_map",
+                payload=event,
+                external_event_id=str(event.get("relay_id") or ""),
+            )
+            conn.commit()
+            conn.close()
+            if not quiet:
+                print(format_unmapped_campaign_message(campaign_ctx), file=sys.stderr)
+            return None
+        workspace_id = routing.workspace_id
+        conn.close()
+
     profile = profile_from_relay_lead(lead_fields, identity, display_name)
     upsert_result = upsert_lead_profile(
         profile,
@@ -2545,12 +2597,11 @@ def ingest_relay_event(
         identities = collect_identities_from_event(identity, raw, platform)
         if not identities:
             conn = get_conn()
-            ensure_default_org_workspace(conn)
-            ctx = extract_campaign_context(platform, event_fields, raw)
+            ensure_organization(conn)
             quarantine_event(
                 conn,
                 DEFAULT_ORG_ID,
-                ctx,
+                campaign_ctx,
                 reason="missing_identity",
                 payload=event,
                 external_event_id=str(event.get("relay_id") or ""),
@@ -2560,9 +2611,9 @@ def ingest_relay_event(
         return None
     lead_id = upsert_result["id"]
 
-    campaign_ctx = extract_campaign_context(platform, event_fields, raw)
     conn = get_conn()
-    ensure_default_org_workspace(conn)
+    if get_org_routing_config(conn, DEFAULT_ORG_ID).mode == WORKSPACE_ROUTING_SINGLE:
+        ensure_default_org_workspace(conn)
     identities = collect_identities_from_event(identity, raw, platform)
     for itype, val in identities:
         try:
@@ -2580,25 +2631,6 @@ def ingest_relay_event(
                     json.dumps({"identity_type": itype, "value": val}),
                 ),
             )
-
-    workspace_id = force_workspace_id
-    if not workspace_id:
-        routing = resolve_workspace_for_ingest(conn, DEFAULT_ORG_ID, campaign_ctx)
-        if not routing:
-            quarantine_event(
-                conn,
-                DEFAULT_ORG_ID,
-                campaign_ctx,
-                reason="no_campaign_map",
-                payload=event,
-                external_event_id=str(event.get("relay_id") or ""),
-            )
-            conn.commit()
-            conn.close()
-            if not quiet:
-                print(format_unmapped_campaign_message(campaign_ctx), file=sys.stderr)
-            return None
-        workspace_id = routing.workspace_id
     conn.commit()
     conn.close()
 

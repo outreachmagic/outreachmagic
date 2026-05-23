@@ -76,10 +76,24 @@ def test_single_mode_routes_all_to_default():
     conn.close()
 
 
+def test_multi_mode_no_default_workspace_on_init():
+    om.init_db()
+    om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
+    conn = om.get_conn()
+    config = om.get_org_routing_config(conn, DEFAULT_ORG_ID)
+    conn.close()
+    routing = om.get_workspace_routing()
+    assert config.mode == WORKSPACE_ROUTING_MULTI
+    assert config.default_workspace_id is None
+    assert "default_workspace_id" not in routing
+    assert routing.get("message")
+
+
 def test_multi_mode_quarantines_unmapped():
     om.init_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
-    om.add_campaign_map_cli("smartlead", "default", campaign_id="c1", campaign_name="Alpha")
+    om.create_workspace("Team Alpha", slug="alpha")
+    om.add_campaign_map_cli("smartlead", "alpha", campaign_id="c1", campaign_name="Alpha")
     ctx = extract_campaign_context(
         "smartlead",
         {"campaign_id": "missing", "campaign_name": "Ghost Campaign"},
@@ -98,16 +112,25 @@ def test_multi_mode_quarantines_unmapped():
         "relay_id": 201,
         "raw": {"campaign_id": "missing", "campaign_name": "Ghost Campaign", "to_email": "ghost@test.com"},
     }
+    conn = om.get_conn()
+    events_before = conn.execute("SELECT COUNT(*) FROM workspace_lead_events").fetchone()[0]
+    conn.close()
     assert om.ingest_relay_event(event, quiet=True) is None
+    conn = om.get_conn()
+    assert conn.execute("SELECT COUNT(*) FROM leads WHERE email = ?", ("ghost@test.com",)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM workspace_lead_events").fetchone()[0] == events_before
+    conn.close()
     pending = om.list_quarantine()
     assert any("Ghost Campaign" in (p.get("campaign_name_raw") or "") for p in pending)
     assert any("message" in p for p in pending)
+    assert any("not processed" in (p.get("message") or "") for p in pending)
 
 
 def test_multi_mode_resolves_mapped_campaign():
     om.init_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
-    om.add_campaign_map_cli("smartlead", "default", campaign_id="c1", campaign_name="Alpha")
+    om.create_workspace("Team Alpha", slug="alpha")
+    om.add_campaign_map_cli("smartlead", "alpha", campaign_id="c1", campaign_name="Alpha")
     conn = om.get_conn()
     ctx = extract_campaign_context(
         "smartlead",
@@ -123,7 +146,8 @@ def test_multi_mode_resolves_mapped_campaign():
 def test_ingest_quarantine_and_route():
     om.init_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
-    om.add_campaign_map_cli("smartlead", "default", campaign_id="c1", campaign_name="Alpha")
+    om.create_workspace("Team Alpha", slug="alpha")
+    om.add_campaign_map_cli("smartlead", "alpha", campaign_id="c1", campaign_name="Alpha")
     event = {
         "platform": "smartlead",
         "event_type": "email_sent",
@@ -151,6 +175,7 @@ if __name__ == "__main__":
     test_normalization()
     test_single_mode_routes_all_to_default()
     test_campaign_routing()
+    test_multi_mode_no_default_workspace_on_init()
     test_multi_mode_quarantines_unmapped()
     test_multi_mode_resolves_mapped_campaign()
     test_ingest_quarantine_and_route()

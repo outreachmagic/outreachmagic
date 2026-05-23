@@ -52,7 +52,7 @@ class RoutingResult:
 @dataclass
 class OrgRoutingConfig:
     mode: str
-    default_workspace_id: str
+    default_workspace_id: Optional[str] = None
 
 
 def normalize_campaign_name(name: Optional[str]) -> Optional[str]:
@@ -166,12 +166,17 @@ def _get_path(data: dict, path: str) -> Any:
     return cur
 
 
-def ensure_default_org_workspace(conn: sqlite3.Connection) -> str:
+def ensure_organization(conn: sqlite3.Connection, org_id: str = DEFAULT_ORG_ID) -> None:
     conn.execute(
         """INSERT OR IGNORE INTO organizations (id, name, created_at)
            VALUES (?, 'Default Organization', datetime('now'))""",
-        (DEFAULT_ORG_ID,),
+        (org_id,),
     )
+
+
+def ensure_default_org_workspace(conn: sqlite3.Connection) -> str:
+    """Create default org + default workspace (single-workspace mode only)."""
+    ensure_organization(conn)
     row = conn.execute(
         "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
         (DEFAULT_ORG_ID, DEFAULT_WORKSPACE_SLUG),
@@ -194,7 +199,7 @@ def ensure_default_org_workspace(conn: sqlite3.Connection) -> str:
 
 
 def get_org_routing_config(conn: sqlite3.Connection, org_id: str) -> OrgRoutingConfig:
-    ensure_default_org_workspace(conn)
+    ensure_organization(conn, org_id)
     row = conn.execute(
         """SELECT workspace_routing_mode, default_workspace_id
            FROM organizations WHERE id = ?""",
@@ -206,7 +211,9 @@ def get_org_routing_config(conn: sqlite3.Connection, org_id: str) -> OrgRoutingC
         raw_mode = (row["workspace_routing_mode"] or "").strip().lower()
         if raw_mode in VALID_WORKSPACE_ROUTING_MODES:
             mode = raw_mode
-        ws_id = row["default_workspace_id"]
+        ws_id = (row["default_workspace_id"] or "").strip() or None
+    if mode == WORKSPACE_ROUTING_MULTI:
+        return OrgRoutingConfig(mode=mode, default_workspace_id=None)
     if not ws_id:
         ws_id = ensure_default_org_workspace(conn)
     return OrgRoutingConfig(mode=mode, default_workspace_id=ws_id)
@@ -220,12 +227,20 @@ def campaign_display_label(ctx: CampaignContext) -> str:
     return "unknown"
 
 
+MULTI_WORKSPACE_HOLD_MESSAGE = (
+    "Multi-workspace mode: events are held unprocessed until each campaign is "
+    "mapped to a workspace. Create workspaces and campaign maps, then replay "
+    "quarantined events."
+)
+
+
 def format_unmapped_campaign_message(ctx: CampaignContext) -> str:
     """User-facing instructions when multi-workspace routing cannot resolve a campaign."""
     label = campaign_display_label(ctx)
     platform = ctx.source_platform
     lines = [
         f"Campaign '{label}' ({platform}) is not mapped to a workspace.",
+        "This event was not processed and is waiting in the quarantine queue.",
         "",
         "To fix this:",
         '1. Create a workspace:  pipeline.py workspace create --name "Your Team"',
@@ -332,6 +347,8 @@ def resolve_workspace_for_ingest(
     """
     config = get_org_routing_config(conn, org_id)
     if config.mode == WORKSPACE_ROUTING_SINGLE:
+        if not config.default_workspace_id:
+            return None
         return RoutingResult(
             workspace_id=config.default_workspace_id,
             match_strategy="single_workspace",

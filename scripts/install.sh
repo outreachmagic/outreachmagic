@@ -50,7 +50,7 @@ python3 "$SKILL_DIR/scripts/pipeline.py" init
 
 echo
 echo "  Synced to: $SKILL_DIR"
-echo "  Database:  $HERMES_HOME/outreach_magic.db"
+echo "  Database:  $HERMES_HOME/outreachmagic.db"
 echo "  Version:   $(cat "$SKILL_DIR/scripts/VERSION" 2>/dev/null || echo unknown)"
 echo
 echo "  Hermes:"

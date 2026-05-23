@@ -16,7 +16,7 @@ metadata:
 The simplest pipeline tracker. Hermes auto-logs every outreach action to a local
 SQLite database. Free forever. Connect Smartlead, Heyreach, Instantly via paid relay.
 
-Database: `~/.hermes/outreach_magic.db`
+Database: `~/.hermes/outreachmagic.db`
 
 ## Version
 
@@ -28,7 +28,7 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py version
 
 The `version:` line in this file is synced from `scripts/VERSION` on install/update. If unsure, use the command above.
 
-**Auto-update:** On each command (at most once per hour), the CLI checks GitHub for a newer `VERSION` and downloads it automatically. Users on Hermes get updates when you push to `main` without running `install.sh` manually. Disable: `"auto_update": false` in `~/.hermes/outreach_magic_config.json`.
+**Auto-update:** On each command (at most once per hour), the CLI checks GitHub for a newer `VERSION` and downloads it automatically. Users on Hermes get updates when you push to `main` without running `install.sh` manually. Disable: `"auto_update": false` in `~/.hermes/outreachmagic_config.json`.
 
 ## When to Use
 

@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-DB_PATH = Path(HERMES_HOME) / "outreach_magic.db"
+DB_PATH = Path(HERMES_HOME) / "outreachmagic.db"
 
 _PIPELINE_DIR = Path(__file__).resolve().parent
 if str(_PIPELINE_DIR) not in sys.path:

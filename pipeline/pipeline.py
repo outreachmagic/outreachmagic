@@ -5,7 +5,7 @@ Outreach Magic — Agent-First Lead Database for Hermes
 One SQLite file. No MongoDB. No BigQuery. Just your leads, visible.
 
 Architecture:
-  ~/.hermes/outreach_magic.db    — Local SQLite database
+  ~/.hermes/outreachmagic.db     — Local SQLite database
   wbhk.org/{platform}/{key}      — Cloudflare Worker relay (optional)
   pipeline.py                    — CLI: show, pull, connect, log-event...
 
@@ -79,10 +79,10 @@ def get_hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
 
 def get_db_path() -> Path:
-    return get_hermes_home() / "outreach_magic.db"
+    return get_hermes_home() / "outreachmagic.db"
 
 def get_config_path() -> Path:
-    return get_hermes_home() / "outreach_magic_config.json"
+    return get_hermes_home() / "outreachmagic_config.json"
 
 RELAY_URL = "https://wbhk.org"
 DB_PATH = get_db_path()

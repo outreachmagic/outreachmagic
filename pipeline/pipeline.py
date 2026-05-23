@@ -450,6 +450,7 @@ def migrate_db(conn=None):
     )
     backfill_companies_from_leads(conn)
     backfill_campaigns_from_events(conn)
+    backfill_plusvibe_status_metadata(conn)
     if own_conn:
         conn.commit()
         conn.close()
@@ -1209,6 +1210,52 @@ def backfill_campaigns_from_events(conn=None):
         conn.close()
 
 
+def backfill_plusvibe_status_metadata(conn=None):
+    """Repair mismatched PlusVibe status label/sentiment from explicit webhook event type."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    rows = conn.execute(
+        """SELECT id, metadata_json
+           FROM events
+           WHERE metadata_json IS NOT NULL
+             AND metadata_json != '{}'
+             AND lower(json_extract(metadata_json, '$.platform')) = 'plusvibe'
+             AND lower(json_extract(metadata_json, '$.plusvibe_webhook_event')) IN (
+                'lead_marked_as_interested',
+                'lead_marked_as_not_interested'
+             )"""
+    ).fetchall()
+    for row in rows:
+        try:
+            meta = json.loads(row["metadata_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        et = str(meta.get("plusvibe_webhook_event") or "").strip().lower()
+        if et == "lead_marked_as_interested":
+            wanted_label, wanted_sentiment = "interested", "positive"
+        elif et == "lead_marked_as_not_interested":
+            wanted_label, wanted_sentiment = "not_interested", "negative"
+        else:
+            continue
+        changed = False
+        if meta.get("lead_status_raw") != wanted_label:
+            meta["lead_status_raw"] = wanted_label
+            meta["lead_status_display"] = normalize_lead_status_display(wanted_label)
+            changed = True
+        if str(meta.get("lead_status_sentiment") or "").strip().lower() != wanted_sentiment:
+            meta["lead_status_sentiment"] = wanted_sentiment
+            changed = True
+        if changed:
+            conn.execute(
+                "UPDATE events SET metadata_json = ? WHERE id = ?",
+                (json.dumps(meta), row["id"]),
+            )
+    if own_conn:
+        conn.commit()
+        conn.close()
+
+
 def log_event(lead_id, event_type, direction="outbound", channel="email",
               subject=None, body_preview=None, metadata=None, campaign=None):
     meta = dict(metadata or {})
@@ -1460,17 +1507,25 @@ def build_plusvibe_status_metadata(
 ) -> dict:
     """Normalized status fields stored on event metadata_json."""
     meta: dict = {}
-    label = (signals.get("label") or raw.get("label") or "").strip().lower()
-    if not label and envelope_event_type:
-        et = envelope_event_type.lower()
-        for prefix in ("lead_marked_as_", "marked_as_"):
-            if et.startswith(prefix):
-                label = et[len(prefix):]
-                break
-        if et == "bounced_email":
-            label = "email_bounced"
+    et = (envelope_event_type or "").lower()
+    forced_label = ""
+    for prefix in ("lead_marked_as_", "marked_as_"):
+        if et.startswith(prefix):
+            # Prefer explicit webhook event type over stale payload fields.
+            forced_label = et[len(prefix):]
+            break
+    if et == "bounced_email":
+        forced_label = "email_bounced"
 
-    sentiment = (signals.get("sentiment") or raw.get("sentiment") or "").strip().lower()
+    payload_label = (signals.get("label") or raw.get("label") or "").strip().lower()
+    label = forced_label or payload_label
+
+    payload_sentiment = (signals.get("sentiment") or raw.get("sentiment") or "").strip().lower()
+    sentiment = payload_sentiment
+    if forced_label == "interested":
+        sentiment = "positive"
+    elif forced_label in ("not_interested", "not interested"):
+        sentiment = "negative"
     if not sentiment and label == "email_bounced":
         sentiment = "invalid"
 
@@ -1601,6 +1656,7 @@ def sync_from_relay(
     since: Optional[str] = None,
     full: bool = False,
     ack: bool = False,
+    debug_sentiment: bool = False,
 ) -> tuple[int, int]:
     """Import relay events locally. Relay keeps all rows; we skip already-ingested keys."""
     imported = skipped = 0
@@ -1621,7 +1677,7 @@ def sync_from_relay(
             break
 
         for event in events:
-            if ingest_relay_event(event) is None:
+            if ingest_relay_event(event, debug_sentiment=debug_sentiment) is None:
                 skipped += 1
             else:
                 imported += 1
@@ -1650,10 +1706,16 @@ def ack_events(token: str, max_id: int):
     except Exception:
         return {"error": True}
 
-def ingest_relay_event(event: dict) -> Optional[int]:
+def ingest_relay_event(event: dict, debug_sentiment: bool = False) -> Optional[int]:
     """Take a relay event and write it to the local SQLite database. Returns None if duplicate."""
     dedupe_key = relay_dedupe_key(event)
     if relay_already_ingested(dedupe_key):
+        if debug_sentiment and event.get("platform") in PLUSVIBE_PLATFORMS:
+            print(
+                "[debug:sentiment] skipped duplicate "
+                f"event_type={event.get('event_type','unknown')} "
+                f"relay_id={event.get('relay_id') or '-'} dedupe_key={dedupe_key}"
+            )
         return None
 
     envelope_lead = event.get("lead") or ""
@@ -1740,6 +1802,23 @@ def ingest_relay_event(event: dict) -> Optional[int]:
         metadata.update(
             build_plusvibe_status_metadata(raw, signals, envelope_event_type)
         )
+
+    if debug_sentiment and platform in PLUSVIBE_PLATFORMS:
+        raw_label = (raw.get("label") or "").strip().lower()
+        raw_sentiment = (raw.get("sentiment") or "").strip().lower()
+        signal_label = (signals.get("label") or "").strip().lower()
+        signal_sentiment = (signals.get("sentiment") or "").strip().lower()
+        normalized_label = metadata.get("lead_status_raw", "")
+        normalized_sentiment = metadata.get("lead_status_sentiment", "")
+        if normalized_label or normalized_sentiment or envelope_event_type.startswith("lead_marked_as_"):
+            print(
+                "[debug:sentiment] "
+                f"event_type={envelope_event_type} "
+                f"raw_label={raw_label or '-'} raw_sentiment={raw_sentiment or '-'} "
+                f"signal_label={signal_label or '-'} signal_sentiment={signal_sentiment or '-'} "
+                f"normalized_label={normalized_label or '-'} "
+                f"normalized_sentiment={normalized_sentiment or '-'}"
+            )
 
     log_event(
         lead_id=lead_id,
@@ -2001,6 +2080,11 @@ def main():
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
     pull_p.add_argument("--full", action="store_true", help="Re-import all relay events (after DB reset)")
     pull_p.add_argument("--ack", action="store_true", help="Mark events pulled on relay (legacy; default keeps archive)")
+    pull_p.add_argument(
+        "--debug-sentiment",
+        action="store_true",
+        help="Print raw vs normalized sentiment mapping during ingest",
+    )
 
     webhook_p = sub.add_parser("webhook-url", help="Show webhook URLs for your platforms")
 
@@ -2089,6 +2173,7 @@ def main():
                 since=None if args.full else get_last_pull(),
                 full=args.full,
                 ack=args.ack,
+                debug_sentiment=args.debug_sentiment,
             )
         except RuntimeError as e:
             if not args.cron:

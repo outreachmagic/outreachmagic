@@ -14,6 +14,7 @@ Usage:
   pipeline.py connect --key abc123          # Connect to relay
   pipeline.py pull                          # Pull events from relay
   pipeline.py show                          # Print pipeline table
+  pipeline.py lead-table                    # Print canonical lead info table
   pipeline.py add-lead --name "Jane" ...    # Add a lead
   pipeline.py import-profiles --file leads.csv  # Bulk enrich from CSV/JSON
   pipeline.py log-event --lead-id 1 ...     # Log outreach event
@@ -3206,6 +3207,50 @@ def format_pipeline_table(leads):
         )
     return "\n".join(lines)
 
+
+def format_lead_table(leads, markdown: bool = False):
+    """Render stable lead rows from canonical show/get_pipeline fields."""
+    if not leads:
+        return "No leads found."
+
+    headers = ["Lead", "Company", "Stage", "Last Event", "Last Event At", "Events", "Notes"]
+    rows = []
+    for lead in leads:
+        rows.append(
+            [
+                (lead.get("name") or "—").strip() or "—",
+                (lead.get("company_display") or lead.get("company") or "—").strip() or "—",
+                (lead.get("stage") or "—").strip() or "—",
+                (lead.get("last_event") or "—").strip() or "—",
+                (lead.get("last_event_at") or "—").strip() or "—",
+                str(int(lead.get("event_count") or 0)),
+                (lead.get("notes") or "—").strip() or "—",
+            ]
+        )
+
+    if markdown:
+        lines = [
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join(["---"] * len(headers)) + " |",
+        ]
+        for row in rows:
+            safe_cells = [str(cell).replace("\n", " ").replace("|", "\\|") for cell in row]
+            lines.append("| " + " | ".join(safe_cells) + " |")
+        return "\n".join(lines)
+
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(str(cell)))
+    lines = [
+        "  ".join(f"{h:<{widths[i]}}" for i, h in enumerate(headers)),
+        "  ".join("-" * widths[i] for i in range(len(headers))),
+    ]
+    for row in rows:
+        lines.append("  ".join(f"{str(cell):<{widths[i]}}" for i, cell in enumerate(row)))
+    return "\n".join(lines)
+
+
 def format_stats(stats):
     lines = [
         f"Pipeline: {stats['active_pipeline']} active | {stats['won']} won | "
@@ -3372,6 +3417,22 @@ def main():
     show_p.add_argument("--limit", type=int, default=50)
     show_p.add_argument("--workspace", help="Filter by workspace name or slug")
     show_p.add_argument("--json", action="store_true")
+
+    lead_table_p = sub.add_parser("lead-table", help="Show canonical lead information table")
+    lead_table_p.add_argument("--stage")
+    lead_table_p.add_argument("--sentiment", choices=("positive", "negative", "neutral", "invalid"),
+                              help="Filter by current lead status sentiment (latest status event)")
+    lead_table_p.add_argument("--auto-reply", dest="auto_reply", choices=("true", "false"),
+                              help="Filter by current auto-reply flag (OOO, etc.)")
+    lead_table_p.add_argument("--lead-status", dest="lead_status",
+                              help="Filter by current lead status label (e.g. interested, not_interested)")
+    lead_table_p.add_argument("--sort", choices=("updated_at", "sentiment", "auto_reply", "status_at"),
+                              default="updated_at")
+    lead_table_p.add_argument("--order", choices=("asc", "desc"), default="desc")
+    lead_table_p.add_argument("--limit", type=int, default=50)
+    lead_table_p.add_argument("--workspace", help="Filter by workspace name or slug")
+    lead_table_p.add_argument("--markdown", action="store_true", help="Render as markdown table")
+    lead_table_p.add_argument("--json", action="store_true")
 
     stats_p = sub.add_parser("stats", help="Pipeline statistics")
     stats_p.add_argument("--json", action="store_true")
@@ -3613,6 +3674,28 @@ def main():
             print(str(e))
             sys.exit(1)
         print(json.dumps(leads, indent=2) if getattr(args, "json", False) else format_pipeline_table(leads))
+    elif args.command == "lead-table":
+        auto_reply = None
+        if getattr(args, "auto_reply", None) is not None:
+            auto_reply = args.auto_reply == "true"
+        try:
+            leads = get_pipeline(
+                stage_filter=args.stage,
+                limit=args.limit,
+                sentiment=getattr(args, "sentiment", None),
+                auto_reply=auto_reply,
+                lead_status=getattr(args, "lead_status", None),
+                sort=getattr(args, "sort", "updated_at"),
+                order=getattr(args, "order", "desc"),
+                workspace=getattr(args, "workspace", None),
+            )
+        except ValueError as e:
+            print(str(e))
+            sys.exit(1)
+        if getattr(args, "json", False):
+            print(json.dumps(leads, indent=2))
+        else:
+            print(format_lead_table(leads, markdown=getattr(args, "markdown", False)))
     elif args.command == "stats":
         stats = get_stats()
         print(json.dumps(stats, indent=0) if getattr(args, "json", False) else format_stats(stats))

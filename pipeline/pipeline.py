@@ -107,14 +107,66 @@ def fetch_remote_version() -> Optional[str]:
         return None
 
 
+UPDATE_CHECK_INTERVAL = int(os.environ.get("OUTREACHMAGIC_UPDATE_INTERVAL", "3600"))
+
+
+def auto_update_enabled() -> bool:
+    if os.environ.get("OUTREACHMAGIC_SKIP_AUTO_UPDATE"):
+        return False
+    cfg = load_config() if CONFIG_PATH.exists() else {}
+    return cfg.get("auto_update", True) is not False
+
+
+def update_check_due() -> bool:
+    cfg = load_config() if CONFIG_PATH.exists() else {}
+    last = cfg.get("update_checked_at")
+    if not last:
+        return True
+    try:
+        dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - dt).total_seconds()
+        return age >= UPDATE_CHECK_INTERVAL
+    except (ValueError, TypeError):
+        return True
+
+
+def record_update_check():
+    cfg = load_config()
+    cfg["update_checked_at"] = datetime.now(timezone.utc).isoformat()
+    save_config(cfg)
+
+
+def maybe_auto_update(quiet: bool = False) -> bool:
+    """Download newer scripts from GitHub if available. Returns True if files were updated."""
+    if not auto_update_enabled() or not update_check_due():
+        return False
+
+    remote = fetch_remote_version()
+    record_update_check()
+    if not remote or parse_version(remote) <= parse_version(__version__):
+        return False
+
+    old = __version__
+    try:
+        result = update_skill()
+        if not quiet:
+            print(f"outreachmagic: auto-updated {old} → {result['version']}")
+        return True
+    except Exception as e:
+        if not quiet:
+            print(f"outreachmagic: auto-update failed ({e}), using {old}")
+        return False
+
+
 def check_skill_update(quiet: bool = False) -> bool:
     """Return True if installed scripts match or exceed remote VERSION."""
     remote = fetch_remote_version()
     if not remote or parse_version(remote) <= parse_version(__version__):
         return True
     if not quiet:
-        print(f"Skill update available: {__version__} → {remote}")
-        print("Run: pipeline.py update")
+        print(f"Update available: {__version__} → {remote} (auto-update runs on next command)")
     return False
 
 
@@ -144,9 +196,15 @@ def update_skill() -> dict:
             updated.append(name)
     else:
         base = update_base_url()
+        repo_base = base.rsplit("/pipeline", 1)[0]
         for name in (*UPDATE_SCRIPT_FILES, "VERSION"):
             (dest / name).write_bytes(_fetch_url(f"{base}/{name}"))
             updated.append(name)
+        try:
+            (dest.parent / "SKILL.md").write_bytes(_fetch_url(f"{repo_base}/skill/SKILL.md"))
+            updated.append("SKILL.md")
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+            pass
 
     init_db()
     sync_skill_md_version()
@@ -893,6 +951,15 @@ def main():
 
     args = parser.parse_args()
 
+    # Auto-update from GitHub (default on, checks at most once per hour). Re-exec so this run uses new code.
+    if (
+        args.command not in (None, "update", "version")
+        and not os.environ.get("OUTREACHMAGIC_REEXEC")
+    ):
+        if maybe_auto_update(quiet=getattr(args, "cron", False)):
+            os.environ["OUTREACHMAGIC_REEXEC"] = "1"
+            os.execv(sys.executable, [sys.executable, *sys.argv])
+
     if args.command == "version":
         print(f"outreachmagic {__version__}")
         return
@@ -917,7 +984,6 @@ def main():
     if args.command == "init":
         init_db()
         print(f"Database initialized: {DB_PATH}")
-        check_skill_update()
         return
 
     if not db_exists():
@@ -941,9 +1007,6 @@ def main():
         return
 
     if args.command == "pull":
-        if not args.cron:
-            check_skill_update()
-
         tok = args.key or get_token()
         if not tok:
             print("Not connected. Run: pipeline.py connect --key YOUR_TOKEN")

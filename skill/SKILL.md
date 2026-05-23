@@ -1,7 +1,7 @@
 ---
 name: outreachmagic
 description: "Use when sending outreach (email, LinkedIn, WhatsApp), researching prospects, showing the pipeline, or connecting sequencer webhooks (paid). Auto-logs actions to local SQLite."
-version: 1.3.0
+version: 1.3.1
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -26,7 +26,9 @@ Database: `~/.hermes/outreach_magic.db`
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py version
 ```
 
-The `version:` line in this file is synced from `scripts/VERSION` when you run `install.sh` or `pipeline.py update`. If unsure, use the command above — not frontmatter alone.
+The `version:` line in this file is synced from `scripts/VERSION` on install/update. If unsure, use the command above.
+
+**Auto-update:** On each command (at most once per hour), the CLI checks GitHub for a newer `VERSION` and downloads it automatically. Users on Hermes get updates when you push to `main` without running `install.sh` manually. Disable: `"auto_update": false` in `~/.hermes/outreach_magic_config.json`.
 
 ## When to Use
 

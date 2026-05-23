@@ -83,7 +83,7 @@ Reload the Hermes skill (or start a new session) after updating so instructions 
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py version
 ```
 
-Bump `pipeline/VERSION` on each release (e.g. `1.3.0` → `1.3.1`). `install.sh` and `pipeline.py update` sync it into `SKILL.md` frontmatter for Hermes.
+Bump `pipeline/VERSION` on each release (e.g. `1.3.1` → `1.3.2`) and push to `main`. Installed skills **auto-update from GitHub** on the next CLI run (checked at most once per hour). `install.sh` is only needed for first install.
 
 ## License
 

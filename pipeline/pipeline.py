@@ -118,6 +118,17 @@ def check_skill_update(quiet: bool = False) -> bool:
     return False
 
 
+def sync_skill_md_version():
+    """Align SKILL.md frontmatter version with scripts/VERSION."""
+    import re
+    dest = skill_scripts_dir()
+    ver = _read_version_file(dest / "VERSION")
+    skill_md = dest.parent / "SKILL.md"
+    if skill_md.exists():
+        text = skill_md.read_text()
+        skill_md.write_text(re.sub(r"^version: .*", f"version: {ver}", text, count=1, flags=re.M))
+
+
 def update_skill() -> dict:
     """Copy or download latest pipeline scripts into this skill install, then migrate DB."""
     dest = skill_scripts_dir()
@@ -138,6 +149,7 @@ def update_skill() -> dict:
             updated.append(name)
 
     init_db()
+    sync_skill_md_version()
     new_version = _read_version_file(dest / "VERSION")
     return {"status": "updated", "version": new_version, "files": updated, "path": str(dest)}
 
@@ -830,6 +842,7 @@ def main():
     sub = parser.add_subparsers(dest="command", help="Commands")
 
     sub.add_parser("init", help="Initialize the database")
+    sub.add_parser("version", help="Print installed outreachmagic version")
 
     update_p = sub.add_parser("update", help="Update skill scripts from GitHub (or OUTREACHMAGIC_DEV_REPO)")
     update_p.add_argument("--check", action="store_true", help="Only check for updates, do not install")
@@ -879,6 +892,10 @@ def main():
     hist_p.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
+
+    if args.command == "version":
+        print(f"outreachmagic {__version__}")
+        return
 
     if args.command == "update":
         if args.check:

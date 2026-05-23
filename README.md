@@ -77,6 +77,14 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py update
 
 Reload the Hermes skill (or start a new session) after updating so instructions refresh; `pipeline.py update` replaces the Python files immediately.
 
+**Version:** One number everywhere — source of truth is `pipeline/VERSION`. Check installed copy:
+
+```bash
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py version
+```
+
+Bump `pipeline/VERSION` on each release (e.g. `1.3.0` → `1.3.1`). `install.sh` and `pipeline.py update` sync it into `SKILL.md` frontmatter for Hermes.
+
 ## License
 
 MIT — [Outreach Magic](https://outreachmagic.io)

@@ -40,6 +40,12 @@ fi
 chmod +x "$SKILL_DIR/scripts/pipeline.py" 2>/dev/null || true
 chmod +x "$SKILL_DIR/scripts/server.py" 2>/dev/null || true
 
+# Single version: pipeline/VERSION → scripts/VERSION + SKILL.md frontmatter
+VER="$(cat "$SKILL_DIR/scripts/VERSION" 2>/dev/null || echo "0.0.0")"
+if [[ -f "$SKILL_DIR/SKILL.md" ]]; then
+  perl -i -pe "s/^version: .*/version: $VER/" "$SKILL_DIR/SKILL.md"
+fi
+
 python3 "$SKILL_DIR/scripts/pipeline.py" init
 
 echo

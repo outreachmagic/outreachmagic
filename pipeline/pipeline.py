@@ -2280,8 +2280,9 @@ def format_quarantine_campaign_summary(
             [
                 "",
                 "Next steps to map campaigns to a workspace:",
-                '1. Create a workspace (if needed):  pipeline.py workspace create --name "Default"',
-                "2. Add campaign mappings (replace WORKSPACE_SLUG):",
+                '1. Create one or more workspaces (if needed):  pipeline.py workspace create --name "Team Name"',
+                "2. Ensure every campaign is covered by either a campaign rule or a manual mapping.",
+                "3. Add campaign mappings (replace WORKSPACE_SLUG):",
             ]
         )
         seen_commands: set[str] = set()
@@ -2306,7 +2307,7 @@ def format_quarantine_campaign_summary(
             lines.append(cmd)
         lines.extend(
             [
-                "3. Replay quarantined events:  pipeline.py quarantine replay",
+                "4. Replay quarantined events:  pipeline.py quarantine replay",
                 "   (or assign one manually: pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG)",
             ]
         )
@@ -2360,7 +2361,7 @@ def assign_quarantine_and_replay(queue_id: str, workspace_slug: str) -> dict:
 
 
 def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int = 100) -> dict:
-    pending = list_quarantine(status="assigned", limit=limit)
+    pending = list_quarantine(status="pending", limit=limit)
     replayed = skipped = 0
     for item in pending:
         if workspace_slug:

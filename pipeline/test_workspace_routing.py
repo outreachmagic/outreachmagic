@@ -143,6 +143,28 @@ def test_multi_mode_resolves_mapped_campaign():
     assert result.match_strategy == "id_exact"
 
 
+def test_quarantine_summary_requires_rules_or_manual_mapping():
+    summary = om.format_quarantine_campaign_summary(
+        [
+            {
+                "source_platform": "smartlead",
+                "campaign": "Campaign One",
+                "campaign_id": "c1",
+                "event_count": 2,
+            },
+            {
+                "source_platform": "plusvibe",
+                "campaign": "Campaign Two",
+                "campaign_id": "",
+                "event_count": 1,
+            },
+        ]
+    )
+    assert "Default" not in summary
+    assert "either a campaign rule or a manual mapping" in summary
+    assert "campaign-map add" in summary
+
+
 def test_ingest_quarantine_and_route():
     om.init_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
@@ -178,5 +200,6 @@ if __name__ == "__main__":
     test_multi_mode_no_default_workspace_on_init()
     test_multi_mode_quarantines_unmapped()
     test_multi_mode_resolves_mapped_campaign()
+    test_quarantine_summary_requires_rules_or_manual_mapping()
     test_ingest_quarantine_and_route()
     print("ok")

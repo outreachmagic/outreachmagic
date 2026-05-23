@@ -2239,13 +2239,24 @@ def get_stats():
     conn = get_conn()
     total = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
     events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    reply_events = conn.execute(
+        """SELECT COUNT(*) FROM events
+           WHERE lower(event_type) IN ('email_reply', 'linkedin_reply', 'linkedin_message')
+              OR (lower(direction) = 'inbound' AND lower(event_type) = 'email')"""
+    ).fetchone()[0]
+    leads_with_replies = conn.execute(
+        """SELECT COUNT(DISTINCT lead_id) FROM events
+           WHERE lower(event_type) IN ('email_reply', 'linkedin_reply', 'linkedin_message')
+              OR (lower(direction) = 'inbound' AND lower(event_type) = 'email')"""
+    ).fetchone()[0]
     stage_counts = get_stage_counts()
     active = sum(v for k, v in stage_counts.items() if k not in ("won", "lost"))
     recent = conn.execute("SELECT COUNT(*) FROM events WHERE created_at > datetime('now', '-7 days')").fetchone()[0]
     conn.close()
     stats = {"total_leads": total, "total_events": events, "active_pipeline": active,
              "won": stage_counts.get("won", 0), "lost": stage_counts.get("lost", 0),
-             "events_7d": recent, "stages": stage_counts}
+             "events_7d": recent, "stages": stage_counts,
+             "reply_events": reply_events, "replied_leads": leads_with_replies}
     stats.update(get_campaign_stats())
     return stats
 
@@ -3256,6 +3267,8 @@ def format_stats(stats):
         f"Pipeline: {stats['active_pipeline']} active | {stats['won']} won | "
         f"{stats['lost']} lost | {stats['total_leads']} total leads",
         f"Events: {stats['total_events']} total | {stats['events_7d']} in last 7 days",
+        f"Replies: {stats.get('reply_events', 0)} events across {stats.get('replied_leads', 0)} leads "
+        f"(stage 'replied' currently {stats.get('stages', {}).get('replied', 0)})",
         "Breakdown: " + ", ".join(f"{s}={c}" for s, c in stats.get("stages", {}).items()),
     ]
     campaign_lines = format_campaign_stats(stats, include_header=True)

@@ -1019,44 +1019,89 @@ def find_lead_by_linkedin(conn: sqlite3.Connection, linkedin_norm: str) -> Optio
     return row["id"] if row else None
 
 
+def resolve_workspace_identity(
+    conn: sqlite3.Connection,
+    workspace: Optional[str],
+    *,
+    org_id: str = DEFAULT_ORG_ID,
+) -> Optional[dict]:
+    token = (workspace or "").strip()
+    if not token:
+        return None
+    row = conn.execute(
+        """SELECT id, name, slug
+           FROM workspaces
+           WHERE org_id = ?
+             AND (lower(slug) = lower(?) OR lower(name) = lower(?))
+           ORDER BY CASE WHEN lower(slug) = lower(?) THEN 0 ELSE 1 END
+           LIMIT 1""",
+        (org_id, token, token, token),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def find_lead(
     *,
     lead_id: Optional[int] = None,
     email: Optional[str] = None,
     linkedin: Optional[str] = None,
     name: Optional[str] = None,
+    workspace: Optional[str] = None,
 ) -> Optional[dict]:
     conn = get_conn()
     row = None
+    workspace_row = resolve_workspace_identity(conn, workspace)
+    if workspace and not workspace_row:
+        conn.close()
+        raise ValueError(f"workspace not found: {workspace}")
+    workspace_join = ""
+    workspace_params: list = []
+    if workspace_row:
+        workspace_join = (
+            " INNER JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?"
+        )
+        workspace_params.append(workspace_row["id"])
     if lead_id:
+        params = [*workspace_params, lead_id]
         row = conn.execute(
-            """SELECT l.*, COALESCE(c.name, l.company) AS company_display
-               FROM leads l LEFT JOIN companies c ON l.company_id = c.id WHERE l.id = ?""",
-            (lead_id,),
+            f"""SELECT l.*, COALESCE(c.name, l.company) AS company_display
+               FROM leads l
+               LEFT JOIN companies c ON l.company_id = c.id
+               {workspace_join}
+               WHERE l.id = ?""",
+            tuple(params),
         ).fetchone()
     elif email:
         em = normalize_email(email)
         if em:
+            params = [*workspace_params, em]
             row = conn.execute(
-                """SELECT l.*, COALESCE(c.name, l.company) AS company_display
-                   FROM leads l LEFT JOIN companies c ON l.company_id = c.id WHERE l.email = ?""",
-                (em,),
+                f"""SELECT l.*, COALESCE(c.name, l.company) AS company_display
+                   FROM leads l
+                   LEFT JOIN companies c ON l.company_id = c.id
+                   {workspace_join}
+                   WHERE l.email = ?""",
+                tuple(params),
             ).fetchone()
     elif linkedin:
         _, norm = normalize_linkedin(linkedin)
         if norm:
+            params = [*workspace_params, norm]
             row = conn.execute(
-                """SELECT l.*, COALESCE(c.name, l.company) AS company_display
+                f"""SELECT l.*, COALESCE(c.name, l.company) AS company_display
                    FROM leads l LEFT JOIN companies c ON l.company_id = c.id
+                   {workspace_join}
                    WHERE l.linkedin_normalized = ?""",
-                (norm,),
+                tuple(params),
             ).fetchone()
     elif name:
+        params = [*workspace_params, f"%{name}%"]
         row = conn.execute(
-            """SELECT l.*, COALESCE(c.name, l.company) AS company_display
+            f"""SELECT l.*, COALESCE(c.name, l.company) AS company_display
                FROM leads l LEFT JOIN companies c ON l.company_id = c.id
+               {workspace_join}
                WHERE l.name LIKE ? LIMIT 1""",
-            (f"%{name}%",),
+            tuple(params),
         ).fetchone()
     conn.close()
     return dict(row) if row else None
@@ -1783,7 +1828,11 @@ def _first_touch_email_events_for_leads(conn, lead_ids: list[int]) -> dict[int, 
     return first_events
 
 
-def get_copy_insights(lead_status: str = "interested", limit: int = 200) -> dict:
+def get_copy_insights(
+    lead_status: str = "interested",
+    limit: int = 200,
+    workspace: Optional[str] = None,
+) -> dict:
     """Analyze winning copy from current positive leads.
 
     Uses current lead status filter for "positives" and scores templates using the
@@ -1794,12 +1843,26 @@ def get_copy_insights(lead_status: str = "interested", limit: int = 200) -> dict
         lead_status=lead_status,
         sort="updated_at",
         order="desc",
+        workspace=workspace,
     )
     positive_by_id = {int(lead["id"]): lead for lead in positive_leads}
     positive_ids = sorted(positive_by_id.keys())
 
     conn = get_conn()
-    all_lead_rows = conn.execute("SELECT id FROM leads").fetchall()
+    workspace_row = resolve_workspace_identity(conn, workspace)
+    if workspace and not workspace_row:
+        conn.close()
+        raise ValueError(f"workspace not found: {workspace}")
+    if workspace_row:
+        all_lead_rows = conn.execute(
+            """SELECT l.id
+               FROM leads l
+               INNER JOIN workspace_leads wl ON wl.lead_id = l.id
+               WHERE wl.workspace_id = ?""",
+            (workspace_row["id"],),
+        ).fetchall()
+    else:
+        all_lead_rows = conn.execute("SELECT id FROM leads").fetchall()
     all_lead_ids = [int(r["id"]) for r in all_lead_rows]
 
     first_touch_all = _first_touch_email_events_for_leads(conn, all_lead_ids)
@@ -1869,7 +1932,7 @@ def get_copy_insights(lead_status: str = "interested", limit: int = 200) -> dict
         )
 
     return {
-        "filter": {"lead_status": lead_status, "limit": limit},
+        "filter": {"lead_status": lead_status, "limit": limit, "workspace": workspace},
         "counts": {
             "positive_leads": len(positive_leads),
             "positive_with_copy": len(positive_copy),
@@ -1914,6 +1977,7 @@ def get_pipeline(
     lead_status=None,
     sort="updated_at",
     order="desc",
+    workspace: Optional[str] = None,
 ):
     """List leads; optional filters use latest status-bearing event per lead (current-only)."""
     conn = get_conn()
@@ -1927,6 +1991,17 @@ def get_pipeline(
         or lead_status is not None
         or sort_key in ("sentiment", "auto_reply", "status_at")
     )
+    workspace_row = resolve_workspace_identity(conn, workspace)
+    if workspace and not workspace_row:
+        conn.close()
+        raise ValueError(f"workspace not found: {workspace}")
+    workspace_join = ""
+    workspace_filter_sql = ""
+    workspace_params: list = []
+    if workspace_row:
+        workspace_join = "INNER JOIN workspace_leads wl ON wl.lead_id = l.id"
+        workspace_filter_sql = " AND wl.workspace_id = ?"
+        workspace_params.append(workspace_row["id"])
 
     company_join = "LEFT JOIN companies co ON l.company_id = co.id"
     company_col = "COALESCE(co.name, l.company) AS company_display"
@@ -1942,9 +2017,11 @@ def get_pipeline(
                (SELECT created_at FROM events WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) AS last_event_at,
                (SELECT COUNT(*) FROM events WHERE lead_id = l.id) AS event_count
         FROM leads l
+        {workspace_join}
         {company_join}
         INNER JOIN ranked_status rs ON rs.lead_id = l.id AND rs.rn = 1
         WHERE 1=1
+        {workspace_filter_sql}
         """
     else:
         query = f"""
@@ -1958,10 +2035,12 @@ def get_pipeline(
                (SELECT created_at FROM events WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) AS last_event_at,
                (SELECT COUNT(*) FROM events WHERE lead_id = l.id) AS event_count
         FROM leads l
+        {workspace_join}
         {company_join}
         WHERE 1=1
+        {workspace_filter_sql}
         """
-    params: list = []
+    params: list = [*workspace_params]
     if stage_filter:
         query += " AND l.stage = ?"
         params.append(stage_filter)
@@ -1999,10 +2078,34 @@ def get_stage_counts():
 
 def get_campaign_stats():
     conn = get_conn()
+    breakdown_rows = conn.execute(
+        """SELECT e.campaign_id,
+                  e.event_type,
+                  e.direction,
+                  e.channel,
+                  COUNT(*) AS event_count
+           FROM events e
+           WHERE e.campaign_id IS NOT NULL
+           GROUP BY e.campaign_id, e.event_type, e.direction, e.channel
+           ORDER BY e.campaign_id, event_count DESC, e.event_type"""
+    ).fetchall()
+    last_event_rows = conn.execute(
+        """SELECT e.campaign_id, MAX(e.created_at) AS last_event_at
+           FROM events e
+           WHERE e.campaign_id IS NOT NULL
+           GROUP BY e.campaign_id"""
+    ).fetchall()
     rows = conn.execute(
-        """SELECT c.name AS campaign,
+        """SELECT c.id AS campaign_id,
+                  c.name AS campaign,
                   (SELECT COUNT(*) FROM events e WHERE e.campaign_id = c.id) AS event_count,
-                  (SELECT COUNT(*) FROM campaign_leads cl WHERE cl.campaign_id = c.id) AS lead_count
+                  (SELECT COUNT(*) FROM campaign_leads cl WHERE cl.campaign_id = c.id) AS lead_count,
+                  (
+                    SELECT COUNT(*)
+                    FROM events e
+                    WHERE e.campaign_id = c.id
+                      AND lower(coalesce(json_extract(e.metadata_json, '$.lead_status_raw'), '')) = 'interested'
+                  ) AS interested_count
            FROM campaigns c
            ORDER BY event_count DESC, c.name"""
     ).fetchall()
@@ -2010,7 +2113,74 @@ def get_campaign_stats():
         "SELECT COUNT(*) FROM events WHERE campaign_id IS NULL"
     ).fetchone()[0]
     conn.close()
-    campaigns = [dict(r) for r in rows]
+    breakdowns: dict[int, dict[str, dict[str, int]]] = {}
+    for row in breakdown_rows:
+        campaign_id = int(row["campaign_id"])
+        campaign_bucket = breakdowns.setdefault(
+            campaign_id,
+            {"event_type_counts": {}, "direction_counts": {}, "channel_counts": {}},
+        )
+        event_type = row["event_type"] or "unknown"
+        direction = row["direction"] or "unknown"
+        channel = row["channel"] or "unknown"
+        count = int(row["event_count"] or 0)
+        campaign_bucket["event_type_counts"][event_type] = (
+            campaign_bucket["event_type_counts"].get(event_type, 0) + count
+        )
+        campaign_bucket["direction_counts"][direction] = (
+            campaign_bucket["direction_counts"].get(direction, 0) + count
+        )
+        campaign_bucket["channel_counts"][channel] = (
+            campaign_bucket["channel_counts"].get(channel, 0) + count
+        )
+    last_event_by_campaign = {
+        int(row["campaign_id"]): row["last_event_at"] for row in last_event_rows if row["campaign_id"] is not None
+    }
+
+    def _format_counts(counts: dict[str, int]) -> str:
+        return ", ".join(f"{key}={counts[key]}" for key in sorted(counts))
+
+    campaigns = []
+    for row in rows:
+        item = dict(row)
+        campaign_id = int(item.get("campaign_id") or 0)
+        breakdown = breakdowns.get(campaign_id, {})
+        event_type_counts = breakdown.get("event_type_counts", {})
+        direction_counts = breakdown.get("direction_counts", {})
+        channel_counts = breakdown.get("channel_counts", {})
+        event_types = [
+            {"event_type": event_type, "count": count}
+            for event_type, count in sorted(
+                event_type_counts.items(),
+                key=lambda kv: (-int(kv[1]), kv[0]),
+            )
+        ]
+        summary_parts = []
+        if event_type_counts:
+            summary_parts.append(f"types: {_format_counts(event_type_counts)}")
+        if direction_counts:
+            summary_parts.append(f"flow: {_format_counts(direction_counts)}")
+        if channel_counts:
+            summary_parts.append(f"channels: {_format_counts(channel_counts)}")
+        last_event_at = last_event_by_campaign.get(campaign_id)
+        if last_event_at:
+            summary_parts.append(f"latest: {last_event_at}")
+        item["event_type_counts"] = event_type_counts
+        item["event_types"] = event_types
+        item["direction_counts"] = direction_counts
+        item["channel_counts"] = channel_counts
+        item["last_event_at"] = last_event_at
+        item["event_summary"] = "; ".join(summary_parts) if summary_parts else "No events recorded."
+        workspace = ""
+        campaign_name = item.get("campaign") or ""
+        if "|" in campaign_name:
+            left, right = campaign_name.split("|", 1)
+            workspace = left.strip()
+            campaign_name = right.strip()
+        item["workspace"] = workspace
+        item["campaign_name"] = campaign_name
+        item.pop("campaign_id", None)
+        campaigns.append(item)
     return {"campaigns": campaigns, "no_campaign_events": no_campaign_events}
 
 
@@ -3008,16 +3178,24 @@ def format_campaign_stats(stats, include_header=False):
     lines = []
     if include_header:
         lines.append("Campaigns:")
-    name_w = max((len(c["campaign"]) for c in campaigns), default=12)
-    name_w = max(name_w, len("(no campaign)"), 12)
-    lines.append(f"{'Campaign':<{name_w}}  {'Events':>7}  {'Leads':>6}")
-    lines.append("-" * (name_w + 18))
+    workspace_w = max((len(c.get("workspace") or "-") for c in campaigns), default=9)
+    workspace_w = max(workspace_w, len("Workspace"), 9)
+    name_w = max((len(c.get("campaign_name") or c.get("campaign") or "") for c in campaigns), default=12)
+    name_w = max(name_w, len("(no campaign)"), len("Campaign"), 12)
+    lines.append(
+        f"{'Workspace':<{workspace_w}}  {'Campaign':<{name_w}}  {'Events':>7}  {'Leads':>6}  {'Interested':>10}"
+    )
+    lines.append("-" * (workspace_w + name_w + 31))
     for row in campaigns:
+        workspace = row.get("workspace") or "-"
+        campaign_name = row.get("campaign_name") or row.get("campaign") or ""
+        interested = int(row.get("interested_count") or 0)
         lines.append(
-            f"{row['campaign']:<{name_w}}  {row['event_count']:>7}  {row['lead_count']:>6}"
+            f"{workspace:<{workspace_w}}  {campaign_name:<{name_w}}  "
+            f"{row['event_count']:>7}  {row['lead_count']:>6}  {interested:>10}"
         )
     if no_campaign:
-        lines.append(f"{'(no campaign)':<{name_w}}  {no_campaign:>7}")
+        lines.append(f"{'-':<{workspace_w}}  {'(no campaign)':<{name_w}}  {no_campaign:>7}  {'-':>6}  {'-':>10}")
     return lines
 
 def format_event_timeline(lead, events):
@@ -3142,6 +3320,7 @@ def main():
                         default="updated_at")
     show_p.add_argument("--order", choices=("asc", "desc"), default="desc")
     show_p.add_argument("--limit", type=int, default=50)
+    show_p.add_argument("--workspace", help="Filter by workspace name or slug")
     show_p.add_argument("--json", action="store_true")
 
     stats_p = sub.add_parser("stats", help="Pipeline statistics")
@@ -3206,6 +3385,7 @@ def main():
     hist_p.add_argument("--email", help="Find lead by email")
     hist_p.add_argument("--linkedin", help="Find lead by LinkedIn URL or profile slug")
     hist_p.add_argument("--name", help="Find lead by name (partial match)")
+    hist_p.add_argument("--workspace", help="Filter lead lookup by workspace name or slug")
 
     merge_p = sub.add_parser("merge-leads", help="Merge two lead records into one")
     merge_p.add_argument("--keep", type=int, help="Lead ID to keep")
@@ -3225,6 +3405,7 @@ def main():
         help="Current lead status to treat as positive (default: interested)",
     )
     copy_p.add_argument("--limit", type=int, default=200, help="Max positive leads to include")
+    copy_p.add_argument("--workspace", help="Filter by workspace name or slug")
     copy_p.add_argument("--json", action="store_true")
 
     ws_p = sub.add_parser("workspace", help="List or create workspaces")
@@ -3367,15 +3548,20 @@ def main():
         auto_reply = None
         if getattr(args, "auto_reply", None) is not None:
             auto_reply = args.auto_reply == "true"
-        leads = get_pipeline(
-            stage_filter=args.stage,
-            limit=args.limit,
-            sentiment=getattr(args, "sentiment", None),
-            auto_reply=auto_reply,
-            lead_status=getattr(args, "lead_status", None),
-            sort=getattr(args, "sort", "updated_at"),
-            order=getattr(args, "order", "desc"),
-        )
+        try:
+            leads = get_pipeline(
+                stage_filter=args.stage,
+                limit=args.limit,
+                sentiment=getattr(args, "sentiment", None),
+                auto_reply=auto_reply,
+                lead_status=getattr(args, "lead_status", None),
+                sort=getattr(args, "sort", "updated_at"),
+                order=getattr(args, "order", "desc"),
+                workspace=getattr(args, "workspace", None),
+            )
+        except ValueError as e:
+            print(str(e))
+            sys.exit(1)
         print(json.dumps(leads, indent=2) if getattr(args, "json", False) else format_pipeline_table(leads))
     elif args.command == "stats":
         stats = get_stats()
@@ -3464,10 +3650,15 @@ def main():
             sys.exit(1)
         print(json.dumps(result, indent=2))
     elif args.command == "history":
-        lead = find_lead(
-            lead_id=args.id, email=args.email,
-            linkedin=getattr(args, "linkedin", None), name=args.name,
-        )
+        try:
+            lead = find_lead(
+                lead_id=args.id, email=args.email,
+                linkedin=getattr(args, "linkedin", None), name=args.name,
+                workspace=getattr(args, "workspace", None),
+            )
+        except ValueError as e:
+            print(json.dumps({"error": str(e)}))
+            sys.exit(1)
         if not lead:
             print(json.dumps({"error": "Lead not found"}))
             sys.exit(1)
@@ -3475,10 +3666,15 @@ def main():
         print(json.dumps({"lead": lead, "events": events}, indent=2)
               if args.json else format_event_timeline(lead, events))
     elif args.command == "copy-insights":
-        insights = get_copy_insights(
-            lead_status=args.lead_status,
-            limit=args.limit,
-        )
+        try:
+            insights = get_copy_insights(
+                lead_status=args.lead_status,
+                limit=args.limit,
+                workspace=getattr(args, "workspace", None),
+            )
+        except ValueError as e:
+            print(str(e))
+            sys.exit(1)
         print(json.dumps(insights, indent=2) if args.json else format_copy_insights(insights))
     elif args.command == "workspace":
         if args.workspace_cmd == "create":

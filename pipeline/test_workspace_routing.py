@@ -271,6 +271,54 @@ def test_replay_pending_quarantine_applies_unknown_name_mapping():
     assert not any(row.get("source_platform") == "prosp" for row in pending_after)
 
 
+def test_campaign_stats_splits_workspace_and_counts_interested():
+    om.init_db()
+    lead_a = om.add_lead(name="Lead A", email="leada@test.com").get("id")
+    lead_b = om.add_lead(name="Lead B", email="leadb@test.com").get("id")
+    assert lead_a and lead_b
+
+    conn = om.get_conn()
+    campaign_id = om.ensure_campaign(conn, "leadgenph | scholarship", int(lead_a))
+    conn.execute(
+        "INSERT OR IGNORE INTO campaign_leads (campaign_id, lead_id) VALUES (?, ?)",
+        (campaign_id, int(lead_b)),
+    )
+    conn.execute(
+        """INSERT INTO events (lead_id, event_type, direction, channel, metadata_json, campaign_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+        (int(lead_a), "lead_status_updated", "inbound", "email", '{"lead_status_raw":"interested"}', campaign_id),
+    )
+    conn.execute(
+        """INSERT INTO events (lead_id, event_type, direction, channel, metadata_json, campaign_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+        (int(lead_b), "email_sent", "outbound", "email", "{}", campaign_id),
+    )
+    conn.commit()
+    conn.close()
+
+    stats = om.get_campaign_stats()
+    row = next((c for c in stats["campaigns"] if c.get("campaign") == "leadgenph | scholarship"), None)
+    assert row is not None
+    assert row.get("workspace") == "leadgenph"
+    assert row.get("campaign_name") == "scholarship"
+    assert row.get("event_count") == 2
+    assert row.get("lead_count") == 2
+    assert row.get("interested_count") == 1
+    assert row.get("event_type_counts", {}).get("email_sent") == 1
+    assert row.get("event_type_counts", {}).get("lead_status_updated") == 1
+    assert row.get("direction_counts", {}).get("outbound") == 1
+    assert row.get("direction_counts", {}).get("inbound") == 1
+    assert row.get("channel_counts", {}).get("email") == 2
+    assert row.get("event_summary")
+    assert "types:" in row.get("event_summary", "")
+
+    rendered = "\n".join(om.format_campaign_stats(stats, include_header=False))
+    assert "Workspace" in rendered
+    assert "Interested" in rendered
+    assert "leadgenph" in rendered
+    assert "scholarship" in rendered
+
+
 if __name__ == "__main__":
     test_normalization()
     test_single_mode_routes_all_to_default()
@@ -283,4 +331,5 @@ if __name__ == "__main__":
     test_ingest_quarantine_and_route()
     test_replay_pending_quarantine_applies_prefix_rules()
     test_replay_pending_quarantine_applies_unknown_name_mapping()
+    test_campaign_stats_splits_workspace_and_counts_interested()
     print("ok")

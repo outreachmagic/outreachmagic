@@ -16,6 +16,9 @@ Usage:
   pipeline.py show                          # Print pipeline table
   pipeline.py add-lead --name "Jane" ...    # Add a lead
   pipeline.py log-event --lead-id 1 ...     # Log outreach event
+  pipeline.py history --id 1                # Show lead's event timeline
+  pipeline.py history --email j@acme.com    # Look up by email
+  pipeline.py history --name "Jane"         # Look up by name (partial)
   pipeline.py stats                         # Quick stats
 """
 
@@ -29,6 +32,8 @@ import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+from relay_extractors import build_display_name, extract_relay_fields, name_from_email
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -57,6 +62,23 @@ STAGE_EMOJI = {
     "prospecting": "\u25cb", "contacted": "\u25cf", "replied": "\u2194",
     "interested": "\u2605", "proposal": "\u25a0", "won": "\u2714", "lost": "\u2716",
 }
+
+# Personal inboxes — skip domain-wide company sync (would touch unrelated leads)
+SHARED_EMAIL_DOMAINS = frozenset({
+    "126.com", "163.com", "aim.com", "alice.it", "aol.com", "ameritech.net", "att.net",
+    "bellsouth.net", "bigpond.com", "btinternet.com", "charter.net", "comcast.net", "cox.net", "cs.com",
+    "daum.net", "earthlink.net", "email.com", "excite.com", "facebook.com", "flash.net", "free.fr",
+    "frontier.com", "gmail.com", "gmx.com", "gmx.net", "googlemail.com", "hanmail.net", "hey.com",
+    "hotmail.com", "hushmail.com", "icloud.com", "inbox.com", "instagram.com", "interia.pl", "juno.com",
+    "laposte.net", "libero.it", "linkedin.com", "live.com", "lycos.com", "mac.com", "mail.com",
+    "mail.ru", "mailfence.com", "me.com", "mindspring.com", "msn.com", "naver.com", "netscape.net",
+    "netzero.net", "ntlworld.com", "o2.pl", "onet.pl", "optonline.net", "orange.fr", "outlook.com",
+    "pacbell.net", "pm.me", "prodigy.net", "proton.me", "protonmail.com", "qq.com", "rediffmail.com",
+    "roadrunner.com", "rocketmail.com", "rogers.com", "runbox.com", "sbcglobal.net", "sfr.fr", "shaw.ca",
+    "sina.com", "sky.com", "swbell.net", "sympatico.ca", "talktalk.net", "t-online.de", "tuta.io",
+    "tutanota.com", "twc.com", "verizon.net", "virgilio.it", "virginmedia.com", "wanadoo.fr", "web.de",
+    "windstream.net", "wp.pl", "yahoo.com", "yandex.com", "yandex.ru", "ymail.com",
+})
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -93,7 +115,10 @@ CREATE TABLE IF NOT EXISTS leads (
     name            TEXT NOT NULL,
     company         TEXT,
     title           TEXT,
+    industry        TEXT,
+    headcount       TEXT,
     email           TEXT,
+    email_domain    TEXT,
     linkedin_url    TEXT,
     channel         TEXT NOT NULL DEFAULT 'email',
     stage           TEXT NOT NULL DEFAULT 'prospecting',
@@ -155,30 +180,113 @@ def get_conn():
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA_SQL)
+    # Migrate existing databases that predate newer columns
+    for col, col_type in [("industry", "TEXT"), ("headcount", "TEXT"), ("email_domain", "TEXT")]:
+        try:
+            conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    conn.execute(
+        """UPDATE leads SET email_domain = lower(substr(email, instr(email, '@') + 1))
+           WHERE email LIKE '%@%' AND (email_domain IS NULL OR email_domain = '')"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_email_domain ON leads(email_domain)")
     conn.commit()
     conn.close()
     return True
 
+
+def email_domain(email: Optional[str]) -> Optional[str]:
+    if not email or "@" not in email:
+        return None
+    return email.split("@", 1)[1].strip().lower()
+
+
+def ensure_lead_domain(lead_id: int, email: Optional[str]):
+    domain = email_domain(email)
+    if not domain:
+        return
+    conn = get_conn()
+    conn.execute(
+        "UPDATE leads SET email_domain = ? WHERE id = ? AND (email_domain IS NULL OR email_domain = '')",
+        (domain, lead_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def sync_company_by_domain(domain: str, company=None, industry=None, headcount=None):
+    """Fill empty company/industry/headcount on all leads sharing a business email domain."""
+    if not domain or domain in SHARED_EMAIL_DOMAINS:
+        return
+    fields = [(c, v) for c, v in [("company", company), ("industry", industry), ("headcount", headcount)] if v]
+    if not fields:
+        return
+    conn = get_conn()
+    sets, params = [], []
+    for col, val in fields:
+        sets.append(f"{col} = CASE WHEN {col} IS NULL OR trim({col}) = '' THEN ? ELSE {col} END")
+        params.append(val)
+    sets.append("updated_at = datetime('now')")
+    params.append(domain)
+    conn.execute(f"UPDATE leads SET {', '.join(sets)} WHERE email_domain = ?", params)
+    conn.commit()
+    conn.close()
+
 def db_exists():
     return DB_PATH.exists()
 
-def add_lead(name, company=None, title=None, email=None, linkedin_url=None,
+def add_lead(name, company=None, title=None, industry=None, headcount=None,
+             email=None, linkedin_url=None,
              channel="email", stage="prospecting", notes=None, tags=None):
     conn = get_conn()
+    domain = email_domain(email)
     if email:
         existing = conn.execute("SELECT id FROM leads WHERE email = ?", (email,)).fetchone()
         if existing:
+            if domain:
+                conn.execute(
+                    "UPDATE leads SET email_domain = ? WHERE id = ? AND (email_domain IS NULL OR email_domain = '')",
+                    (domain, existing["id"]),
+                )
+                conn.commit()
             conn.close()
             return {"status": "exists", "id": existing["id"], "email": email}
     cursor = conn.execute(
-        """INSERT INTO leads (name, company, title, email, linkedin_url, channel, stage, notes, tags)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (name, company, title, email, linkedin_url, channel, stage, notes, json.dumps(tags or [])),
+        """INSERT INTO leads (name, company, title, industry, headcount, email, email_domain, linkedin_url, channel, stage, notes, tags)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (name, company, title, industry, headcount, email, domain, linkedin_url, channel, stage, notes, json.dumps(tags or [])),
     )
     lead_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return {"status": "created", "id": lead_id, "name": name}
+
+def enrich_lead(lead_id, name=None, title=None, industry=None, company=None):
+    """Fill empty lead profile fields from relay extraction (won't overwrite non-empty)."""
+    conn = get_conn()
+    row = conn.execute("SELECT name, email, title, industry, company FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    if not row:
+        conn.close()
+        return
+    updates, params = [], []
+    email = row["email"] or ""
+    if name:
+        current = (row["name"] or "").strip()
+        derived = name_from_email(email) if email else ""
+        if not current or current == derived:
+            updates.append("name = ?")
+            params.append(name)
+    for col, val in [("title", title), ("industry", industry), ("company", company)]:
+        if val and not (row[col] or "").strip():
+            updates.append(f"{col} = ?")
+            params.append(val)
+    if updates:
+        updates.append("updated_at = datetime('now')")
+        conn.execute(f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", (*params, lead_id))
+        conn.commit()
+    conn.close()
+
 
 def update_lead_stage(lead_id, stage, next_action=None):
     if stage not in PIPELINE_STAGES:
@@ -207,6 +315,18 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
     )
     conn.commit()
     conn.close()
+
+def get_lead_events(lead_id, limit=50):
+    """Get all events for a lead, newest first."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT id, event_type, direction, channel, subject, body_preview,
+                  metadata_json, created_at
+           FROM events WHERE lead_id = ? ORDER BY created_at DESC LIMIT ?""",
+        (lead_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 def get_pipeline(stage_filter=None, limit=50):
     conn = get_conn()
@@ -262,7 +382,7 @@ def pull_events(token: str, since: Optional[str] = None) -> dict:
     if since:
         url += f"?since={since}"
 
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(url, headers={"User-Agent": "OutreachMagic/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
@@ -277,7 +397,8 @@ def ack_events(token: str, max_id: int):
     url = f"{RELAY_URL}/pull/{token}/ack"
     data = json.dumps({"max_id": max_id}).encode()
     req = urllib.request.Request(url, data=data, method="POST",
-                                  headers={"Content-Type": "application/json"})
+                                  headers={"Content-Type": "application/json",
+                                           "User-Agent": "OutreachMagic/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
@@ -291,6 +412,17 @@ def ingest_relay_event(event: dict):
     platform = event.get("platform", "unknown")
     sender = event.get("sender", "")
     received_at = event.get("received_at", "")
+    raw = event.get("raw") or {}
+
+    extracted = extract_relay_fields(platform, raw)
+    lead_fields = extracted["lead"]
+    event_fields = extracted["event"]
+
+    display_name = build_display_name(lead_fields, lead_email)
+    if not display_name and lead_email and "@" in lead_email:
+        display_name = name_from_email(lead_email)
+    elif not display_name:
+        display_name = lead_email or f"Unknown ({platform})"
 
     # Determine channel from platform
     channel_map = {"smartlead": "email", "instantly": "email", "emailbison": "email",
@@ -298,10 +430,13 @@ def ingest_relay_event(event: dict):
                    "pipl": "email", "plusvibe": "email", "clay": "email"}
     channel = channel_map.get(platform, "email")
 
-    # Auto-add lead if not exists (minimal profile from relay data)
+    # Auto-add lead if not exists; enrich profile from raw on every event
     if lead_email and "@" in lead_email:
         result = add_lead(
-            name=lead_email.split("@")[0].replace(".", " ").title(),
+            name=display_name,
+            company=lead_fields.get("company_name"),
+            title=lead_fields.get("job_title"),
+            industry=lead_fields.get("industry"),
             email=lead_email,
             channel=channel,
             stage="prospecting",
@@ -310,13 +445,35 @@ def ingest_relay_event(event: dict):
         lead_id = result["id"]
     else:
         result = add_lead(
-            name=lead_email or f"Unknown ({platform})",
+            name=display_name,
+            company=lead_fields.get("company_name"),
+            title=lead_fields.get("job_title"),
+            industry=lead_fields.get("industry"),
             email=lead_email or f"unknown-{platform}@relay.local",
             channel=channel,
             stage="prospecting",
             notes=f"Auto-imported from {platform} via relay",
         )
         lead_id = result["id"]
+
+    enrich_lead(
+        lead_id,
+        name=display_name if lead_fields.get("first_name") else None,
+        title=lead_fields.get("job_title"),
+        industry=lead_fields.get("industry"),
+        company=lead_fields.get("company_name"),
+    )
+
+    if lead_email and "@" in lead_email:
+        ensure_lead_domain(lead_id, lead_email)
+        domain = email_domain(lead_email)
+        if domain:
+            sync_company_by_domain(
+                domain,
+                company=lead_fields.get("company_name"),
+                industry=lead_fields.get("industry"),
+                headcount=lead_fields.get("headcount"),
+            )
 
     # Map relay event types to local event types
     event_type_map = {
@@ -333,14 +490,28 @@ def ingest_relay_event(event: dict):
     direction = "inbound" if event_type in ("email_reply", "email_open", "email_click",
                                              "linkedin_connection_accepted", "linkedin_reply") else "outbound"
 
+    subject = event_fields.get("subject") or f"{platform}: {event_type}"
+    body = event_fields.get("body") or ""
+    body_preview = body[:200] if body else (f"From {sender}" if sender else "")
+
+    metadata = {
+        "source": "relay",
+        "platform": platform,
+        "relay_received_at": received_at,
+    }
+    if event_fields.get("campaign"):
+        metadata["campaign"] = event_fields["campaign"]
+    if body:
+        metadata["body"] = body
+
     log_event(
         lead_id=lead_id,
         event_type=local_type,
         direction=direction,
         channel=channel,
-        subject=f"{platform}: {event_type}",
-        body_preview=f"From {sender}" if sender else "",
-        metadata={"source": "relay", "platform": platform, "relay_received_at": received_at},
+        subject=subject,
+        body_preview=body_preview,
+        metadata=metadata,
     )
 
     # Auto-update stage based on event type
@@ -372,8 +543,29 @@ def connect(token: str):
     for p in platforms:
         print(f"  {p}: {RELAY_URL}/{p}/{token}")
     print()
-    print("Events will auto-sync every time you run: pipeline.py pull")
-    print("Or add a Hermes cron job to pull every 15 minutes.")
+
+    # Auto-pull + show on first connect for simple onboarding
+    if count > 0:
+        print("Pulling events for the first time...")
+        imported = 0
+        for event in result.get("events", []):
+            try:
+                ingest_relay_event(event)
+                imported += 1
+            except Exception:
+                pass
+        print(f"Imported {imported} events.\n")
+        leads = get_pipeline()
+        print(format_pipeline_table(leads))
+        print()
+        print(format_stats(get_stats()))
+    else:
+        print("No events yet. Run 'pipeline.py pull' after your platforms start sending webhooks.")
+
+    print()
+    print("Tip: Add a cron job to auto-pull every 15 minutes:")
+    print("  hermes cron create --name 'outreach-pull' --schedule '*/15 * * * *' \\")
+    print("    --command 'cd ~/.hermes/skills/sales/outreach-magic && python3 pipeline.py pull --cron'")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -410,6 +602,50 @@ def format_stats(stats):
         f"Breakdown: " + ", ".join(f"{s}={c}" for s, c in stats.get("stages", {}).items())
     )
 
+def format_event_timeline(lead, events):
+    """Format a lead's event history as a timeline."""
+    emoji = STAGE_EMOJI.get(lead.get("stage", ""), "")
+    lines = [
+        f"Lead:    {lead['name']} ({emoji} {lead.get('stage', '?')})",
+        f"Title:   {lead.get('title') or '—'}",
+        f"Email:   {lead.get('email') or '—'}",
+        f"Company: {lead.get('company') or '—'}",
+        f"Industry:{lead.get('industry') or '—'}  |  Headcount: {lead.get('headcount') or '—'}",
+        f"Notes:   {lead.get('notes') or '—'}",
+        "",
+    ]
+    if not events:
+        lines.append("No events recorded yet.")
+        return "\n".join(lines)
+
+    lines.append(f"{'#':<4} {'When':<20} {'Event':<32} {'Details'}")
+    lines.append("-" * 95)
+    for i, e in enumerate(events, 1):
+        created = e.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(created)
+            now = datetime.now(timezone.utc)
+            delta = now - dt.replace(tzinfo=timezone.utc)
+            if delta.days:
+                when = f"{delta.days}d ago"
+            elif delta.seconds >= 3600:
+                when = f"{delta.seconds // 3600}h ago"
+            elif delta.seconds >= 60:
+                when = f"{delta.seconds // 60}m ago"
+            else:
+                when = "just now"
+        except (ValueError, TypeError):
+            when = created[:16]
+
+        direction = "←" if e.get("direction") == "inbound" else "→"
+        evt = f"{direction} {e.get('event_type', '?')}"
+        details = e.get("body_preview") or e.get("subject") or ""
+        if len(details) > 45:
+            details = details[:42] + "..."
+        lines.append(f"{i:<4} {when:<20} {evt:<32} {details}")
+
+    return "\n".join(lines)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # CLI
@@ -431,6 +667,7 @@ def main():
     add_p = sub.add_parser("add-lead", help="Add a lead")
     add_p.add_argument("--name", required=True)
     add_p.add_argument("--company"); add_p.add_argument("--title")
+    add_p.add_argument("--industry"); add_p.add_argument("--headcount")
     add_p.add_argument("--email"); add_p.add_argument("--linkedin")
     add_p.add_argument("--channel", default="email"); add_p.add_argument("--stage", default="prospecting")
     add_p.add_argument("--notes"); add_p.add_argument("--tags")
@@ -454,6 +691,13 @@ def main():
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
 
     webhook_p = sub.add_parser("webhook-url", help="Show webhook URLs for your platforms")
+
+    hist_p = sub.add_parser("history", help="Show event history for a lead")
+    hist_p.add_argument("--id", type=int, help="Lead ID")
+    hist_p.add_argument("--email", help="Find lead by email")
+    hist_p.add_argument("--name", help="Find lead by name (partial match)")
+    hist_p.add_argument("--limit", type=int, default=50, help="Max events to show")
+    hist_p.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
 
@@ -532,6 +776,7 @@ def main():
     elif args.command == "add-lead":
         tags = json.loads(args.tags) if args.tags else None
         print(json.dumps(add_lead(name=args.name, company=args.company, title=args.title,
+                                   industry=args.industry, headcount=args.headcount,
                                    email=args.email, linkedin_url=args.linkedin,
                                    channel=args.channel, stage=args.stage, notes=args.notes, tags=tags)))
     elif args.command == "update-stage":
@@ -541,6 +786,27 @@ def main():
         log_event(lead_id=args.lead_id, event_type=args.event_type, direction=args.direction,
                   channel=args.channel, subject=args.subject, body_preview=args.body)
         print(json.dumps({"status": "logged", "lead_id": args.lead_id}))
+    elif args.command == "history":
+        conn = get_conn()
+        if args.id:
+            lead = conn.execute("SELECT * FROM leads WHERE id = ?", (args.id,)).fetchone()
+        elif args.email:
+            lead = conn.execute("SELECT * FROM leads WHERE email = ?", (args.email,)).fetchone()
+        elif args.name:
+            lead = conn.execute(
+                "SELECT * FROM leads WHERE name LIKE ? LIMIT 1", (f"%{args.name}%",)
+            ).fetchone()
+        else:
+            conn.close()
+            print(json.dumps({"error": "Provide --id, --email, or --name"}))
+            sys.exit(1)
+        conn.close()
+        if not lead:
+            print(json.dumps({"error": "Lead not found"}))
+            sys.exit(1)
+        events = get_lead_events(lead["id"], args.limit)
+        print(json.dumps({"lead": dict(lead), "events": events}, indent=2)
+              if args.json else format_event_timeline(dict(lead), events))
     else:
         if not db_exists():
             init_db()

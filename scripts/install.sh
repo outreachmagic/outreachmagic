@@ -17,6 +17,7 @@ if [ -d ".git" ]; then
     # Running from repo
     cp scripts/pipeline.py "$SKILL_DIR/scripts/pipeline.py" 2>/dev/null || \
     cp pipeline/pipeline.py "$SKILL_DIR/scripts/pipeline.py"
+    cp pipeline/relay_extractors.py "$SKILL_DIR/scripts/relay_extractors.py" 2>/dev/null || true
     cp pipeline/server.py "$SKILL_DIR/scripts/server.py" 2>/dev/null || true
     cp skill/SKILL.md "$SKILL_DIR/SKILL.md" 2>/dev/null || \
     cp SKILL.md "$SKILL_DIR/SKILL.md" 2>/dev/null || true
@@ -25,6 +26,7 @@ else
     # Direct install from URL
     REPO="https://raw.githubusercontent.com/outreachmagic/outreach-magic-skill/main"
     curl -fsSL "$REPO/pipeline/pipeline.py" -o "$SKILL_DIR/scripts/pipeline.py"
+    curl -fsSL "$REPO/pipeline/relay_extractors.py" -o "$SKILL_DIR/scripts/relay_extractors.py"
     curl -fsSL "$REPO/pipeline/server.py" -o "$SKILL_DIR/scripts/server.py"
     curl -fsSL "$REPO/skill/SKILL.md" -o "$SKILL_DIR/SKILL.md"
     curl -fsSL "$REPO/references/schema.md" -o "$SKILL_DIR/references/schema.md"

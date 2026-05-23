@@ -7,10 +7,10 @@ One SQLite file. No cloud. Your pipeline, visible.
 ## Quick Start
 
 ```bash
-hermes skills install outreach-magic
-hermes -s outreach-magic
+hermes skills install outreachmagic
+hermes -s outreachmagic
 # Your agent now auto-logs every outreach action
-python3 ~/.hermes/skills/sales/outreach-magic/scripts/pipeline.py show
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show
 ```
 
 ```
@@ -38,6 +38,8 @@ Upgrade to sync Smartlead, Heyreach, Instantly, and more into your pipeline. Fre
 pipeline.py connect --key YOUR_TOKEN
 ```
 
+On first connect, Outreach Magic will automatically pull any existing events and show your pipeline.
+
 [Sign up for a token →](https://outreachmagic.io)
 
 ## Commands
@@ -46,11 +48,14 @@ pipeline.py connect --key YOUR_TOKEN
 |---------|-------------|
 | `pipeline.py init` | Create database |
 | `pipeline.py show [--stage X]` | View pipeline |
+| `pipeline.py history --id 1` | Lead event timeline |
+| `pipeline.py history --email j@a.com` | Look up + timeline by email |
+| `pipeline.py history --name "Jane"` | Look up + timeline by name |
 | `pipeline.py stats` | Quick stats |
 | `pipeline.py add-lead --name "..."` | Add a lead |
 | `pipeline.py log-event --lead-id 1 --type ...` | Log outreach |
 | `pipeline.py update-stage --id 1 --stage ...` | Move deal forward |
-| `pipeline.py connect --key TOKEN` | Connect sequencers (paid) |
+| `pipeline.py connect --key TOKEN` | Connect to relay + auto-pull on first run |
 | `pipeline.py pull` | Sync events from relay |
 | `pipeline.py webhook-url` | Show webhook URLs |
 

@@ -49,15 +49,21 @@ from relay_extractors import (
 )
 from workspace_routing import (
     DEFAULT_ORG_ID,
+    VALID_WORKSPACE_ROUTING_MODES,
+    WORKSPACE_ROUTING_MULTI,
+    WORKSPACE_ROUTING_SINGLE,
     append_workspace_event,
     assign_campaign_map,
     collect_identities_from_event,
     ensure_default_org_workspace,
     extract_campaign_context,
     find_lead_by_identity,
+    format_unmapped_campaign_message,
+    get_org_routing_config,
     quarantine_event,
     replay_quarantine_item,
     resolve_workspace,
+    resolve_workspace_for_ingest,
     upsert_identity_alias,
     upsert_workspace_lead,
 )
@@ -381,9 +387,11 @@ CREATE TABLE IF NOT EXISTS relay_ingested (
 
 -- Org + workspace routing (org-wide lead, workspace-scoped status/events)
 CREATE TABLE IF NOT EXISTS organizations (
-    id              TEXT PRIMARY KEY,
-    name            TEXT NOT NULL,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    id                      TEXT PRIMARY KEY,
+    name                    TEXT NOT NULL,
+    workspace_routing_mode  TEXT NOT NULL DEFAULT 'single',
+    default_workspace_id    TEXT,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -684,6 +692,14 @@ def migrate_db(conn=None):
     backfill_companies_from_leads(conn)
     backfill_campaigns_from_events(conn)
     backfill_plusvibe_status_metadata(conn)
+    for col, col_type in [
+        ("workspace_routing_mode", "TEXT NOT NULL DEFAULT 'single'"),
+        ("default_workspace_id", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE organizations ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
     backfill_workspace_routing(conn)
     if own_conn:
         conn.commit()
@@ -1960,6 +1976,64 @@ def list_workspaces(org_id: str = DEFAULT_ORG_ID) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_workspace_routing(org_id: str = DEFAULT_ORG_ID) -> dict:
+    conn = get_conn()
+    config = get_org_routing_config(conn, org_id)
+    ws = conn.execute(
+        "SELECT id, name, slug FROM workspaces WHERE id = ?",
+        (config.default_workspace_id,),
+    ).fetchone()
+    conn.close()
+    return {
+        "mode": config.mode,
+        "default_workspace_id": config.default_workspace_id,
+        "default_workspace_slug": ws["slug"] if ws else None,
+        "default_workspace_name": ws["name"] if ws else None,
+    }
+
+
+def set_workspace_routing(
+    mode: str,
+    *,
+    workspace_slug: Optional[str] = None,
+    org_id: str = DEFAULT_ORG_ID,
+) -> dict:
+    mode = (mode or "").strip().lower()
+    if mode not in VALID_WORKSPACE_ROUTING_MODES:
+        return {
+            "status": "error",
+            "error": f"mode must be one of: {', '.join(VALID_WORKSPACE_ROUTING_MODES)}",
+        }
+    conn = get_conn()
+    ensure_default_org_workspace(conn)
+    ws_id = get_org_routing_config(conn, org_id).default_workspace_id
+    if workspace_slug:
+        ws = conn.execute(
+            "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
+            (org_id, workspace_slug),
+        ).fetchone()
+        if not ws:
+            conn.close()
+            return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
+        ws_id = ws["id"]
+    if mode == WORKSPACE_ROUTING_SINGLE:
+        conn.execute(
+            """UPDATE organizations
+               SET workspace_routing_mode = ?, default_workspace_id = ? WHERE id = ?""",
+            (mode, ws_id, org_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE organizations SET workspace_routing_mode = ? WHERE id = ?",
+            (mode, org_id),
+        )
+    conn.commit()
+    conn.close()
+    result = get_workspace_routing(org_id)
+    result["status"] = "ok"
+    return result
+
+
 def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAULT_ORG_ID) -> dict:
     slug = slug or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "workspace"
     ws_id = f"ws_{slug}"
@@ -2040,7 +2114,21 @@ def list_quarantine(org_id: str = DEFAULT_ORG_ID, status: str = "pending", limit
         (org_id, status, limit),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for row in rows:
+        item = dict(row)
+        if item.get("reason") == "no_campaign_map":
+            ctx = extract_campaign_context(
+                item["source_platform"],
+                {},
+                {
+                    "campaign_id": item.get("campaign_id"),
+                    "campaign_name": item.get("campaign_name_raw"),
+                },
+            )
+            item["message"] = format_unmapped_campaign_message(ctx)
+        out.append(item)
+    return out
 
 
 def assign_quarantine_and_replay(queue_id: str, workspace_slug: str) -> dict:
@@ -2335,6 +2423,7 @@ def sync_from_relay(
     full: bool = False,
     ack: bool = False,
     debug_sentiment: bool = False,
+    quiet: bool = False,
 ) -> tuple[int, int]:
     """Import relay events locally. Relay keeps all rows; we skip already-ingested keys."""
     imported = skipped = 0
@@ -2355,7 +2444,9 @@ def sync_from_relay(
             break
 
         for event in events:
-            if ingest_relay_event(event, debug_sentiment=debug_sentiment) is None:
+            if ingest_relay_event(
+                event, debug_sentiment=debug_sentiment, quiet=quiet
+            ) is None:
                 skipped += 1
             else:
                 imported += 1
@@ -2388,6 +2479,7 @@ def ingest_relay_event(
     event: dict,
     debug_sentiment: bool = False,
     force_workspace_id: Optional[str] = None,
+    quiet: bool = False,
 ) -> Optional[int]:
     """Take a relay event and write it to the local SQLite database. Returns None if duplicate."""
     dedupe_key = relay_dedupe_key(event)
@@ -2491,7 +2583,7 @@ def ingest_relay_event(
 
     workspace_id = force_workspace_id
     if not workspace_id:
-        routing = resolve_workspace(conn, DEFAULT_ORG_ID, campaign_ctx)
+        routing = resolve_workspace_for_ingest(conn, DEFAULT_ORG_ID, campaign_ctx)
         if not routing:
             quarantine_event(
                 conn,
@@ -2503,6 +2595,8 @@ def ingest_relay_event(
             )
             conn.commit()
             conn.close()
+            if not quiet:
+                print(format_unmapped_campaign_message(campaign_ctx), file=sys.stderr)
             return None
         workspace_id = routing.workspace_id
     conn.commit()
@@ -2945,6 +3039,20 @@ def main():
     ws_create = ws_sub.add_parser("create", help="Create a workspace")
     ws_create.add_argument("--name", required=True)
     ws_create.add_argument("--slug")
+    ws_routing = ws_sub.add_parser("routing", help="Single vs multi-workspace routing mode")
+    ws_routing_sub = ws_routing.add_subparsers(dest="workspace_routing_cmd")
+    ws_routing_sub.add_parser("show", help="Show current routing mode")
+    ws_routing_set = ws_routing_sub.add_parser("set", help="Set routing mode")
+    ws_routing_set.add_argument(
+        "--mode",
+        required=True,
+        choices=VALID_WORKSPACE_ROUTING_MODES,
+        help="single: all events to one workspace; multi: require campaign maps",
+    )
+    ws_routing_set.add_argument(
+        "--workspace",
+        help="Workspace slug (required for single mode)",
+    )
 
     cmap_p = sub.add_parser("campaign-map", help="Campaign to workspace routing")
     cmap_sub = cmap_p.add_subparsers(dest="campaign_map_cmd")
@@ -3039,6 +3147,7 @@ def main():
                 full=args.full,
                 ack=args.ack,
                 debug_sentiment=args.debug_sentiment,
+                quiet=args.cron,
             )
         except RuntimeError as e:
             if not args.cron:
@@ -3177,6 +3286,14 @@ def main():
     elif args.command == "workspace":
         if args.workspace_cmd == "create":
             print(json.dumps(create_workspace(args.name, args.slug), indent=2))
+        elif args.workspace_cmd == "routing":
+            if args.workspace_routing_cmd == "set":
+                print(json.dumps(
+                    set_workspace_routing(args.mode, workspace_slug=args.workspace),
+                    indent=2,
+                ))
+            else:
+                print(json.dumps(get_workspace_routing(), indent=2))
         else:
             print(json.dumps(list_workspaces(), indent=2))
     elif args.command == "campaign-map":

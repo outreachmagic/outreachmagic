@@ -21,6 +21,10 @@ from typing import Any, Optional
 DEFAULT_ORG_ID = "default"
 DEFAULT_WORKSPACE_SLUG = "default"
 
+WORKSPACE_ROUTING_SINGLE = "single"
+WORKSPACE_ROUTING_MULTI = "multi"
+VALID_WORKSPACE_ROUTING_MODES = (WORKSPACE_ROUTING_SINGLE, WORKSPACE_ROUTING_MULTI)
+
 IDENTITY_PRECEDENCE = (
     "unified_id",
     "email",
@@ -43,6 +47,12 @@ class RoutingResult:
     workspace_id: str
     match_strategy: str
     map_id: Optional[str] = None
+
+
+@dataclass
+class OrgRoutingConfig:
+    mode: str
+    default_workspace_id: str
 
 
 def normalize_campaign_name(name: Optional[str]) -> Optional[str]:
@@ -167,14 +177,76 @@ def ensure_default_org_workspace(conn: sqlite3.Connection) -> str:
         (DEFAULT_ORG_ID, DEFAULT_WORKSPACE_SLUG),
     ).fetchone()
     if row:
-        return row["id"]
-    ws_id = f"ws_{DEFAULT_WORKSPACE_SLUG}"
+        ws_id = row["id"]
+    else:
+        ws_id = f"ws_{DEFAULT_WORKSPACE_SLUG}"
+        conn.execute(
+            """INSERT INTO workspaces (id, org_id, name, slug, created_at, updated_at)
+               VALUES (?, ?, 'Default Workspace', ?, datetime('now'), datetime('now'))""",
+            (ws_id, DEFAULT_ORG_ID, DEFAULT_WORKSPACE_SLUG),
+        )
     conn.execute(
-        """INSERT INTO workspaces (id, org_id, name, slug, created_at, updated_at)
-           VALUES (?, ?, 'Default Workspace', ?, datetime('now'), datetime('now'))""",
-        (ws_id, DEFAULT_ORG_ID, DEFAULT_WORKSPACE_SLUG),
+        """UPDATE organizations SET default_workspace_id = ?
+           WHERE id = ? AND (default_workspace_id IS NULL OR default_workspace_id = '')""",
+        (ws_id, DEFAULT_ORG_ID),
     )
     return ws_id
+
+
+def get_org_routing_config(conn: sqlite3.Connection, org_id: str) -> OrgRoutingConfig:
+    ensure_default_org_workspace(conn)
+    row = conn.execute(
+        """SELECT workspace_routing_mode, default_workspace_id
+           FROM organizations WHERE id = ?""",
+        (org_id,),
+    ).fetchone()
+    mode = WORKSPACE_ROUTING_SINGLE
+    ws_id: Optional[str] = None
+    if row:
+        raw_mode = (row["workspace_routing_mode"] or "").strip().lower()
+        if raw_mode in VALID_WORKSPACE_ROUTING_MODES:
+            mode = raw_mode
+        ws_id = row["default_workspace_id"]
+    if not ws_id:
+        ws_id = ensure_default_org_workspace(conn)
+    return OrgRoutingConfig(mode=mode, default_workspace_id=ws_id)
+
+
+def campaign_display_label(ctx: CampaignContext) -> str:
+    if ctx.campaign_name_raw:
+        return ctx.campaign_name_raw
+    if ctx.campaign_id:
+        return ctx.campaign_id
+    return "unknown"
+
+
+def format_unmapped_campaign_message(ctx: CampaignContext) -> str:
+    """User-facing instructions when multi-workspace routing cannot resolve a campaign."""
+    label = campaign_display_label(ctx)
+    platform = ctx.source_platform
+    lines = [
+        f"Campaign '{label}' ({platform}) is not mapped to a workspace.",
+        "",
+        "To fix this:",
+        '1. Create a workspace:  pipeline.py workspace create --name "Your Team"',
+        "2. Map this campaign to that workspace:",
+        f"     pipeline.py campaign-map add --platform {platform} "
+        f"--workspace WORKSPACE_SLUG --campaign-id ID",
+        f"     pipeline.py campaign-map add --platform {platform} "
+        f"--workspace WORKSPACE_SLUG --campaign-name \"{label}\"",
+        "   Or use a prefix/regex rule:",
+        f"     pipeline.py campaign-map add --platform {platform} "
+        f"--workspace WORKSPACE_SLUG --match-strategy rule_prefix --campaign-name \"prefix\"",
+        "3. Or assign one quarantined event manually:",
+        "     pipeline.py quarantine list",
+        "     pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG",
+    ]
+    if ctx.campaign_id and ctx.campaign_name_raw and ctx.campaign_id != ctx.campaign_name_raw:
+        lines[5] = (
+            f"     pipeline.py campaign-map add --platform {platform} "
+            f"--workspace WORKSPACE_SLUG --campaign-id {ctx.campaign_id}"
+        )
+    return "\n".join(lines)
 
 
 def resolve_workspace(
@@ -246,6 +318,25 @@ def resolve_workspace(
                     continue
 
     return None
+
+
+def resolve_workspace_for_ingest(
+    conn: sqlite3.Connection,
+    org_id: str,
+    ctx: CampaignContext,
+) -> Optional[RoutingResult]:
+    """
+    Resolve workspace using org routing mode:
+      single — all events go to default_workspace_id
+      multi  — campaign maps required; None if unmapped
+    """
+    config = get_org_routing_config(conn, org_id)
+    if config.mode == WORKSPACE_ROUTING_SINGLE:
+        return RoutingResult(
+            workspace_id=config.default_workspace_id,
+            match_strategy="single_workspace",
+        )
+    return resolve_workspace(conn, org_id, ctx)
 
 
 def quarantine_event(

@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 # Canonical keys returned by extract_relay_fields()
 LEAD_KEYS = ("first_name", "last_name", "job_title", "industry", "company_name", "headcount")
-EVENT_KEYS = ("subject", "body", "campaign")
+EVENT_KEYS = ("subject", "body", "campaign", "campaign_id", "campaign_name")
 SIGNAL_KEYS = ("label", "sentiment", "status", "webhook_event")
 
 
@@ -63,7 +63,9 @@ _PLUSVIBE_SPEC = {
     "event": {
         "subject": ("subject", "last_lead_reply_subject", "latest_subject"),
         "body": ("body", "text_body", "last_lead_reply", "snippet"),
-        "campaign": ("campaign_name", "campaign_id"),
+        "campaign": ("campaign_name", "campaign"),
+        "campaign_id": ("campaign_id", "data.campaign_id", "campaign.id"),
+        "campaign_name": ("campaign_name", "campaign"),
     },
     "signals": {
         "label": ("label",),
@@ -102,7 +104,9 @@ _DEFAULT_SPEC = {
     "event": {
         "subject": ("subject", "email_subject", "data.subject"),
         "body": ("body", "email_body", "message", "data.body", "text_body"),
-        "campaign": ("campaign_name", "campaign", "campaign_id", "data.campaign_name"),
+        "campaign": ("campaign_name", "campaign"),
+        "campaign_id": ("campaign_id", "data.campaign_id", "campaign.id"),
+        "campaign_name": ("campaign_name", "campaign", "data.campaign_name"),
     },
     "signals": {
         "label": ("label", "lead_status", "data.label"),

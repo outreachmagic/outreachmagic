@@ -47,6 +47,20 @@ from relay_extractors import (
     extract_relay_identity,
     name_from_email,
 )
+from workspace_routing import (
+    DEFAULT_ORG_ID,
+    append_workspace_event,
+    assign_campaign_map,
+    collect_identities_from_event,
+    ensure_default_org_workspace,
+    extract_campaign_context,
+    find_lead_by_identity,
+    quarantine_event,
+    replay_quarantine_item,
+    resolve_workspace,
+    upsert_identity_alias,
+    upsert_workspace_lead,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -68,7 +82,7 @@ CONFIG_PATH = get_config_path()
 
 SKILL_NAME = "outreachmagic"
 SKILL_SCRIPTS_DIR = f"skills/sales/{SKILL_NAME}/scripts"
-UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py")
+UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py", "workspace_routing.py")
 DEFAULT_UPDATE_BASE = "https://raw.githubusercontent.com/outreachmagic/hermes-agent/main/pipeline"
 
 
@@ -364,6 +378,133 @@ CREATE TABLE IF NOT EXISTS relay_ingested (
     lead_id         INTEGER REFERENCES leads(id) ON DELETE SET NULL,
     ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Org + workspace routing (org-wide lead, workspace-scoped status/events)
+CREATE TABLE IF NOT EXISTS organizations (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+    id              TEXT PRIMARY KEY,
+    org_id          TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    slug            TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (org_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS lead_identities (
+    id                      TEXT PRIMARY KEY,
+    org_id                  TEXT NOT NULL,
+    lead_id                 INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    identity_type           TEXT NOT NULL,
+    identity_value_normalized TEXT NOT NULL,
+    source                  TEXT,
+    is_verified             INTEGER NOT NULL DEFAULT 0,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (org_id, identity_type, identity_value_normalized)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lead_identities_lead ON lead_identities(org_id, lead_id);
+
+CREATE TABLE IF NOT EXISTS workspace_leads (
+    id              TEXT PRIMARY KEY,
+    org_id          TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    status          TEXT NOT NULL DEFAULT 'prospecting',
+    owner_user_id   TEXT,
+    stage_entered_at TEXT,
+    last_activity_at TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (workspace_id, lead_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_leads_status ON workspace_leads(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_workspace_leads_owner ON workspace_leads(workspace_id, owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_leads_activity ON workspace_leads(workspace_id, last_activity_at);
+
+CREATE TABLE IF NOT EXISTS workspace_lead_events (
+    id                  TEXT PRIMARY KEY,
+    org_id              TEXT NOT NULL,
+    workspace_id        TEXT NOT NULL,
+    lead_id             INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    workspace_lead_id   TEXT REFERENCES workspace_leads(id) ON DELETE SET NULL,
+    event_type          TEXT NOT NULL,
+    event_at            TEXT NOT NULL,
+    source_platform     TEXT NOT NULL,
+    external_event_id   TEXT,
+    idempotency_key     TEXT NOT NULL,
+    payload_json        TEXT NOT NULL DEFAULT '{}',
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (org_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ws_events_lead ON workspace_lead_events(workspace_id, lead_id, event_at);
+CREATE INDEX IF NOT EXISTS idx_ws_events_type ON workspace_lead_events(workspace_id, event_type, event_at);
+
+CREATE TABLE IF NOT EXISTS campaign_workspace_map (
+    id                      TEXT PRIMARY KEY,
+    org_id                  TEXT NOT NULL,
+    source_platform         TEXT NOT NULL,
+    campaign_id             TEXT,
+    campaign_name_normalized  TEXT,
+    workspace_id            TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    match_strategy          TEXT NOT NULL DEFAULT 'id_exact',
+    priority                INTEGER NOT NULL DEFAULT 100,
+    is_active               INTEGER NOT NULL DEFAULT 1,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_campaign_map_lookup ON campaign_workspace_map(
+    org_id, source_platform, is_active, priority
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_map_id ON campaign_workspace_map(
+    org_id, source_platform, campaign_id
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_map_name ON campaign_workspace_map(
+    org_id, source_platform, campaign_name_normalized
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_map_id_active ON campaign_workspace_map(
+    org_id, source_platform, campaign_id
+) WHERE campaign_id IS NOT NULL AND is_active = 1;
+
+CREATE TABLE IF NOT EXISTS unmapped_campaign_queue (
+    id                      TEXT PRIMARY KEY,
+    org_id                  TEXT NOT NULL,
+    source_platform         TEXT NOT NULL,
+    campaign_id             TEXT,
+    campaign_name_raw       TEXT,
+    campaign_name_normalized TEXT,
+    external_event_id       TEXT,
+    reason                  TEXT NOT NULL,
+    status                  TEXT NOT NULL DEFAULT 'pending',
+    payload_json            TEXT NOT NULL,
+    received_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_quarantine_status ON unmapped_campaign_queue(org_id, status, received_at);
+CREATE INDEX IF NOT EXISTS idx_quarantine_campaign ON unmapped_campaign_queue(
+    org_id, source_platform, campaign_id, status
+);
+
+CREATE TABLE IF NOT EXISTS lead_merge_jobs (
+    id              TEXT PRIMARY KEY,
+    org_id          TEXT NOT NULL,
+    keep_lead_id    INTEGER NOT NULL,
+    merge_lead_id   INTEGER NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'completed',
+    reason          TEXT,
+    audit_json      TEXT DEFAULT '{}',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -407,6 +548,96 @@ def migrate_db(conn=None):
             merge_id INTEGER NOT NULL,
             reason TEXT,
             merged_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS organizations (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (org_id, slug)
+        );
+        CREATE TABLE IF NOT EXISTS lead_identities (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+            identity_type TEXT NOT NULL,
+            identity_value_normalized TEXT NOT NULL,
+            source TEXT,
+            is_verified INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (org_id, identity_type, identity_value_normalized)
+        );
+        CREATE TABLE IF NOT EXISTS workspace_leads (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'prospecting',
+            owner_user_id TEXT,
+            stage_entered_at TEXT,
+            last_activity_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (workspace_id, lead_id)
+        );
+        CREATE TABLE IF NOT EXISTS workspace_lead_events (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            lead_id INTEGER NOT NULL,
+            workspace_lead_id TEXT,
+            event_type TEXT NOT NULL,
+            event_at TEXT NOT NULL,
+            source_platform TEXT NOT NULL,
+            external_event_id TEXT,
+            idempotency_key TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (org_id, idempotency_key)
+        );
+        CREATE TABLE IF NOT EXISTS campaign_workspace_map (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            source_platform TEXT NOT NULL,
+            campaign_id TEXT,
+            campaign_name_normalized TEXT,
+            workspace_id TEXT NOT NULL,
+            match_strategy TEXT NOT NULL DEFAULT 'id_exact',
+            priority INTEGER NOT NULL DEFAULT 100,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS unmapped_campaign_queue (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            source_platform TEXT NOT NULL,
+            campaign_id TEXT,
+            campaign_name_raw TEXT,
+            campaign_name_normalized TEXT,
+            external_event_id TEXT,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            payload_json TEXT NOT NULL,
+            received_at TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS lead_merge_jobs (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            keep_lead_id INTEGER NOT NULL,
+            merge_lead_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'completed',
+            reason TEXT,
+            audit_json TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
     """)
     for col, col_type in [
@@ -453,9 +684,68 @@ def migrate_db(conn=None):
     backfill_companies_from_leads(conn)
     backfill_campaigns_from_events(conn)
     backfill_plusvibe_status_metadata(conn)
+    backfill_workspace_routing(conn)
     if own_conn:
         conn.commit()
         conn.close()
+
+
+def backfill_workspace_routing(conn: sqlite3.Connection):
+    """Ensure default org/workspace, identity aliases, and workspace_leads for existing leads."""
+    ensure_default_org_workspace(conn)
+    default_ws = conn.execute(
+        "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
+        (DEFAULT_ORG_ID, "default"),
+    ).fetchone()
+    if not default_ws:
+        return
+    workspace_id = default_ws["id"]
+
+    leads = conn.execute(
+        "SELECT id, email, linkedin_normalized FROM leads"
+    ).fetchall()
+    for lead in leads:
+        lid = lead["id"]
+        if lead["email"]:
+            conn.execute(
+                """INSERT OR IGNORE INTO lead_identities (
+                       id, org_id, lead_id, identity_type, identity_value_normalized,
+                       source, is_verified, created_at
+                   ) VALUES (
+                       ?, ?, ?, 'email', ?, 'backfill', 1, datetime('now')
+                   )""",
+                (f"id_email_{lid}", DEFAULT_ORG_ID, lid, lead["email"]),
+            )
+        if lead["linkedin_normalized"]:
+            conn.execute(
+                """INSERT OR IGNORE INTO lead_identities (
+                       id, org_id, lead_id, identity_type, identity_value_normalized,
+                       source, is_verified, created_at
+                   ) VALUES (
+                       ?, ?, ?, 'linkedin_url', ?, 'backfill', 1, datetime('now')
+                   )""",
+                (f"id_li_{lid}", DEFAULT_ORG_ID, lid, lead["linkedin_normalized"]),
+            )
+        stage_row = conn.execute("SELECT stage FROM leads WHERE id = ?", (lid,)).fetchone()
+        status = stage_row["stage"] if stage_row else "prospecting"
+        upsert_workspace_lead(conn, DEFAULT_ORG_ID, workspace_id, lid, status=status)
+
+    # Seed campaign maps from existing campaigns table into default workspace
+    platforms = ("smartlead", "heyreach", "instantly", "plusvibe", "emailbison", "clay", "prosp")
+    campaigns = conn.execute("SELECT name FROM campaigns").fetchall()
+    for row in campaigns:
+        name = (row["name"] or "").strip()
+        if not name:
+            continue
+        for platform in platforms:
+            assign_campaign_map(
+                conn,
+                DEFAULT_ORG_ID,
+                source_platform=platform,
+                workspace_id=workspace_id,
+                campaign_name=name,
+                match_strategy="name_exact",
+            )
 
 
 def email_domain(email: Optional[str]) -> Optional[str]:
@@ -731,6 +1021,33 @@ def merge_leads(keep_id: int, merge_id: int, reason: str = "manual") -> dict:
         conn.execute(
             "UPDATE relay_ingested SET lead_id = ? WHERE lead_id = ?", (keep_id, merge_id)
         )
+        conn.execute(
+            "UPDATE lead_identities SET lead_id = ? WHERE lead_id = ?", (keep_id, merge_id)
+        )
+        for tbl in ("workspace_leads", "workspace_lead_events"):
+            if tbl == "workspace_leads":
+                for row in conn.execute(
+                    "SELECT id, workspace_id FROM workspace_leads WHERE lead_id = ?", (merge_id,)
+                ).fetchall():
+                    existing = conn.execute(
+                        "SELECT id FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
+                        (row["workspace_id"], keep_id),
+                    ).fetchone()
+                    if existing:
+                        conn.execute(
+                            "UPDATE workspace_lead_events SET workspace_lead_id = ? WHERE workspace_lead_id = ?",
+                            (existing["id"], row["id"]),
+                        )
+                        conn.execute("DELETE FROM workspace_leads WHERE id = ?", (row["id"],))
+                    else:
+                        conn.execute(
+                            "UPDATE workspace_leads SET lead_id = ? WHERE id = ?",
+                            (keep_id, row["id"]),
+                        )
+            else:
+                conn.execute(
+                    f"UPDATE {tbl} SET lead_id = ? WHERE lead_id = ?", (keep_id, merge_id)
+                )
 
         email = keep["email"] or other["email"]
         linkedin_url = keep["linkedin_url"] or other["linkedin_url"]
@@ -1630,6 +1947,183 @@ def get_lead_by_email(email):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Workspace routing (org lead + workspace-scoped events)
+# ──────────────────────────────────────────────────────────────────────
+
+def list_workspaces(org_id: str = DEFAULT_ORG_ID) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, org_id, name, slug, created_at FROM workspaces WHERE org_id = ? ORDER BY name",
+        (org_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAULT_ORG_ID) -> dict:
+    slug = slug or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "workspace"
+    ws_id = f"ws_{slug}"
+    conn = get_conn()
+    ensure_default_org_workspace(conn)
+    try:
+        conn.execute(
+            """INSERT INTO workspaces (id, org_id, name, slug, created_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (ws_id, org_id, name, slug),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return {"status": "error", "error": f"workspace slug already exists: {slug}"}
+    conn.close()
+    return {"status": "created", "id": ws_id, "name": name, "slug": slug}
+
+
+def list_campaign_maps(org_id: str = DEFAULT_ORG_ID, platform: Optional[str] = None) -> list[dict]:
+    conn = get_conn()
+    q = """SELECT m.*, w.name AS workspace_name FROM campaign_workspace_map m
+           JOIN workspaces w ON w.id = m.workspace_id WHERE m.org_id = ?"""
+    params: list = [org_id]
+    if platform:
+        q += " AND m.source_platform = ?"
+        params.append(platform)
+    q += " ORDER BY m.source_platform, m.priority, m.campaign_name_normalized"
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_campaign_map_cli(
+    platform: str,
+    workspace_slug: str,
+    *,
+    campaign_id: Optional[str] = None,
+    campaign_name: Optional[str] = None,
+    match_strategy: Optional[str] = None,
+    priority: int = 100,
+) -> dict:
+    conn = get_conn()
+    ws = conn.execute(
+        "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
+        (DEFAULT_ORG_ID, workspace_slug),
+    ).fetchone()
+    if not ws:
+        conn.close()
+        return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
+    if not campaign_id and not campaign_name:
+        conn.close()
+        return {"status": "error", "error": "provide --campaign-id or --campaign-name"}
+    strategy = match_strategy or ("id_exact" if campaign_id else "name_exact")
+    map_id = assign_campaign_map(
+        conn,
+        DEFAULT_ORG_ID,
+        source_platform=platform,
+        workspace_id=ws["id"],
+        campaign_id=campaign_id,
+        campaign_name=campaign_name,
+        match_strategy=strategy,
+        priority=priority,
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "created", "map_id": map_id, "workspace_id": ws["id"]}
+
+
+def list_quarantine(org_id: str = DEFAULT_ORG_ID, status: str = "pending", limit: int = 50) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT id, source_platform, campaign_id, campaign_name_raw,
+                  campaign_name_normalized, reason, status, received_at
+           FROM unmapped_campaign_queue
+           WHERE org_id = ? AND status = ?
+           ORDER BY received_at DESC LIMIT ?""",
+        (org_id, status, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def assign_quarantine_and_replay(queue_id: str, workspace_slug: str) -> dict:
+    conn = get_conn()
+    ws = conn.execute(
+        "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
+        (DEFAULT_ORG_ID, workspace_slug),
+    ).fetchone()
+    if not ws:
+        conn.close()
+        return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
+    result = replay_quarantine_item(conn, queue_id, ws["id"])
+    if result.get("status") != "assigned":
+        conn.close()
+        return result
+    row = conn.execute(
+        "SELECT payload_json FROM unmapped_campaign_queue WHERE id = ?", (queue_id,)
+    ).fetchone()
+    conn.commit()
+    conn.close()
+    if not row:
+        return result
+    try:
+        event = json.loads(row["payload_json"])
+    except (json.JSONDecodeError, TypeError):
+        return {**result, "replay": "failed", "error": "invalid payload"}
+    lead_id = ingest_relay_event(event, force_workspace_id=ws["id"])
+    conn = get_conn()
+    conn.execute(
+        """UPDATE unmapped_campaign_queue SET status = 'replayed', resolved_at = datetime('now')
+           WHERE id = ?""",
+        (queue_id,),
+    )
+    conn.commit()
+    conn.close()
+    return {**result, "replay": "ok", "lead_id": lead_id}
+
+
+def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int = 100) -> dict:
+    pending = list_quarantine(status="assigned", limit=limit)
+    replayed = skipped = 0
+    for item in pending:
+        if workspace_slug:
+            r = assign_quarantine_and_replay(item["id"], workspace_slug)
+        else:
+            conn = get_conn()
+            maps = conn.execute(
+                """SELECT workspace_id FROM campaign_workspace_map
+                   WHERE org_id = ? AND source_platform = ? AND is_active = 1
+                     AND (
+                       (campaign_id IS NOT NULL AND campaign_id = ?)
+                       OR (campaign_name_normalized IS NOT NULL
+                           AND campaign_name_normalized = ?)
+                     )
+                   ORDER BY priority ASC LIMIT 1""",
+                (
+                    DEFAULT_ORG_ID,
+                    item["source_platform"],
+                    item.get("campaign_id"),
+                    item.get("campaign_name_normalized"),
+                ),
+            ).fetchone()
+            conn.close()
+            if not maps:
+                skipped += 1
+                continue
+            ws_row = get_conn()
+            slug = ws_row.execute(
+                "SELECT slug FROM workspaces WHERE id = ?", (maps["workspace_id"],)
+            ).fetchone()
+            ws_row.close()
+            if not slug:
+                skipped += 1
+                continue
+            r = assign_quarantine_and_replay(item["id"], slug["slug"])
+        if r.get("replay") == "ok":
+            replayed += 1
+        else:
+            skipped += 1
+    return {"replayed": replayed, "skipped": skipped}
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Relay Integration (wbhk.org)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1890,9 +2384,24 @@ def ack_events(token: str, max_id: int):
     except Exception:
         return {"error": True}
 
-def ingest_relay_event(event: dict, debug_sentiment: bool = False) -> Optional[int]:
+def ingest_relay_event(
+    event: dict,
+    debug_sentiment: bool = False,
+    force_workspace_id: Optional[str] = None,
+) -> Optional[int]:
     """Take a relay event and write it to the local SQLite database. Returns None if duplicate."""
     dedupe_key = relay_dedupe_key(event)
+    ws_idempotency = f"ws:{dedupe_key}"
+    conn = get_conn()
+    if conn.execute(
+        "SELECT 1 FROM workspace_lead_events WHERE org_id = ? AND idempotency_key = ?",
+        (DEFAULT_ORG_ID, ws_idempotency),
+    ).fetchone():
+        conn.close()
+        if relay_already_ingested(dedupe_key):
+            return None
+    conn.close()
+
     if relay_already_ingested(dedupe_key):
         if debug_sentiment and event.get("platform") in PLUSVIBE_PLATFORMS:
             print(
@@ -1941,8 +2450,63 @@ def ingest_relay_event(event: dict, debug_sentiment: bool = False) -> Optional[i
         enrich_name=display_name if lead_fields.get("first_name") else None,
     )
     if upsert_result.get("status") == "error":
+        identities = collect_identities_from_event(identity, raw, platform)
+        if not identities:
+            conn = get_conn()
+            ensure_default_org_workspace(conn)
+            ctx = extract_campaign_context(platform, event_fields, raw)
+            quarantine_event(
+                conn,
+                DEFAULT_ORG_ID,
+                ctx,
+                reason="missing_identity",
+                payload=event,
+                external_event_id=str(event.get("relay_id") or ""),
+            )
+            conn.commit()
+            conn.close()
         return None
     lead_id = upsert_result["id"]
+
+    campaign_ctx = extract_campaign_context(platform, event_fields, raw)
+    conn = get_conn()
+    ensure_default_org_workspace(conn)
+    identities = collect_identities_from_event(identity, raw, platform)
+    for itype, val in identities:
+        try:
+            upsert_identity_alias(conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform)
+        except ValueError:
+            conn.execute(
+                """INSERT INTO lead_merge_jobs (id, org_id, keep_lead_id, merge_lead_id,
+                       status, reason, audit_json)
+                   VALUES (?, ?, ?, ?, 'pending', 'identity_conflict', ?)""",
+                (
+                    f"merge_{lead_id}_{val[:8]}",
+                    DEFAULT_ORG_ID,
+                    lead_id,
+                    find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val) or lead_id,
+                    json.dumps({"identity_type": itype, "value": val}),
+                ),
+            )
+
+    workspace_id = force_workspace_id
+    if not workspace_id:
+        routing = resolve_workspace(conn, DEFAULT_ORG_ID, campaign_ctx)
+        if not routing:
+            quarantine_event(
+                conn,
+                DEFAULT_ORG_ID,
+                campaign_ctx,
+                reason="no_campaign_map",
+                payload=event,
+                external_event_id=str(event.get("relay_id") or ""),
+            )
+            conn.commit()
+            conn.close()
+            return None
+        workspace_id = routing.workspace_id
+    conn.commit()
+    conn.close()
 
     if platform in PLUSVIBE_PLATFORMS:
         local_type, direction = normalize_plusvibe_event(envelope_event_type, raw)
@@ -2019,6 +2583,41 @@ def ingest_relay_event(event: dict, debug_sentiment: bool = False) -> Optional[i
     )
     if target_stage:
         update_lead_stage(lead_id, target_stage)
+
+    ws_status = target_stage or "prospecting"
+    conn = get_conn()
+    ws_lead_id = upsert_workspace_lead(
+        conn, DEFAULT_ORG_ID, workspace_id, lead_id, status=ws_status
+    )
+    if target_stage:
+        conn.execute(
+            "UPDATE workspace_leads SET status = ?, stage_entered_at = datetime('now') WHERE id = ?",
+            (target_stage, ws_lead_id),
+        )
+    ws_payload = {
+        "event": metadata,
+        "subject": subject,
+        "body_preview": body_preview,
+        "direction": direction,
+        "channel": channel,
+        "campaign_id": campaign_ctx.campaign_id,
+        "campaign_name": campaign_ctx.campaign_name_raw,
+    }
+    append_workspace_event(
+        conn,
+        DEFAULT_ORG_ID,
+        workspace_id,
+        lead_id,
+        ws_lead_id,
+        event_type=local_type,
+        event_at=received_at or datetime.now(timezone.utc).isoformat(),
+        source_platform=platform,
+        idempotency_key=ws_idempotency,
+        payload=ws_payload,
+        external_event_id=str(event.get("relay_id") or ""),
+    )
+    conn.commit()
+    conn.close()
 
     mark_relay_ingested(dedupe_key, lead_id)
     return lead_id
@@ -2340,6 +2939,34 @@ def main():
     copy_p.add_argument("--limit", type=int, default=200, help="Max positive leads to include")
     copy_p.add_argument("--json", action="store_true")
 
+    ws_p = sub.add_parser("workspace", help="List or create workspaces")
+    ws_sub = ws_p.add_subparsers(dest="workspace_cmd")
+    ws_sub.add_parser("list", help="List workspaces")
+    ws_create = ws_sub.add_parser("create", help="Create a workspace")
+    ws_create.add_argument("--name", required=True)
+    ws_create.add_argument("--slug")
+
+    cmap_p = sub.add_parser("campaign-map", help="Campaign to workspace routing")
+    cmap_sub = cmap_p.add_subparsers(dest="campaign_map_cmd")
+    cmap_sub.add_parser("list", help="List campaign maps")
+    cmap_add = cmap_sub.add_parser("add", help="Add campaign map")
+    cmap_add.add_argument("--platform", required=True)
+    cmap_add.add_argument("--workspace", required=True, help="Workspace slug")
+    cmap_add.add_argument("--campaign-id")
+    cmap_add.add_argument("--campaign-name")
+    cmap_add.add_argument("--match-strategy", choices=("id_exact", "name_exact", "rule_prefix", "rule_regex"))
+    cmap_add.add_argument("--priority", type=int, default=100)
+
+    q_p = sub.add_parser("quarantine", help="Unmapped campaign queue")
+    q_sub = q_p.add_subparsers(dest="quarantine_cmd")
+    q_sub.add_parser("list", help="List pending quarantined events")
+    q_assign = q_sub.add_parser("assign", help="Assign workspace and replay one item")
+    q_assign.add_argument("--id", required=True, help="Queue item id")
+    q_assign.add_argument("--workspace", required=True, help="Workspace slug")
+    q_replay = q_sub.add_parser("replay", help="Replay assigned quarantine items")
+    q_replay.add_argument("--workspace")
+    q_replay.add_argument("--limit", type=int, default=100)
+
     args = parser.parse_args()
 
     # Auto-update from GitHub (default on, checks at most once per hour). Re-exec so this run uses new code.
@@ -2547,6 +3174,33 @@ def main():
             limit=args.limit,
         )
         print(json.dumps(insights, indent=2) if args.json else format_copy_insights(insights))
+    elif args.command == "workspace":
+        if args.workspace_cmd == "create":
+            print(json.dumps(create_workspace(args.name, args.slug), indent=2))
+        else:
+            print(json.dumps(list_workspaces(), indent=2))
+    elif args.command == "campaign-map":
+        if args.campaign_map_cmd == "add":
+            print(json.dumps(
+                add_campaign_map_cli(
+                    args.platform,
+                    args.workspace,
+                    campaign_id=args.campaign_id,
+                    campaign_name=args.campaign_name,
+                    match_strategy=args.match_strategy,
+                    priority=args.priority,
+                ),
+                indent=2,
+            ))
+        else:
+            print(json.dumps(list_campaign_maps(platform=getattr(args, "platform", None)), indent=2))
+    elif args.command == "quarantine":
+        if args.quarantine_cmd == "assign":
+            print(json.dumps(assign_quarantine_and_replay(args.id, args.workspace), indent=2))
+        elif args.quarantine_cmd == "replay":
+            print(json.dumps(replay_pending_quarantine(args.workspace, args.limit), indent=2))
+        else:
+            print(json.dumps(list_quarantine(), indent=2))
     else:
         if not db_exists():
             init_db()

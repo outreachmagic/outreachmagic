@@ -57,6 +57,11 @@ On first connect, Outreach Magic will automatically pull any existing events and
 | `pipeline.py update-stage --id 1 --stage ...` | Move deal forward |
 | `pipeline.py connect --key TOKEN` | Connect to relay + auto-pull on first run |
 | `pipeline.py pull` | Sync new events from relay (relay keeps archive; local dedupe) |
+| `pipeline.py workspace list` | List workspaces (org-wide leads, workspace-scoped status/events) |
+| `pipeline.py workspace create --name "Sales"` | Create a workspace |
+| `pipeline.py campaign-map add --platform smartlead --workspace default --campaign-id ID` | Route platform campaign ID to a workspace |
+| `pipeline.py quarantine list` | Events blocked until campaign is mapped to a workspace |
+| `pipeline.py quarantine assign --id QID --workspace default` | Assign workspace and replay quarantined event |
 | `pipeline.py pull --full` | Re-import all relay events after DB reset |
 | `pipeline.py update` | Download latest skill scripts (checks remote `VERSION`) |
 | `pipeline.py webhook-url` | Show webhook URLs |

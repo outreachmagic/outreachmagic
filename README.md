@@ -4,6 +4,8 @@ Your Hermes agent does the outreach. We show you what's working.
 
 One SQLite file. No cloud. Your pipeline, visible.
 
+Config lives in one place: `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`.
+
 ## Quick Start
 
 ```bash

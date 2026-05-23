@@ -285,9 +285,17 @@ SHARED_EMAIL_DOMAINS = frozenset({
 # Config (api token, last pull timestamp)
 # ──────────────────────────────────────────────────────────────────────
 
+def _load_json_dict(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def load_config() -> dict:
     if CONFIG_PATH.exists():
-        return json.loads(CONFIG_PATH.read_text())
+        return _load_json_dict(CONFIG_PATH)
     return {}
 
 def _chmod_best_effort(path: Path, mode: int):
@@ -410,7 +418,7 @@ CREATE TABLE IF NOT EXISTS relay_ingested (
 CREATE TABLE IF NOT EXISTS organizations (
     id                      TEXT PRIMARY KEY,
     name                    TEXT NOT NULL,
-    workspace_routing_mode  TEXT NOT NULL DEFAULT 'single',
+    workspace_routing_mode  TEXT NOT NULL DEFAULT 'multi',
     default_workspace_id    TEXT,
     created_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -718,7 +726,7 @@ def migrate_db(conn=None):
     backfill_campaigns_from_events(conn)
     backfill_plusvibe_status_metadata(conn)
     for col, col_type in [
-        ("workspace_routing_mode", "TEXT NOT NULL DEFAULT 'single'"),
+        ("workspace_routing_mode", "TEXT NOT NULL DEFAULT 'multi'"),
         ("default_workspace_id", "TEXT"),
     ]:
         try:
@@ -2045,7 +2053,7 @@ def set_workspace_routing(
     ensure_organization(conn, org_id)
     ws_id: Optional[str] = None
     if mode == WORKSPACE_ROUTING_SINGLE:
-        ws_id = get_org_routing_config(conn, org_id).default_workspace_id
+        ws_id = ensure_default_org_workspace(conn)
         if workspace_slug:
             ws = conn.execute(
                 "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",

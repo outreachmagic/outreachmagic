@@ -47,6 +47,7 @@ The `version:` line in this file is synced from `scripts/VERSION` on install/upd
 - After any pull, explicitly report the exact number of new records imported.
 - When the user asks about version, read the frontmatter of SKILL.md (version line).
 - When the user asks for message content, use the `history` command on the specific lead.
+- For copy-performance analysis (full subject/body on positive leads + winner), use `copy-insights`.
 - For campaign counts, use `pipeline.py campaigns` (or `stats`, which includes a campaign section). Do not write raw SQL.
 
 ## MANDATORY: Always Pull First
@@ -83,6 +84,7 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --id 1
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --email j@acme.com
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py stats
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py campaigns
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles --file leads.csv
 ```
 
@@ -119,6 +121,13 @@ Then open full timeline for any lead (all events, not just the status event):
 
 ```bash
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --id 1
+```
+
+Native copy-performance analysis (full message bodies + best template):
+
+```bash
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
 ```
 
 Web API: `/api/leads?sentiment=positive&auto_reply=true`

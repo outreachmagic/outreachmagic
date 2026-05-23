@@ -31,6 +31,8 @@ import os
 import sys
 import csv
 import argparse
+import hashlib
+import re
 import shutil
 import urllib.request
 import urllib.error
@@ -1290,6 +1292,188 @@ def get_lead_events(lead_id, limit=50):
     conn.close()
     return [dict(r) for r in rows]
 
+
+def _decode_event_metadata(raw_meta) -> dict:
+    if not raw_meta:
+        return {}
+    try:
+        return json.loads(raw_meta)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _event_subject_and_body(event: dict) -> tuple[str, str]:
+    meta = _decode_event_metadata(event.get("metadata_json"))
+    subject = (event.get("subject") or "").strip()
+    body = (meta.get("body") or event.get("body_preview") or "").strip()
+    return subject, body
+
+
+def _anonymize_template_text(text: str, lead: dict) -> str:
+    out = text or ""
+
+    # Normalize common greeting/sign-off personalization so template grouping
+    # is not split by sender names.
+    out = re.sub(r"(?im)^hi\s+[^,\n]{1,60},", "Hi [first_name],", out)
+    out = re.sub(r"(?im)^best,\s*$", "Best,", out)
+    out = re.sub(r"(?im)^(best,\s*\n)[^\n]+", r"\1[sender]", out)
+
+    replacements = [
+        (lead.get("name") or "", "[name]"),
+        ((lead.get("name") or "").split(" ")[0] if lead.get("name") else "", "[first_name]"),
+        (lead.get("email") or "", "[email]"),
+        (lead.get("company_display") or lead.get("company") or "", "[company]"),
+    ]
+    for original, token in replacements:
+        original = (original or "").strip()
+        if not original:
+            continue
+        escaped = re.escape(original)
+        if len(original) <= 3 and re.fullmatch(r"[A-Za-z0-9 _.-]+", original):
+            pattern = rf"\b{escaped}\b"
+        else:
+            pattern = escaped
+        out = re.sub(pattern, token, out, flags=re.IGNORECASE)
+    return out
+
+
+def _normalize_for_signature(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _template_signature(subject: str, body: str) -> str:
+    data = f"{_normalize_for_signature(subject)}\n{_normalize_for_signature(body)}"
+    return hashlib.sha1(data.encode("utf-8")).hexdigest()[:12]
+
+
+def _first_touch_email_events_for_leads(conn, lead_ids: list[int]) -> dict[int, dict]:
+    if not lead_ids:
+        return {}
+    placeholders = ",".join("?" for _ in lead_ids)
+    rows = conn.execute(
+        f"""SELECT e.id, e.lead_id, e.subject, e.body_preview, e.metadata_json, e.created_at,
+                   l.name, l.email, l.company,
+                   COALESCE(co.name, l.company) AS company_display
+            FROM events e
+            JOIN leads l ON l.id = e.lead_id
+            LEFT JOIN companies co ON co.id = l.company_id
+            WHERE e.lead_id IN ({placeholders})
+              AND lower(e.channel) = 'email'
+              AND lower(e.direction) = 'outbound'
+              AND lower(e.event_type) = 'email_sent'
+            ORDER BY e.lead_id ASC, e.created_at ASC, e.id ASC""",
+        lead_ids,
+    ).fetchall()
+    first_events: dict[int, dict] = {}
+    for row in rows:
+        event = dict(row)
+        lead_id = event["lead_id"]
+        if lead_id in first_events:
+            continue
+        subject, body = _event_subject_and_body(event)
+        if not subject and not body:
+            continue
+        first_events[lead_id] = event
+    return first_events
+
+
+def get_copy_insights(lead_status: str = "interested", limit: int = 200) -> dict:
+    """Analyze winning copy from current positive leads.
+
+    Uses current lead status filter for "positives" and scores templates using the
+    first outbound email sent to each lead (positive-hit count and hit rate).
+    """
+    positive_leads = get_pipeline(
+        limit=limit,
+        lead_status=lead_status,
+        sort="updated_at",
+        order="desc",
+    )
+    positive_by_id = {int(lead["id"]): lead for lead in positive_leads}
+    positive_ids = sorted(positive_by_id.keys())
+
+    conn = get_conn()
+    all_lead_rows = conn.execute("SELECT id FROM leads").fetchall()
+    all_lead_ids = [int(r["id"]) for r in all_lead_rows]
+
+    first_touch_all = _first_touch_email_events_for_leads(conn, all_lead_ids)
+    first_touch_positive = _first_touch_email_events_for_leads(conn, positive_ids)
+    conn.close()
+
+    template_stats: dict[str, dict] = {}
+    lead_template_by_id: dict[int, str] = {}
+
+    for lead_id, event in first_touch_all.items():
+        lead_row = {
+            "name": event.get("name"),
+            "email": event.get("email"),
+            "company": event.get("company"),
+            "company_display": event.get("company_display"),
+        }
+        subject, body = _event_subject_and_body(event)
+        anon_subject = _anonymize_template_text(subject, lead_row)
+        anon_body = _anonymize_template_text(body, lead_row)
+        sig = _template_signature(anon_subject, anon_body)
+        bucket = template_stats.setdefault(
+            sig,
+            {
+                "template_id": sig,
+                "subject_template": anon_subject,
+                "body_template": anon_body,
+                "total_leads": 0,
+                "positive_leads": 0,
+                "positive_rate": 0.0,
+            },
+        )
+        bucket["total_leads"] += 1
+        lead_template_by_id[lead_id] = sig
+        if lead_id in positive_by_id:
+            bucket["positive_leads"] += 1
+
+    for row in template_stats.values():
+        total = row["total_leads"] or 1
+        row["positive_rate"] = round(row["positive_leads"] / total, 4)
+
+    ranked_templates = sorted(
+        template_stats.values(),
+        key=lambda r: (r["positive_leads"], r["positive_rate"], r["total_leads"]),
+        reverse=True,
+    )
+
+    positive_copy = []
+    for lead in positive_leads:
+        lead_id = int(lead["id"])
+        event = first_touch_positive.get(lead_id)
+        if not event:
+            continue
+        subject, body = _event_subject_and_body(event)
+        template_id = lead_template_by_id.get(lead_id)
+        positive_copy.append(
+            {
+                "lead_id": lead_id,
+                "lead_name": lead.get("name"),
+                "lead_status": lead_status,
+                "stage": lead.get("stage"),
+                "event_id": event.get("id"),
+                "sent_at": event.get("created_at"),
+                "subject": subject,
+                "body": body,
+                "template_id": template_id,
+            }
+        )
+
+    return {
+        "filter": {"lead_status": lead_status, "limit": limit},
+        "counts": {
+            "positive_leads": len(positive_leads),
+            "positive_with_copy": len(positive_copy),
+            "templates_seen": len(ranked_templates),
+        },
+        "positive_leads_copy": positive_copy,
+        "templates_ranked": ranked_templates,
+        "best_template": ranked_templates[0] if ranked_templates else None,
+    }
+
 # Events that carry lead status / sentiment / auto-reply for current-state filters.
 _STATUS_METADATA_PREDICATE = """(
     json_extract(e.metadata_json, '$.lead_status_sentiment') IS NOT NULL
@@ -2003,6 +2187,48 @@ def format_event_timeline(lead, events):
     return "\n".join(lines)
 
 
+def format_copy_insights(insights: dict) -> str:
+    counts = insights.get("counts") or {}
+    best = insights.get("best_template")
+    lines = [
+        f"Positive leads: {counts.get('positive_leads', 0)}",
+        f"Positive leads with copy captured: {counts.get('positive_with_copy', 0)}",
+        f"Templates seen: {counts.get('templates_seen', 0)}",
+        "",
+        "Positive lead copy (full subject + body):",
+        "-" * 95,
+    ]
+    for row in insights.get("positive_leads_copy") or []:
+        lines.append(f"Lead #{row['lead_id']} — {row.get('lead_name') or 'Unknown'}")
+        lines.append(f"Subject: {row.get('subject') or '—'}")
+        lines.append("Body:")
+        lines.append(row.get("body") or "—")
+        lines.append("")
+
+    lines.append("Template performance (first outbound email per lead):")
+    lines.append("-" * 95)
+    for t in (insights.get("templates_ranked") or [])[:10]:
+        rate = round(100 * float(t.get("positive_rate") or 0), 1)
+        lines.append(
+            f"[{t['template_id']}] positives={t['positive_leads']}/{t['total_leads']} ({rate}%)"
+        )
+        lines.append(f"Subject template: {t.get('subject_template') or '—'}")
+        lines.append("")
+
+    if best:
+        rate = round(100 * float(best.get("positive_rate") or 0), 1)
+        lines.append("Best working template:")
+        lines.append(f"- ID: {best['template_id']}")
+        lines.append(
+            f"- Performance: {best['positive_leads']}/{best['total_leads']} positive leads ({rate}%)"
+        )
+        lines.append(f"- Subject: {best.get('subject_template') or '—'}")
+        lines.append("Body:")
+        lines.append(best.get("body_template") or "—")
+
+    return "\n".join(lines)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────
@@ -2101,6 +2327,18 @@ def main():
     merge_p.add_argument("--linkedin", help="Merge lead matched by LinkedIn into email lead")
     hist_p.add_argument("--limit", type=int, default=50, help="Max events to show")
     hist_p.add_argument("--json", action="store_true")
+
+    copy_p = sub.add_parser(
+        "copy-insights",
+        help="Show full copy for positive leads and rank best-performing templates",
+    )
+    copy_p.add_argument(
+        "--lead-status",
+        default="interested",
+        help="Current lead status to treat as positive (default: interested)",
+    )
+    copy_p.add_argument("--limit", type=int, default=200, help="Max positive leads to include")
+    copy_p.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
 
@@ -2303,6 +2541,12 @@ def main():
         events = get_lead_events(lead["id"], args.limit)
         print(json.dumps({"lead": lead, "events": events}, indent=2)
               if args.json else format_event_timeline(lead, events))
+    elif args.command == "copy-insights":
+        insights = get_copy_insights(
+            lead_status=args.lead_status,
+            limit=args.limit,
+        )
+        print(json.dumps(insights, indent=2) if args.json else format_copy_insights(insights))
     else:
         if not db_exists():
             init_db()

@@ -2076,6 +2076,26 @@ def get_stage_counts():
     conn.close()
     return {r["stage"]: r["count"] for r in rows}
 
+
+def normalize_campaign_event_type(event_type: str, direction: str, channel: str) -> str:
+    """Map raw event labels to reporting-friendly campaign event buckets."""
+    et = (event_type or "unknown").strip().lower()
+    flow = (direction or "").strip().lower()
+    medium = (channel or "").strip().lower()
+    if medium == "linkedin":
+        if et in ("send_connection", "linkedin_connect", "linkedin_connection_sent"):
+            return "linkedin_connection_sent"
+        if et == "linkedin_connection_accepted":
+            return "linkedin_connection_accepted"
+        if et == "linkedin_reply":
+            return "linkedin_message_reply"
+        if et == "linkedin_message_sent":
+            return "linkedin_message_sent"
+        if et == "linkedin_message":
+            return "linkedin_message_reply" if flow == "inbound" else "linkedin_message_sent"
+    return et or "unknown"
+
+
 def get_campaign_stats():
     conn = get_conn()
     breakdown_rows = conn.execute(
@@ -2118,14 +2138,23 @@ def get_campaign_stats():
         campaign_id = int(row["campaign_id"])
         campaign_bucket = breakdowns.setdefault(
             campaign_id,
-            {"event_type_counts": {}, "direction_counts": {}, "channel_counts": {}},
+            {
+                "event_type_counts": {},
+                "normalized_event_type_counts": {},
+                "direction_counts": {},
+                "channel_counts": {},
+            },
         )
         event_type = row["event_type"] or "unknown"
         direction = row["direction"] or "unknown"
         channel = row["channel"] or "unknown"
         count = int(row["event_count"] or 0)
+        normalized_type = normalize_campaign_event_type(event_type, direction, channel)
         campaign_bucket["event_type_counts"][event_type] = (
             campaign_bucket["event_type_counts"].get(event_type, 0) + count
+        )
+        campaign_bucket["normalized_event_type_counts"][normalized_type] = (
+            campaign_bucket["normalized_event_type_counts"].get(normalized_type, 0) + count
         )
         campaign_bucket["direction_counts"][direction] = (
             campaign_bucket["direction_counts"].get(direction, 0) + count
@@ -2146,6 +2175,7 @@ def get_campaign_stats():
         campaign_id = int(item.get("campaign_id") or 0)
         breakdown = breakdowns.get(campaign_id, {})
         event_type_counts = breakdown.get("event_type_counts", {})
+        normalized_event_type_counts = breakdown.get("normalized_event_type_counts", {})
         direction_counts = breakdown.get("direction_counts", {})
         channel_counts = breakdown.get("channel_counts", {})
         event_types = [
@@ -2155,9 +2185,18 @@ def get_campaign_stats():
                 key=lambda kv: (-int(kv[1]), kv[0]),
             )
         ]
+        normalized_event_types = [
+            {"event_type": event_type, "count": count}
+            for event_type, count in sorted(
+                normalized_event_type_counts.items(),
+                key=lambda kv: (-int(kv[1]), kv[0]),
+            )
+        ]
         summary_parts = []
         if event_type_counts:
             summary_parts.append(f"types: {_format_counts(event_type_counts)}")
+        if normalized_event_type_counts and normalized_event_type_counts != event_type_counts:
+            summary_parts.append(f"normalized: {_format_counts(normalized_event_type_counts)}")
         if direction_counts:
             summary_parts.append(f"flow: {_format_counts(direction_counts)}")
         if channel_counts:
@@ -2167,8 +2206,19 @@ def get_campaign_stats():
             summary_parts.append(f"latest: {last_event_at}")
         item["event_type_counts"] = event_type_counts
         item["event_types"] = event_types
+        item["normalized_event_type_counts"] = normalized_event_type_counts
+        item["normalized_event_types"] = normalized_event_types
         item["direction_counts"] = direction_counts
         item["channel_counts"] = channel_counts
+        item["linkedin_connections_sent"] = int(
+            normalized_event_type_counts.get("linkedin_connection_sent", 0)
+        )
+        item["linkedin_messages_sent"] = int(
+            normalized_event_type_counts.get("linkedin_message_sent", 0)
+        )
+        item["linkedin_message_replies"] = int(
+            normalized_event_type_counts.get("linkedin_message_reply", 0)
+        )
         item["last_event_at"] = last_event_at
         item["event_summary"] = "; ".join(summary_parts) if summary_parts else "No events recorded."
         workspace = ""

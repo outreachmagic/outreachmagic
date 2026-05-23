@@ -319,6 +319,43 @@ def test_campaign_stats_splits_workspace_and_counts_interested():
     assert "scholarship" in rendered
 
 
+def test_campaign_stats_normalizes_linkedin_sent_and_reply_counts():
+    om.init_db()
+    lead_id = om.add_lead(name="LinkedIn Lead", email="linkedinlead@test.com").get("id")
+    assert lead_id
+
+    conn = om.get_conn()
+    campaign_id = om.ensure_campaign(conn, "popcam | nace", int(lead_id))
+    conn.execute(
+        """INSERT INTO events (lead_id, event_type, direction, channel, metadata_json, campaign_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+        (int(lead_id), "send_connection", "outbound", "linkedin", "{}", campaign_id),
+    )
+    conn.execute(
+        """INSERT INTO events (lead_id, event_type, direction, channel, metadata_json, campaign_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+        (int(lead_id), "linkedin_message", "outbound", "linkedin", "{}", campaign_id),
+    )
+    conn.execute(
+        """INSERT INTO events (lead_id, event_type, direction, channel, metadata_json, campaign_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+        (int(lead_id), "linkedin_message", "inbound", "linkedin", "{}", campaign_id),
+    )
+    conn.commit()
+    conn.close()
+
+    stats = om.get_campaign_stats()
+    row = next((c for c in stats["campaigns"] if c.get("campaign") == "popcam | nace"), None)
+    assert row is not None
+    assert row.get("normalized_event_type_counts", {}).get("linkedin_connection_sent") == 1
+    assert row.get("normalized_event_type_counts", {}).get("linkedin_message_sent") == 1
+    assert row.get("normalized_event_type_counts", {}).get("linkedin_message_reply") == 1
+    assert row.get("linkedin_connections_sent") == 1
+    assert row.get("linkedin_messages_sent") == 1
+    assert row.get("linkedin_message_replies") == 1
+    assert "normalized:" in (row.get("event_summary") or "")
+
+
 if __name__ == "__main__":
     test_normalization()
     test_single_mode_routes_all_to_default()
@@ -332,4 +369,5 @@ if __name__ == "__main__":
     test_replay_pending_quarantine_applies_prefix_rules()
     test_replay_pending_quarantine_applies_unknown_name_mapping()
     test_campaign_stats_splits_workspace_and_counts_interested()
+    test_campaign_stats_normalizes_linkedin_sent_and_reply_counts()
     print("ok")

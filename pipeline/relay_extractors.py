@@ -75,6 +75,52 @@ _PLUSVIBE_SPEC = {
     },
 }
 
+_PROSP_SPEC = {
+    "lead": {
+        "first_name": ("eventData.profileInfo.firstName", "profileInfo.firstName", "firstName"),
+        "last_name": ("eventData.profileInfo.lastName", "profileInfo.lastName", "lastName"),
+        "job_title": ("eventData.profileInfo.jobTitle", "profileInfo.jobTitle", "jobTitle"),
+        "industry": ("eventData.profileInfo.industry", "profileInfo.industry", "industry"),
+        "company_name": ("eventData.profileInfo.company", "profileInfo.company", "company"),
+        "headcount": ("eventData.profileInfo.headcount", "profileInfo.headcount", "headcount"),
+    },
+    "event": {
+        "subject": ("eventData.subject", "subject"),
+        "body": ("eventData.content", "content", "body", "message"),
+        "campaign": (
+            "eventData.campaignName",
+            "campaignName",
+            "eventData.campaign",
+            "campaign",
+        ),
+        "campaign_id": ("eventData.campaignId", "campaignId"),
+        "campaign_name": (
+            "eventData.campaignName",
+            "campaignName",
+            "eventData.campaign",
+            "campaign",
+        ),
+    },
+    "signals": {
+        "status": ("eventType", "event_type", "eventData.status"),
+        "webhook_event": ("eventType", "event_type"),
+    },
+    "identity": {
+        "email": (
+            "eventData.profileInfo.email",
+            "profileInfo.email",
+            "email",
+        ),
+        "linkedin_url": (
+            "eventData.lead",
+            "lead",
+            "eventData.profileInfo.linkedinUrl",
+            "profileInfo.linkedinUrl",
+            "linkedinUrl",
+        ),
+    },
+}
+
 _IDENTITY_DEFAULT = {
     "email": (
         "lead_email", "from_email", "email", "lead.email_address",
@@ -120,6 +166,7 @@ _DEFAULT_SPEC = {
 # Registry: platform id -> {lead, event, signals?, identity?}
 PLATFORM_SPECS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
     "plusvibe": {**_PLUSVIBE_SPEC, "identity": _IDENTITY_DEFAULT},
+    "prosp": _PROSP_SPEC,
     "heyreach": {
         "lead": _DEFAULT_SPEC["lead"],
         "event": _DEFAULT_SPEC["event"],

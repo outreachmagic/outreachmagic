@@ -12,6 +12,7 @@ os.environ["HERMES_HOME"] = _tmp
 os.environ["OUTREACHMAGIC_SKIP_AUTO_UPDATE"] = "1"
 
 import pipeline as om  # noqa: E402
+from relay_extractors import extract_relay_fields  # noqa: E402
 from workspace_routing import (  # noqa: E402
     DEFAULT_ORG_ID,
     WORKSPACE_ROUTING_MULTI,
@@ -55,6 +56,29 @@ def test_campaign_routing():
     assert result is not None
     assert result.workspace_id == ws_id
     assert result.match_strategy == "id_exact"
+
+
+def test_prosp_camelcase_campaign_fields_are_extracted():
+    raw = {
+        "eventType": "send_connection",
+        "eventData": {
+            "campaignId": "43795293-6fcf-444b-b246-04671a947fcd",
+            "campaignName": "popcam | nace",
+            "lead": "https://www.linkedin.com/in/ashley-m-rose-mba-07a36913",
+            "profileInfo": {
+                "linkedinUrl": "https://www.linkedin.com/in/ashley-m-rose-mba-07a36913",
+            },
+        },
+    }
+    extracted = extract_relay_fields("prosp", raw)
+    event_fields = extracted.get("event", {})
+    assert event_fields.get("campaign_id") == "43795293-6fcf-444b-b246-04671a947fcd"
+    assert event_fields.get("campaign_name") == "popcam | nace"
+
+    ctx = extract_campaign_context("prosp", event_fields, raw)
+    assert ctx.campaign_id == "43795293-6fcf-444b-b246-04671a947fcd"
+    assert ctx.campaign_name_raw == "popcam | nace"
+    assert ctx.campaign_name_normalized == "popcam | nace"
 
 
 def test_single_mode_routes_all_to_default():
@@ -193,13 +217,70 @@ def test_ingest_quarantine_and_route():
     assert len(pending) >= 1
 
 
+def test_replay_pending_quarantine_applies_prefix_rules():
+    om.init_db()
+    om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
+    om.create_workspace("LeadgenPH", slug="leadgenph")
+    event = {
+        "platform": "smartlead",
+        "event_type": "email_sent",
+        "lead": "prefix@test.com",
+        "received_at": "2026-05-23T00:00:00Z",
+        "relay_id": 301,
+        "raw": {"campaign_name": "leadgenph scholarship", "to_email": "prefix@test.com"},
+    }
+    assert om.ingest_relay_event(event, quiet=True) is None
+    pending_before = om.list_quarantine()
+    assert any((row.get("campaign_name_raw") or "") == "leadgenph scholarship" for row in pending_before)
+
+    om.add_campaign_map_cli(
+        "smartlead",
+        "leadgenph",
+        campaign_name="leadgenph",
+        match_strategy="rule_prefix",
+    )
+    result = om.replay_pending_quarantine(limit=100)
+    assert result["replayed"] >= 1
+
+    pending_after = om.list_quarantine()
+    assert not any((row.get("campaign_name_raw") or "") == "leadgenph scholarship" for row in pending_after)
+    conn = om.get_conn()
+    event_count = conn.execute("SELECT COUNT(*) FROM workspace_lead_events").fetchone()[0]
+    conn.close()
+    assert event_count >= 1
+
+
+def test_replay_pending_quarantine_applies_unknown_name_mapping():
+    om.init_db()
+    om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
+    om.create_workspace("Popcam", slug="popcam")
+    event = {
+        "platform": "prosp",
+        "event_type": "linkedin_message",
+        "lead": "https://linkedin.com/in/unknown-campaign",
+        "received_at": "2026-05-23T00:00:00Z",
+        "relay_id": 302,
+        "raw": {},
+    }
+    assert om.ingest_relay_event(event, quiet=True) is None
+    om.add_campaign_map_cli("prosp", "popcam", campaign_name="unknown", match_strategy="name_exact")
+
+    result = om.replay_pending_quarantine(limit=100)
+    assert result["replayed"] >= 1
+    pending_after = om.list_quarantine()
+    assert not any(row.get("source_platform") == "prosp" for row in pending_after)
+
+
 if __name__ == "__main__":
     test_normalization()
     test_single_mode_routes_all_to_default()
     test_campaign_routing()
+    test_prosp_camelcase_campaign_fields_are_extracted()
     test_multi_mode_no_default_workspace_on_init()
     test_multi_mode_quarantines_unmapped()
     test_multi_mode_resolves_mapped_campaign()
     test_quarantine_summary_requires_rules_or_manual_mapping()
     test_ingest_quarantine_and_route()
+    test_replay_pending_quarantine_applies_prefix_rules()
+    test_replay_pending_quarantine_applies_unknown_name_mapping()
     print("ok")

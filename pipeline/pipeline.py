@@ -2368,31 +2368,26 @@ def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int =
             r = assign_quarantine_and_replay(item["id"], workspace_slug)
         else:
             conn = get_conn()
-            maps = conn.execute(
-                """SELECT workspace_id FROM campaign_workspace_map
-                   WHERE org_id = ? AND source_platform = ? AND is_active = 1
-                     AND (
-                       (campaign_id IS NOT NULL AND campaign_id = ?)
-                       OR (campaign_name_normalized IS NOT NULL
-                           AND campaign_name_normalized = ?)
-                     )
-                   ORDER BY priority ASC LIMIT 1""",
-                (
-                    DEFAULT_ORG_ID,
-                    item["source_platform"],
-                    item.get("campaign_id"),
-                    item.get("campaign_name_normalized"),
-                ),
-            ).fetchone()
-            conn.close()
-            if not maps:
+            campaign_name = item.get("campaign_name_raw") or item.get("campaign_name_normalized")
+            if not campaign_name and not item.get("campaign_id"):
+                campaign_name = "unknown"
+            ctx = extract_campaign_context(
+                item["source_platform"],
+                {},
+                {
+                    "campaign_id": item.get("campaign_id"),
+                    "campaign_name": campaign_name,
+                },
+            )
+            routing = resolve_workspace(conn, DEFAULT_ORG_ID, ctx)
+            if not routing:
+                conn.close()
                 skipped += 1
                 continue
-            ws_row = get_conn()
-            slug = ws_row.execute(
-                "SELECT slug FROM workspaces WHERE id = ?", (maps["workspace_id"],)
+            slug = conn.execute(
+                "SELECT slug FROM workspaces WHERE id = ?", (routing.workspace_id,)
             ).fetchone()
-            ws_row.close()
+            conn.close()
             if not slug:
                 skipped += 1
                 continue

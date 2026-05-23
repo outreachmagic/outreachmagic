@@ -322,6 +322,46 @@ def set_last_pull(ts: str):
     save_config(cfg)
 
 
+def get_workspace_routing_mode_from_config() -> Optional[str]:
+    raw = str(load_config().get("workspace_routing_mode") or "").strip().lower()
+    if raw in VALID_WORKSPACE_ROUTING_MODES:
+        return raw
+    return None
+
+
+def sync_workspace_routing_mode_from_config(org_id: str = DEFAULT_ORG_ID):
+    """If workspace_routing_mode is set in config, sync it into DB routing state."""
+    mode = get_workspace_routing_mode_from_config()
+    if not mode:
+        return
+    conn = get_conn()
+    ensure_organization(conn, org_id)
+    row = conn.execute(
+        "SELECT workspace_routing_mode, default_workspace_id FROM organizations WHERE id = ?",
+        (org_id,),
+    ).fetchone()
+    current_mode = (row["workspace_routing_mode"] or "").strip().lower() if row else ""
+    current_ws_id = (row["default_workspace_id"] or "").strip() if row else ""
+    if mode == WORKSPACE_ROUTING_SINGLE:
+        ws_id = current_ws_id or ensure_default_org_workspace(conn)
+        if current_mode != WORKSPACE_ROUTING_SINGLE or current_ws_id != ws_id:
+            conn.execute(
+                """UPDATE organizations
+                   SET workspace_routing_mode = ?, default_workspace_id = ? WHERE id = ?""",
+                (WORKSPACE_ROUTING_SINGLE, ws_id, org_id),
+            )
+            conn.commit()
+    else:
+        if current_mode != WORKSPACE_ROUTING_MULTI or current_ws_id:
+            conn.execute(
+                """UPDATE organizations
+                   SET workspace_routing_mode = ?, default_workspace_id = NULL WHERE id = ?""",
+                (WORKSPACE_ROUTING_MULTI, org_id),
+            )
+            conn.commit()
+    conn.close()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Schema
 # ──────────────────────────────────────────────────────────────────────
@@ -2078,6 +2118,9 @@ def set_workspace_routing(
         )
     conn.commit()
     conn.close()
+    cfg = load_config()
+    cfg["workspace_routing_mode"] = mode
+    save_config(cfg)
     result = get_workspace_routing(org_id)
     result["status"] = "ok"
     if mode == WORKSPACE_ROUTING_MULTI:
@@ -2180,6 +2223,104 @@ def list_quarantine(org_id: str = DEFAULT_ORG_ID, status: str = "pending", limit
             item["message"] = format_unmapped_campaign_message(ctx)
         out.append(item)
     return out
+
+
+def get_quarantine_campaign_summary(
+    org_id: str = DEFAULT_ORG_ID,
+    status: str = "pending",
+) -> list[dict]:
+    """Aggregate quarantine queue by platform + campaign label."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT
+               source_platform,
+               COALESCE(NULLIF(campaign_name_raw, ''), NULLIF(campaign_id, ''), 'unknown') AS campaign,
+               campaign_id,
+               COUNT(*) AS event_count,
+               MIN(received_at) AS oldest_received_at,
+               MAX(received_at) AS newest_received_at
+           FROM unmapped_campaign_queue
+           WHERE org_id = ? AND status = ?
+           GROUP BY source_platform, campaign
+           ORDER BY event_count DESC, source_platform ASC, campaign ASC""",
+        (org_id, status),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def format_quarantine_campaign_summary(
+    campaigns: list[dict],
+    *,
+    include_steps: bool = True,
+) -> str:
+    if not campaigns:
+        return "No pending quarantined events."
+
+    platform_w = max(len("Platform"), *(len(str(r.get("source_platform") or "")) for r in campaigns))
+    campaign_w = max(len("Campaign"), *(len(str(r.get("campaign") or "")) for r in campaigns))
+    count_w = max(len("Events"), *(len(str(r.get("event_count") or 0)) for r in campaigns))
+
+    total_events = sum(int(r.get("event_count") or 0) for r in campaigns)
+    lines = [
+        f"Pending quarantine: {total_events} event(s) across {len(campaigns)} campaign(s).",
+        "",
+        f"{'Platform':<{platform_w}}  {'Campaign':<{campaign_w}}  {'Events':>{count_w}}",
+        "-" * (platform_w + campaign_w + count_w + 4),
+    ]
+    for row in campaigns:
+        lines.append(
+            f"{(row.get('source_platform') or ''):<{platform_w}}  "
+            f"{(row.get('campaign') or 'unknown'):<{campaign_w}}  "
+            f"{int(row.get('event_count') or 0):>{count_w}}"
+        )
+
+    if include_steps:
+        lines.extend(
+            [
+                "",
+                "Next steps to map campaigns to a workspace:",
+                '1. Create a workspace (if needed):  pipeline.py workspace create --name "Default"',
+                "2. Add campaign mappings (replace WORKSPACE_SLUG):",
+            ]
+        )
+        seen_commands: set[str] = set()
+        for row in campaigns:
+            platform = str(row.get("source_platform") or "").strip() or "unknown"
+            campaign_id = str(row.get("campaign_id") or "").strip()
+            campaign_name = str(row.get("campaign") or "unknown").strip() or "unknown"
+            if campaign_id:
+                cmd = (
+                    "   pipeline.py campaign-map add "
+                    f"--platform {platform} --workspace WORKSPACE_SLUG --campaign-id {campaign_id}"
+                )
+            else:
+                escaped = campaign_name.replace('"', '\\"')
+                cmd = (
+                    "   pipeline.py campaign-map add "
+                    f'--platform {platform} --workspace WORKSPACE_SLUG --campaign-name "{escaped}"'
+                )
+            if cmd in seen_commands:
+                continue
+            seen_commands.add(cmd)
+            lines.append(cmd)
+        lines.extend(
+            [
+                "3. Replay quarantined events:  pipeline.py quarantine replay",
+                "   (or assign one manually: pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG)",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def print_quarantine_guidance() -> None:
+    routing = get_workspace_routing()
+    pending = int(routing.get("pending_quarantine") or 0)
+    if routing.get("mode") != WORKSPACE_ROUTING_MULTI or pending <= 0:
+        return
+    print(MULTI_WORKSPACE_HOLD_MESSAGE, file=sys.stderr)
+    print(format_quarantine_campaign_summary(get_quarantine_campaign_summary()), file=sys.stderr)
 
 
 def assign_quarantine_and_replay(queue_id: str, workspace_slug: str) -> dict:
@@ -2496,7 +2637,9 @@ def sync_from_relay(
 
         for event in events:
             if ingest_relay_event(
-                event, debug_sentiment=debug_sentiment, quiet=quiet
+                event,
+                debug_sentiment=debug_sentiment,
+                quiet=True,  # print one aggregate quarantine summary at end of pull
             ) is None:
                 skipped += 1
             else:
@@ -2511,15 +2654,7 @@ def sync_from_relay(
 
     set_last_pull(datetime.now(timezone.utc).isoformat())
     if not quiet:
-        routing = get_workspace_routing()
-        pending = routing.get("pending_quarantine") or 0
-        if routing.get("mode") == WORKSPACE_ROUTING_MULTI and pending:
-            print(MULTI_WORKSPACE_HOLD_MESSAGE, file=sys.stderr)
-            print(
-                f"{pending} event(s) waiting in quarantine — run: "
-                "pipeline.py quarantine list",
-                file=sys.stderr,
-            )
+        print_quarantine_guidance()
     return imported, skipped
 
 
@@ -3130,7 +3265,9 @@ def main():
 
     q_p = sub.add_parser("quarantine", help="Unmapped campaign queue")
     q_sub = q_p.add_subparsers(dest="quarantine_cmd")
-    q_sub.add_parser("list", help="List pending quarantined events")
+    q_list = q_sub.add_parser("list", help="List pending quarantined events by campaign")
+    q_list.add_argument("--limit", type=int, default=0, help="Limit pending queue items in JSON mode (0 = all)")
+    q_list.add_argument("--json", action="store_true", help="Output raw queue rows as JSON")
     q_assign = q_sub.add_parser("assign", help="Assign workspace and replay one item")
     q_assign.add_argument("--id", required=True, help="Queue item id")
     q_assign.add_argument("--workspace", required=True, help="Workspace slug")
@@ -3180,6 +3317,7 @@ def main():
         sys.exit(1)
 
     migrate_db()
+    sync_workspace_routing_mode_from_config()
 
     if args.command == "connect":
         connect(args.key)
@@ -3380,7 +3518,12 @@ def main():
         elif args.quarantine_cmd == "replay":
             print(json.dumps(replay_pending_quarantine(args.workspace, args.limit), indent=2))
         else:
-            print(json.dumps(list_quarantine(), indent=2))
+            if getattr(args, "json", False):
+                raw_limit = getattr(args, "limit", 0) or 0
+                limit = raw_limit if raw_limit > 0 else 1000000
+                print(json.dumps(list_quarantine(limit=limit), indent=2))
+            else:
+                print(format_quarantine_campaign_summary(get_quarantine_campaign_summary()))
     else:
         if not db_exists():
             init_db()

@@ -18,6 +18,7 @@ SQLite database. Free forever. Connect Smartlead, Heyreach, Instantly via paid r
 
 Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
 Config (single source of truth): `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`
+You can set routing default there with `"workspace_routing_mode": "multi"` (or `"single"`).
 
 ## Version
 

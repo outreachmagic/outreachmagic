@@ -5,7 +5,7 @@ Outreach Magic — Agent-First Lead Database for Hermes
 One SQLite file. No MongoDB. No BigQuery. Just your leads, visible.
 
 Architecture:
-  ~/.hermes/outreachmagic.db     — Local SQLite database
+  ~/.hermes/skills/outreachmagic/databases/outreachmagic.db  — Local SQLite database
   wbhk.org/{platform}/{key}      — Cloudflare Worker relay (optional)
   pipeline.py                    — CLI: show, pull, connect, log-event...
 
@@ -75,21 +75,31 @@ from workspace_routing import (
 # Configuration
 # ──────────────────────────────────────────────────────────────────────
 
+SKILL_NAME = "outreachmagic"
+
 def get_hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
 
+def get_skill_home() -> Path:
+    return get_hermes_home() / "skills" / SKILL_NAME
+
+def get_databases_home() -> Path:
+    return get_skill_home() / "databases"
+
+def get_config_home() -> Path:
+    return get_skill_home() / "config"
+
 def get_db_path() -> Path:
-    return get_hermes_home() / "outreachmagic.db"
+    return get_databases_home() / "outreachmagic.db"
 
 def get_config_path() -> Path:
-    return get_hermes_home() / "outreachmagic_config.json"
+    return get_config_home() / "outreachmagic_config.json"
 
 RELAY_URL = "https://wbhk.org"
 DB_PATH = get_db_path()
 CONFIG_PATH = get_config_path()
 
-SKILL_NAME = "outreachmagic"
-SKILL_SCRIPTS_DIR = f"skills/sales/{SKILL_NAME}/scripts"
+SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
 UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py", "workspace_routing.py")
 DEFAULT_UPDATE_BASE = "https://raw.githubusercontent.com/outreachmagic/hermes-agent/main/pipeline"
 
@@ -280,8 +290,17 @@ def load_config() -> dict:
         return json.loads(CONFIG_PATH.read_text())
     return {}
 
+def _chmod_best_effort(path: Path, mode: int):
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
 def save_config(cfg: dict):
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_best_effort(CONFIG_PATH.parent, 0o700)
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    _chmod_best_effort(CONFIG_PATH, 0o600)
 
 def get_token() -> Optional[str]:
     return load_config().get("token")
@@ -530,10 +549,14 @@ def get_conn():
     return conn
 
 def init_db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_best_effort(DB_PATH.parent, 0o700)
     conn = get_conn()
     conn.executescript(SCHEMA_SQL)
     migrate_db(conn)
     conn.close()
+    if DB_PATH.exists():
+        _chmod_best_effort(DB_PATH, 0o600)
     return True
 
 
@@ -2787,7 +2810,7 @@ def connect(token: str):
     print()
     print("Tip: Add a cron job to auto-pull every 15 minutes:")
     print("  hermes cron create --name 'outreach-pull' --schedule '*/15 * * * *' \\")
-    print("    --command 'cd ~/.hermes/skills/sales/outreachmagic/scripts && python3 pipeline.py pull --cron'")
+    print("    --command 'cd ~/.hermes/skills/outreachmagic/scripts && python3 pipeline.py pull --cron'")
 
 
 # ──────────────────────────────────────────────────────────────────────

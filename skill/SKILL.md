@@ -16,19 +16,19 @@ metadata:
 The simplest pipeline tracker. Hermes auto-logs every outreach action to a local
 SQLite database. Free forever. Connect Smartlead, Heyreach, Instantly via paid relay.
 
-Database: `~/.hermes/outreachmagic.db`
+Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
 
 ## Version
 
 **One version for the whole skill.** To see what is installed, always run:
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py version
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
 ```
 
 The `version:` line in this file is synced from `scripts/VERSION` on install/update. If unsure, use the command above.
 
-**Auto-update:** On each command (at most once per hour), the CLI checks GitHub for a newer `VERSION` and downloads it automatically. Users on Hermes get updates when you push to `main` without running `install.sh` manually. Disable: `"auto_update": false` in `~/.hermes/outreachmagic_config.json`.
+**Auto-update:** On each command (at most once per hour), the CLI checks GitHub for a newer `VERSION` and downloads it automatically. Users on Hermes get updates when you push to `main` without running `install.sh` manually. Disable: `"auto_update": false` in `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`.
 
 ## When to Use
 
@@ -55,7 +55,7 @@ The `version:` line in this file is synced from `scripts/VERSION` on install/upd
 **Before showing any pipeline data (show, stats, campaigns, history, or any query), you MUST run `pull` first.**
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py pull
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
 ```
 
 This fetches the latest events from the relay, so the user always sees current data. The local DB may be stale. Never skip this step — even if the user just asks "how's my pipeline" or "any activity?" — pull first, then show. This applies across sessions: a new session's first pipeline query must pull.
@@ -78,14 +78,14 @@ Sign up at https://outreachmagic.io
 ## Quick Start
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py version
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --id 1
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --email j@acme.com
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py stats
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py campaigns
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles --file leads.csv
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --id 1
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --email j@acme.com
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py stats
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py campaigns
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles --file leads.csv
 ```
 
 ### Campaign breakdown
@@ -93,8 +93,8 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles
 Relay imports auto-populate campaign names from webhook payloads (Smartlead, PlusVibe, etc.).
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py campaigns
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py campaigns --json
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py campaigns
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py campaigns --json
 ```
 
 `stats` also includes a campaign section. Use `campaigns` when the user only wants counts by campaign name.
@@ -111,23 +111,23 @@ Hermes stores each webhook as an event. **Interested / not interested / sentimen
 After `pull`, filter the pipeline by **current** status (latest status-bearing event per lead):
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show --sentiment positive
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show --sentiment invalid
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show --auto-reply true
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show --lead-status interested --json
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --sentiment positive
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --sentiment invalid
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --auto-reply true
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --lead-status interested --json
 ```
 
 Then open full timeline for any lead (all events, not just the status event):
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --id 1
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --id 1
 ```
 
 Native copy-performance analysis (full message bodies + best template):
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
 ```
 
 Web API: `/api/leads?sentiment=positive&auto_reply=true`
@@ -137,10 +137,10 @@ Web API: `/api/leads?sentiment=positive&auto_reply=true`
 ### View a lead's full timeline
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --id 1
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --email jane@acme.com
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --name "Jane Doe"
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --id 1 --json
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --id 1
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --email jane@acme.com
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --name "Jane Doe"
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --id 1 --json
 ```
 
 Outputs lead info + numbered event timeline with direction arrows (← inbound, → outbound),
@@ -149,7 +149,7 @@ human-readable timestamps, and event details.
 ### Add leads when researching prospects
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py add-lead \
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py add-lead \
   --name "Jane Doe" --company "Acme Corp" --title "VP Marketing" \
   --industry "Martech" --headcount "50-200" \
   --email "jane@acme.com" \
@@ -163,16 +163,16 @@ If lead exists by email or LinkedIn, returns `{"status": "exists", "id": N}` (do
 **Use `import-profiles` for spreadsheets, enriched exports, or batched research** — not repeated `add-lead` calls. Match key is **email and/or LinkedIn**. Fills empty fields only (same as relay/PlusVibe); use `--overwrite` to replace existing values.
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles \
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
   --file /path/to/contacts_enriched.csv
 
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles \
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
   --file leads.json
 
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles \
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
   --json '[{"email":"j@acme.com","name":"Jane","job_title":"VP Marketing","industry":"Martech","headcount":"11-50","company":"Acme"}]'
 
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles \
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
   --file contacts.csv --dry-run
 ```
 
@@ -187,13 +187,13 @@ Column aliases (first non-empty wins): `email` / `lead_email`; `linkedin` / `lin
   - **Manual:**
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py merge-leads --keep 12 --merge 34
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py merge-leads \
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py merge-leads --keep 12 --merge 34
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py merge-leads \
   --email j@acme.com --linkedin linkedin.com/in/janedoe
 ```
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --linkedin linkedin.com/in/janedoe
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --linkedin linkedin.com/in/janedoe
 ```
 
 After `pull`, use **`campaigns`** for per-campaign event and lead counts (unchanged).
@@ -201,7 +201,7 @@ After `pull`, use **`campaigns`** for per-campaign event and lead counts (unchan
 ### Log every outreach send
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py log-event \
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py log-event \
   --lead-id 1 --type email_sent --direction outbound \
   --subject "Quick intro"
 ```
@@ -209,7 +209,7 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py log-event \
 ### Update stage and log replies
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py update-stage \
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update-stage \
   --id 1 --stage replied --next-action "Send case study"
 ```
 
@@ -218,15 +218,15 @@ Stages: `prospecting` -> `contacted` -> `replied` -> `interested` -> `proposal` 
 ### Connect sequencers (paid)
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py connect --key YOUR_TOKEN
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py pull
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py pull --full   # after DB reset
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect --key YOUR_TOKEN
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --full   # after DB reset
 ```
 
 ### Update skill scripts
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py update
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 ```
 
 ## Lead Fields Reference
@@ -248,7 +248,7 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py update
 ## Web Dashboard
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/server.py
+python3 ~/.hermes/skills/outreachmagic/scripts/server.py
 # http://localhost:3100
 ```
 

@@ -10,7 +10,7 @@ One SQLite file. No cloud. Your pipeline, visible.
 hermes skills install outreachmagic
 hermes -s outreachmagic
 # Your agent now auto-logs every outreach action
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show
 ```
 
 ```
@@ -68,14 +68,14 @@ On first connect, Outreach Magic will automatically pull any existing events and
 
 ## Keeping the skill up to date
 
-Hermes runs scripts from `~/.hermes/skills/sales/outreachmagic/scripts/`, not your git clone. After pulling repo changes:
+Hermes runs scripts from `~/.hermes/skills/outreachmagic/scripts/`, not your git clone. After pulling repo changes:
 
 ```bash
 # From a clone (fastest while developing)
 bash scripts/install.sh
 
 # Or from the installed skill (after you push to GitHub)
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py update
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 ```
 
 `pull` warns when a newer version is on GitHub. Set `OUTREACHMAGIC_DEV_REPO=/path/to/hermes-agent` to update from a local clone instead of GitHub.
@@ -85,7 +85,7 @@ Reload the Hermes skill (or start a new session) after updating so instructions 
 **Version:** One number everywhere — source of truth is `pipeline/VERSION`. Check installed copy:
 
 ```bash
-python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py version
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
 ```
 
 Bump `pipeline/VERSION` on each release (e.g. `1.3.1` → `1.3.2`) and push to `main`. Installed skills **auto-update from GitHub** on the next CLI run (checked at most once per hour). `install.sh` is only needed for first install.

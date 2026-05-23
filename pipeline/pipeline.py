@@ -20,6 +20,7 @@ Usage:
   pipeline.py history --email j@acme.com    # Look up by email
   pipeline.py history --name "Jane"         # Look up by name (partial)
   pipeline.py stats                         # Quick stats
+  pipeline.py update                        # Refresh skill scripts from GitHub
 """
 
 import sqlite3
@@ -27,8 +28,10 @@ import json
 import os
 import sys
 import argparse
+import shutil
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -52,6 +55,91 @@ def get_config_path() -> Path:
 RELAY_URL = "https://wbhk.org"
 DB_PATH = get_db_path()
 CONFIG_PATH = get_config_path()
+
+SKILL_NAME = "outreachmagic"
+SKILL_SCRIPTS_DIR = f"skills/sales/{SKILL_NAME}/scripts"
+UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py")
+DEFAULT_UPDATE_BASE = "https://raw.githubusercontent.com/outreachmagic/hermes-agent/main/pipeline"
+
+
+def _read_version_file(path: Path) -> str:
+    if path.exists():
+        return path.read_text().strip()
+    return "0.0.0"
+
+
+__version__ = _read_version_file(Path(__file__).resolve().parent / "VERSION")
+
+
+def parse_version(version: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for piece in version.strip().split("."):
+        if piece.isdigit():
+            parts.append(int(piece))
+        else:
+            break
+    return tuple(parts) or (0,)
+
+
+def skill_scripts_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def update_base_url() -> str:
+    cfg = load_config() if CONFIG_PATH.exists() else {}
+    return (
+        os.environ.get("OUTREACHMAGIC_UPDATE_URL")
+        or cfg.get("update_url")
+        or DEFAULT_UPDATE_BASE
+    ).rstrip("/")
+
+
+def _fetch_url(url: str, timeout: int = 30) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": f"OutreachMagic/{__version__}"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def fetch_remote_version() -> Optional[str]:
+    try:
+        return _fetch_url(f"{update_base_url()}/VERSION").decode().strip()
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        return None
+
+
+def check_skill_update(quiet: bool = False) -> bool:
+    """Return True if installed scripts match or exceed remote VERSION."""
+    remote = fetch_remote_version()
+    if not remote or parse_version(remote) <= parse_version(__version__):
+        return True
+    if not quiet:
+        print(f"Skill update available: {__version__} → {remote}")
+        print("Run: pipeline.py update")
+    return False
+
+
+def update_skill() -> dict:
+    """Copy or download latest pipeline scripts into this skill install, then migrate DB."""
+    dest = skill_scripts_dir()
+    dev_repo = os.environ.get("OUTREACHMAGIC_DEV_REPO")
+    updated: list[str] = []
+
+    if dev_repo:
+        src = Path(dev_repo) / "pipeline"
+        if not src.is_dir():
+            raise FileNotFoundError(f"OUTREACHMAGIC_DEV_REPO has no pipeline/: {src}")
+        for name in (*UPDATE_SCRIPT_FILES, "VERSION"):
+            shutil.copy2(src / name, dest / name)
+            updated.append(name)
+    else:
+        base = update_base_url()
+        for name in (*UPDATE_SCRIPT_FILES, "VERSION"):
+            (dest / name).write_bytes(_fetch_url(f"{base}/{name}"))
+            updated.append(name)
+
+    init_db()
+    new_version = _read_version_file(dest / "VERSION")
+    return {"status": "updated", "version": new_version, "files": updated, "path": str(dest)}
 
 PIPELINE_STAGES = [
     "prospecting", "contacted", "replied", "interested",
@@ -163,6 +251,12 @@ CREATE INDEX IF NOT EXISTS idx_leads_updated ON leads(updated_at);
 CREATE INDEX IF NOT EXISTS idx_events_lead ON events(lead_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
+
+CREATE TABLE IF NOT EXISTS relay_ingested (
+    dedupe_key      TEXT PRIMARY KEY,
+    lead_id         INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+    ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -376,13 +470,49 @@ def get_lead_by_email(email):
 # Relay Integration (wbhk.org)
 # ──────────────────────────────────────────────────────────────────────
 
-def pull_events(token: str, since: Optional[str] = None) -> dict:
-    """Pull buffered events from the relay."""
-    url = f"{RELAY_URL}/pull/{token}"
-    if since:
-        url += f"?since={since}"
+def relay_dedupe_key(event: dict) -> str:
+    """Stable id so we can re-pull from the relay without duplicating local rows."""
+    if event.get("relay_id"):
+        return f"relay:{event['relay_id']}"
+    raw = event.get("raw") or {}
+    if raw.get("sent_email_id"):
+        return f"sent:{raw['sent_email_id']}"
+    if raw.get("message_id"):
+        return f"msg:{raw['message_id']}"
+    return (
+        f"fp:{event.get('platform')}|{event.get('lead')}|{event.get('event_type')}"
+        f"|{event.get('received_at')}"
+    )
 
-    req = urllib.request.Request(url, headers={"User-Agent": "OutreachMagic/1.0"})
+
+def relay_already_ingested(dedupe_key: str) -> bool:
+    conn = get_conn()
+    row = conn.execute("SELECT 1 FROM relay_ingested WHERE dedupe_key = ?", (dedupe_key,)).fetchone()
+    conn.close()
+    return row is not None
+
+
+def mark_relay_ingested(dedupe_key: str, lead_id: int):
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
+        (dedupe_key, lead_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def pull_events(token: str, since: Optional[str] = None, after_id: Optional[int] = None) -> dict:
+    """Pull events from the relay (events stay on Cloudflare; client dedupes)."""
+    params = []
+    if since:
+        params.append(f"since={urllib.parse.quote(since)}")
+    if after_id:
+        params.append(f"after_id={after_id}")
+    qs = f"?{'&'.join(params)}" if params else ""
+    url = f"{RELAY_URL}/pull/{token}{qs}"
+
+    req = urllib.request.Request(url, headers={"User-Agent": f"OutreachMagic/{__version__}"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
@@ -392,8 +522,49 @@ def pull_events(token: str, since: Optional[str] = None) -> dict:
     except urllib.error.URLError as e:
         return {"error": True, "message": str(e.reason)}
 
+def sync_from_relay(
+    token: str,
+    since: Optional[str] = None,
+    full: bool = False,
+    ack: bool = False,
+) -> tuple[int, int]:
+    """Import relay events locally. Relay keeps all rows; we skip already-ingested keys."""
+    imported = skipped = 0
+    after_id = 0
+    page_since = None if full else since
+
+    while True:
+        result = pull_events(
+            token,
+            since=page_since,
+            after_id=after_id if after_id else None,
+        )
+        if result.get("error"):
+            raise RuntimeError(result.get("message", "pull failed"))
+
+        events = result.get("events") or []
+        if not events:
+            break
+
+        for event in events:
+            if ingest_relay_event(event) is None:
+                skipped += 1
+            else:
+                imported += 1
+
+        if ack and result.get("max_id"):
+            ack_events(token, result["max_id"])
+
+        if len(events) < 1000:
+            break
+        after_id = result.get("max_id") or 0
+
+    set_last_pull(datetime.now(timezone.utc).isoformat())
+    return imported, skipped
+
+
 def ack_events(token: str, max_id: int):
-    """Acknowledge pulled events so relay can clean them up."""
+    """Optional: hide events on relay (default pull does not ack — relay keeps archive)."""
     url = f"{RELAY_URL}/pull/{token}/ack"
     data = json.dumps({"max_id": max_id}).encode()
     req = urllib.request.Request(url, data=data, method="POST",
@@ -405,8 +576,12 @@ def ack_events(token: str, max_id: int):
     except Exception:
         return {"error": True}
 
-def ingest_relay_event(event: dict):
-    """Take a relay event and write it to the local SQLite database."""
+def ingest_relay_event(event: dict) -> Optional[int]:
+    """Take a relay event and write it to the local SQLite database. Returns None if duplicate."""
+    dedupe_key = relay_dedupe_key(event)
+    if relay_already_ingested(dedupe_key):
+        return None
+
     lead_email = event.get("lead")
     event_type = event.get("event_type", "unknown")
     platform = event.get("platform", "unknown")
@@ -503,6 +678,8 @@ def ingest_relay_event(event: dict):
         metadata["campaign"] = event_fields["campaign"]
     if body:
         metadata["body"] = body
+    if event.get("relay_id"):
+        metadata["relay_id"] = event["relay_id"]
 
     log_event(
         lead_id=lead_id,
@@ -520,6 +697,7 @@ def ingest_relay_event(event: dict):
     elif event_type in ("email_sent", "linkedin_connect", "linkedin_message_sent"):
         update_lead_stage(lead_id, "contacted")
 
+    mark_relay_ingested(dedupe_key, lead_id)
     return lead_id
 
 
@@ -544,17 +722,13 @@ def connect(token: str):
         print(f"  {p}: {RELAY_URL}/{p}/{token}")
     print()
 
-    # Auto-pull + show on first connect for simple onboarding
     if count > 0:
-        print("Pulling events for the first time...")
-        imported = 0
-        for event in result.get("events", []):
-            try:
-                ingest_relay_event(event)
-                imported += 1
-            except Exception:
-                pass
-        print(f"Imported {imported} events.\n")
+        print("Importing events from relay (archive stays on Cloudflare)...")
+        try:
+            imported, skipped = sync_from_relay(token, since=get_last_pull(), full=not get_last_pull())
+            print(f"Imported {imported} new, {skipped} already on disk.\n")
+        except RuntimeError as e:
+            print(f"Import failed: {e}\n")
         leads = get_pipeline()
         print(format_pipeline_table(leads))
         print()
@@ -565,7 +739,7 @@ def connect(token: str):
     print()
     print("Tip: Add a cron job to auto-pull every 15 minutes:")
     print("  hermes cron create --name 'outreach-pull' --schedule '*/15 * * * *' \\")
-    print("    --command 'cd ~/.hermes/skills/sales/outreach-magic && python3 pipeline.py pull --cron'")
+    print("    --command 'cd ~/.hermes/skills/sales/outreachmagic/scripts && python3 pipeline.py pull --cron'")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -657,6 +831,9 @@ def main():
 
     sub.add_parser("init", help="Initialize the database")
 
+    update_p = sub.add_parser("update", help="Update skill scripts from GitHub (or OUTREACHMAGIC_DEV_REPO)")
+    update_p.add_argument("--check", action="store_true", help="Only check for updates, do not install")
+
     show_p = sub.add_parser("show", help="Show pipeline")
     show_p.add_argument("--stage"); show_p.add_argument("--limit", type=int, default=50)
     show_p.add_argument("--json", action="store_true")
@@ -689,6 +866,8 @@ def main():
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
     pull_p.add_argument("--key", help="Override token")
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
+    pull_p.add_argument("--full", action="store_true", help="Re-import all relay events (after DB reset)")
+    pull_p.add_argument("--ack", action="store_true", help="Mark events pulled on relay (legacy; default keeps archive)")
 
     webhook_p = sub.add_parser("webhook-url", help="Show webhook URLs for your platforms")
 
@@ -701,9 +880,27 @@ def main():
 
     args = parser.parse_args()
 
+    if args.command == "update":
+        if args.check:
+            remote = fetch_remote_version()
+            if remote and parse_version(remote) > parse_version(__version__):
+                print(f"Update available: {__version__} → {remote}")
+                sys.exit(1)
+            print(f"Up to date ({__version__})")
+            return
+        try:
+            result = update_skill()
+            print(f"Updated to v{result['version']} in {result['path']}")
+            print("Files:", ", ".join(result["files"]))
+        except Exception as e:
+            print(f"Update failed: {e}")
+            sys.exit(1)
+        return
+
     if args.command == "init":
         init_db()
         print(f"Database initialized: {DB_PATH}")
+        check_skill_update()
         return
 
     if not db_exists():
@@ -727,44 +924,36 @@ def main():
         return
 
     if args.command == "pull":
+        if not args.cron:
+            check_skill_update()
+
         tok = args.key or get_token()
         if not tok:
             print("Not connected. Run: pipeline.py connect --key YOUR_TOKEN")
             sys.exit(1)
 
-        since = get_last_pull()
-        result = pull_events(tok, since)
-
-        if result.get("error"):
+        try:
+            imported, skipped = sync_from_relay(
+                tok,
+                since=None if args.full else get_last_pull(),
+                full=args.full,
+                ack=args.ack,
+            )
+        except RuntimeError as e:
             if not args.cron:
-                print(f"Pull failed: {result.get('message', 'unknown')}")
+                print(f"Pull failed: {e}")
             sys.exit(0)
 
-        count = result.get("count", 0)
-        max_id = result.get("max_id", 0)
-
-        if count == 0:
+        if imported == 0 and skipped == 0:
             if not args.cron:
-                print("No new events.")
+                print("No events on relay.")
             sys.exit(0)
 
-        imported = 0
-        for event in result.get("events", []):
-            try:
-                ingest_relay_event(event)
-                imported += 1
-            except Exception as e:
-                if not args.cron:
-                    print(f"  Skipped event: {e}")
-
-        if max_id:
-            ack_events(tok, max_id)
-
-        now_iso = datetime.now(timezone.utc).isoformat()
-        set_last_pull(now_iso)
-
-        print(f"Pulled {imported} events from relay.")
-        print(f"Run 'pipeline.py show' to see your updated pipeline.")
+        if not args.cron:
+            print(f"Pulled {imported} new, {skipped} already imported (relay archive unchanged).")
+            if args.full:
+                print("Full replay complete.")
+            print("Run 'pipeline.py show' to see your updated pipeline.")
         return
 
     if args.command == "show":

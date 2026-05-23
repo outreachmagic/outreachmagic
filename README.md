@@ -56,8 +56,26 @@ On first connect, Outreach Magic will automatically pull any existing events and
 | `pipeline.py log-event --lead-id 1 --type ...` | Log outreach |
 | `pipeline.py update-stage --id 1 --stage ...` | Move deal forward |
 | `pipeline.py connect --key TOKEN` | Connect to relay + auto-pull on first run |
-| `pipeline.py pull` | Sync events from relay |
+| `pipeline.py pull` | Sync new events from relay (relay keeps archive; local dedupe) |
+| `pipeline.py pull --full` | Re-import all relay events after DB reset |
+| `pipeline.py update` | Download latest skill scripts (checks remote `VERSION`) |
 | `pipeline.py webhook-url` | Show webhook URLs |
+
+## Keeping the skill up to date
+
+Hermes runs scripts from `~/.hermes/skills/sales/outreachmagic/scripts/`, not your git clone. After pulling repo changes:
+
+```bash
+# From a clone (fastest while developing)
+bash scripts/install.sh
+
+# Or from the installed skill (after you push to GitHub)
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py update
+```
+
+`pull` warns when a newer version is on GitHub. Set `OUTREACHMAGIC_DEV_REPO=/path/to/hermes-agent` to update from a local clone instead of GitHub.
+
+Reload the Hermes skill (or start a new session) after updating so instructions refresh; `pipeline.py update` replaces the Python files immediately.
 
 ## License
 

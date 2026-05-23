@@ -16,26 +16,41 @@ from urllib.parse import urlparse, parse_qs
 HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 DB_PATH = Path(HERMES_HOME) / "outreach_magic.db"
 
+_PIPELINE_DIR = Path(__file__).resolve().parent
+if str(_PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE_DIR))
 
-def query_leads(stage=None, limit=50):
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    query = """
-        SELECT l.*,
-               (SELECT event_type FROM events WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) as last_event,
-               (SELECT created_at FROM events WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) as last_event_at,
-               (SELECT COUNT(*) FROM events WHERE lead_id = l.id) as event_count
-        FROM leads l
-    """
-    params = []
-    if stage:
-        query += " WHERE l.stage = ?"
-        params.append(stage)
-    query += " ORDER BY l.updated_at DESC LIMIT ?"
-    params.append(limit)
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+
+def _pipeline_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("om_pipeline", _PIPELINE_DIR / "pipeline.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def query_leads(
+    stage=None,
+    limit=50,
+    sentiment=None,
+    auto_reply=None,
+    lead_status=None,
+    sort="updated_at",
+    order="desc",
+):
+    om = _pipeline_module()
+    ar = None
+    if auto_reply is not None:
+        ar = auto_reply in (True, 1, "1", "true", "yes")
+    return om.get_pipeline(
+        stage_filter=stage,
+        limit=limit,
+        sentiment=sentiment,
+        auto_reply=ar,
+        lead_status=lead_status,
+        sort=sort,
+        order=order,
+    )
 
 
 def query_stats():
@@ -142,7 +157,26 @@ class PipelineHandler(http.server.BaseHTTPRequestHandler):
             self._json(query_stats())
         elif path == "/api/leads":
             stage = params.get("stage", [None])[0]
-            self._json(query_leads(stage=stage))
+            sentiment = params.get("sentiment", [None])[0]
+            auto_reply_raw = params.get("auto_reply", [None])[0]
+            lead_status = params.get("lead_status", [None])[0]
+            sort = params.get("sort", ["updated_at"])[0]
+            order = params.get("order", ["desc"])[0]
+            limit = int(params.get("limit", ["50"])[0])
+            auto_reply = None
+            if auto_reply_raw is not None:
+                auto_reply = auto_reply_raw.lower() in ("1", "true", "yes")
+            self._json(
+                query_leads(
+                    stage=stage,
+                    limit=limit,
+                    sentiment=sentiment,
+                    auto_reply=auto_reply,
+                    lead_status=lead_status,
+                    sort=sort,
+                    order=order,
+                )
+            )
         else:
             self._html(PIPELINE_HTML)
 

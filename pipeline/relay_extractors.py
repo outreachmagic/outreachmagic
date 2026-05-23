@@ -13,8 +13,9 @@ from __future__ import annotations
 from typing import Any, Optional
 
 # Canonical keys returned by extract_relay_fields()
-LEAD_KEYS = ("first_name", "last_name", "job_title", "industry", "company_name")
+LEAD_KEYS = ("first_name", "last_name", "job_title", "industry", "company_name", "headcount")
 EVENT_KEYS = ("subject", "body", "campaign")
+SIGNAL_KEYS = ("label", "sentiment", "status", "webhook_event")
 
 
 def _get_path(data: dict, path: str) -> Any:
@@ -48,8 +49,8 @@ def _extract_block(data: dict, spec: dict[str, tuple[str, ...]]) -> dict[str, st
 
 # Plusvibe webhook shape (verified). Top-level flat fields on POST body, e.g.:
 #   first_name, last_name, job_title, industry, company_name,
-#   lead_email, subject, body, campaign_name, webhook_event, ...
-# Smartlead, Instantly, etc. are not this shape — add a separate spec when we have samples.
+#   lead_email, subject, body, campaign_name, webhook_event, label, sentiment, ...
+# Reply payloads use text_body; label webhooks use last_lead_reply / last_lead_reply_subject.
 _PLUSVIBE_SPEC = {
     "lead": {
         "first_name": ("first_name",),
@@ -57,17 +58,35 @@ _PLUSVIBE_SPEC = {
         "job_title": ("job_title",),
         "industry": ("industry",),
         "company_name": ("company_name",),
+        "headcount": ("headcount", "company_headcount", "employee_count"),
     },
     "event": {
-        "subject": ("subject",),
-        "body": ("body",),
+        "subject": ("subject", "last_lead_reply_subject", "latest_subject"),
+        "body": ("body", "text_body", "last_lead_reply", "snippet"),
         "campaign": ("campaign_name", "campaign_id"),
+    },
+    "signals": {
+        "label": ("label",),
+        "sentiment": ("sentiment",),
+        "status": ("status",),
+        "webhook_event": ("webhook_event",),
     },
 }
 
-# Registry: platform id -> {lead: {canonical: (paths...)}, event: {...}}
-PLATFORM_SPECS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
-    "plusvibe": _PLUSVIBE_SPEC,
+_IDENTITY_DEFAULT = {
+    "email": (
+        "lead_email", "from_email", "email", "lead.email_address",
+        "data.lead.email", "to_email", "sl_lead_email",
+    ),
+    "linkedin_url": (
+        "linkedin_url", "lead_linkedin_url", "lead.profile_url",
+        "linkedin", "profile_url",
+    ),
+}
+
+_HEYREACH_IDENTITY = {
+    "email": ("lead.email_address", "lead.email"),
+    "linkedin_url": ("lead.profile_url", "lead.linkedin_url"),
 }
 
 # Fallback for platforms not yet mapped — tries common keys across vendors
@@ -78,24 +97,68 @@ _DEFAULT_SPEC = {
         "job_title": ("job_title", "title", "lead.title", "data.lead.job_title"),
         "industry": ("industry", "lead.industry", "data.lead.industry"),
         "company_name": ("company_name", "company", "lead.company", "data.lead.company_name"),
+        "headcount": ("headcount", "company_headcount", "employee_count", "lead.headcount"),
     },
     "event": {
         "subject": ("subject", "email_subject", "data.subject"),
-        "body": ("body", "email_body", "message", "data.body"),
+        "body": ("body", "email_body", "message", "data.body", "text_body"),
         "campaign": ("campaign_name", "campaign", "campaign_id", "data.campaign_name"),
+    },
+    "signals": {
+        "label": ("label", "lead_status", "data.label"),
+        "sentiment": ("sentiment", "lead_sentiment"),
+        "status": ("status",),
+        "webhook_event": ("webhook_event", "event_type"),
+    },
+    "identity": _IDENTITY_DEFAULT,
+}
+
+# Registry: platform id -> {lead, event, signals?, identity?}
+PLATFORM_SPECS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
+    "plusvibe": {**_PLUSVIBE_SPEC, "identity": _IDENTITY_DEFAULT},
+    "heyreach": {
+        "lead": _DEFAULT_SPEC["lead"],
+        "event": _DEFAULT_SPEC["event"],
+        "signals": _DEFAULT_SPEC["signals"],
+        "identity": _HEYREACH_IDENTITY,
+    },
+    "clay": {
+        "lead": _DEFAULT_SPEC["lead"],
+        "event": _DEFAULT_SPEC["event"],
+        "signals": _DEFAULT_SPEC["signals"],
+        "identity": _IDENTITY_DEFAULT,
     },
 }
 
 
 def extract_relay_fields(platform: str, raw: dict | None) -> dict[str, dict[str, str]]:
-    """Return {lead: {...}, event: {...}} with canonical string fields."""
+    """Return {lead, event, signals, identity} with canonical string fields."""
     if not raw or not isinstance(raw, dict):
-        return {"lead": {}, "event": {}}
+        return {"lead": {}, "event": {}, "signals": {}, "identity": {}}
     spec = PLATFORM_SPECS.get(platform, _DEFAULT_SPEC)
+    signals_spec = spec.get("signals", _DEFAULT_SPEC.get("signals", {}))
+    identity_spec = spec.get("identity", _IDENTITY_DEFAULT)
     return {
         "lead": _extract_block(raw, spec["lead"]),
         "event": _extract_block(raw, spec["event"]),
+        "signals": _extract_block(raw, signals_spec) if signals_spec else {},
+        "identity": _extract_block(raw, identity_spec),
     }
+
+
+def extract_relay_identity(
+    platform: str, raw: dict | None, envelope_lead: str = ""
+) -> dict[str, str]:
+    """Resolve email and LinkedIn from raw payload and relay envelope lead field."""
+    fields = extract_relay_fields(platform, raw)
+    identity = dict(fields.get("identity") or {})
+    env = (envelope_lead or "").strip()
+    if env:
+        if "@" in env:
+            identity.setdefault("email", env)
+        else:
+            identity.setdefault("linkedin_url", env)
+    return identity
 
 
 def build_display_name(lead: dict[str, str], email: Optional[str] = None) -> Optional[str]:

@@ -15,6 +15,7 @@ Usage:
   pipeline.py pull                          # Pull events from relay
   pipeline.py show                          # Print pipeline table
   pipeline.py add-lead --name "Jane" ...    # Add a lead
+  pipeline.py import-profiles --file leads.csv  # Bulk enrich from CSV/JSON
   pipeline.py log-event --lead-id 1 ...     # Log outreach event
   pipeline.py history --id 1                # Show lead's event timeline
   pipeline.py history --email j@acme.com    # Look up by email
@@ -28,6 +29,7 @@ import sqlite3
 import json
 import os
 import sys
+import csv
 import argparse
 import shutil
 import urllib.request
@@ -37,7 +39,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from relay_extractors import build_display_name, extract_relay_fields, name_from_email
+from relay_extractors import (
+    build_display_name,
+    extract_relay_fields,
+    extract_relay_identity,
+    name_from_email,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -269,25 +276,37 @@ def set_last_pull(ts: str):
 # ──────────────────────────────────────────────────────────────────────
 
 SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS leads (
+CREATE TABLE IF NOT EXISTS companies (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT NOT NULL,
-    company         TEXT,
-    title           TEXT,
+    domain          TEXT,
     industry        TEXT,
     headcount       TEXT,
-    email           TEXT,
-    email_domain    TEXT,
-    linkedin_url    TEXT,
-    channel         TEXT NOT NULL DEFAULT 'email',
-    stage           TEXT NOT NULL DEFAULT 'prospecting',
-    notes           TEXT,
-    tags            TEXT DEFAULT '[]',
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    last_contact_at TEXT,
-    next_action     TEXT,
-    next_action_at  TEXT
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS leads (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT NOT NULL,
+    company_id          INTEGER REFERENCES companies(id) ON DELETE SET NULL,
+    company             TEXT,
+    title               TEXT,
+    industry            TEXT,
+    headcount           TEXT,
+    email               TEXT,
+    email_domain        TEXT,
+    linkedin_url        TEXT,
+    linkedin_normalized TEXT,
+    channel             TEXT NOT NULL DEFAULT 'email',
+    stage               TEXT NOT NULL DEFAULT 'prospecting',
+    notes               TEXT,
+    tags                TEXT DEFAULT '[]',
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    last_contact_at     TEXT,
+    next_action         TEXT,
+    next_action_at      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -322,8 +341,21 @@ CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage);
 CREATE INDEX IF NOT EXISTS idx_leads_updated ON leads(updated_at);
 CREATE INDEX IF NOT EXISTS idx_events_lead ON events(lead_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
+CREATE INDEX IF NOT EXISTS idx_events_lead_created ON events(lead_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_unique ON leads(email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_linkedin_unique ON leads(linkedin_normalized) WHERE linkedin_normalized IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain) WHERE domain IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS lead_merges (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    keep_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    merge_id        INTEGER NOT NULL,
+    reason          TEXT,
+    merged_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS relay_ingested (
     dedupe_key      TEXT PRIMARY KEY,
@@ -353,11 +385,32 @@ def init_db():
 
 
 def migrate_db(conn=None):
-    """Apply incremental schema changes and backfill campaign data."""
+    """Apply incremental schema changes and backfill derived data."""
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
-    for col, col_type in [("industry", "TEXT"), ("headcount", "TEXT"), ("email_domain", "TEXT")]:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS companies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            domain TEXT,
+            industry TEXT,
+            headcount TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS lead_merges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            keep_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+            merge_id INTEGER NOT NULL,
+            reason TEXT,
+            merged_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+    """)
+    for col, col_type in [
+        ("industry", "TEXT"), ("headcount", "TEXT"), ("email_domain", "TEXT"),
+        ("company_id", "INTEGER"), ("linkedin_normalized", "TEXT"),
+    ]:
         try:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
@@ -365,6 +418,12 @@ def migrate_db(conn=None):
     conn.execute(
         """UPDATE leads SET email_domain = lower(substr(email, instr(email, '@') + 1))
            WHERE email LIKE '%@%' AND (email_domain IS NULL OR email_domain = '')"""
+    )
+    conn.execute(
+        """UPDATE leads SET linkedin_normalized = lower(trim(replace(replace(
+               replace(linkedin_url, 'https://', ''), 'http://', ''), 'www.', '')))
+           WHERE linkedin_url IS NOT NULL AND linkedin_url != ''
+             AND (linkedin_normalized IS NULL OR linkedin_normalized = '')"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_email_domain ON leads(email_domain)")
     try:
@@ -374,7 +433,22 @@ def migrate_db(conn=None):
     except sqlite3.OperationalError:
         pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_lead_created ON events(lead_id, created_at DESC)"
+    )
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_name ON campaigns(name)")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_unique ON leads(email) WHERE email IS NOT NULL"
+    )
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_linkedin_unique
+           ON leads(linkedin_normalized) WHERE linkedin_normalized IS NOT NULL"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id)")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain) WHERE domain IS NOT NULL"
+    )
+    backfill_companies_from_leads(conn)
     backfill_campaigns_from_events(conn)
     if own_conn:
         conn.commit()
@@ -385,6 +459,157 @@ def email_domain(email: Optional[str]) -> Optional[str]:
     if not email or "@" not in email:
         return None
     return email.split("@", 1)[1].strip().lower()
+
+
+def normalize_email(email: Optional[str]) -> Optional[str]:
+    if not email or "@" not in str(email):
+        return None
+    return str(email).strip().lower()
+
+
+def normalize_linkedin(url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Return (raw_url_stored, normalized_key) for matching."""
+    if not url or not str(url).strip():
+        return None, None
+    raw = str(url).strip()
+    norm = raw.lower()
+    for prefix in ("https://", "http://"):
+        if norm.startswith(prefix):
+            norm = norm[len(prefix):]
+    if norm.startswith("www."):
+        norm = norm[4:]
+    norm = norm.rstrip("/")
+    return raw, norm or None
+
+
+def furthest_stage(stage_a: str, stage_b: str) -> str:
+    def rank(s: str) -> int:
+        try:
+            return PIPELINE_STAGES.index(s)
+        except ValueError:
+            return 0
+    return stage_a if rank(stage_a) >= rank(stage_b) else stage_b
+
+
+def ensure_company(
+    conn: sqlite3.Connection,
+    name: Optional[str] = None,
+    domain: Optional[str] = None,
+    industry: Optional[str] = None,
+    headcount: Optional[str] = None,
+) -> Optional[int]:
+    """Find or create company row; match business domain first, then exact name."""
+    domain = (domain or "").strip().lower() or None
+    if domain and domain in SHARED_EMAIL_DOMAINS:
+        domain = None
+    name = (name or "").strip() or None
+    if not name and not domain:
+        return None
+    if domain:
+        row = conn.execute("SELECT id FROM companies WHERE domain = ?", (domain,)).fetchone()
+        if row:
+            cid = row["id"]
+            _update_company_fields(conn, cid, name, industry, headcount)
+            return cid
+    if name:
+        row = conn.execute(
+            "SELECT id FROM companies WHERE lower(name) = lower(?)", (name,)
+        ).fetchone()
+        if row:
+            cid = row["id"]
+            if domain:
+                conn.execute(
+                    """UPDATE companies SET domain = COALESCE(domain, ?),
+                       updated_at = datetime('now') WHERE id = ?""",
+                    (domain, cid),
+                )
+            _update_company_fields(conn, cid, None, industry, headcount)
+            return cid
+    display_name = name or (domain or "Unknown")
+    cid = conn.execute(
+        """INSERT INTO companies (name, domain, industry, headcount)
+           VALUES (?, ?, ?, ?)""",
+        (display_name, domain, industry, headcount),
+    ).lastrowid
+    return cid
+
+
+def _update_company_fields(
+    conn: sqlite3.Connection,
+    company_id: int,
+    name: Optional[str],
+    industry: Optional[str],
+    headcount: Optional[str],
+):
+    sets, params = [], []
+    if name:
+        sets.append("name = CASE WHEN trim(name) = '' THEN ? ELSE name END")
+        params.append(name)
+    if industry:
+        sets.append("industry = COALESCE(industry, ?)")
+        params.append(industry)
+    if headcount:
+        sets.append("headcount = COALESCE(headcount, ?)")
+        params.append(headcount)
+    if sets:
+        sets.append("updated_at = datetime('now')")
+        params.append(company_id)
+        conn.execute(f"UPDATE companies SET {', '.join(sets)} WHERE id = ?", params)
+
+
+def backfill_companies_from_leads(conn: sqlite3.Connection):
+    """Create companies rows from existing lead company/domain data."""
+    rows = conn.execute(
+        """SELECT DISTINCT company, email_domain, industry, headcount FROM leads
+           WHERE (company IS NOT NULL AND trim(company) != '')
+              OR (email_domain IS NOT NULL AND email_domain != '')"""
+    ).fetchall()
+    for row in rows:
+        domain = row["email_domain"]
+        if domain and domain in SHARED_EMAIL_DOMAINS:
+            domain = None
+        name = (row["company"] or "").strip() or None
+        if not name and not domain:
+            continue
+        cid = ensure_company(
+            conn, name=name, domain=domain,
+            industry=row["industry"], headcount=row["headcount"],
+        )
+        if not cid:
+            continue
+        if domain and domain not in SHARED_EMAIL_DOMAINS:
+            conn.execute(
+                """UPDATE leads SET company_id = ?
+                   WHERE email_domain = ? AND (company_id IS NULL)""",
+                (cid, domain),
+            )
+        if name:
+            conn.execute(
+                """UPDATE leads SET company_id = ?
+                   WHERE lower(company) = lower(?) AND (company_id IS NULL)""",
+                (cid, name),
+            )
+
+
+def link_lead_company(
+    conn: sqlite3.Connection,
+    lead_id: int,
+    company: Optional[str] = None,
+    email: Optional[str] = None,
+    industry: Optional[str] = None,
+    headcount: Optional[str] = None,
+) -> Optional[int]:
+    domain = email_domain(email) if email else None
+    cid = ensure_company(conn, name=company, domain=domain, industry=industry, headcount=headcount)
+    if cid:
+        conn.execute("UPDATE leads SET company_id = ? WHERE id = ?", (cid, lead_id))
+    if company:
+        conn.execute(
+            """UPDATE leads SET company = CASE WHEN company IS NULL OR trim(company) = ''
+               THEN ? ELSE company END WHERE id = ?""",
+            (company, lead_id),
+        )
+    return cid
 
 
 def ensure_lead_domain(lead_id: int, email: Optional[str]):
@@ -400,23 +625,274 @@ def ensure_lead_domain(lead_id: int, email: Optional[str]):
     conn.close()
 
 
-def sync_company_by_domain(domain: str, company=None, industry=None, headcount=None):
-    """Fill empty company/industry/headcount on all leads sharing a business email domain."""
-    if not domain or domain in SHARED_EMAIL_DOMAINS:
-        return
-    fields = [(c, v) for c, v in [("company", company), ("industry", industry), ("headcount", headcount)] if v]
-    if not fields:
-        return
+def find_lead_by_email(conn: sqlite3.Connection, email: str) -> Optional[int]:
+    row = conn.execute("SELECT id FROM leads WHERE email = ?", (email,)).fetchone()
+    return row["id"] if row else None
+
+
+def find_lead_by_linkedin(conn: sqlite3.Connection, linkedin_norm: str) -> Optional[int]:
+    row = conn.execute(
+        "SELECT id FROM leads WHERE linkedin_normalized = ?", (linkedin_norm,)
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def find_lead(
+    *,
+    lead_id: Optional[int] = None,
+    email: Optional[str] = None,
+    linkedin: Optional[str] = None,
+    name: Optional[str] = None,
+) -> Optional[dict]:
     conn = get_conn()
-    sets, params = [], []
-    for col, val in fields:
-        sets.append(f"{col} = CASE WHEN {col} IS NULL OR trim({col}) = '' THEN ? ELSE {col} END")
-        params.append(val)
-    sets.append("updated_at = datetime('now')")
-    params.append(domain)
-    conn.execute(f"UPDATE leads SET {', '.join(sets)} WHERE email_domain = ?", params)
+    row = None
+    if lead_id:
+        row = conn.execute(
+            """SELECT l.*, COALESCE(c.name, l.company) AS company_display
+               FROM leads l LEFT JOIN companies c ON l.company_id = c.id WHERE l.id = ?""",
+            (lead_id,),
+        ).fetchone()
+    elif email:
+        em = normalize_email(email)
+        if em:
+            row = conn.execute(
+                """SELECT l.*, COALESCE(c.name, l.company) AS company_display
+                   FROM leads l LEFT JOIN companies c ON l.company_id = c.id WHERE l.email = ?""",
+                (em,),
+            ).fetchone()
+    elif linkedin:
+        _, norm = normalize_linkedin(linkedin)
+        if norm:
+            row = conn.execute(
+                """SELECT l.*, COALESCE(c.name, l.company) AS company_display
+                   FROM leads l LEFT JOIN companies c ON l.company_id = c.id
+                   WHERE l.linkedin_normalized = ?""",
+                (norm,),
+            ).fetchone()
+    elif name:
+        row = conn.execute(
+            """SELECT l.*, COALESCE(c.name, l.company) AS company_display
+               FROM leads l LEFT JOIN companies c ON l.company_id = c.id
+               WHERE l.name LIKE ? LIMIT 1""",
+            (f"%{name}%",),
+        ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _pick_merge_keep_id(conn: sqlite3.Connection, id_a: int, id_b: int) -> tuple[int, int]:
+    counts = conn.execute(
+        """SELECT lead_id, COUNT(*) AS n FROM events
+           WHERE lead_id IN (?, ?) GROUP BY lead_id""",
+        (id_a, id_b),
+    ).fetchall()
+    by_id = {r["lead_id"]: r["n"] for r in counts}
+    na, nb = by_id.get(id_a, 0), by_id.get(id_b, 0)
+    if na > nb:
+        return id_a, id_b
+    if nb > na:
+        return id_b, id_a
+    ca = conn.execute("SELECT created_at FROM leads WHERE id = ?", (id_a,)).fetchone()
+    cb = conn.execute("SELECT created_at FROM leads WHERE id = ?", (id_b,)).fetchone()
+    if ca and cb and str(ca["created_at"]) <= str(cb["created_at"]):
+        return id_a, id_b
+    return id_b, id_a
+
+
+def merge_leads(keep_id: int, merge_id: int, reason: str = "manual") -> dict:
+    """Combine two lead rows; merge_id is deleted after moving children."""
+    if keep_id == merge_id:
+        return {"status": "noop", "keep_id": keep_id}
+    conn = get_conn()
+    try:
+        conn.execute("BEGIN")
+        keep = conn.execute("SELECT * FROM leads WHERE id = ?", (keep_id,)).fetchone()
+        other = conn.execute("SELECT * FROM leads WHERE id = ?", (merge_id,)).fetchone()
+        if not keep or not other:
+            conn.execute("ROLLBACK")
+            return {"status": "error", "error": "lead not found"}
+
+        events_moved = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE lead_id = ?", (merge_id,)
+        ).fetchone()[0]
+        conn.execute("UPDATE events SET lead_id = ? WHERE lead_id = ?", (keep_id, merge_id))
+
+        for row in conn.execute(
+            "SELECT campaign_id FROM campaign_leads WHERE lead_id = ?", (merge_id,)
+        ).fetchall():
+            conn.execute(
+                "INSERT OR IGNORE INTO campaign_leads (campaign_id, lead_id) VALUES (?, ?)",
+                (row["campaign_id"], keep_id),
+            )
+        conn.execute("DELETE FROM campaign_leads WHERE lead_id = ?", (merge_id,))
+        conn.execute(
+            "UPDATE relay_ingested SET lead_id = ? WHERE lead_id = ?", (keep_id, merge_id)
+        )
+
+        email = keep["email"] or other["email"]
+        linkedin_url = keep["linkedin_url"] or other["linkedin_url"]
+        _, linkedin_norm = normalize_linkedin(linkedin_url)
+        domain = email_domain(email)
+        new_stage = furthest_stage(keep["stage"] or "prospecting", other["stage"] or "prospecting")
+        company = (keep["company"] or "") or (other["company"] or "") or None
+        title = (keep["title"] or "") or (other["title"] or "") or None
+        industry = (keep["industry"] or "") or (other["industry"] or "") or None
+        headcount = (keep["headcount"] or "") or (other["headcount"] or "") or None
+        company_id = keep["company_id"] or other["company_id"]
+        conn.execute(
+            "INSERT INTO lead_merges (keep_id, merge_id, reason) VALUES (?, ?, ?)",
+            (keep_id, merge_id, reason),
+        )
+        conn.execute("DELETE FROM leads WHERE id = ?", (merge_id,))
+
+        if not company_id:
+            company_id = link_lead_company(
+                conn, keep_id, company=company, email=email,
+                industry=industry, headcount=headcount,
+            )
+
+        conn.execute(
+            """UPDATE leads SET
+               email = COALESCE(email, ?),
+               email_domain = COALESCE(email_domain, ?),
+               linkedin_url = COALESCE(linkedin_url, ?),
+               linkedin_normalized = COALESCE(linkedin_normalized, ?),
+               company_id = COALESCE(company_id, ?),
+               company = COALESCE(NULLIF(trim(company), ''), ?),
+               title = COALESCE(NULLIF(trim(title), ''), ?),
+               industry = COALESCE(NULLIF(trim(industry), ''), ?),
+               headcount = COALESCE(NULLIF(trim(headcount), ''), ?),
+               stage = ?,
+               updated_at = datetime('now')
+               WHERE id = ?""",
+            (
+                email, domain, linkedin_url, linkedin_norm, company_id,
+                company, title, industry, headcount, new_stage, keep_id,
+            ),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
+    return {
+        "status": "merged",
+        "keep_id": keep_id,
+        "merge_id": merge_id,
+        "events_moved": events_moved,
+        "reason": reason,
+    }
+
+
+def resolve_lead(
+    *,
+    email: Optional[str] = None,
+    linkedin_url: Optional[str] = None,
+    name: str = "Unknown",
+    company: Optional[str] = None,
+    title: Optional[str] = None,
+    industry: Optional[str] = None,
+    headcount: Optional[str] = None,
+    channel: str = "email",
+    stage: str = "prospecting",
+    notes: Optional[str] = None,
+    tags: Optional[list] = None,
+    enrich_name: Optional[str] = None,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    auto_merge: bool = True,
+) -> dict:
+    """Match or create lead by email and/or LinkedIn; optionally auto-merge duplicates."""
+    email_norm = normalize_email(email)
+    li_raw, li_norm = normalize_linkedin(linkedin_url)
+    if not email_norm and not li_norm:
+        return {"status": "error", "error": "email or linkedin required"}
+
+    conn = get_conn()
+    by_email = find_lead_by_email(conn, email_norm) if email_norm else None
+    by_li = find_lead_by_linkedin(conn, li_norm) if li_norm else None
+
+    if by_email and by_li and by_email != by_li and auto_merge and not dry_run:
+        keep_id, merge_id = _pick_merge_keep_id(conn, by_email, by_li)
+        conn.close()
+        merge_leads(keep_id, merge_id, reason="auto_dual_identifier")
+        conn = get_conn()
+        lead_id = keep_id
+        created = False
+    elif by_email:
+        lead_id, created = by_email, False
+    elif by_li:
+        lead_id, created = by_li, False
+    else:
+        lead_id, created = None, True
+
+    if dry_run:
+        conn.close()
+        if created:
+            return {
+                "status": "created", "id": None, "email": email_norm,
+                "linkedin": li_norm, "dry_run": True,
+            }
+        return {
+            "status": "matched", "id": lead_id, "email": email_norm,
+            "linkedin": li_norm, "dry_run": True,
+        }
+
+    if created:
+        domain = email_domain(email_norm)
+        company_id = ensure_company(
+            conn, name=company, domain=domain, industry=industry, headcount=headcount,
+        )
+        cur = conn.execute(
+            """INSERT INTO leads (name, company_id, company, title, industry, headcount,
+               email, email_domain, linkedin_url, linkedin_normalized, channel, stage, notes, tags)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                name, company_id, company, title, industry, headcount,
+                email_norm, domain, li_raw, li_norm, channel, stage, notes,
+                json.dumps(tags or []),
+            ),
+        )
+        lead_id = cur.lastrowid
+        conn.commit()
+    else:
+        sets, params = [], []
+        if email_norm:
+            sets.extend(["email = COALESCE(email, ?)", "email_domain = COALESCE(email_domain, ?)"])
+            params.extend([email_norm, email_domain(email_norm)])
+        if li_norm:
+            sets.extend(["linkedin_url = COALESCE(linkedin_url, ?)",
+                         "linkedin_normalized = COALESCE(linkedin_normalized, ?)"])
+            params.extend([li_raw, li_norm])
+        if sets:
+            sets.append("updated_at = datetime('now')")
+            params.append(lead_id)
+            conn.execute(f"UPDATE leads SET {', '.join(sets)} WHERE id = ?", params)
+            conn.commit()
+
+    conn.close()
+    name_for_enrich = enrich_name if enrich_name is not None else name
+    filled = enrich_lead(
+        lead_id, name=name_for_enrich, title=title, industry=industry,
+        company=company, headcount=headcount, overwrite=overwrite,
+    )
+    if email_norm:
+        ensure_lead_domain(lead_id, email_norm)
+    conn = get_conn()
+    link_lead_company(conn, lead_id, company=company, email=email_norm,
+                      industry=industry, headcount=headcount)
     conn.commit()
     conn.close()
+
+    return {
+        "status": "created" if created else "matched",
+        "id": lead_id,
+        "email": email_norm,
+        "linkedin": li_norm,
+        "filled": filled,
+    }
+
 
 def db_exists():
     return DB_PATH.exists()
@@ -424,53 +900,263 @@ def db_exists():
 def add_lead(name, company=None, title=None, industry=None, headcount=None,
              email=None, linkedin_url=None,
              channel="email", stage="prospecting", notes=None, tags=None):
-    conn = get_conn()
-    domain = email_domain(email)
-    if email:
-        existing = conn.execute("SELECT id FROM leads WHERE email = ?", (email,)).fetchone()
-        if existing:
-            if domain:
-                conn.execute(
-                    "UPDATE leads SET email_domain = ? WHERE id = ? AND (email_domain IS NULL OR email_domain = '')",
-                    (domain, existing["id"]),
-                )
-                conn.commit()
-            conn.close()
-            return {"status": "exists", "id": existing["id"], "email": email}
-    cursor = conn.execute(
-        """INSERT INTO leads (name, company, title, industry, headcount, email, email_domain, linkedin_url, channel, stage, notes, tags)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (name, company, title, industry, headcount, email, domain, linkedin_url, channel, stage, notes, json.dumps(tags or [])),
+    result = resolve_lead(
+        email=email,
+        linkedin_url=linkedin_url,
+        name=name,
+        company=company,
+        title=title,
+        industry=industry,
+        headcount=headcount,
+        channel=channel,
+        stage=stage,
+        notes=notes,
+        tags=tags,
     )
-    lead_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return {"status": "created", "id": lead_id, "name": name}
+    if result.get("status") == "error":
+        return result
+    status = "exists" if result["status"] == "matched" else "created"
+    return {
+        "status": status,
+        "id": result["id"],
+        "name": name,
+        "email": result.get("email"),
+        "linkedin": result.get("linkedin"),
+    }
 
-def enrich_lead(lead_id, name=None, title=None, industry=None, company=None):
-    """Fill empty lead profile fields from relay extraction (won't overwrite non-empty)."""
+
+# Canonical profile keys (CSV, JSON, relay → leads table)
+PROFILE_ALIASES: dict[str, tuple[str, ...]] = {
+    "email": ("email", "lead_email", "work_email"),
+    "linkedin": ("linkedin", "linkedin_url", "lead_linkedin_url", "profile_url"),
+    "name": ("name", "full_name", "display_name"),
+    "title": ("title", "job_title", "role"),
+    "company": ("company", "company_name", "organization", "org"),
+    "industry": ("industry",),
+    "headcount": ("headcount", "company_size", "employees", "employee_count"),
+}
+
+
+def _pick_profile_field(row: dict, keys: tuple[str, ...]) -> Optional[str]:
+    for key in keys:
+        val = row.get(key)
+        if val is None:
+            continue
+        text = str(val).strip()
+        if text:
+            return text
+    return None
+
+
+def normalize_profile_row(row: dict) -> dict[str, str]:
+    """Map CSV/JSON/webhook-shaped dicts to canonical profile fields."""
+    out: dict[str, str] = {}
+    for canonical, aliases in PROFILE_ALIASES.items():
+        val = _pick_profile_field(row, aliases)
+        if val:
+            out[canonical] = val
+    first = _pick_profile_field(row, ("first_name",))
+    last = _pick_profile_field(row, ("last_name",))
+    if first and "name" not in out:
+        out["name"] = f"{first} {last}".strip() if last else first
+    return out
+
+
+def profile_from_relay_lead(
+    lead_fields: dict[str, str],
+    identity: dict[str, str],
+    display_name: str,
+) -> dict[str, str]:
+    """Build a canonical profile dict from relay extractor output."""
+    row = {
+        "email": identity.get("email"),
+        "linkedin": identity.get("linkedin_url"),
+        "name": display_name,
+        "job_title": lead_fields.get("job_title"),
+        "company_name": lead_fields.get("company_name"),
+        "industry": lead_fields.get("industry"),
+        "headcount": lead_fields.get("headcount"),
+    }
+    return normalize_profile_row(row)
+
+
+def enrich_lead(
+    lead_id,
+    name=None,
+    title=None,
+    industry=None,
+    company=None,
+    headcount=None,
+    overwrite: bool = False,
+) -> list[str]:
+    """Fill empty lead profile fields (won't overwrite non-empty unless overwrite=True)."""
     conn = get_conn()
-    row = conn.execute("SELECT name, email, title, industry, company FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    row = conn.execute(
+        "SELECT name, email, title, industry, company, headcount FROM leads WHERE id = ?",
+        (lead_id,),
+    ).fetchone()
     if not row:
         conn.close()
-        return
-    updates, params = [], []
+        return []
+    updates, params, filled = [], [], []
     email = row["email"] or ""
     if name:
         current = (row["name"] or "").strip()
         derived = name_from_email(email) if email else ""
-        if not current or current == derived:
+        if overwrite or not current or current == derived:
             updates.append("name = ?")
             params.append(name)
-    for col, val in [("title", title), ("industry", industry), ("company", company)]:
-        if val and not (row[col] or "").strip():
+            filled.append("name")
+    for col, val in [
+        ("title", title),
+        ("industry", industry),
+        ("company", company),
+        ("headcount", headcount),
+    ]:
+        if not val:
+            continue
+        if overwrite or not (row[col] or "").strip():
             updates.append(f"{col} = ?")
             params.append(val)
+            filled.append(col)
     if updates:
         updates.append("updated_at = datetime('now')")
         conn.execute(f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", (*params, lead_id))
         conn.commit()
     conn.close()
+    return filled
+
+
+def _preview_enrich_fields(row, name, title, industry, company, headcount, overwrite) -> list[str]:
+    """Dry-run: which columns would enrich_lead update?"""
+    if not row:
+        return list(filter(None, [name and "name", title and "title", industry and "industry",
+                                  company and "company", headcount and "headcount"]))
+    filled = []
+    email = row["email"] or ""
+    if name:
+        current = (row["name"] or "").strip()
+        derived = name_from_email(email) if email else ""
+        if overwrite or not current or current == derived:
+            filled.append("name")
+    for col, val in [
+        ("title", title),
+        ("industry", industry),
+        ("company", company),
+        ("headcount", headcount),
+    ]:
+        if val and (overwrite or not (row[col] or "").strip()):
+            filled.append(col)
+    return filled
+
+
+def upsert_lead_profile(
+    profile: dict[str, str],
+    *,
+    channel: str = "email",
+    stage: str = "prospecting",
+    notes: Optional[str] = None,
+    tags: Optional[list] = None,
+    enrich_name: Optional[str] = None,
+    dry_run: bool = False,
+    overwrite: bool = False,
+) -> dict:
+    """Match by email and/or LinkedIn; create if missing; enrich profile and company link."""
+    email = profile.get("email")
+    linkedin = profile.get("linkedin")
+    if not normalize_email(email) and not normalize_linkedin(linkedin)[1]:
+        return {"status": "error", "error": "email or linkedin required"}
+
+    name = profile.get("name")
+    if not name:
+        em = normalize_email(email)
+        name = name_from_email(em) if em else "Unknown"
+
+    return resolve_lead(
+        email=email,
+        linkedin_url=linkedin,
+        name=name,
+        company=profile.get("company"),
+        title=profile.get("title"),
+        industry=profile.get("industry"),
+        headcount=profile.get("headcount"),
+        channel=channel,
+        stage=stage,
+        notes=notes,
+        tags=tags,
+        enrich_name=enrich_name,
+        dry_run=dry_run,
+        overwrite=overwrite,
+    )
+
+
+def import_profiles(
+    rows: list[dict],
+    *,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    channel: str = "email",
+    stage: str = "prospecting",
+    notes: Optional[str] = None,
+) -> dict:
+    """Import many profile rows (CSV dicts or JSON objects). Match key: email and/or linkedin."""
+    summary: dict = {
+        "processed": 0,
+        "created": 0,
+        "matched": 0,
+        "enriched": 0,
+        "domain_synced": 0,
+        "errors": [],
+        "results": [],
+    }
+    for i, raw in enumerate(rows):
+        profile = normalize_profile_row(raw)
+        if not profile.get("email") and not profile.get("linkedin"):
+            summary["errors"].append({"row": i + 1, "error": "missing email or linkedin"})
+            continue
+        summary["processed"] += 1
+        try:
+            result = upsert_lead_profile(
+                profile,
+                channel=channel,
+                stage=stage,
+                notes=notes,
+                dry_run=dry_run,
+                overwrite=overwrite,
+            )
+        except Exception as e:
+            summary["errors"].append({"row": i + 1, "email": profile.get("email"), "error": str(e)})
+            continue
+        if result.get("status") == "error":
+            summary["errors"].append({"row": i + 1, "email": profile.get("email"), "error": result.get("error")})
+            continue
+        summary["results"].append(result)
+        if result["status"] == "created":
+            summary["created"] += 1
+        else:
+            summary["matched"] += 1
+        if result.get("filled"):
+            summary["enriched"] += 1
+        if result.get("domain_synced"):
+            summary["domain_synced"] += 1
+    return summary
+
+
+def load_profile_rows_from_file(path: Path) -> list[dict]:
+    """Load rows from a .csv file or a .json / .jsonl file."""
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        with path.open(encoding="utf-8-sig", newline="") as f:
+            return list(csv.DictReader(f))
+    text = path.read_text(encoding="utf-8-sig")
+    if suffix == ".jsonl":
+        return [json.loads(line) for line in text.splitlines() if line.strip()]
+    data = json.loads(text)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return [data]
+    raise ValueError("JSON file must be an array of objects or a single object")
 
 
 def update_lead_stage(lead_id, stage, next_action=None):
@@ -557,20 +1243,112 @@ def get_lead_events(lead_id, limit=50):
     conn.close()
     return [dict(r) for r in rows]
 
-def get_pipeline(stage_filter=None, limit=50):
+# Events that carry lead status / sentiment / auto-reply for current-state filters.
+_STATUS_METADATA_PREDICATE = """(
+    json_extract(e.metadata_json, '$.lead_status_sentiment') IS NOT NULL
+    OR json_extract(e.metadata_json, '$.lead_status_raw') IS NOT NULL
+    OR CAST(json_extract(e.metadata_json, '$.is_auto_reply') AS INTEGER) = 1
+)"""
+
+_LATEST_STATUS_CTE = f"""
+WITH ranked_status AS (
+  SELECT
+    e.lead_id,
+    lower(json_extract(e.metadata_json, '$.lead_status_sentiment')) AS current_sentiment,
+    json_extract(e.metadata_json, '$.lead_status_raw') AS current_lead_status_raw,
+    json_extract(e.metadata_json, '$.lead_status_display') AS current_lead_status_display,
+    CAST(json_extract(e.metadata_json, '$.is_auto_reply') AS INTEGER) AS current_is_auto_reply,
+    e.created_at AS status_at,
+    ROW_NUMBER() OVER (
+      PARTITION BY e.lead_id
+      ORDER BY e.created_at DESC, e.id DESC
+    ) AS rn
+  FROM events e
+  WHERE {_STATUS_METADATA_PREDICATE}
+)
+"""
+
+
+def get_pipeline(
+    stage_filter=None,
+    limit=50,
+    sentiment=None,
+    auto_reply=None,
+    lead_status=None,
+    sort="updated_at",
+    order="desc",
+):
+    """List leads; optional filters use latest status-bearing event per lead (current-only)."""
     conn = get_conn()
-    query = """
-        SELECT l.*,
-               (SELECT event_type FROM events WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) as last_event,
-               (SELECT created_at FROM events WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) as last_event_at,
-               (SELECT COUNT(*) FROM events WHERE lead_id = l.id) as event_count
+    order = (order or "desc").lower()
+    if order not in ("asc", "desc"):
+        order = "desc"
+    sort_key = (sort or "updated_at").lower()
+    use_status_join = (
+        sentiment is not None
+        or auto_reply is not None
+        or lead_status is not None
+        or sort_key in ("sentiment", "auto_reply", "status_at")
+    )
+
+    company_join = "LEFT JOIN companies co ON l.company_id = co.id"
+    company_col = "COALESCE(co.name, l.company) AS company_display"
+    if use_status_join:
+        query = _LATEST_STATUS_CTE + f"""
+        SELECT l.*, {company_col},
+               rs.current_sentiment,
+               rs.current_lead_status_raw,
+               rs.current_lead_status_display,
+               rs.current_is_auto_reply,
+               rs.status_at,
+               (SELECT event_type FROM events WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) AS last_event,
+               (SELECT created_at FROM events WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) AS last_event_at,
+               (SELECT COUNT(*) FROM events WHERE lead_id = l.id) AS event_count
         FROM leads l
-    """
-    params = []
+        {company_join}
+        INNER JOIN ranked_status rs ON rs.lead_id = l.id AND rs.rn = 1
+        WHERE 1=1
+        """
+    else:
+        query = f"""
+        SELECT l.*, {company_col},
+               NULL AS current_sentiment,
+               NULL AS current_lead_status_raw,
+               NULL AS current_lead_status_display,
+               NULL AS current_is_auto_reply,
+               NULL AS status_at,
+               (SELECT event_type FROM events WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) AS last_event,
+               (SELECT created_at FROM events WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) AS last_event_at,
+               (SELECT COUNT(*) FROM events WHERE lead_id = l.id) AS event_count
+        FROM leads l
+        {company_join}
+        WHERE 1=1
+        """
+    params: list = []
     if stage_filter:
-        query += " WHERE l.stage = ?"
+        query += " AND l.stage = ?"
         params.append(stage_filter)
-    query += " ORDER BY l.updated_at DESC LIMIT ?"
+    if sentiment:
+        query += " AND rs.current_sentiment = ?"
+        params.append(sentiment.lower())
+    if auto_reply is not None:
+        want = 1 if auto_reply in (True, 1, "1", "true", "yes") else 0
+        query += " AND rs.current_is_auto_reply = ?"
+        params.append(want)
+    if lead_status:
+        query += (
+            " AND (lower(rs.current_lead_status_raw) = lower(?) "
+            "OR lower(rs.current_lead_status_display) = lower(?))"
+        )
+        params.extend([lead_status, lead_status.replace("_", " ")])
+
+    order_sql = {
+        "updated_at": f"l.updated_at {order.upper()}",
+        "sentiment": f"rs.current_sentiment {order.upper()}, l.updated_at DESC",
+        "auto_reply": f"rs.current_is_auto_reply {order.upper()}, l.updated_at DESC",
+        "status_at": f"rs.status_at {order.upper()}",
+    }.get(sort_key, f"l.updated_at {order.upper()}")
+    query += f" ORDER BY {order_sql} LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
     conn.close()
@@ -624,11 +1402,153 @@ def get_lead_by_email(email):
 # Relay Integration (wbhk.org)
 # ──────────────────────────────────────────────────────────────────────
 
+PLUSVIBE_PLATFORMS = frozenset({"plusvibe"})
+
+PLUSVIBE_REPLY_EVENTS = frozenset({
+    "all_email_replies",
+    "first_email_replies",
+    "all_positive_replies",
+})
+
+PLUSVIBE_SENT_EVENTS = frozenset({"email_sent"})
+PLUSVIBE_BOUNCE_EVENTS = frozenset({"bounced_email"})
+
+AUTO_REPLY_LABELS = frozenset({
+    "out_of_office",
+    "ooo",
+    "automatic_reply",
+    "auto_reply",
+})
+
+
+def normalize_lead_status_display(label: str) -> str:
+    """Underscores to spaces, matching backend normalize_lead_status_status."""
+    if not label:
+        return ""
+    return label.strip().lower().replace("_", " ")
+
+
+def is_auto_reply_label(label: str) -> bool:
+    normalized = (label or "").strip().lower().replace(" ", "_")
+    return normalized in AUTO_REPLY_LABELS or "out_of_office" in normalized
+
+
+def normalize_plusvibe_event(event_type: str, raw: dict) -> tuple[str, str]:
+    """Map PlusVibe webhook_event to local event type and direction."""
+    et = (event_type or "").lower()
+    label = (raw.get("label") or "").strip().lower()
+
+    if et in PLUSVIBE_REPLY_EVENTS:
+        return "email_reply", "inbound"
+    if et in PLUSVIBE_SENT_EVENTS:
+        return "email_sent", "outbound"
+    if et in PLUSVIBE_BOUNCE_EVENTS:
+        return "email_bounce", "outbound"
+    if et.startswith("lead_marked_as_") or et.startswith("marked_as_"):
+        return "lead_status_updated", "inbound"
+    if label in ("interested", "not_interested", "out_of_office"):
+        return "lead_status_updated", "inbound"
+    if raw.get("direction", "").upper() == "IN":
+        return et, "inbound"
+    return et, "outbound"
+
+
+def build_plusvibe_status_metadata(
+    raw: dict,
+    signals: dict,
+    envelope_event_type: str,
+) -> dict:
+    """Normalized status fields stored on event metadata_json."""
+    meta: dict = {}
+    label = (signals.get("label") or raw.get("label") or "").strip().lower()
+    if not label and envelope_event_type:
+        et = envelope_event_type.lower()
+        for prefix in ("lead_marked_as_", "marked_as_"):
+            if et.startswith(prefix):
+                label = et[len(prefix):]
+                break
+        if et == "bounced_email":
+            label = "email_bounced"
+
+    sentiment = (signals.get("sentiment") or raw.get("sentiment") or "").strip().lower()
+    if not sentiment and label == "email_bounced":
+        sentiment = "invalid"
+
+    if label:
+        meta["lead_status_raw"] = label
+        meta["lead_status_display"] = normalize_lead_status_display(label)
+    if sentiment:
+        meta["lead_status_sentiment"] = sentiment
+    if signals.get("status"):
+        meta["lead_status_platform_status"] = signals["status"].lower()
+    if envelope_event_type:
+        meta["plusvibe_webhook_event"] = envelope_event_type
+
+    if is_auto_reply_label(label):
+        meta["is_auto_reply"] = True
+        meta["auto_reply_type"] = "ooo"
+
+    return meta
+
+
+def relay_target_stage(
+    platform: str,
+    envelope_event_type: str,
+    local_type: str,
+    raw: dict,
+    metadata: dict,
+) -> Optional[str]:
+    """Pipeline stage to apply after ingest; None = leave stage unchanged."""
+    et = envelope_event_type.lower()
+    label = (metadata.get("lead_status_raw") or raw.get("label") or "").lower()
+    sentiment = (metadata.get("lead_status_sentiment") or "").lower()
+
+    if platform in PLUSVIBE_PLATFORMS:
+        # Bounce/invalid: record on event metadata only; do not force pipeline stage to lost.
+        if local_type == "email_bounce" or et in PLUSVIBE_BOUNCE_EVENTS or sentiment == "invalid":
+            return None
+        if metadata.get("is_auto_reply") or is_auto_reply_label(label):
+            return None
+        if (
+            "not_interested" in et
+            or label in ("not_interested", "not interested")
+            or sentiment == "negative"
+        ):
+            return "lost"
+        if (
+            "interested" in et
+            or label == "interested"
+            or sentiment == "positive"
+        ):
+            return "interested"
+        if local_type == "email_reply" or et in PLUSVIBE_REPLY_EVENTS:
+            return "replied"
+        if local_type == "email_sent" or et in PLUSVIBE_SENT_EVENTS:
+            return "contacted"
+        return None
+
+    if local_type in ("email_reply", "linkedin_message") or et in (
+        "email_reply",
+        "linkedin_reply",
+        "linkedin_message",
+    ):
+        return "replied"
+    if local_type in ("email_sent",) or et in (
+        "email_sent",
+        "linkedin_connect",
+        "linkedin_message_sent",
+    ):
+        return "contacted"
+    return None
+
+
 def relay_dedupe_key(event: dict) -> str:
     """Stable id so we can re-pull from the relay without duplicating local rows."""
     if event.get("relay_id"):
         return f"relay:{event['relay_id']}"
     raw = event.get("raw") or {}
+    if event.get("platform") in PLUSVIBE_PLATFORMS and raw.get("webhook_id"):
+        return f"pv:{raw['webhook_id']}"
     if raw.get("sent_email_id"):
         return f"sent:{raw['sent_email_id']}"
     if raw.get("message_id"):
@@ -736,8 +1656,8 @@ def ingest_relay_event(event: dict) -> Optional[int]:
     if relay_already_ingested(dedupe_key):
         return None
 
-    lead_email = event.get("lead")
-    event_type = event.get("event_type", "unknown")
+    envelope_lead = event.get("lead") or ""
+    envelope_event_type = event.get("event_type", "unknown")
     platform = event.get("platform", "unknown")
     sender = event.get("sender", "")
     received_at = event.get("received_at", "")
@@ -746,80 +1666,61 @@ def ingest_relay_event(event: dict) -> Optional[int]:
     extracted = extract_relay_fields(platform, raw)
     lead_fields = extracted["lead"]
     event_fields = extracted["event"]
+    signals = extracted.get("signals") or {}
+    identity = extract_relay_identity(platform, raw, envelope_lead)
 
-    display_name = build_display_name(lead_fields, lead_email)
-    if not display_name and lead_email and "@" in lead_email:
-        display_name = name_from_email(lead_email)
+    email_hint = identity.get("email") or (
+        envelope_lead if "@" in str(envelope_lead) else None
+    )
+    display_name = build_display_name(lead_fields, email_hint)
+    if not display_name and email_hint and "@" in email_hint:
+        display_name = name_from_email(email_hint)
+    elif not display_name and identity.get("linkedin_url"):
+        slug = identity["linkedin_url"].rstrip("/").split("/")[-1]
+        display_name = slug.replace("-", " ").title() or f"Unknown ({platform})"
     elif not display_name:
-        display_name = lead_email or f"Unknown ({platform})"
+        display_name = f"Unknown ({platform})"
 
-    # Determine channel from platform
     channel_map = {"smartlead": "email", "instantly": "email", "emailbison": "email",
                    "heyreach": "linkedin", "prosp": "linkedin",
-                   "pipl": "email", "plusvibe": "email", "clay": "email"}
+                   "plusvibe": "email", "clay": "email"}
     channel = channel_map.get(platform, "email")
 
-    # Auto-add lead if not exists; enrich profile from raw on every event
-    if lead_email and "@" in lead_email:
-        result = add_lead(
-            name=display_name,
-            company=lead_fields.get("company_name"),
-            title=lead_fields.get("job_title"),
-            industry=lead_fields.get("industry"),
-            email=lead_email,
-            channel=channel,
-            stage="prospecting",
-            notes=f"Auto-imported from {platform} via relay",
-        )
-        lead_id = result["id"]
-    else:
-        result = add_lead(
-            name=display_name,
-            company=lead_fields.get("company_name"),
-            title=lead_fields.get("job_title"),
-            industry=lead_fields.get("industry"),
-            email=lead_email or f"unknown-{platform}@relay.local",
-            channel=channel,
-            stage="prospecting",
-            notes=f"Auto-imported from {platform} via relay",
-        )
-        lead_id = result["id"]
-
-    enrich_lead(
-        lead_id,
-        name=display_name if lead_fields.get("first_name") else None,
-        title=lead_fields.get("job_title"),
-        industry=lead_fields.get("industry"),
-        company=lead_fields.get("company_name"),
+    profile = profile_from_relay_lead(lead_fields, identity, display_name)
+    upsert_result = upsert_lead_profile(
+        profile,
+        channel=channel,
+        stage="prospecting",
+        notes=f"Auto-imported from {platform} via relay",
+        enrich_name=display_name if lead_fields.get("first_name") else None,
     )
+    if upsert_result.get("status") == "error":
+        return None
+    lead_id = upsert_result["id"]
 
-    if lead_email and "@" in lead_email:
-        ensure_lead_domain(lead_id, lead_email)
-        domain = email_domain(lead_email)
-        if domain:
-            sync_company_by_domain(
-                domain,
-                company=lead_fields.get("company_name"),
-                industry=lead_fields.get("industry"),
-                headcount=lead_fields.get("headcount"),
+    if platform in PLUSVIBE_PLATFORMS:
+        local_type, direction = normalize_plusvibe_event(envelope_event_type, raw)
+    else:
+        event_type_map = {
+            "email_sent": "email_sent", "email_open": "email_open",
+            "email_reply": "email_reply", "email_bounce": "email_bounce",
+            "email_click": "email_click", "email_unsubscribe": "email_unsubscribe",
+            "linkedin_connect": "linkedin_connect",
+            "linkedin_connection_accepted": "linkedin_connection_accepted",
+            "linkedin_message": "linkedin_message",
+            "linkedin_reply": "linkedin_message",
+        }
+        local_type = event_type_map.get(envelope_event_type, envelope_event_type)
+        direction = (
+            "inbound"
+            if envelope_event_type in (
+                "email_reply", "email_open", "email_click",
+                "linkedin_connection_accepted", "linkedin_reply",
             )
+            else "outbound"
+        )
 
-    # Map relay event types to local event types
-    event_type_map = {
-        "email_sent": "email_sent", "email_open": "email_open",
-        "email_reply": "email_reply", "email_bounce": "email_bounce",
-        "email_click": "email_click", "email_unsubscribe": "email_unsubscribe",
-        "linkedin_connect": "linkedin_connect",
-        "linkedin_connection_accepted": "linkedin_connection_accepted",
-        "linkedin_message": "linkedin_message",
-        "linkedin_reply": "linkedin_message",
-    }
-
-    local_type = event_type_map.get(event_type, event_type)
-    direction = "inbound" if event_type in ("email_reply", "email_open", "email_click",
-                                             "linkedin_connection_accepted", "linkedin_reply") else "outbound"
-
-    subject = event_fields.get("subject") or f"{platform}: {event_type}"
+    subject = event_fields.get("subject") or f"{platform}: {envelope_event_type}"
     body = event_fields.get("body") or ""
     body_preview = body[:200] if body else (f"From {sender}" if sender else "")
 
@@ -835,6 +1736,11 @@ def ingest_relay_event(event: dict) -> Optional[int]:
     if event.get("relay_id"):
         metadata["relay_id"] = event["relay_id"]
 
+    if platform in PLUSVIBE_PLATFORMS:
+        metadata.update(
+            build_plusvibe_status_metadata(raw, signals, envelope_event_type)
+        )
+
     log_event(
         lead_id=lead_id,
         event_type=local_type,
@@ -845,11 +1751,11 @@ def ingest_relay_event(event: dict) -> Optional[int]:
         metadata=metadata,
     )
 
-    # Auto-update stage based on event type
-    if event_type in ("email_reply", "linkedin_reply", "linkedin_message"):
-        update_lead_stage(lead_id, "replied")
-    elif event_type in ("email_sent", "linkedin_connect", "linkedin_message_sent"):
-        update_lead_stage(lead_id, "contacted")
+    target_stage = relay_target_stage(
+        platform, envelope_event_type, local_type, raw, metadata
+    )
+    if target_stage:
+        update_lead_stage(lead_id, target_stage)
 
     mark_relay_ingested(dedupe_key, lead_id)
     return lead_id
@@ -906,7 +1812,7 @@ def format_pipeline_table(leads):
     lines = [f"{'Lead':<28} {'Company':<20} {'Stage':<14} {'Last':<12} {'Next Action'}", "-" * 95]
     for lead in leads:
         name = (lead["name"] or "")[:26]
-        company = (lead["company"] or "")[:18]
+        company = (lead.get("company_display") or lead.get("company") or "")[:18]
         stage = lead["stage"] or "?"
         emoji = STAGE_EMOJI.get(stage, "  ")
         last = lead.get("last_contact_at") or lead.get("last_event_at") or ""
@@ -919,7 +1825,15 @@ def format_pipeline_table(leads):
             except (ValueError, TypeError):
                 last = last[:10]
         next_action = (lead.get("next_action") or "")[:30]
-        lines.append(f"{name:<28} {company:<20} {emoji} {stage:<12} {last:<12} {next_action}")
+        status_bits = []
+        if lead.get("current_sentiment"):
+            status_bits.append(lead["current_sentiment"])
+        if lead.get("current_is_auto_reply"):
+            status_bits.append("auto")
+        status_suffix = f" [{','.join(status_bits)}]" if status_bits else ""
+        lines.append(
+            f"{name:<28} {company:<20} {emoji} {stage:<12} {last:<12} {next_action}{status_suffix}"
+        )
     return "\n".join(lines)
 
 def format_stats(stats):
@@ -963,7 +1877,7 @@ def format_event_timeline(lead, events):
         f"Lead:    {lead['name']} ({emoji} {lead.get('stage', '?')})",
         f"Title:   {lead.get('title') or '—'}",
         f"Email:   {lead.get('email') or '—'}",
-        f"Company: {lead.get('company') or '—'}",
+        f"Company: {lead.get('company_display') or lead.get('company') or '—'}",
         f"Industry:{lead.get('industry') or '—'}  |  Headcount: {lead.get('headcount') or '—'}",
         f"Notes:   {lead.get('notes') or '—'}",
         "",
@@ -994,6 +1908,15 @@ def format_event_timeline(lead, events):
         direction = "←" if e.get("direction") == "inbound" else "→"
         evt = f"{direction} {e.get('event_type', '?')}"
         details = e.get("body_preview") or e.get("subject") or ""
+        try:
+            meta = json.loads(e.get("metadata_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        status_note = meta.get("lead_status_sentiment") or meta.get("lead_status_raw")
+        if meta.get("is_auto_reply"):
+            status_note = (status_note or "") + " auto_reply"
+        if status_note:
+            details = f"{status_note}: {details}" if details else str(status_note)
         if len(details) > 45:
             details = details[:42] + "..."
         lines.append(f"{i:<4} {when:<20} {evt:<32} {details}")
@@ -1016,7 +1939,17 @@ def main():
     update_p.add_argument("--check", action="store_true", help="Only check for updates, do not install")
 
     show_p = sub.add_parser("show", help="Show pipeline")
-    show_p.add_argument("--stage"); show_p.add_argument("--limit", type=int, default=50)
+    show_p.add_argument("--stage")
+    show_p.add_argument("--sentiment", choices=("positive", "negative", "neutral", "invalid"),
+                        help="Filter by current lead status sentiment (latest status event)")
+    show_p.add_argument("--auto-reply", dest="auto_reply", choices=("true", "false"),
+                        help="Filter by current auto-reply flag (OOO, etc.)")
+    show_p.add_argument("--lead-status", dest="lead_status",
+                        help="Filter by current lead status label (e.g. interested, not_interested)")
+    show_p.add_argument("--sort", choices=("updated_at", "sentiment", "auto_reply", "status_at"),
+                        default="updated_at")
+    show_p.add_argument("--order", choices=("asc", "desc"), default="desc")
+    show_p.add_argument("--limit", type=int, default=50)
     show_p.add_argument("--json", action="store_true")
 
     stats_p = sub.add_parser("stats", help="Pipeline statistics")
@@ -1032,6 +1965,22 @@ def main():
     add_p.add_argument("--email"); add_p.add_argument("--linkedin")
     add_p.add_argument("--channel", default="email"); add_p.add_argument("--stage", default="prospecting")
     add_p.add_argument("--notes"); add_p.add_argument("--tags")
+
+    imp_p = sub.add_parser(
+        "import-profiles",
+        help="Bulk import/enrich leads from CSV or JSON (match by email)",
+    )
+    imp_p.add_argument("--file", help="Path to .csv, .json, or .jsonl file")
+    imp_p.add_argument(
+        "--json",
+        dest="json_data",
+        help='JSON array string, or "-" to read JSON array from stdin',
+    )
+    imp_p.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
+    imp_p.add_argument("--overwrite", action="store_true", help="Overwrite non-empty profile fields")
+    imp_p.add_argument("--channel", default="email")
+    imp_p.add_argument("--stage", default="prospecting")
+    imp_p.add_argument("--notes")
 
     up_p = sub.add_parser("update-stage", help="Update lead stage")
     up_p.add_argument("--id", type=int, required=True); up_p.add_argument("--stage", required=True)
@@ -1058,7 +2007,14 @@ def main():
     hist_p = sub.add_parser("history", help="Show event history for a lead")
     hist_p.add_argument("--id", type=int, help="Lead ID")
     hist_p.add_argument("--email", help="Find lead by email")
+    hist_p.add_argument("--linkedin", help="Find lead by LinkedIn URL or profile slug")
     hist_p.add_argument("--name", help="Find lead by name (partial match)")
+
+    merge_p = sub.add_parser("merge-leads", help="Merge two lead records into one")
+    merge_p.add_argument("--keep", type=int, help="Lead ID to keep")
+    merge_p.add_argument("--merge", type=int, help="Lead ID to merge into --keep and delete")
+    merge_p.add_argument("--email", help="Keep lead matched by email (with --linkedin)")
+    merge_p.add_argument("--linkedin", help="Merge lead matched by LinkedIn into email lead")
     hist_p.add_argument("--limit", type=int, default=50, help="Max events to show")
     hist_p.add_argument("--json", action="store_true")
 
@@ -1152,7 +2108,18 @@ def main():
         return
 
     if args.command == "show":
-        leads = get_pipeline(args.stage, args.limit)
+        auto_reply = None
+        if getattr(args, "auto_reply", None) is not None:
+            auto_reply = args.auto_reply == "true"
+        leads = get_pipeline(
+            stage_filter=args.stage,
+            limit=args.limit,
+            sentiment=getattr(args, "sentiment", None),
+            auto_reply=auto_reply,
+            lead_status=getattr(args, "lead_status", None),
+            sort=getattr(args, "sort", "updated_at"),
+            order=getattr(args, "order", "desc"),
+        )
         print(json.dumps(leads, indent=2) if getattr(args, "json", False) else format_pipeline_table(leads))
     elif args.command == "stats":
         stats = get_stats()
@@ -1170,6 +2137,47 @@ def main():
                                    industry=args.industry, headcount=args.headcount,
                                    email=args.email, linkedin_url=args.linkedin,
                                    channel=args.channel, stage=args.stage, notes=args.notes, tags=tags)))
+    elif args.command == "import-profiles":
+        rows: list[dict] = []
+        if args.file and args.json_data:
+            print(json.dumps({"error": "Use --file or --json, not both"}))
+            sys.exit(1)
+        if args.file:
+            path = Path(args.file).expanduser()
+            if not path.is_file():
+                print(json.dumps({"error": f"File not found: {path}"}))
+                sys.exit(1)
+            try:
+                rows = load_profile_rows_from_file(path)
+            except (json.JSONDecodeError, ValueError) as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+        elif args.json_data:
+            raw = sys.stdin.read() if args.json_data.strip() == "-" else args.json_data
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as e:
+                print(json.dumps({"error": f"Invalid JSON: {e}"}))
+                sys.exit(1)
+            if isinstance(data, list):
+                rows = data
+            elif isinstance(data, dict):
+                rows = [data]
+            else:
+                print(json.dumps({"error": "JSON must be an array of objects or a single object"}))
+                sys.exit(1)
+        else:
+            print(json.dumps({"error": "Provide --file or --json"}))
+            sys.exit(1)
+        summary = import_profiles(
+            rows,
+            dry_run=args.dry_run,
+            overwrite=args.overwrite,
+            channel=args.channel,
+            stage=args.stage,
+            notes=args.notes,
+        )
+        print(json.dumps(summary, indent=2))
     elif args.command == "update-stage":
         update_lead_stage(args.id, args.stage, args.next_action)
         print(json.dumps({"status": "updated", "id": args.id, "stage": args.stage}))
@@ -1177,27 +2185,39 @@ def main():
         log_event(lead_id=args.lead_id, event_type=args.event_type, direction=args.direction,
                   channel=args.channel, subject=args.subject, body_preview=args.body)
         print(json.dumps({"status": "logged", "lead_id": args.lead_id}))
-    elif args.command == "history":
-        conn = get_conn()
-        if args.id:
-            lead = conn.execute("SELECT * FROM leads WHERE id = ?", (args.id,)).fetchone()
-        elif args.email:
-            lead = conn.execute("SELECT * FROM leads WHERE email = ?", (args.email,)).fetchone()
-        elif args.name:
-            lead = conn.execute(
-                "SELECT * FROM leads WHERE name LIKE ? LIMIT 1", (f"%{args.name}%",)
-            ).fetchone()
+    elif args.command == "merge-leads":
+        if args.keep and args.merge:
+            result = merge_leads(args.keep, args.merge, reason="manual_cli")
+        elif args.email and args.linkedin:
+            keep_lead = find_lead(email=args.email)
+            merge_lead = find_lead(linkedin=args.linkedin)
+            if not keep_lead or not merge_lead:
+                print(json.dumps({"error": "Could not resolve both leads by email and linkedin"}))
+                sys.exit(1)
+            if keep_lead["id"] == merge_lead["id"]:
+                result = {"status": "noop", "keep_id": keep_lead["id"]}
+            else:
+                conn = get_conn()
+                keep_id, merge_id = _pick_merge_keep_id(
+                    conn, keep_lead["id"], merge_lead["id"]
+                )
+                conn.close()
+                result = merge_leads(keep_id, merge_id, reason="manual_email_linkedin")
         else:
-            conn.close()
-            print(json.dumps({"error": "Provide --id, --email, or --name"}))
+            print(json.dumps({"error": "Provide --keep and --merge, or --email and --linkedin"}))
             sys.exit(1)
-        conn.close()
+        print(json.dumps(result, indent=2))
+    elif args.command == "history":
+        lead = find_lead(
+            lead_id=args.id, email=args.email,
+            linkedin=getattr(args, "linkedin", None), name=args.name,
+        )
         if not lead:
             print(json.dumps({"error": "Lead not found"}))
             sys.exit(1)
         events = get_lead_events(lead["id"], args.limit)
-        print(json.dumps({"lead": dict(lead), "events": events}, indent=2)
-              if args.json else format_event_timeline(dict(lead), events))
+        print(json.dumps({"lead": lead, "events": events}, indent=2)
+              if args.json else format_event_timeline(lead, events))
     else:
         if not db_exists():
             init_db()

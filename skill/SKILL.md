@@ -42,6 +42,7 @@ The `version:` line in this file is synced from `scripts/VERSION` on install/upd
 
 ## Agent Behavior Rules (Important)
 
+- For bulk enrichment (CSV, spreadsheet export, Apollo/Clay dump): use **`import-profiles`**, not repeated `add-lead`.
 - Always run `pull` first before showing pipeline data, history, stats, or campaigns.
 - After any pull, explicitly report the exact number of new records imported.
 - When the user asks about version, read the frontmatter of SKILL.md (version line).
@@ -82,6 +83,7 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --id 1
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --email j@acme.com
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py stats
 python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py campaigns
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles --file leads.csv
 ```
 
 ### Campaign breakdown
@@ -94,6 +96,32 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py campaigns --jso
 ```
 
 `stats` also includes a campaign section. Use `campaigns` when the user only wants counts by campaign name.
+
+### PlusVibe webhooks (status + sentiment)
+
+Point PlusVibe webhooks at your relay URL (`…/plusvibe/{token}`). Subscribe separately to:
+
+- **Reply events:** `ALL_EMAIL_REPLIES` (and optional `FIRST_EMAIL_REPLIES`, `ALL_POSITIVE_REPLIES`)
+- **Label/status events:** `LEAD_MARKED_AS_INTERESTED`, `LEAD_MARKED_AS_NOT_INTERESTED`, `LEAD_MARKED_AS_OUT_OF_OFFICE`, plus any custom `LEAD_MARKED_AS_*` labels
+
+Hermes stores each webhook as an event. **Interested / not interested / sentiment come from label webhooks**, not from reply webhooks alone. OOO is classified as **auto-reply** (metadata flag, query with `--auto-reply true`). Bounces set event sentiment `invalid` but **do not** auto-move the lead to stage `lost` (use `--sentiment invalid` to find them).
+
+After `pull`, filter the pipeline by **current** status (latest status-bearing event per lead):
+
+```bash
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show --sentiment positive
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show --sentiment invalid
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show --auto-reply true
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py show --lead-status interested --json
+```
+
+Then open full timeline for any lead (all events, not just the status event):
+
+```bash
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --id 1
+```
+
+Web API: `/api/leads?sentiment=positive&auto_reply=true`
 
 ## Core Workflow
 
@@ -119,7 +147,47 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py add-lead \
   --channel email --stage prospecting
 ```
 
-If lead exists by email, returns `{"status": "exists", "id": N}`.
+If lead exists by email or LinkedIn, returns `{"status": "exists", "id": N}` (does not enrich existing rows — use `import-profiles` for that).
+
+### Bulk import / enrich (CSV, JSON, research dumps)
+
+**Use `import-profiles` for spreadsheets, enriched exports, or batched research** — not repeated `add-lead` calls. Match key is **email and/or LinkedIn**. Fills empty fields only (same as relay/PlusVibe); use `--overwrite` to replace existing values.
+
+```bash
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles \
+  --file /path/to/contacts_enriched.csv
+
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles \
+  --file leads.json
+
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles \
+  --json '[{"email":"j@acme.com","name":"Jane","job_title":"VP Marketing","industry":"Martech","headcount":"11-50","company":"Acme"}]'
+
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py import-profiles \
+  --file contacts.csv --dry-run
+```
+
+Column aliases (first non-empty wins): `email` / `lead_email`; `linkedin` / `linkedin_url`; `name` / `full_name`; `title` / `job_title`; `company` / `company_name`; `industry`; `headcount` / `company_size`. At least one of **email** or **linkedin** is required per row.
+
+### Companies and unified lead identity
+
+- **`companies` table** — canonical company name, domain, industry, headcount. Leads link via `company_id` (business email domain or company name on ingest).
+- **Match by email and/or LinkedIn** — a lead can have email only, LinkedIn only, or both. Relay ingest resolves identity from webhook payload + envelope `lead` field.
+- **Merge duplicates** when email and LinkedIn history were separate rows:
+  - **Auto:** ingest with both identifiers matching two leads merges them (keeps row with more events).
+  - **Manual:**
+
+```bash
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py merge-leads --keep 12 --merge 34
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py merge-leads \
+  --email j@acme.com --linkedin linkedin.com/in/janedoe
+```
+
+```bash
+python3 ~/.hermes/skills/sales/outreachmagic/scripts/pipeline.py history --linkedin linkedin.com/in/janedoe
+```
+
+After `pull`, use **`campaigns`** for per-campaign event and lead counts (unchanged).
 
 ### Log every outreach send
 
@@ -183,3 +251,4 @@ python3 ~/.hermes/skills/sales/outreachmagic/scripts/server.py
 4. Connect requires a token — sign up at outreachmagic.io
 5. **Version:** run `pipeline.py version` — do not guess from SKILL.md frontmatter alone.
 6. Relay archive stays on wbhk.org; `pull` dedupes locally. Use `pull --full` after deleting the local DB.
+7. **`add-lead` on an existing email does not enrich** — use `import-profiles` or rely on relay `pull` for fill-if-empty updates.

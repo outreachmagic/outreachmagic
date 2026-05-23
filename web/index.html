@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Outreach Magic — Pipeline visibility for Hermes</title>
+<style>
+  :root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #c9d1d9; --text-dim: #8b949e; --green: #3fb950; --blue: #58a6ff; --purple: #a371f7; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+  .container { max-width: 720px; margin: 0 auto; padding: 60px 24px; }
+  nav { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  nav .logo { font-weight: 700; font-size: 1.1rem; } nav .logo span { color: var(--purple); }
+  nav a { color: var(--text-dim); text-decoration: none; font-size: 0.85rem; margin-left: 16px; } nav a:hover { color: var(--text); }
+  .hero { text-align: center; padding: 60px 0 40px; }
+  .hero h1 { font-size: 2.2rem; font-weight: 700; margin-bottom: 12px; } .hero h1 span { color: var(--purple); }
+  .hero p { font-size: 1.1rem; color: var(--text-dim); max-width: 540px; margin: 0 auto 32px; }
+  .cmd-block { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; margin-bottom: 16px; text-align: left; font-family: 'SF Mono', monospace; font-size: 0.9rem; overflow-x: auto; }
+  .cmd-block .prompt { color: var(--text-dim); } .cmd-block .cmd { color: var(--text); } .cmd-block .comment { color: var(--text-dim); }
+  .btn { display: inline-block; background: var(--purple); color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 1rem; } .btn:hover { opacity: 0.9; }
+  .btn-outline { display: inline-block; background: transparent; color: var(--purple); border: 1px solid var(--purple); padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 1rem; margin-left: 12px; } .btn-outline:hover { background: var(--purple); color: white; }
+  .pipe-demo { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin: 32px 0; font-family: 'SF Mono', monospace; font-size: 0.8rem; overflow-x: auto; white-space: pre; line-height: 1.8; }
+  .section-title { font-size: 1.3rem; font-weight: 600; margin: 48px 0 20px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .steps { counter-reset: step; }
+  .step { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px 20px 56px; margin-bottom: 12px; position: relative; }
+  .step::before { counter-increment: step; content: counter(step); position: absolute; left: 16px; top: 18px; width: 28px; height: 28px; border-radius: 50%; background: var(--purple); color: white; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 700; }
+  .step h4 { font-size: 1rem; margin-bottom: 4px; } .step p { font-size: 0.85rem; color: var(--text-dim); }
+  .pricing { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 24px 0; }
+  .plan { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px; text-align: center; }
+  .plan.featured { border-color: var(--purple); }
+  .plan h3 { font-size: 1.1rem; margin-bottom: 4px; }
+  .plan .price { font-size: 2rem; font-weight: 700; margin: 12px 0 4px; }
+  .plan .price span { font-size: 0.9rem; color: var(--text-dim); font-weight: 400; }
+  .plan .desc { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 16px; }
+  .plan ul { list-style: none; text-align: left; font-size: 0.85rem; margin-bottom: 20px; }
+  .plan ul li { padding: 4px 0; } .plan ul li::before { content: "✓ "; color: var(--green); }
+  .platforms { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+  .platform-badge { background: var(--surface); border: 1px solid var(--border); padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; color: var(--text-dim); }
+  footer { text-align: center; padding: 40px 0; color: var(--text-dim); font-size: 0.8rem; border-top: 1px solid var(--border); margin-top: 60px; } footer a { color: var(--blue); }
+  @media (max-width: 640px) { .hero h1 { font-size: 1.6rem; } .pricing { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<nav><div class="logo">Outreach <span>Magic</span></div><div><a href="https://github.com/outreachmagic/outreach-magic-skill">GitHub</a><a href="https://outreachmagic.io">Platform</a></div></nav>
+<div class="container">
+<div class="hero">
+<h1>Pipeline visibility for your <span>Hermes</span> agent</h1>
+<p>Your Hermes agent does the outreach. We show you what's working. One SQLite file. No setup. Your pipeline, visible.</p>
+<a href="https://github.com/outreachmagic/outreach-magic-skill" class="btn">Get Started — Free</a>
+<a href="https://outreachmagic.io" class="btn-outline">Sign Up</a>
+</div>
+<div class="cmd-block">
+<span class="prompt">$</span> <span class="cmd">hermes skills install outreach-magic</span><br><br>
+<span class="prompt">$</span> <span class="cmd">hermes -s outreach-magic</span><br>
+<span class="comment"># Your agent now auto-logs every outreach action</span>
+</div>
+<div class="pipe-demo">
+<span style="color:var(--text-dim)">Lead</span>                    <span style="color:var(--text-dim)">Company</span>    <span style="color:var(--text-dim)">Stage</span>        <span style="color:var(--text-dim)">Last</span>      <span style="color:var(--text-dim)">Next Action</span>
+<span style="color:var(--text-dim)">──────────────────────────────────────────────────────────</span>
+<span style="color:var(--green)">Sarah Chen</span>              <span style="color:var(--green)">Stripe</span>     <span style="color:var(--green)">replied</span>      <span style="color:var(--green)">just now</span>  <span style="color:var(--green)">Send case study</span>
+Marcus Rivera           Notion     contacted    just now
+Emily Park              Vercel     contacted    1d ago
+David Kim               Linear     prospecting
+
+Pipeline: <span style="color:var(--blue)">4 active</span> | <span style="color:var(--green)">0 won</span> | <span style="color:var(--text-dim)">0 lost</span> | 4 total leads
+</div>
+
+<div class="section-title">Free vs Paid</div>
+
+<div class="pricing">
+<div class="plan">
+  <h3>Free</h3>
+  <div class="price">$0</div>
+  <div class="desc">Forever</div>
+  <ul>
+    <li>Unlimited Hermes-originated tracking</li>
+    <li>CLI pipeline view</li>
+    <li>Web dashboard (localhost:3100)</li>
+    <li>Pipeline stages + auto-advancement</li>
+    <li>100 relay events/month</li>
+  </ul>
+  <a href="https://github.com/outreachmagic/outreach-magic-skill" class="btn">Install</a>
+</div>
+<div class="plan featured">
+  <h3>Pro</h3>
+  <div class="price">$19<span>/mo</span></div>
+  <div class="desc">Everything in Free +</div>
+  <ul>
+    <li>Unlimited relay events</li>
+    <li>Smartlead, Heyreach, Instantly sync</li>
+    <li>Multi-platform pipeline</li>
+    <li>Email + LinkedIn unified timeline</li>
+    <li>Priority support</li>
+  </ul>
+  <a href="https://outreachmagic.io" class="btn">Sign Up</a>
+</div>
+</div>
+
+<div class="section-title">How It Works</div>
+<div class="steps">
+<div class="step"><h4>Install the skill</h4><p>One command. Lives inside Hermes. No cloud, no API keys, no setup.</p></div>
+<div class="step"><h4>Agent auto-logs everything</h4><p>Every email, reply, LinkedIn connection — tracked automatically. Pipeline stages update as a side effect.</p></div>
+<div class="step"><h4>Connect your sequencers (optional)</h4><p>Upgrade to Pro. Paste webhook URLs into Smartlead, Heyreach, Instantly. See everything in one pipeline.</p></div>
+<div class="step"><h4>See what's working</h4><p>Run pipeline.py show. Or open the web dashboard. Same data, zero infrastructure.</p></div>
+</div>
+
+<div class="section-title">Connects To</div>
+<div class="platforms">
+<span class="platform-badge">Smartlead</span><span class="platform-badge">HeyReach</span><span class="platform-badge">Instantly</span><span class="platform-badge">PlusVibe</span><span class="platform-badge">EmailBison</span><span class="platform-badge">Prosp</span><span class="platform-badge">Clay</span><span class="platform-badge">+ Hermes outreach</span>
+</div>
+
+</div>
+<footer>Outreach Magic · <a href="https://github.com/outreachmagic/outreach-magic-skill">Open source</a> · <a href="https://outreachmagic.io">Platform</a></footer>
+</body>
+</html>

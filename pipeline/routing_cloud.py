@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
-DEFAULT_API_BASE = "https://wbhkoutreachmagic.io"
+DEFAULT_API_BASE = "https://wbhkapp-sandbox-503953663932.us-east4.run.app"
 CONFIG_API_BASE_KEY = "api_base_url"
 CONFIG_ROUTING_VERSION_KEY = "routing_config_version"
 

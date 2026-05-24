@@ -18,6 +18,7 @@ if [[ -d ".git" ]]; then
   cp pipeline/pipeline.py "$SKILL_DIR/scripts/pipeline.py"
   cp pipeline/relay_extractors.py "$SKILL_DIR/scripts/relay_extractors.py"
   cp pipeline/workspace_routing.py "$SKILL_DIR/scripts/workspace_routing.py"
+  cp pipeline/routing_cloud.py "$SKILL_DIR/scripts/routing_cloud.py"
   cp pipeline/VERSION "$SKILL_DIR/scripts/VERSION" 2>/dev/null || true
   cp pipeline/server.py "$SKILL_DIR/scripts/server.py" 2>/dev/null || true
   cp skill/SKILL.md "$SKILL_DIR/SKILL.md" 2>/dev/null || cp SKILL.md "$SKILL_DIR/SKILL.md" 2>/dev/null || true
@@ -27,6 +28,7 @@ else
   curl -fsSL "$base/pipeline.py" -o "$SKILL_DIR/scripts/pipeline.py"
   curl -fsSL "$base/relay_extractors.py" -o "$SKILL_DIR/scripts/relay_extractors.py"
   curl -fsSL "$base/workspace_routing.py" -o "$SKILL_DIR/scripts/workspace_routing.py"
+  curl -fsSL "$base/routing_cloud.py" -o "$SKILL_DIR/scripts/routing_cloud.py"
   curl -fsSL "$base/VERSION" -o "$SKILL_DIR/scripts/VERSION"
   curl -fsSL "$REPO_RAW/pipeline/server.py" -o "$SKILL_DIR/scripts/server.py" 2>/dev/null || true
   curl -fsSL "$REPO_RAW/skill/SKILL.md" -o "$SKILL_DIR/SKILL.md" 2>/dev/null || true

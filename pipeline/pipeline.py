@@ -3414,6 +3414,11 @@ def connect(token: str):
     cfg["token"] = token
     save_config(cfg)
 
+    api_base = routing_cloud.get_api_base(load_config)
+    print(f"Routing API: {api_base}/api/routing-config")
+    print(f"Relay pull:  {RELAY_URL}/pull/{{token}}")
+    print()
+
     try:
         maybe_sync_routing_from_cloud(token)
     except RuntimeError as exc:

@@ -4,8 +4,8 @@ Your Hermes agent does the outreach. We show you what's working.
 
 One SQLite file. No cloud. Your pipeline, visible.
 
-Config lives in one place: `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`.
-Set workspace routing there with `"workspace_routing_mode": "multi"` (or `"single"`).
+Config lives in `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json` (relay token, pull cursor).
+**Pipeline workspace routing** (single vs multi, workspaces, campaign maps) is stored in the wbhk-app cloud when connected; the dashboard and CLI both edit the same config. Set `"api_base_url": "http://localhost:3000"` for local app dev, or `OUTREACHMAGIC_API_URL`.
 
 ## Quick Start
 

@@ -71,6 +71,8 @@ from workspace_routing import (
     upsert_workspace_lead,
 )
 
+import routing_cloud
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Configuration
@@ -101,7 +103,7 @@ DB_PATH = get_db_path()
 CONFIG_PATH = get_config_path()
 
 SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
-UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py", "workspace_routing.py")
+UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py", "workspace_routing.py", "routing_cloud.py")
 DEFAULT_UPDATE_BASE = "https://raw.githubusercontent.com/outreachmagic/hermes-agent/main/pipeline"
 
 
@@ -2476,6 +2478,38 @@ def get_workspace_routing(org_id: str = DEFAULT_ORG_ID) -> dict:
     return out
 
 
+def _apply_cloud_routing_bundle(bundle: dict, org_id: str = DEFAULT_ORG_ID) -> None:
+    conn = get_conn()
+    routing_cloud.apply_routing_bundle_to_sqlite(conn, bundle, org_id=org_id)
+    conn.commit()
+    conn.close()
+    cfg = load_config()
+    cfg["routing_config_version"] = bundle.get("version")
+    cfg["workspace_routing_mode"] = bundle.get("mode")
+    save_config(cfg)
+
+
+def maybe_sync_routing_from_cloud(token: Optional[str] = None, *, quiet: bool = False) -> bool:
+    """Pull routing config from wbhk-app when a relay token is configured."""
+    tok = token or get_token()
+    if not routing_cloud.cloud_routing_enabled(load_config, tok):
+        return False
+    conn = get_conn()
+    try:
+        routing_cloud.sync_routing_from_cloud(
+            conn,
+            api_base=routing_cloud.get_api_base(load_config),
+            token=tok,
+            org_id=DEFAULT_ORG_ID,
+            load_config_fn=load_config,
+            save_config_fn=save_config,
+            quiet=quiet,
+        )
+        return True
+    finally:
+        conn.close()
+
+
 def set_workspace_routing(
     mode: str,
     *,
@@ -2488,6 +2522,23 @@ def set_workspace_routing(
             "status": "error",
             "error": f"mode must be one of: {', '.join(VALID_WORKSPACE_ROUTING_MODES)}",
         }
+    tok = get_token()
+    if routing_cloud.cloud_routing_enabled(load_config, tok):
+        try:
+            bundle = routing_cloud.push_routing_mode(
+                routing_cloud.get_api_base(load_config),
+                tok,
+                mode=mode,
+                default_workspace_slug=workspace_slug,
+            )
+            _apply_cloud_routing_bundle(bundle, org_id)
+            result = get_workspace_routing(org_id)
+            result["status"] = "ok"
+            if mode == WORKSPACE_ROUTING_MULTI:
+                result["notice"] = MULTI_WORKSPACE_HOLD_MESSAGE
+            return result
+        except RuntimeError as exc:
+            return {"status": "error", "error": str(exc)}
     conn = get_conn()
     ensure_organization(conn, org_id)
     ws_id: Optional[str] = None
@@ -2529,6 +2580,22 @@ def set_workspace_routing(
 
 def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAULT_ORG_ID) -> dict:
     slug = slug or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "workspace"
+    tok = get_token()
+    if routing_cloud.cloud_routing_enabled(load_config, tok):
+        try:
+            bundle = routing_cloud.push_workspace_create(
+                routing_cloud.get_api_base(load_config),
+                tok,
+                name=name,
+                slug=slug,
+            )
+            _apply_cloud_routing_bundle(bundle, org_id)
+            created = next((w for w in bundle.get("workspaces") or [] if w.get("slug") == slug), None)
+            if created:
+                return {"status": "created", "id": created["id"], "name": created["name"], "slug": created["slug"]}
+            return {"status": "created", "name": name, "slug": slug}
+        except RuntimeError as exc:
+            return {"status": "error", "error": str(exc)}
     ws_id = f"ws_{slug}"
     conn = get_conn()
     ensure_organization(conn, org_id)
@@ -2569,6 +2636,26 @@ def add_campaign_map_cli(
     match_strategy: Optional[str] = None,
     priority: int = 100,
 ) -> dict:
+    if not campaign_id and not campaign_name:
+        return {"status": "error", "error": "provide --campaign-id or --campaign-name"}
+    strategy = match_strategy or ("id_exact" if campaign_id else "name_exact")
+    tok = get_token()
+    if routing_cloud.cloud_routing_enabled(load_config, tok):
+        try:
+            bundle = routing_cloud.push_campaign_map(
+                routing_cloud.get_api_base(load_config),
+                tok,
+                source_platform=platform,
+                workspace_slug=workspace_slug,
+                campaign_id=campaign_id,
+                campaign_name=campaign_name,
+                match_strategy=strategy,
+                priority=priority,
+            )
+            _apply_cloud_routing_bundle(bundle, DEFAULT_ORG_ID)
+            return {"status": "created", "workspace_slug": workspace_slug, "match_strategy": strategy}
+        except RuntimeError as exc:
+            return {"status": "error", "error": str(exc)}
     conn = get_conn()
     ws = conn.execute(
         "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
@@ -2577,10 +2664,6 @@ def add_campaign_map_cli(
     if not ws:
         conn.close()
         return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
-    if not campaign_id and not campaign_name:
-        conn.close()
-        return {"status": "error", "error": "provide --campaign-id or --campaign-name"}
-    strategy = match_strategy or ("id_exact" if campaign_id else "name_exact")
     map_id = assign_campaign_map(
         conn,
         DEFAULT_ORG_ID,
@@ -3013,6 +3096,7 @@ def sync_from_relay(
     quiet: bool = False,
 ) -> tuple[int, int]:
     """Import relay events locally. Relay keeps all rows; we skip already-ingested keys."""
+    maybe_sync_routing_from_cloud(token, quiet=quiet)
     imported = skipped = 0
     after_id = 0
     page_since = None if full else since
@@ -3315,6 +3399,11 @@ def connect(token: str):
     cfg = load_config()
     cfg["token"] = token
     save_config(cfg)
+
+    try:
+        maybe_sync_routing_from_cloud(token)
+    except RuntimeError as exc:
+        print(f"Warning: could not sync routing config from app ({exc}). Using local routing.")
 
     result = pull_events(token)
     if result.get("error"):

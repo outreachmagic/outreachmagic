@@ -6,7 +6,7 @@ One SQLite file. No MongoDB. No BigQuery. Just your leads, visible.
 
 Architecture:
   ~/.hermes/skills/outreachmagic/databases/outreachmagic.db  — Local SQLite database
-  wbhk.org/{platform}/{key}      — Cloudflare Worker relay (optional)
+  api.outreachmagic.io           — Cloudflare Worker relay (optional)
   pipeline.py                    — CLI: show, pull, connect, log-event...
 
 Usage:
@@ -98,7 +98,7 @@ def get_db_path() -> Path:
 def get_config_path() -> Path:
     return get_config_home() / "outreachmagic_config.json"
 
-RELAY_URL = "https://wbhk.org"
+RELAY_URL = "https://api.outreachmagic.io"
 DB_PATH = get_db_path()
 CONFIG_PATH = get_config_path()
 
@@ -2896,7 +2896,7 @@ def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int =
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Relay Integration (wbhk.org)
+# Relay Integration (api.outreachmagic.io)
 # ──────────────────────────────────────────────────────────────────────
 
 PLUSVIBE_PLATFORMS = frozenset({"plusvibe"})
@@ -3793,7 +3793,7 @@ def main():
     log_p.add_argument("--subject"); log_p.add_argument("--body")
 
     # ── Relay commands ──
-    connect_p = sub.add_parser("connect", help="Connect to wbhk.org relay")
+    connect_p = sub.add_parser("connect", help="Connect to OutreachMagic webhook relay")
     connect_p.add_argument("--key", required=True, help="Your Outreach Magic token")
 
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")

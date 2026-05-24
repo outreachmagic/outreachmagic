@@ -261,5 +261,5 @@ python3 ~/.hermes/skills/outreachmagic/scripts/server.py
 3. Not updating stage after reply
 4. Connect requires a token — sign up at outreachmagic.io
 5. **Version:** run `pipeline.py version` — do not guess from SKILL.md frontmatter alone.
-6. Relay archive stays on wbhk.org; `pull` dedupes locally. Use `pull --full` after deleting the local DB.
+6. Relay archive stays on api.outreachmagic.io; `pull` dedupes locally. Use `pull --full` after deleting the local DB.
 7. **`add-lead` on an existing email does not enrich** — use `import-profiles` or rely on relay `pull` for fill-if-empty updates.

@@ -1,0 +1,64 @@
+name: Skill CI
+
+on:
+  pull_request:
+    paths:
+      - "skills/**"
+      - "scripts/**"
+      - ".github/workflows/skill-scan.yml"
+      - "SECURITY.md"
+      - "LICENSE"
+  push:
+    branches: [main]
+
+concurrency:
+  group: skill-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run workspace routing tests
+        run: bash scripts/run-tests.sh
+
+  manifest:
+    name: Update manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify update-manifest.json is current
+        run: |
+          python3 scripts/generate-update-manifest.py
+          git diff --exit-code skills/outreachmagic/update-manifest.json
+
+  skill-scan:
+    name: SkillScan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: HermesHub SkillScan (strict)
+        run: bash scripts/skill-scan.sh --strict

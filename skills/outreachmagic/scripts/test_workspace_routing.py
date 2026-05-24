@@ -9,7 +9,6 @@ from pathlib import Path
 # Use isolated DB
 _tmp = tempfile.mkdtemp()
 os.environ["HERMES_HOME"] = _tmp
-os.environ["OUTREACHMAGIC_SKIP_AUTO_UPDATE"] = "1"
 
 import pipeline as om  # noqa: E402
 from relay_extractors import extract_relay_fields  # noqa: E402
@@ -83,7 +82,11 @@ def test_prosp_camelcase_campaign_fields_are_extracted():
 
 def test_single_mode_routes_all_to_default():
     om.init_db()
-    om.set_workspace_routing(WORKSPACE_ROUTING_SINGLE, workspace_slug="default")
+    # Org defaults to multi; use config sync (set_workspace_routing blocks multi → single).
+    cfg = om.load_config()
+    cfg["workspace_routing_mode"] = WORKSPACE_ROUTING_SINGLE
+    om.save_config(cfg)
+    om.sync_workspace_routing_mode_from_config()
     om.add_campaign_map_cli("smartlead", "default", campaign_id="c1", campaign_name="Alpha")
     event = {
         "platform": "smartlead",

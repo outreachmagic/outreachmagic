@@ -1,14 +1,26 @@
 ---
 name: outreachmagic
-description: "Use when sending outreach (email, LinkedIn, WhatsApp), researching prospects, showing the pipeline, or connecting sequencer webhooks (paid). Auto-logs actions to local SQLite."
-version: 1.3.2
+description: >
+  The outreach data layer for AI agents. Syncs events, replies, and lead
+  attributes from Smartlead, Instantly, Heyreach, PlusVibe, and EmailBison
+  into a local SQLite database your agent can query directly. Use for pipeline
+  views, client briefings, deliverability diagnostics, campaign breakdowns,
+  segment performance, and reply copy insights. Webhook payloads pass through
+  api.outreachmagic.io; your data lives in a local SQLite file on your machine.
+  Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
+version: 1.4.5
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
 metadata:
   hermes:
-    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks]
+    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm]
     related_skills: []
+    external_domains:
+      - domain: api.outreachmagic.io
+        purpose: Relay webhooks and authenticated event pull (payloads imported to local SQLite)
+      - domain: dev.outreachmagic.io
+        purpose: Portal API for tokens, billing, and workspace routing config sync
 ---
 
 # Outreach Magic — Pipeline Visibility for Hermes
@@ -30,7 +42,25 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
 
 The `version:` line in this file is synced from `scripts/VERSION` on install/update. If unsure, use the command above.
 
-**Auto-update:** On each command (at most once per hour), the CLI checks GitHub for a newer `VERSION` and downloads it automatically. Users on Hermes get updates when you push to `main` without running `install.sh` manually. Disable: `"auto_update": false` in the single config file above.
+**Updates are user-triggered.** The CLI may print an update notice (at most once per hour) when a newer GitHub **release** exists. It never downloads or replaces scripts automatically. Install updates with:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
+# or
+hermes skills update
+```
+
+Check without installing: `pipeline.py update --check`. Install a specific release: `pipeline.py update --tag v1.4.5`.
+
+## Install
+
+```bash
+hermes skills install outreachmagic/hermes-agent/skills/outreachmagic
+hermes -s outreachmagic
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
+```
+
+Local dev sync: `bash scripts/sync-local.sh` from a clone. See `docs/install.md`.
 
 ## When to Use
 
@@ -253,6 +283,14 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 python3 ~/.hermes/skills/outreachmagic/scripts/server.py
 # http://localhost:3100
 ```
+
+## Privacy & Security
+
+- **Local-first data.** Pipeline leads, events, and campaign stats live in `~/.hermes/skills/outreachmagic/databases/outreachmagic.db` on your machine.
+- **Relay pass-through.** Webhooks hit `api.outreachmagic.io`; the CLI imports them locally via `pull`. We store tokens and usage on our side, not a searchable cloud copy of your outreach archive.
+- **Portal API.** `dev.outreachmagic.io` (production: app.outreachmagic.io) handles tokens, billing, and optional workspace routing sync when connected.
+- **Credentials.** Store relay tokens in `config/outreachmagic_config.json` only. Never hardcode tokens in SKILL.md or commit them to git.
+- **Read before connect.** See repo root [SECURITY.md](https://github.com/outreachmagic/hermes-agent/blob/main/SECURITY.md) for full data boundaries and vulnerability reporting.
 
 ## Common Pitfalls
 

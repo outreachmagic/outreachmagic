@@ -23,7 +23,8 @@ Usage:
   pipeline.py history --name "Jane"         # Look up by name (partial)
   pipeline.py stats                         # Quick stats
   pipeline.py campaigns                   # Counts by campaign name
-  pipeline.py update                        # Refresh skill scripts from GitHub
+  pipeline.py update                        # Install latest release (user-triggered)
+  pipeline.py update --check                # Check for newer release without installing
 """
 
 import sqlite3
@@ -104,7 +105,10 @@ CONFIG_PATH = get_config_path()
 
 SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
 UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py", "workspace_routing.py", "routing_cloud.py")
-DEFAULT_UPDATE_BASE = "https://raw.githubusercontent.com/outreachmagic/hermes-agent/main/pipeline"
+UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
+SKILL_REPO_PATH = "skills/outreachmagic"
+GITHUB_REPO = "outreachmagic/hermes-agent"
+GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 
 def _read_version_file(path: Path) -> str:
@@ -130,13 +134,23 @@ def skill_scripts_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def update_base_url() -> str:
-    cfg = load_config() if CONFIG_PATH.exists() else {}
-    return (
-        os.environ.get("OUTREACHMAGIC_UPDATE_URL")
-        or cfg.get("update_url")
-        or DEFAULT_UPDATE_BASE
-    ).rstrip("/")
+def normalize_release_tag(tag: str) -> str:
+    tag = tag.strip()
+    if tag and not tag.startswith(("v", "V")):
+        return f"v{tag}"
+    return tag
+
+
+def release_tag_version(tag: str) -> str:
+    return normalize_release_tag(tag).lstrip("vV")
+
+
+def raw_repo_base_for_tag(tag: str) -> str:
+    return f"https://raw.githubusercontent.com/{GITHUB_REPO}/{normalize_release_tag(tag)}"
+
+
+def scripts_base_for_tag(tag: str) -> str:
+    return f"{raw_repo_base_for_tag(tag)}/{SKILL_REPO_PATH}/scripts"
 
 
 def _fetch_url(url: str, timeout: int = 30) -> bytes:
@@ -145,21 +159,51 @@ def _fetch_url(url: str, timeout: int = 30) -> bytes:
         return resp.read()
 
 
-def fetch_remote_version() -> Optional[str]:
+def fetch_latest_release() -> Optional[dict]:
+    """Return latest GitHub release metadata or None if unavailable."""
     try:
-        return _fetch_url(f"{update_base_url()}/VERSION").decode().strip()
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        req = urllib.request.Request(
+            GITHUB_RELEASES_LATEST,
+            headers={
+                "User-Agent": f"OutreachMagic/{__version__}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError, ValueError):
         return None
+
+    tag = str(data.get("tag_name") or "").strip()
+    if not tag:
+        return None
+    return {
+        "tag": normalize_release_tag(tag),
+        "version": release_tag_version(tag),
+        "base": scripts_base_for_tag(tag),
+    }
+
+
+def dev_update_base_url() -> Optional[str]:
+    """Dev-only override. Not read from user config (supply-chain hardening)."""
+    url = os.environ.get("OUTREACHMAGIC_UPDATE_URL")
+    return url.rstrip("/") if url else None
+
+
+def fetch_remote_version() -> Optional[str]:
+    """Latest published release version, or None if no release is available."""
+    release = fetch_latest_release()
+    if release:
+        return release["version"]
+    if dev_update_base_url():
+        try:
+            return _fetch_url(f"{dev_update_base_url()}/VERSION").decode().strip()
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+            return None
+    return None
 
 
 UPDATE_CHECK_INTERVAL = int(os.environ.get("OUTREACHMAGIC_UPDATE_INTERVAL", "3600"))
-
-
-def auto_update_enabled() -> bool:
-    if os.environ.get("OUTREACHMAGIC_SKIP_AUTO_UPDATE"):
-        return False
-    cfg = load_config() if CONFIG_PATH.exists() else {}
-    return cfg.get("auto_update", True) is not False
 
 
 def update_check_due() -> bool:
@@ -183,35 +227,33 @@ def record_update_check():
     save_config(cfg)
 
 
-def maybe_auto_update(quiet: bool = False) -> bool:
-    """Download newer scripts from GitHub if available. Returns True if files were updated."""
-    if not auto_update_enabled() or not update_check_due():
-        return False
-
-    remote = fetch_remote_version()
+def notify_update_available(quiet: bool = False) -> None:
+    """Check-only: inform the user when a newer release exists (never downloads)."""
+    if not update_check_due():
+        return
     record_update_check()
+    remote = fetch_remote_version()
     if not remote or parse_version(remote) <= parse_version(__version__):
-        return False
-
-    old = __version__
-    try:
-        result = update_skill()
-        if not quiet:
-            print(f"outreachmagic: auto-updated {old} → {result['version']}")
-        return True
-    except Exception as e:
-        if not quiet:
-            print(f"outreachmagic: auto-update failed ({e}), using {old}")
-        return False
+        return
+    if quiet:
+        return
+    print(
+        f"outreachmagic: update available {__version__} → {remote} "
+        "(run: pipeline.py update  or  hermes skills update)",
+        file=sys.stderr,
+    )
 
 
 def check_skill_update(quiet: bool = False) -> bool:
-    """Return True if installed scripts match or exceed remote VERSION."""
+    """Return True if installed scripts match or exceed the latest release."""
     remote = fetch_remote_version()
     if not remote or parse_version(remote) <= parse_version(__version__):
         return True
     if not quiet:
-        print(f"Update available: {__version__} → {remote} (auto-update runs on next command)")
+        print(
+            f"Update available: {__version__} → {remote} "
+            "(run: pipeline.py update  or  hermes skills update)"
+        )
     return False
 
 
@@ -226,35 +268,101 @@ def sync_skill_md_version():
         skill_md.write_text(re.sub(r"^version: .*", f"version: {ver}", text, count=1, flags=re.M))
 
 
-def update_skill() -> dict:
-    """Copy or download latest pipeline scripts into this skill install, then migrate DB."""
-    dest = skill_scripts_dir()
-    dev_repo = os.environ.get("OUTREACHMAGIC_DEV_REPO")
-    updated: list[str] = []
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
+
+def fetch_update_manifest(repo_base: str) -> Optional[dict]:
+    url = f"{repo_base.rstrip('/')}/{SKILL_REPO_PATH}/update-manifest.json"
+    try:
+        payload = json.loads(_fetch_url(url).decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def resolve_update_source(explicit_tag: Optional[str] = None) -> tuple[Optional[Path], str, str, str]:
+    """
+    Resolve where to download skill files from.
+    Returns (local_scripts_dir or None, scripts_base_url, repo_base_url, label).
+    """
+    dev_repo = os.environ.get("OUTREACHMAGIC_DEV_REPO")
     if dev_repo:
-        src = Path(dev_repo) / "pipeline"
+        src = Path(dev_repo) / SKILL_REPO_PATH / "scripts"
         if not src.is_dir():
-            raise FileNotFoundError(f"OUTREACHMAGIC_DEV_REPO has no pipeline/: {src}")
-        for name in (*UPDATE_SCRIPT_FILES, "VERSION"):
-            shutil.copy2(src / name, dest / name)
+            raise FileNotFoundError(
+                f"OUTREACHMAGIC_DEV_REPO has no {SKILL_REPO_PATH}/scripts/: {src}"
+            )
+        return src, "", str(Path(dev_repo)), "local clone"
+
+    dev_base = dev_update_base_url()
+    if dev_base:
+        repo_base = dev_base.rsplit(f"/{SKILL_REPO_PATH}/scripts", 1)[0]
+        return None, dev_base, repo_base, "OUTREACHMAGIC_UPDATE_URL"
+
+    tag = explicit_tag or os.environ.get("OUTREACHMAGIC_UPDATE_TAG")
+    if tag:
+        norm = normalize_release_tag(tag)
+        return None, scripts_base_for_tag(norm), raw_repo_base_for_tag(norm), norm
+
+    release = fetch_latest_release()
+    if not release:
+        raise RuntimeError(
+            "No GitHub release found. Publish a release tag (e.g. v1.4.5), use "
+            "pipeline.py update --tag v1.4.5, or set OUTREACHMAGIC_DEV_REPO for local development."
+        )
+    repo_base = release["base"].rsplit(f"/{SKILL_REPO_PATH}/scripts", 1)[0]
+    return None, release["base"], repo_base, release["tag"]
+
+
+def update_skill(explicit_tag: Optional[str] = None) -> dict:
+    """Download or copy a tagged release into this skill install, then migrate DB."""
+    dest = skill_scripts_dir()
+    local_src, scripts_base, repo_base, source_label = resolve_update_source(explicit_tag)
+    updated: list[str] = []
+    manifest = None if local_src else fetch_update_manifest(repo_base)
+
+    if local_src:
+        for name in UPDATE_MANIFEST_FILES:
+            shutil.copy2(local_src / name, dest / name)
             updated.append(name)
     else:
-        base = update_base_url()
-        repo_base = base.rsplit("/pipeline", 1)[0]
-        for name in (*UPDATE_SCRIPT_FILES, "VERSION"):
-            (dest / name).write_bytes(_fetch_url(f"{base}/{name}"))
+        for name in UPDATE_MANIFEST_FILES:
+            content = _fetch_url(f"{scripts_base}/{name}")
+            expected = (manifest or {}).get("files", {}).get(name)
+            if expected and _sha256_hex(content) != expected:
+                raise RuntimeError(
+                    f"Checksum mismatch for {name} from {source_label}. "
+                    "Refusing to install. Try again or report at security@outreachmagic.io."
+                )
+            (dest / name).write_bytes(content)
             updated.append(name)
         try:
-            (dest.parent / "SKILL.md").write_bytes(_fetch_url(f"{repo_base}/skill/SKILL.md"))
+            skill_md_url = f"{repo_base.rstrip('/')}/{SKILL_REPO_PATH}/SKILL.md"
+            skill_content = _fetch_url(skill_md_url)
+            expected_md = (manifest or {}).get("files", {}).get("SKILL.md")
+            if expected_md and _sha256_hex(skill_content) != expected_md:
+                raise RuntimeError("Checksum mismatch for SKILL.md. Refusing to install.")
+            (dest.parent / "SKILL.md").write_bytes(skill_content)
             updated.append("SKILL.md")
         except (urllib.error.URLError, urllib.error.HTTPError, OSError):
             pass
 
     init_db()
     sync_skill_md_version()
+    cfg = load_config()
+    cfg["auto_update"] = False
+    cfg["installed_from_tag"] = source_label
+    cfg.pop("update_url", None)
+    save_config(cfg)
     new_version = _read_version_file(dest / "VERSION")
-    return {"status": "updated", "version": new_version, "files": updated, "path": str(dest)}
+    return {
+        "status": "updated",
+        "version": new_version,
+        "files": updated,
+        "path": str(dest),
+        "source": source_label,
+    }
 
 PIPELINE_STAGES = [
     "prospecting", "contacted", "replied", "interested",
@@ -3723,8 +3831,12 @@ def main():
     sub.add_parser("init", help="Initialize the database")
     sub.add_parser("version", help="Print installed outreachmagic version")
 
-    update_p = sub.add_parser("update", help="Update skill scripts from GitHub (or OUTREACHMAGIC_DEV_REPO)")
+    update_p = sub.add_parser(
+        "update",
+        help="Install skill scripts from the latest GitHub release (user-triggered)",
+    )
     update_p.add_argument("--check", action="store_true", help="Only check for updates, do not install")
+    update_p.add_argument("--tag", help="Install a specific release tag (e.g. v1.4.5)")
 
     show_p = sub.add_parser("show", help="Show pipeline")
     show_p.add_argument("--stage")
@@ -3915,14 +4027,9 @@ def main():
 
     args = parser.parse_args()
 
-    # Auto-update from GitHub (default on, checks at most once per hour). Re-exec so this run uses new code.
-    if (
-        args.command not in (None, "update", "version")
-        and not os.environ.get("OUTREACHMAGIC_REEXEC")
-    ):
-        if maybe_auto_update(quiet=getattr(args, "cron", False)):
-            os.environ["OUTREACHMAGIC_REEXEC"] = "1"
-            os.execv(sys.executable, [sys.executable, *sys.argv])
+    # Check-only update notice (never downloads). At most once per hour.
+    if args.command not in (None, "update", "version"):
+        notify_update_available(quiet=getattr(args, "cron", False))
 
     if args.command == "version":
         print(f"outreachmagic {__version__}")
@@ -3930,15 +4037,13 @@ def main():
 
     if args.command == "update":
         if args.check:
-            remote = fetch_remote_version()
-            if remote and parse_version(remote) > parse_version(__version__):
-                print(f"Update available: {__version__} → {remote}")
+            if not check_skill_update(quiet=False):
                 sys.exit(1)
             print(f"Up to date ({__version__})")
             return
         try:
-            result = update_skill()
-            print(f"Updated to v{result['version']} in {result['path']}")
+            result = update_skill(explicit_tag=args.tag)
+            print(f"Updated to v{result['version']} from {result['source']} in {result['path']}")
             print("Files:", ", ".join(result["files"]))
         except Exception as e:
             print(f"Update failed: {e}")

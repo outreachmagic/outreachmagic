@@ -5,16 +5,19 @@ Your Hermes agent does the outreach. We show you what's working.
 One SQLite file. No cloud. Your pipeline, visible.
 
 Config lives in `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json` (relay token, pull cursor).
-**Pipeline workspace routing** (single vs multi, workspaces, campaign maps) is stored in the wbhk-app cloud when connected; the dashboard and CLI both edit the same config. Default API host is the sandbox portal (`wbhkapp-sandbox-*.run.app`); override with `"api_base_url"` in config, or `OUTREACHMAGIC_API_URL` (e.g. `http://localhost:3000` for local dev).
+**Pipeline workspace routing** (single vs multi, workspaces, campaign maps) is stored in the Outreach Magic portal when connected; the dashboard and CLI both edit the same config. Default portal API is [dev.outreachmagic.io](https://dev.outreachmagic.io); override with `"api_base_url"` in config, or `OUTREACHMAGIC_API_URL` (e.g. `http://localhost:3000` for local dev).
 
 ## Quick Start
 
 ```bash
-hermes skills install outreachmagic
+hermes skills inspect outreachmagic/hermes-agent/skills/outreachmagic
+hermes skills install outreachmagic/hermes-agent/skills/outreachmagic
 hermes -s outreachmagic
-# Your agent now auto-logs every outreach action
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show
 ```
+
+See [docs/install.md](docs/install.md) for Cursor, Claude Code, and local development setup.
 
 ```
 Lead                    Company    Stage        Last      Next Action
@@ -26,24 +29,39 @@ Emily Park              Vercel     contacted    1d ago
 Pipeline: 3 active | 0 won | 0 lost | 3 total leads
 ```
 
+## Repository layout
+
+This repo follows the [agentskills.io](https://agentskills.io) skill layout:
+
+```
+skills/outreachmagic/
+├── SKILL.md           # Agent instructions
+├── scripts/           # pipeline.py CLI and helpers
+└── references/        # Schema and reference docs
+```
+
+Install path for Hermes: `outreachmagic/hermes-agent/skills/outreachmagic`
+
 ## What It Does
 
 - **Auto-logs every outreach action** — emails sent, replies received, LinkedIn messages, calls, meetings booked
 - **Pipeline stages update automatically** — prospecting → contacted → replied → interested → proposal → won/lost
 - **CLI + web dashboard** — terminal pipeline view or dark-themed UI at http://localhost:3100
-- **Zero infrastructure** — one SQLite file in your Hermes container, no cloud, no API keys
+- **Zero infrastructure** — one SQLite file in your Hermes container, no cloud API keys required for free tier
 
 ## Connect Your Sequencers (Paid)
 
 Upgrade to sync Smartlead, Heyreach, Instantly, and more into your pipeline. Free tier includes 100 relay events/month.
 
 ```bash
-pipeline.py connect --key YOUR_TOKEN
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect --key YOUR_TOKEN
 ```
 
 On first connect, Outreach Magic will automatically pull any existing events and show your pipeline.
 
-[Sign up for a token →](https://outreachmagic.io)
+[Sign up for a token →](https://dev.outreachmagic.io)
+
+Relay API: `api.outreachmagic.io` (webhook pass-through; payloads not stored server-side).
 
 ## Commands
 
@@ -82,27 +100,50 @@ pipeline.py copy-insights --lead-status interested
 
 ## Keeping the skill up to date
 
-Hermes runs scripts from `~/.hermes/skills/outreachmagic/scripts/`, not your git clone. After pulling repo changes:
+Updates are **user-triggered** — the CLI never silently replaces scripts. It may print a notice when a newer GitHub release is available.
 
 ```bash
-# From a clone (fastest while developing)
-bash scripts/install.sh
+# Check for updates
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update --check
 
-# Or from the installed skill (after you push to GitHub)
+# Install latest release
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
+
+# Or reinstall from Hermes hub
+hermes skills update
+
+# Local development — sync from clone (no GitHub download)
+bash scripts/sync-local.sh
 ```
 
-`pull` warns when a newer version is on GitHub. Set `OUTREACHMAGIC_DEV_REPO=/path/to/hermes-agent` to update from a local clone instead of GitHub.
+Set `OUTREACHMAGIC_DEV_REPO=/path/to/hermes-agent` to update from a local clone.
 
-Reload the Hermes skill (or start a new session) after updating so instructions refresh; `pipeline.py update` replaces the Python files immediately.
+Each release must be tagged on GitHub (e.g. `v1.4.5`) with `update-manifest.json` generated via:
 
-**Version:** One number everywhere — source of truth is `pipeline/VERSION`. Check installed copy:
+```bash
+python3 scripts/generate-update-manifest.py
+```
+
+Reload the Hermes skill (or start a new session) after updating so instructions refresh.
+
+**Version:** Source of truth is `skills/outreachmagic/scripts/VERSION`. Check installed copy:
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
 ```
 
-Bump `pipeline/VERSION` on each release (e.g. `1.3.1` → `1.3.2`) and push to `main`. Installed skills **auto-update from GitHub** on the next CLI run (checked at most once per hour). `install.sh` is only needed for first install.
+Bump `skills/outreachmagic/scripts/VERSION`, regenerate the manifest, tag `vX.Y.Z`, and push — CI publishes the GitHub Release automatically.
+
+```bash
+python3 scripts/generate-update-manifest.py
+git tag vX.Y.Z && git push origin main --tags
+```
+
+See `.github/workflows/release.yml` and [docs/SKILL_REGISTRY_PLAN.md](docs/SKILL_REGISTRY_PLAN.md).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for data boundaries, external domains, and vulnerability reporting.
 
 ## License
 

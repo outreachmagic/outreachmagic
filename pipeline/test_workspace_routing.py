@@ -250,6 +250,33 @@ def test_replay_pending_quarantine_applies_prefix_rules():
     assert event_count >= 1
 
 
+def test_replay_pending_quarantine_applies_contains_rules():
+    om.init_db()
+    om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
+    om.create_workspace("Acme", slug="acme")
+    event = {
+        "platform": "smartlead",
+        "event_type": "email_sent",
+        "lead": "contains@test.com",
+        "received_at": "2026-05-23T00:00:00Z",
+        "relay_id": 303,
+        "raw": {"campaign_name": "Q2 Acme outbound", "to_email": "contains@test.com"},
+    }
+    assert om.ingest_relay_event(event, quiet=True) is None
+
+    om.add_campaign_map_cli(
+        "smartlead",
+        "acme",
+        campaign_name="acme",
+        match_strategy="rule_contains",
+    )
+    result = om.replay_pending_quarantine(limit=100)
+    assert result["replayed"] >= 1
+
+    pending_after = om.list_quarantine()
+    assert not any((row.get("campaign_name_raw") or "") == "Q2 Acme outbound" for row in pending_after)
+
+
 def test_replay_pending_quarantine_applies_unknown_name_mapping():
     om.init_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)

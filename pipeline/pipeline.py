@@ -2541,6 +2541,20 @@ def set_workspace_routing(
             return {"status": "error", "error": str(exc)}
     conn = get_conn()
     ensure_organization(conn, org_id)
+    current = conn.execute(
+        "SELECT workspace_routing_mode FROM organizations WHERE id = ?",
+        (org_id,),
+    ).fetchone()
+    if (
+        current
+        and current["workspace_routing_mode"] == WORKSPACE_ROUTING_MULTI
+        and mode == WORKSPACE_ROUTING_SINGLE
+    ):
+        conn.close()
+        return {
+            "status": "error",
+            "error": "Cannot switch back to single-workspace mode after multi-workspace is enabled.",
+        }
     ws_id: Optional[str] = None
     if mode == WORKSPACE_ROUTING_SINGLE:
         ws_id = ensure_default_org_workspace(conn)
@@ -3876,7 +3890,10 @@ def main():
     cmap_add.add_argument("--workspace", required=True, help="Workspace slug")
     cmap_add.add_argument("--campaign-id")
     cmap_add.add_argument("--campaign-name")
-    cmap_add.add_argument("--match-strategy", choices=("id_exact", "name_exact", "rule_prefix", "rule_regex"))
+    cmap_add.add_argument(
+        "--match-strategy",
+        choices=("id_exact", "name_exact", "rule_contains", "rule_prefix", "rule_regex"),
+    )
     cmap_add.add_argument("--priority", type=int, default=100)
 
     q_p = sub.add_parser("quarantine", help="Unmapped campaign queue")

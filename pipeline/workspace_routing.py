@@ -3,7 +3,7 @@ Org-wide leads + workspace-scoped status/events + campaign routing.
 
 Campaign routing priority:
   platform + campaign_id exact > platform + campaign_name exact >
-  rule_prefix / rule_regex > quarantine
+  rule_contains / rule_prefix / rule_regex > quarantine
 
 Identity resolution (additive aliases):
   unified_id > email > linkedin_url > phone > provider_id
@@ -249,7 +249,9 @@ def format_unmapped_campaign_message(ctx: CampaignContext) -> str:
         f"--workspace WORKSPACE_SLUG --campaign-id ID",
         f"     pipeline.py campaign-map add --platform {platform} "
         f"--workspace WORKSPACE_SLUG --campaign-name \"{label}\"",
-        "   Or use a prefix/regex rule:",
+        "   Or use a contains/prefix/regex rule:",
+        f"     pipeline.py campaign-map add --platform {platform} "
+        f"--workspace WORKSPACE_SLUG --match-strategy rule_contains --campaign-name \"substring\"",
         f"     pipeline.py campaign-map add --platform {platform} "
         f"--workspace WORKSPACE_SLUG --match-strategy rule_prefix --campaign-name \"prefix\"",
         "3. Or assign one quarantined event manually:",
@@ -309,12 +311,18 @@ def resolve_workspace(
             """SELECT id, workspace_id, match_strategy, campaign_name_normalized
                FROM campaign_workspace_map
                WHERE org_id = ? AND source_platform = ? AND is_active = 1
-                 AND match_strategy IN ('rule_prefix', 'rule_regex')
+                 AND match_strategy IN ('rule_contains', 'rule_prefix', 'rule_regex')
                ORDER BY priority ASC""",
             (org_id, platform),
         ).fetchall()
         for rule in rules:
             pattern = rule["campaign_name_normalized"] or ""
+            if rule["match_strategy"] == "rule_contains" and pattern in name_for_rules:
+                return RoutingResult(
+                    workspace_id=rule["workspace_id"],
+                    match_strategy=rule["match_strategy"],
+                    map_id=rule["id"],
+                )
             if rule["match_strategy"] == "rule_prefix" and name_for_rules.startswith(pattern):
                 return RoutingResult(
                     workspace_id=rule["workspace_id"],

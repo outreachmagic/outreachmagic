@@ -3593,25 +3593,18 @@ def setup(agent_key: Optional[str] = None):
     api_base = routing_cloud.get_api_base(load_config)
     signup_url = f"{api_base}/setup/agent"
 
-    print("=" * 60)
-    print("  Outreach Magic — Agent Setup")
-    print("=" * 60)
-    print()
-
     if not agent_key:
-        print("To connect your agent to Outreach Magic you need an Agent Key.")
-        print("This gives your agent access to all webhooks and events across")
-        print("your entire organization.\n")
-        print("Steps:")
-        print("  1. Sign up or log in at Outreach Magic")
-        print("  2. Create an Agent Key in the dashboard")
-        print("  3. Paste the key below\n")
+        print()
+        print("  1. Go to: " + signup_url)
+        print("  2. Sign up (or log in) and click 'Create Agent Key'")
+        print("  3. Paste the key below")
+        print()
 
         try:
             webbrowser.open(signup_url)
-            print(f"Opening browser → {signup_url}")
+            print(f"(Opening {signup_url} in your browser)")
         except Exception:
-            print(f"Open this URL in your browser:\n  {signup_url}")
+            pass
 
         print()
         agent_key = input("Paste your Agent Key (om_agent_...): ").strip()
@@ -3629,7 +3622,7 @@ def setup(agent_key: Optional[str] = None):
     cfg["agent_key"] = agent_key
     save_config(cfg)
 
-    print("\nValidating agent key...")
+    print("\nValidating key...")
     result = pull_events_org(agent_key)
     if result.get("error"):
         status = result.get("status", "")
@@ -3644,42 +3637,29 @@ def setup(agent_key: Optional[str] = None):
     else:
         count = result.get("count", 0)
         org_id = result.get("organization_id", "")
-        print(f"Connected! Organization: {org_id}")
-        print(f"Found {count} buffered events across all platforms.")
+        print(f"Connected to org {org_id} — {count} events available.")
 
-    print()
     try:
-        maybe_sync_routing_from_cloud(agent_key, quiet=False)
-    except RuntimeError as exc:
-        print(f"Warning: could not sync routing config ({exc}).")
+        maybe_sync_routing_from_cloud(agent_key, quiet=True)
+    except RuntimeError:
+        pass
 
     count = result.get("count", 0) if not result.get("error") else 0
     if count > 0:
-        print("\nImporting events from relay...")
+        print("Importing events...")
         try:
             imported, skipped = sync_from_relay_org(agent_key, since=get_last_pull(), full=not get_last_pull())
-            print(f"Imported {imported} new, {skipped} already on disk.\n")
+            print(f"Imported {imported} new, {skipped} already on disk.")
         except RuntimeError as e:
-            print(f"Import failed: {e}\n")
+            print(f"Import failed: {e}")
+        print()
         leads = get_pipeline()
         print(format_pipeline_table(leads))
         print()
         print(format_stats(get_stats()))
-    else:
-        print("No events yet. Create webhook tokens in the dashboard, connect your")
-        print("platforms, then run 'pipeline.py pull' to sync events.")
 
     print()
-    print("Setup complete! Your agent now has org-wide access.")
-    print()
-    print("Next steps:")
-    print("  pipeline.py pull        — sync new events from all platforms")
-    print("  pipeline.py show        — view your lead pipeline")
-    print("  pipeline.py webhook-url — show webhook URLs (requires legacy token)")
-    print()
-    print("Tip: Add a cron job to auto-pull every 15 minutes:")
-    print("  hermes cron create --name 'outreach-pull' --schedule '*/15 * * * *' \\")
-    print("    --command 'cd ~/.hermes/skills/outreachmagic/scripts && python3 pipeline.py pull --cron'")
+    print("Setup complete. Run 'pull' to sync events, 'show' to view pipeline.")
 
 
 def connect(token: str):

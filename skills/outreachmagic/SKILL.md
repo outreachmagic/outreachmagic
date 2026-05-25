@@ -33,6 +33,46 @@ Config (single source of truth): `~/.hermes/skills/outreachmagic/config/outreach
 
 Optional config keys: `data_root` (e.g. `~/.claude` for Claude Code), `api_base_url`, `dev_repo` for local development.
 
+## First-Time Setup (IMPORTANT — read this first)
+
+On startup, **always check if the agent is already connected** by running:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
+```
+
+Then check whether an agent key exists in the config:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
+```
+
+If `pull` returns an error like "No agent key or token configured", the user needs to set up.
+
+**When setup is needed, tell the user exactly this:**
+
+> To get started, you need an Agent Key. Two steps:
+>
+> 1. Go to **https://dev.outreachmagic.io/setup/agent** — sign up (or log in) and click "Create Agent Key"
+> 2. Copy the key and paste it back here
+>
+> I'll handle the rest.
+
+Then wait for the user to paste a key (starts with `om_agent_`). Once they do, run:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup --key <PASTED_KEY>
+```
+
+That's it. Don't list other commands, don't offer alternatives. Just: go get a key, paste it, done.
+
+**When setup is already done** (pull succeeds or returns events), skip setup and go straight to showing data:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show
+```
+
 ## Version
 
 **One version for the whole skill.** To see what is installed, always run:
@@ -250,6 +290,14 @@ Stages: `prospecting` -> `contacted` -> `replied` -> `interested` -> `proposal` 
 
 ### Connect sequencers (paid)
 
+If the user already has a key, skip the browser flow:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_THEIR_KEY
+```
+
+Legacy per-platform token (not agent key):
+
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect --key YOUR_TOKEN
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
@@ -298,7 +346,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/server.py
 1. **Always pull before show when checking "latest activity."**
 2. Forgetting add-lead before log-event
 3. Not updating stage after reply
-4. Connect requires a token — sign up at outreachmagic.io
+4. Setup requires an Agent Key — get one at https://dev.outreachmagic.io/setup/agent
 5. **Version:** run `pipeline.py version` — do not guess from SKILL.md frontmatter alone.
 6. Relay archive stays on api.outreachmagic.io; `pull` dedupes locally. Use `pull --full` after deleting the local DB.
 7. **`add-lead` on an existing email does not enrich** — use `import-profiles` or rely on relay `pull` for fill-if-empty updates.

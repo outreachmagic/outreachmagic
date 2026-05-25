@@ -1,36 +1,40 @@
 # Install Outreach Magic
 
-## Hermes Agent (recommended)
-
-Install from GitHub (Hermes downloads the skill into `~/.hermes/skills/outreachmagic/`):
+## New Hermes setup (3 commands)
 
 ```bash
-hermes skills inspect outreachmagic/outreachmagic-skill/skills/outreachmagic
-hermes skills install outreachmagic/outreachmagic-skill/skills/outreachmagic
+hermes skills install outreachmagic/hermes-agent/skills/outreachmagic
 hermes -s outreachmagic
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup
 ```
 
-If the security scan flags env-var usage in `pipeline.py`, retry with `--force` after you have reviewed [SECURITY.md](../SECURITY.md):
+`setup` initializes the database, opens your browser to create an account (or log in),
+and connects your agent with org-wide access. You're done.
+
+If the security scan blocks install, review [SECURITY.md](../SECURITY.md) then retry with `--force`:
 
 ```bash
-hermes skills install outreachmagic/outreachmagic-skill/skills/outreachmagic --force
+hermes skills install outreachmagic/hermes-agent/skills/outreachmagic --force
 ```
 
-### Troubleshooting `hermes skills install`
+## Already have a token?
 
-| Error | Fix |
-|-------|-----|
-| **GitHub API rate limit** | Authenticate: `gh auth login` **or** add `GITHUB_TOKEN=ghp_...` to `~/.hermes/.env`, then retry install |
-| Security scan blocked (env / exfiltration warnings) | Push latest `outreachmagic-skill` (no `os.environ` in scripts); retry install. Use `--force` only if still blocked on an old commit. |
-| **Skill folder missing after install** | Install did not complete — use [local sync](#local-install-no-github-api) below |
+Skip the browser flow and pass it directly:
 
-Hermes hub installs need GitHub API access (60 req/hr unauthenticated, 5000/hr with a token).
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_YOUR_KEY
+```
+
+Or connect a legacy per-platform token:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect --key YOUR_TOKEN
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
+```
 
 ## Local install (no GitHub API)
 
-Use this on a new machine, when rate-limited, or while developing from a clone. **No `hermes skills install` required.**
+Use this when rate-limited or developing from a local clone:
 
 ```bash
 git clone https://github.com/outreachmagic/outreachmagic-skill.git
@@ -39,70 +43,34 @@ bash scripts/sync-local.sh
 hermes -s outreachmagic
 ```
 
-If you already have the repo locally (e.g. `~/Developer/hermes-agent`):
+If you already have the repo cloned, just run `bash scripts/sync-local.sh` from the repo root.
 
-```bash
-cd ~/Developer/hermes-agent   # or your clone path
-bash scripts/sync-local.sh
-hermes -s outreachmagic
-```
-
-`sync-local.sh` copies `skills/outreachmagic/` → `~/.hermes/skills/outreachmagic/` and runs `pipeline.py init`.
-
-Verify:
-
-```bash
-ls ~/.hermes/skills/outreachmagic/
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
-```
-
-## Cursor / Claude Code / Codex CLI
+## Cursor / Claude Code
 
 Copy `skills/outreachmagic/` into your agent's skills folder:
 
-- **Cursor:** `~/.cursor/skills/outreachmagic/` or `.cursor/skills/outreachmagic/`
+- **Cursor:** `~/.cursor/skills/outreachmagic/`
 - **Claude Code:** `~/.claude/skills/outreachmagic/`
 
-Set `HERMES_HOME=~/.claude` if you want the database next to the skill instead of under `~/.hermes`:
-
-Or set in config after first `init`:
-
-```json
-{ "data_root": "/Users/you/.claude" }
-```
+Then init and set up:
 
 ```bash
-export HERMES_HOME=~/.claude
-python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py init
-```
-
-## Connect to Outreach Magic (recommended)
-
-Run `setup` to create an account, get an org-wide agent key, and sync all platforms:
-
-```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup
-```
-
-This opens your browser to sign up (or log in), guides you to create an Agent Key,
-and connects your agent with access to all webhooks and events across your organization.
-
-### Legacy per-token connection
-
-If you have a per-platform webhook token instead:
-
-```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect --key YOUR_TOKEN
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py init
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py setup
 ```
 
 ## Updates
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update --check
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 ```
 
-Or reinstall from hub after `gh auth login` / `GITHUB_TOKEN` is set: `hermes skills update`
+Check without installing: `pipeline.py update --check`.
 
-See [SECURITY.md](../SECURITY.md) and [SKILL_REGISTRY_PLAN.md](./SKILL_REGISTRY_PLAN.md).
+## Troubleshooting
+
+| Error | Fix |
+|-------|-----|
+| GitHub API rate limit | Run `gh auth login` or set `GITHUB_TOKEN=ghp_...` in `~/.hermes/.env` |
+| Security scan blocked | Use `--force` after reviewing [SECURITY.md](../SECURITY.md) |
+| Skill folder missing after install | Use the [local install](#local-install-no-github-api) path instead |

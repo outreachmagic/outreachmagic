@@ -1,5 +1,6 @@
 """
-Skill install paths. Default data root ~/.hermes; optional data_root in config.
+Skill install paths. Infers data root from script location; falls back to ~/.hermes.
+Optional data_root override in config.
 """
 
 from __future__ import annotations
@@ -9,7 +10,23 @@ from pathlib import Path
 from typing import Optional
 
 SKILL_NAME = "outreachmagic"
-DEFAULT_DATA_ROOT = Path.home() / ".hermes"
+
+
+def _infer_data_root() -> Path:
+    """Derive data root from where this script actually lives on disk.
+    ~/.hermes/skills/outreachmagic/scripts/om_paths.py -> ~/.hermes
+    ~/.cursor/skills/outreachmagic/scripts/om_paths.py -> ~/.cursor
+    ~/.claude/skills/outreachmagic/scripts/om_paths.py -> ~/.claude
+    """
+    scripts_dir = Path(__file__).resolve().parent
+    skill_dir = scripts_dir.parent
+    skills_dir = skill_dir.parent
+    if skills_dir.name == "skills" and skill_dir.name == SKILL_NAME:
+        return skills_dir.parent
+    return Path.home() / ".hermes"
+
+
+DEFAULT_DATA_ROOT = _infer_data_root()
 
 _DATA_ROOT_OVERRIDE: Optional[Path] = None
 

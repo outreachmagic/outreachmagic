@@ -1,0 +1,40 @@
+---
+description: Outreach pipeline tracking and lead management. Use when the user asks about pipeline, leads, outreach, campaigns, sequencer data, deliverability, or says show pipeline.
+globs:
+alwaysApply: false
+---
+
+# OutreachMagic — Pipeline Tracking
+
+All pipeline commands use: `python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py`
+
+## Mandatory: always pull before showing data
+
+```bash
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py pull
+```
+
+## Commands
+
+| Command | What it does |
+|---------|-------------|
+| `pull` | Fetch latest events from relay (always run first) |
+| `show` | Print pipeline table |
+| `stats` | Quick stats summary |
+| `campaigns` | Counts by campaign name |
+| `history --id N` | Full timeline for a lead |
+| `history --email j@acme.com` | Look up by email |
+| `add-lead --name "Jane" --email j@acme.com --company "Acme"` | Add a lead |
+| `import-profiles --file leads.csv` | Bulk import from CSV/JSON |
+| `log-event --lead-id 1 --type email_sent --direction outbound` | Log outreach event |
+| `update-stage --id 1 --stage replied` | Update pipeline stage |
+| `copy-insights --lead-status interested` | Message copy analysis |
+
+## Rules
+
+- NEVER use `python3 -c`, `sqlite3`, or raw SQL directly on the database
+- Always run `pull` before showing any pipeline data
+- Use `import-profiles` for bulk enrichment, not repeated `add-lead`
+- Stages: prospecting -> contacted -> replied -> interested -> proposal -> won | lost
+
+For full reference: read `~/.cursor/skills/outreachmagic/references/schema.md`

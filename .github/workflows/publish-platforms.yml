@@ -1,0 +1,88 @@
+name: Publish Platform Repos
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: publish-platforms-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: hermes-skill
+            org: outreachmagic
+            skill_md: platforms/hermes/SKILL.md
+            readme: platforms/hermes/README.md
+            extras: ""
+            github_repo_value: outreachmagic/hermes-skill
+          - platform: cursor-skill
+            org: outreachmagic
+            skill_md: platforms/cursor/SKILL.md
+            readme: platforms/cursor/README.md
+            extras: "platforms/cursor/outreachmagic.mdc"
+            github_repo_value: outreachmagic/cursor-skill
+          - platform: claude-code-skill
+            org: outreachmagic
+            skill_md: ""
+            readme: platforms/claude-code/README.md
+            extras: "platforms/claude-code/CLAUDE_SNIPPET.md"
+            github_repo_value: outreachmagic/claude-code-skill
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assemble platform repo
+        run: |
+          mkdir -p staging/scripts staging/references
+
+          # Copy shared scripts and references
+          cp skills/outreachmagic/scripts/*.py staging/scripts/
+          cp skills/outreachmagic/scripts/VERSION staging/scripts/
+          cp -r skills/outreachmagic/references/* staging/references/
+          cp skills/outreachmagic/update-manifest.json staging/ 2>/dev/null || true
+
+          # Copy platform-specific SKILL.md (if applicable)
+          if [ -n "${{ matrix.skill_md }}" ]; then
+            cp "${{ matrix.skill_md }}" staging/SKILL.md
+          fi
+
+          # Copy README
+          cp "${{ matrix.readme }}" staging/README.md
+
+          # Copy extras (mdc file, CLAUDE_SNIPPET, etc.)
+          if [ -n "${{ matrix.extras }}" ]; then
+            for f in ${{ matrix.extras }}; do
+              cp "$f" staging/
+            done
+          fi
+
+          # Copy root-level files
+          cp LICENSE staging/
+          cp SECURITY.md staging/
+
+          # Rewrite GITHUB_REPO in pipeline.py for platform-specific updates
+          sed -i 's|GITHUB_REPO = "outreachmagic/outreachmagic-skill"|GITHUB_REPO = "${{ matrix.github_repo_value }}"|' staging/scripts/pipeline.py
+          sed -i 's|GITHUB_REPO = "outreachmagic/hermes-agent"|GITHUB_REPO = "${{ matrix.github_repo_value }}"|' staging/scripts/pipeline.py
+
+      - name: Push to platform repo
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          cd staging
+          git init
+          git config user.name "OutreachMagic Bot"
+          git config user.email "bot@outreachmagic.io"
+          git add -A
+          git commit -m "Release ${{ github.ref_name }}"
+          git tag "${{ github.ref_name }}"
+          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/${{ matrix.org }}/${{ matrix.platform }}.git"
+          git push origin main --force
+          git push origin "${{ github.ref_name }}" --force

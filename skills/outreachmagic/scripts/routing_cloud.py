@@ -83,6 +83,26 @@ def apply_routing_bundle_to_sqlite(
     for ws in bundle.get("workspaces") or []:
         ws_id = ws["id"]
         cloud_workspace_ids.append(ws_id)
+
+        # A locally-generated workspace (e.g. id="ws_default") may already exist
+        # with the same (org_id, slug) but a different id. Migrate child-table
+        # references first (foreign_keys=ON means the parent update must come last).
+        row = conn.execute(
+            "SELECT id FROM workspaces WHERE org_id = ? AND slug = ? AND id != ?",
+            (org_id, ws["slug"], ws_id),
+        ).fetchone()
+        if row:
+            old_id = row[0]
+            for child_table in ("workspace_leads", "campaign_workspace_map"):
+                conn.execute(
+                    f"UPDATE {child_table} SET workspace_id = ? WHERE workspace_id = ?",
+                    (ws_id, old_id),
+                )
+            conn.execute(
+                "UPDATE workspaces SET id = ? WHERE id = ?",
+                (ws_id, old_id),
+            )
+
         conn.execute(
             """INSERT INTO workspaces (id, org_id, name, slug, created_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))

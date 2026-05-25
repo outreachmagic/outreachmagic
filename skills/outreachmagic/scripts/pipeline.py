@@ -79,35 +79,16 @@ import routing_cloud
 # Configuration
 # ──────────────────────────────────────────────────────────────────────
 
+from om_paths import get_config_path, get_db_path, get_skill_home
+
 SKILL_NAME = "outreachmagic"
-
-def get_hermes_home() -> Path:
-    return Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
-
-def get_skill_home() -> Path:
-    return get_hermes_home() / "skills" / SKILL_NAME
-
-def get_databases_home() -> Path:
-    return get_skill_home() / "databases"
-
-def get_config_home() -> Path:
-    return get_skill_home() / "config"
-
-def get_db_path() -> Path:
-    return get_databases_home() / "outreachmagic.db"
-
-def get_config_path() -> Path:
-    return get_config_home() / "outreachmagic_config.json"
-
 RELAY_URL = "https://api.outreachmagic.io"
-DB_PATH = get_db_path()
-CONFIG_PATH = get_config_path()
 
 SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
-UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py", "workspace_routing.py", "routing_cloud.py")
+UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py", "workspace_routing.py", "routing_cloud.py", "om_paths.py")
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
 SKILL_REPO_PATH = "skills/outreachmagic"
-GITHUB_REPO = "outreachmagic/hermes-agent"
+GITHUB_REPO = "outreachmagic/outreachmagic-skill"
 GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 
@@ -185,8 +166,9 @@ def fetch_latest_release() -> Optional[dict]:
 
 
 def dev_update_base_url() -> Optional[str]:
-    """Dev-only override. Not read from user config (supply-chain hardening)."""
-    url = os.environ.get("OUTREACHMAGIC_UPDATE_URL")
+    """Dev-only override via config key dev_update_url (not env)."""
+    cfg = load_config() if get_config_path().exists() else {}
+    url = (cfg.get("dev_update_url") or "").strip()
     return url.rstrip("/") if url else None
 
 
@@ -203,11 +185,20 @@ def fetch_remote_version() -> Optional[str]:
     return None
 
 
-UPDATE_CHECK_INTERVAL = int(os.environ.get("OUTREACHMAGIC_UPDATE_INTERVAL", "3600"))
+UPDATE_CHECK_INTERVAL_DEFAULT = 3600
+
+
+def get_update_check_interval() -> int:
+    cfg = load_config() if get_config_path().exists() else {}
+    raw = cfg.get("update_check_interval_seconds", UPDATE_CHECK_INTERVAL_DEFAULT)
+    try:
+        return max(60, int(raw))
+    except (TypeError, ValueError):
+        return UPDATE_CHECK_INTERVAL_DEFAULT
 
 
 def update_check_due() -> bool:
-    cfg = load_config() if CONFIG_PATH.exists() else {}
+    cfg = load_config() if get_config_path().exists() else {}
     last = cfg.get("update_checked_at")
     if not last:
         return True
@@ -216,7 +207,7 @@ def update_check_due() -> bool:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         age = (datetime.now(timezone.utc) - dt).total_seconds()
-        return age >= UPDATE_CHECK_INTERVAL
+        return age >= get_update_check_interval()
     except (ValueError, TypeError):
         return True
 
@@ -286,30 +277,29 @@ def resolve_update_source(explicit_tag: Optional[str] = None) -> tuple[Optional[
     Resolve where to download skill files from.
     Returns (local_scripts_dir or None, scripts_base_url, repo_base_url, label).
     """
-    dev_repo = os.environ.get("OUTREACHMAGIC_DEV_REPO")
+    dev_repo = (load_config().get("dev_repo") or "").strip() if get_config_path().exists() else ""
     if dev_repo:
         src = Path(dev_repo) / SKILL_REPO_PATH / "scripts"
         if not src.is_dir():
             raise FileNotFoundError(
-                f"OUTREACHMAGIC_DEV_REPO has no {SKILL_REPO_PATH}/scripts/: {src}"
+                f"dev_repo in config has no {SKILL_REPO_PATH}/scripts/: {src}"
             )
         return src, "", str(Path(dev_repo)), "local clone"
 
     dev_base = dev_update_base_url()
     if dev_base:
         repo_base = dev_base.rsplit(f"/{SKILL_REPO_PATH}/scripts", 1)[0]
-        return None, dev_base, repo_base, "OUTREACHMAGIC_UPDATE_URL"
+        return None, dev_base, repo_base, "dev_update_url"
 
-    tag = explicit_tag or os.environ.get("OUTREACHMAGIC_UPDATE_TAG")
-    if tag:
-        norm = normalize_release_tag(tag)
+    if explicit_tag:
+        norm = normalize_release_tag(explicit_tag)
         return None, scripts_base_for_tag(norm), raw_repo_base_for_tag(norm), norm
 
     release = fetch_latest_release()
     if not release:
         raise RuntimeError(
             "No GitHub release found. Publish a release tag (e.g. v1.4.5), use "
-            "pipeline.py update --tag v1.4.5, or set OUTREACHMAGIC_DEV_REPO for local development."
+            "pipeline.py update --tag v1.4.5, or set dev_repo in config for local development."
         )
     repo_base = release["base"].rsplit(f"/{SKILL_REPO_PATH}/scripts", 1)[0]
     return None, release["base"], repo_base, release["tag"]
@@ -370,8 +360,8 @@ PIPELINE_STAGES = [
 ]
 
 STAGE_EMOJI = {
-    "prospecting": "\u25cb", "contacted": "\u25cf", "replied": "\u2194",
-    "interested": "\u2605", "proposal": "\u25a0", "won": "\u2714", "lost": "\u2716",
+    "prospecting": "○", "contacted": "●", "replied": "↔",
+    "interested": "★", "proposal": "■", "won": "✔", "lost": "✖",
 }
 
 ATTRIBUTE_INSIGHT_FIELDS = ("title", "industry", "headcount")
@@ -407,8 +397,8 @@ def _load_json_dict(path: Path) -> dict:
 
 
 def load_config() -> dict:
-    if CONFIG_PATH.exists():
-        return _load_json_dict(CONFIG_PATH)
+    if get_config_path().exists():
+        return _load_json_dict(get_config_path())
     return {}
 
 def _chmod_best_effort(path: Path, mode: int):
@@ -418,10 +408,11 @@ def _chmod_best_effort(path: Path, mode: int):
         pass
 
 def save_config(cfg: dict):
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _chmod_best_effort(CONFIG_PATH.parent, 0o700)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
-    _chmod_best_effort(CONFIG_PATH, 0o600)
+    path = get_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_best_effort(path.parent, 0o700)
+    path.write_text(json.dumps(cfg, indent=2))
+    _chmod_best_effort(path, 0o600)
 
 def get_token() -> Optional[str]:
     return load_config().get("token")
@@ -703,21 +694,22 @@ CREATE TABLE IF NOT EXISTS lead_merge_jobs (
 # ──────────────────────────────────────────────────────────────────────
 
 def get_conn():
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(get_db_path()))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _chmod_best_effort(DB_PATH.parent, 0o700)
+    db = get_db_path()
+    db.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_best_effort(db.parent, 0o700)
     conn = get_conn()
     conn.executescript(SCHEMA_SQL)
     migrate_db(conn)
     conn.close()
-    if DB_PATH.exists():
-        _chmod_best_effort(DB_PATH, 0o600)
+    if db.exists():
+        _chmod_best_effort(db, 0o600)
     return True
 
 
@@ -1462,7 +1454,7 @@ def resolve_lead(
 
 
 def db_exists():
-    return DB_PATH.exists()
+    return get_db_path().exists()
 
 def add_lead(name, company=None, title=None, industry=None, headcount=None,
              email=None, linkedin_url=None,
@@ -4052,7 +4044,7 @@ def main():
 
     if args.command == "init":
         init_db()
-        print(f"Database initialized: {DB_PATH}")
+        print(f"Database initialized: {get_db_path()}")
         return
 
     if not db_exists():

@@ -49,9 +49,9 @@ We do **not** use our servers as the long-term store for webhook payload content
 | `api.github.com` | Latest release lookup for update checks | None | Public releases API only |
 | `raw.githubusercontent.com` | Tagged release downloads (`pipeline.py update`) | None | Only on explicit user-triggered update |
 
-Override portal URL for local development: `OUTREACHMAGIC_API_URL` or `"api_base_url"` in config.
+Override portal API: `"api_base_url"` in config (default `https://dev.outreachmagic.io`).
 
-Relay URL is fixed in code (`api.outreachmagic.io`). Updates install from GitHub release tags only, unless `OUTREACHMAGIC_DEV_REPO` or `OUTREACHMAGIC_UPDATE_URL` is set for development.
+Relay URL is fixed in code (`api.outreachmagic.io`). Updates install from GitHub release tags; local dev uses `dev_repo` / `dev_update_url` in config.
 
 ## Credentials
 
@@ -71,10 +71,12 @@ hermes skills update
 
 Releases are pinned to GitHub tags (e.g. `v1.4.5`), not the moving `main` branch. When a manifest is published with the release, downloads are verified with SHA256 checksums.
 
-Development overrides (not for end users):
+Development overrides (in `outreachmagic_config.json`, not environment variables):
 
-- `OUTREACHMAGIC_DEV_REPO=/path/to/hermes-agent` — copy from a local clone
-- `OUTREACHMAGIC_UPDATE_URL` — custom raw URL base (dev/testing only; not stored in config)
+- `data_root` — e.g. `~/.claude` for Claude Code (default `~/.hermes`)
+- `dev_repo` — path to a local clone for `pipeline.py update`
+- `dev_update_url` — custom raw URL base for dev/testing only
+- `api_base_url` — portal API host (default `https://dev.outreachmagic.io`)
 
 Install through Hermes when possible — Hermes runs its own security scan on hub installs:
 

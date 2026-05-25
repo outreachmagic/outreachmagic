@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Outreach Magic — Dev sync: copy skills/outreachmagic from this repo into ~/.hermes
 # For local development only. End users should install via:
-#   hermes skills install outreachmagic/hermes-agent/skills/outreachmagic
+#   hermes skills install outreachmagic/outreachmagic-skill/skills/outreachmagic
 
 set -euo pipefail
 

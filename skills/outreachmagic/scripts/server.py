@@ -7,18 +7,18 @@ Just Python stdlib serving the pipeline dashboard at http://localhost:3100.
 
 import http.server
 import json
-import os
 import sys
 import sqlite3
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-DB_PATH = Path(HERMES_HOME) / "skills" / "outreachmagic" / "databases" / "outreachmagic.db"
-
 _PIPELINE_DIR = Path(__file__).resolve().parent
 if str(_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(_PIPELINE_DIR))
+
+from om_paths import get_db_path  # noqa: E402
+
+DB_PATH = get_db_path()
 
 
 def _pipeline_module():

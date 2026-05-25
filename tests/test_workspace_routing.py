@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Lightweight tests for workspace routing (run: python3 test_workspace_routing.py)."""
+"""Lightweight tests for workspace routing."""
 
-import os
-import sqlite3
+import sys
 import tempfile
 from pathlib import Path
 
-# Use isolated DB
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
 _tmp = tempfile.mkdtemp()
-os.environ["HERMES_HOME"] = _tmp
+from om_paths import set_data_root_override  # noqa: E402
+
+set_data_root_override(Path(_tmp))
 
 import pipeline as om  # noqa: E402
 from relay_extractors import extract_relay_fields  # noqa: E402

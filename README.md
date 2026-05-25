@@ -5,7 +5,7 @@ Your Hermes agent does the outreach. We show you what's working.
 One SQLite file. No cloud. Your pipeline, visible.
 
 Config lives in `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json` (relay token, pull cursor).
-**Pipeline workspace routing** (single vs multi, workspaces, campaign maps) is stored in the Outreach Magic portal when connected; the dashboard and CLI both edit the same config. Default portal API is [dev.outreachmagic.io](https://dev.outreachmagic.io); override with `"api_base_url"` in config, or `OUTREACHMAGIC_API_URL` (e.g. `http://localhost:3000` for local dev).
+**Pipeline workspace routing** (single vs multi, workspaces, campaign maps) is stored in the Outreach Magic portal when connected; the dashboard and CLI both edit the same config. Default portal API is [dev.outreachmagic.io](https://dev.outreachmagic.io); override with `"api_base_url"` in config (e.g. `http://localhost:3000` for local dev).
 
 ## Quick Start
 
@@ -116,7 +116,7 @@ hermes skills update
 bash scripts/sync-local.sh
 ```
 
-Set `OUTREACHMAGIC_DEV_REPO=/path/to/hermes-agent` to update from a local clone.
+Set `"dev_repo": "/path/to/outreachmagic-skill"` in config to update from a local clone instead of GitHub.
 
 Each release must be tagged on GitHub (e.g. `v1.4.5`) with `update-manifest.json` generated via:
 

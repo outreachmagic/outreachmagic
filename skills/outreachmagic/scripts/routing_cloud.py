@@ -5,7 +5,6 @@ Sync pipeline workspace routing config with wbhk-app (Neon source of truth).
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import urllib.error
 import urllib.request
@@ -21,11 +20,7 @@ WORKSPACE_ROUTING_MULTI = "multi"
 
 def get_api_base(load_config_fn) -> str:
     cfg = load_config_fn()
-    return (
-        os.environ.get("OUTREACHMAGIC_API_URL")
-        or cfg.get(CONFIG_API_BASE_KEY)
-        or DEFAULT_API_BASE
-    ).rstrip("/")
+    return (cfg.get(CONFIG_API_BASE_KEY) or DEFAULT_API_BASE).rstrip("/")
 
 
 def _request_json(

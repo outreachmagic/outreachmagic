@@ -15,6 +15,8 @@ MANIFEST_FILES = (
     "relay_extractors.py",
     "workspace_routing.py",
     "routing_cloud.py",
+    "om_paths.py",
+    "server.py",
     "VERSION",
     "SKILL.md",
 )

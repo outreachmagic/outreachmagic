@@ -76,9 +76,20 @@ export HERMES_HOME=~/.claude
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py init
 ```
 
-## Connect sequencer relay (optional, paid)
+## Connect to Outreach Magic (recommended)
 
-Get a token at [dev.outreachmagic.io](https://dev.outreachmagic.io).
+Run `setup` to create an account, get an org-wide agent key, and sync all platforms:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup
+```
+
+This opens your browser to sign up (or log in), guides you to create an Agent Key,
+and connects your agent with access to all webhooks and events across your organization.
+
+### Legacy per-token connection
+
+If you have a per-platform webhook token instead:
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect --key YOUR_TOKEN

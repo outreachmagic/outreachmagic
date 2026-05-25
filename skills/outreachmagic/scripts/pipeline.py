@@ -417,6 +417,9 @@ def save_config(cfg: dict):
 def get_token() -> Optional[str]:
     return load_config().get("token")
 
+def get_agent_key() -> Optional[str]:
+    return load_config().get("agent_key")
+
 def get_last_pull() -> Optional[str]:
     return load_config().get("last_pull")
 
@@ -2590,8 +2593,8 @@ def _apply_cloud_routing_bundle(bundle: dict, org_id: str = DEFAULT_ORG_ID) -> N
 
 
 def maybe_sync_routing_from_cloud(token: Optional[str] = None, *, quiet: bool = False) -> bool:
-    """Pull routing config from wbhk-app when a relay token is configured."""
-    tok = token or get_token()
+    """Pull routing config from wbhk-app when an agent key or relay token is configured."""
+    tok = token or get_agent_key() or get_token()
     if not routing_cloud.cloud_routing_enabled(load_config, tok):
         return False
     conn = get_conn()
@@ -3201,6 +3204,35 @@ def pull_events(token: str, since: Optional[str] = None, after_id: Optional[int]
     except urllib.error.URLError as e:
         return {"error": True, "message": str(e.reason)}
 
+
+def pull_events_org(agent_key: str, since: Optional[str] = None, after_id: Optional[int] = None, platform: Optional[str] = None) -> dict:
+    """Pull all org events from relay using an agent key (org-wide access)."""
+    params = []
+    if since:
+        params.append(f"since={urllib.parse.quote(since)}")
+    if after_id:
+        params.append(f"after_id={after_id}")
+    if platform:
+        params.append(f"platform={urllib.parse.quote(platform)}")
+    qs = f"?{'&'.join(params)}" if params else ""
+    url = f"{RELAY_URL}/pull{qs}"
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": f"OutreachMagic/{__version__}",
+            "Authorization": f"Bearer {agent_key}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode() if e.fp else ""
+        return {"error": True, "status": e.code, "message": body}
+    except urllib.error.URLError as e:
+        return {"error": True, "message": str(e.reason)}
+
 def sync_from_relay(
     token: str,
     since: Optional[str] = None,
@@ -3240,6 +3272,52 @@ def sync_from_relay(
 
         if ack and result.get("max_id"):
             ack_events(token, result["max_id"])
+
+        if len(events) < 1000:
+            break
+        after_id = result.get("max_id") or 0
+
+    set_last_pull(datetime.now(timezone.utc).isoformat())
+    if not quiet:
+        print_quarantine_guidance()
+    return imported, skipped
+
+
+def sync_from_relay_org(
+    agent_key: str,
+    since: Optional[str] = None,
+    full: bool = False,
+    debug_sentiment: bool = False,
+    quiet: bool = False,
+) -> tuple[int, int]:
+    """Import relay events for the entire org using an agent key."""
+    maybe_sync_routing_from_cloud(agent_key, quiet=quiet)
+    imported = skipped = 0
+    after_id = 0
+    page_since = None if full else since
+
+    while True:
+        result = pull_events_org(
+            agent_key,
+            since=page_since,
+            after_id=after_id if after_id else None,
+        )
+        if result.get("error"):
+            raise RuntimeError(result.get("message", "pull failed"))
+
+        events = result.get("events") or []
+        if not events:
+            break
+
+        for event in events:
+            if ingest_relay_event(
+                event,
+                debug_sentiment=debug_sentiment,
+                quiet=True,
+            ) is None:
+                skipped += 1
+            else:
+                imported += 1
 
         if len(events) < 1000:
             break
@@ -3506,6 +3584,102 @@ def ingest_relay_event(
 
     mark_relay_ingested(dedupe_key, lead_id)
     return lead_id
+
+
+def setup(agent_key: Optional[str] = None):
+    """Interactive setup: sign up / log in to Outreach Magic and configure the agent key."""
+    import webbrowser
+
+    api_base = routing_cloud.get_api_base(load_config)
+    signup_url = f"{api_base}/setup/agent"
+
+    print("=" * 60)
+    print("  Outreach Magic — Agent Setup")
+    print("=" * 60)
+    print()
+
+    if not agent_key:
+        print("To connect your agent to Outreach Magic you need an Agent Key.")
+        print("This gives your agent access to all webhooks and events across")
+        print("your entire organization.\n")
+        print("Steps:")
+        print("  1. Sign up or log in at Outreach Magic")
+        print("  2. Create an Agent Key in the dashboard")
+        print("  3. Paste the key below\n")
+
+        try:
+            webbrowser.open(signup_url)
+            print(f"Opening browser → {signup_url}")
+        except Exception:
+            print(f"Open this URL in your browser:\n  {signup_url}")
+
+        print()
+        agent_key = input("Paste your Agent Key (om_agent_...): ").strip()
+
+    if not agent_key:
+        print("No key provided. Run 'pipeline.py setup' again when ready.")
+        sys.exit(1)
+
+    if not agent_key.startswith("om_agent_"):
+        print("Invalid key format. Agent keys start with 'om_agent_'.")
+        print("(If you have a webhook token instead, use: pipeline.py connect --key <token>)")
+        sys.exit(1)
+
+    cfg = load_config()
+    cfg["agent_key"] = agent_key
+    save_config(cfg)
+
+    print("\nValidating agent key...")
+    result = pull_events_org(agent_key)
+    if result.get("error"):
+        status = result.get("status", "")
+        message = result.get("message", "")
+        if "401" in str(status) or "Invalid" in message:
+            print(f"Authentication failed: {message}")
+            print("Check your agent key and try again.")
+            cfg.pop("agent_key", None)
+            save_config(cfg)
+            sys.exit(1)
+        print(f"Warning: could not reach relay ({message}). Key saved — will retry on next pull.")
+    else:
+        count = result.get("count", 0)
+        org_id = result.get("organization_id", "")
+        print(f"Connected! Organization: {org_id}")
+        print(f"Found {count} buffered events across all platforms.")
+
+    print()
+    try:
+        maybe_sync_routing_from_cloud(agent_key, quiet=False)
+    except RuntimeError as exc:
+        print(f"Warning: could not sync routing config ({exc}).")
+
+    count = result.get("count", 0) if not result.get("error") else 0
+    if count > 0:
+        print("\nImporting events from relay...")
+        try:
+            imported, skipped = sync_from_relay_org(agent_key, since=get_last_pull(), full=not get_last_pull())
+            print(f"Imported {imported} new, {skipped} already on disk.\n")
+        except RuntimeError as e:
+            print(f"Import failed: {e}\n")
+        leads = get_pipeline()
+        print(format_pipeline_table(leads))
+        print()
+        print(format_stats(get_stats()))
+    else:
+        print("No events yet. Create webhook tokens in the dashboard, connect your")
+        print("platforms, then run 'pipeline.py pull' to sync events.")
+
+    print()
+    print("Setup complete! Your agent now has org-wide access.")
+    print()
+    print("Next steps:")
+    print("  pipeline.py pull        — sync new events from all platforms")
+    print("  pipeline.py show        — view your lead pipeline")
+    print("  pipeline.py webhook-url — show webhook URLs (requires legacy token)")
+    print()
+    print("Tip: Add a cron job to auto-pull every 15 minutes:")
+    print("  hermes cron create --name 'outreach-pull' --schedule '*/15 * * * *' \\")
+    print("    --command 'cd ~/.hermes/skills/outreachmagic/scripts && python3 pipeline.py pull --cron'")
 
 
 def connect(token: str):
@@ -3901,12 +4075,15 @@ def main():
     log_p.add_argument("--direction", default="outbound"); log_p.add_argument("--channel", default="email")
     log_p.add_argument("--subject"); log_p.add_argument("--body")
 
-    # ── Relay commands ──
-    connect_p = sub.add_parser("connect", help="Connect to OutreachMagic webhook relay")
+    # ── Setup & relay commands ──
+    setup_p = sub.add_parser("setup", help="Sign up and connect your agent to Outreach Magic (org-wide access)")
+    setup_p.add_argument("--key", help="Agent key (om_agent_...) — skips browser prompt")
+
+    connect_p = sub.add_parser("connect", help="Connect to OutreachMagic webhook relay (legacy per-token)")
     connect_p.add_argument("--key", required=True, help="Your Outreach Magic token")
 
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
-    pull_p.add_argument("--key", help="Override token")
+    pull_p.add_argument("--key", help="Override token (legacy per-token pull)")
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
     pull_p.add_argument("--full", action="store_true", help="Re-import all relay events (after DB reset)")
     pull_p.add_argument("--ack", action="store_true", help="Mark events pulled on relay (legacy; default keeps archive)")
@@ -4045,6 +4222,8 @@ def main():
     if args.command == "init":
         init_db()
         print(f"Database initialized: {get_db_path()}")
+        print()
+        print("Next: run 'pipeline.py setup' to connect your agent to Outreach Magic.")
         return
 
     if not db_exists():
@@ -4053,6 +4232,10 @@ def main():
 
     migrate_db()
     sync_workspace_routing_mode_from_config()
+
+    if args.command == "setup":
+        setup(agent_key=args.key)
+        return
 
     if args.command == "connect":
         connect(args.key)
@@ -4071,20 +4254,32 @@ def main():
         return
 
     if args.command == "pull":
+        agent_key = get_agent_key()
         tok = args.key or get_token()
-        if not tok:
-            print("Not connected. Run: pipeline.py connect --key YOUR_TOKEN")
+
+        if not agent_key and not tok:
+            print("Not connected. Run: pipeline.py setup  (recommended)")
+            print("  or legacy:    pipeline.py connect --key YOUR_TOKEN")
             sys.exit(1)
 
         try:
-            imported, skipped = sync_from_relay(
-                tok,
-                since=None if args.full else get_last_pull(),
-                full=args.full,
-                ack=args.ack,
-                debug_sentiment=args.debug_sentiment,
-                quiet=args.cron,
-            )
+            if agent_key and not args.key:
+                imported, skipped = sync_from_relay_org(
+                    agent_key,
+                    since=None if args.full else get_last_pull(),
+                    full=args.full,
+                    debug_sentiment=args.debug_sentiment,
+                    quiet=args.cron,
+                )
+            else:
+                imported, skipped = sync_from_relay(
+                    tok,
+                    since=None if args.full else get_last_pull(),
+                    full=args.full,
+                    ack=args.ack,
+                    debug_sentiment=args.debug_sentiment,
+                    quiet=args.cron,
+                )
         except RuntimeError as e:
             if not args.cron:
                 print(f"Pull failed: {e}")

@@ -77,7 +77,7 @@ jobs:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: |
           cd staging
-          git init
+          git init -b main
           git config user.name "OutreachMagic Bot"
           git config user.email "bot@outreachmagic.io"
           git add -A

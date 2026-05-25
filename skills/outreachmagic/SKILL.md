@@ -122,6 +122,7 @@ Local dev sync: `bash scripts/sync-local.sh` from a clone. See `docs/install.md`
 - When the user asks for message content, use the `history` command on the specific lead.
 - For copy-performance analysis (full subject/body on positive leads + winner), use `copy-insights`.
 - For campaign counts, use `pipeline.py campaigns` (or `stats`, which includes a campaign section). Do not write raw SQL.
+- **NEVER use `python3 -c`, `sqlite3` directly, raw SQL, or any inline script to inspect or modify the database.** All database operations must go through `pipeline.py` commands. If a command errors, report the error verbatim and stop — do not attempt to debug by accessing the database directly.
 
 ## MANDATORY: Always Pull First
 

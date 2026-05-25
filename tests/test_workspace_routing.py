@@ -86,7 +86,7 @@ def test_prosp_camelcase_campaign_fields_are_extracted():
 
 def test_single_mode_routes_all_to_default():
     om.init_db()
-    # Org defaults to multi; use config sync (set_workspace_routing blocks multi → single).
+    # Force single mode via config sync (set_workspace_routing blocks multi → single).
     cfg = om.load_config()
     cfg["workspace_routing_mode"] = WORKSPACE_ROUTING_SINGLE
     om.save_config(cfg)

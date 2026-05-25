@@ -562,7 +562,7 @@ CREATE TABLE IF NOT EXISTS relay_ingested (
 CREATE TABLE IF NOT EXISTS organizations (
     id                      TEXT PRIMARY KEY,
     name                    TEXT NOT NULL,
-    workspace_routing_mode  TEXT NOT NULL DEFAULT 'multi',
+    workspace_routing_mode  TEXT NOT NULL DEFAULT 'single',
     default_workspace_id    TEXT,
     created_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -871,7 +871,7 @@ def migrate_db(conn=None):
     backfill_campaigns_from_events(conn)
     backfill_plusvibe_status_metadata(conn)
     for col, col_type in [
-        ("workspace_routing_mode", "TEXT NOT NULL DEFAULT 'multi'"),
+        ("workspace_routing_mode", "TEXT NOT NULL DEFAULT 'single'"),
         ("default_workspace_id", "TEXT"),
     ]:
         try:

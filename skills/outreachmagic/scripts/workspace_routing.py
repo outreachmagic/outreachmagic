@@ -205,7 +205,7 @@ def get_org_routing_config(conn: sqlite3.Connection, org_id: str) -> OrgRoutingC
            FROM organizations WHERE id = ?""",
         (org_id,),
     ).fetchone()
-    mode = WORKSPACE_ROUTING_MULTI
+    mode = WORKSPACE_ROUTING_SINGLE
     ws_id: Optional[str] = None
     if row:
         raw_mode = (row["workspace_routing_mode"] or "").strip().lower()

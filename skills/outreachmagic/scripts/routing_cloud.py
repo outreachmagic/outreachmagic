@@ -65,7 +65,7 @@ def apply_routing_bundle_to_sqlite(
     *,
     org_id: str,
 ) -> None:
-    mode = (bundle.get("mode") or WORKSPACE_ROUTING_MULTI).strip().lower()
+    mode = (bundle.get("mode") or WORKSPACE_ROUTING_SINGLE).strip().lower()
     default_ws_id = bundle.get("defaultWorkspaceId")
     conn.execute(
         """INSERT OR IGNORE INTO organizations (id, name, created_at)

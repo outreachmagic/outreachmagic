@@ -3897,7 +3897,7 @@ def ingest_agent_entry(
                 )
                 conn.commit()
                 conn.close()
-                mark_relay_ingested(dedupe_key, 0)
+                mark_relay_ingested(dedupe_key, None)
                 return None
 
         if action == "lead_create":

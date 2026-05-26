@@ -127,6 +127,8 @@ def apply_routing_bundle_to_sqlite(
 
     cloud_map_ids: list[str] = []
     for item in bundle.get("campaignMaps") or []:
+        if not item.get("campaignId") and not item.get("campaignNameNormalized"):
+            continue
         map_id = item["id"]
         cloud_map_ids.append(map_id)
         conn.execute(

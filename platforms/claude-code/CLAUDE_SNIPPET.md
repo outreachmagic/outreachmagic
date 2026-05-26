@@ -42,6 +42,12 @@ In multi-workspace mode, workspace-scoped commands require `--workspace SLUG`.
 - `show --since today` — Filter by date (YYYY-MM-DD or 'today')
 - `lead-table --workspace popcam --since today --json` — Today's leads for a workspace
 - `workspace list` — List available workspaces
+- `personalize-pending --json` — List leads needing personalization (default: first_name, company_name)
+- `personalize-set --lead-id N --field F --value V` — Write a personalization value
+- `personalize-set --batch --json '[...]'` — Bulk write personalization values
+- `personalize-get --lead-id N --json` — Read personalization for a lead
+- `personalize-status` — Personalization summary counts
+- `cleanup-rules` — Remove invalid campaign mapping rules
 
 ### Rules
 

@@ -714,6 +714,17 @@ CREATE TABLE IF NOT EXISTS lead_merge_jobs (
     audit_json      TEXT DEFAULT '{}',
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS lead_personalization (
+    lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    field_name      TEXT NOT NULL,
+    field_value     TEXT NOT NULL,
+    source_hash     TEXT,
+    processed_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    cloud_pending   INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (lead_id, field_name)
+);
+CREATE INDEX IF NOT EXISTS idx_personalization_pending ON lead_personalization(cloud_pending) WHERE cloud_pending = 1;
 """
 
 
@@ -855,6 +866,16 @@ def migrate_db(conn=None):
             audit_json TEXT DEFAULT '{}',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS lead_personalization (
+            lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+            field_name TEXT NOT NULL,
+            field_value TEXT NOT NULL,
+            source_hash TEXT,
+            processed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            cloud_pending INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (lead_id, field_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_personalization_pending ON lead_personalization(cloud_pending) WHERE cloud_pending = 1;
     """)
     for col, col_type in [
         ("industry", "TEXT"), ("headcount", "TEXT"), ("email_domain", "TEXT"),
@@ -3171,6 +3192,13 @@ def _push_pending_lead_updates(agent_key: str) -> int:
                 payload["tags"] = tags
         except (json.JSONDecodeError, TypeError):
             pass
+        p_rows = conn.execute(
+            "SELECT field_name, field_value, processed_at FROM lead_personalization WHERE lead_id = ?",
+            (row["id"],),
+        ).fetchall()
+        if p_rows:
+            payload["personalization"] = {r["field_name"]: r["field_value"] for r in p_rows}
+            payload["personalization_at"] = max(r["processed_at"] for r in p_rows)
         entry: dict = {
             "action": "lead_update",
             "entity_key": entity_key,
@@ -3211,6 +3239,10 @@ def _push_pending_lead_updates(agent_key: str) -> int:
                     placeholders = ",".join("?" for _ in batch_ids)
                     mark_conn.execute(
                         f"UPDATE leads SET cloud_pending = 0 WHERE id IN ({placeholders})",
+                        batch_ids,
+                    )
+                    mark_conn.execute(
+                        f"UPDATE lead_personalization SET cloud_pending = 0 WHERE lead_id IN ({placeholders})",
                         batch_ids,
                     )
                     mark_conn.commit()
@@ -3436,7 +3468,11 @@ def assign_quarantine_and_replay(queue_id: str, workspace_slug: str) -> dict:
     if not ws:
         conn.close()
         return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
-    result = replay_quarantine_item(conn, queue_id, ws["id"])
+    try:
+        result = replay_quarantine_item(conn, queue_id, ws["id"])
+    except ValueError as e:
+        conn.close()
+        return {"status": "error", "error": str(e)}
     if result.get("status") != "assigned":
         conn.close()
         return result
@@ -3785,6 +3821,13 @@ def export_local_changes(
                 payload["tags"] = tags
         except (json.JSONDecodeError, TypeError):
             pass
+        p_rows = conn.execute(
+            "SELECT field_name, field_value, processed_at FROM lead_personalization WHERE lead_id = ?",
+            (lead_id,),
+        ).fetchall()
+        if p_rows:
+            payload["personalization"] = {r["field_name"]: r["field_value"] for r in p_rows}
+            payload["personalization_at"] = max(r["processed_at"] for r in p_rows)
         entry["payload"] = payload
         entries.append(entry)
 
@@ -3912,6 +3955,22 @@ def ingest_agent_entry(
                 upsert_workspace_lead(conn, org_id, workspace_id, lead_id)
                 conn.commit()
                 conn.close()
+            personalization = payload.get("personalization")
+            if personalization and lead_id:
+                p_at = payload.get("personalization_at", datetime.now(timezone.utc).isoformat())
+                p_conn = get_conn()
+                for fname, fval in personalization.items():
+                    p_conn.execute("""
+                        INSERT INTO lead_personalization (lead_id, field_name, field_value, processed_at, cloud_pending)
+                        VALUES (?, ?, ?, ?, 0)
+                        ON CONFLICT (lead_id, field_name) DO UPDATE SET
+                            field_value = excluded.field_value,
+                            processed_at = excluded.processed_at,
+                            cloud_pending = 0
+                        WHERE excluded.processed_at > lead_personalization.processed_at
+                    """, (lead_id, fname, fval, p_at))
+                p_conn.commit()
+                p_conn.close()
         elif action == "lead_update":
             lead_id = find_lead_by_identifier(conn, entity_key)
             conn.close()
@@ -3938,6 +3997,22 @@ def ingest_agent_entry(
                     )
                     note_conn.commit()
                     note_conn.close()
+                personalization = payload.get("personalization")
+                if personalization and lead_id:
+                    p_at = payload.get("personalization_at", datetime.now(timezone.utc).isoformat())
+                    p_conn = get_conn()
+                    for fname, fval in personalization.items():
+                        p_conn.execute("""
+                            INSERT INTO lead_personalization (lead_id, field_name, field_value, processed_at, cloud_pending)
+                            VALUES (?, ?, ?, ?, 0)
+                            ON CONFLICT (lead_id, field_name) DO UPDATE SET
+                                field_value = excluded.field_value,
+                                processed_at = excluded.processed_at,
+                                cloud_pending = 0
+                            WHERE excluded.processed_at > lead_personalization.processed_at
+                        """, (lead_id, fname, fval, p_at))
+                    p_conn.commit()
+                    p_conn.close()
         # Workspace-scoped actions: skip if no workspace (don't quarantine)
         elif action == "stage_change":
             if not workspace_id:
@@ -5058,6 +5133,160 @@ def format_segment_insights(insights: dict) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Personalization (mail-merge fields)
+# ──────────────────────────────────────────────────────────────────────
+
+_PERSONALIZATION_SOURCE_FIELDS = {
+    "first_name": "name",
+    "company_name": "company",
+}
+
+
+def _personalization_source_hash(lead_id: int, field_name: str) -> Optional[str]:
+    source_col = _PERSONALIZATION_SOURCE_FIELDS.get(field_name)
+    if not source_col:
+        return None
+    conn = get_conn()
+    row = conn.execute(f"SELECT {source_col} FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    conn.close()
+    if not row or not row[source_col]:
+        return None
+    return hashlib.md5(row[source_col].encode()).hexdigest()[:8]
+
+
+def personalize_set(lead_id: int, field_name: str, field_value: str) -> dict:
+    source_hash = _personalization_source_hash(lead_id, field_name)
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO lead_personalization (lead_id, field_name, field_value, source_hash, cloud_pending)
+        VALUES (?, ?, ?, ?, 1)
+        ON CONFLICT (lead_id, field_name) DO UPDATE SET
+            field_value = excluded.field_value,
+            source_hash = excluded.source_hash,
+            processed_at = datetime('now'),
+            cloud_pending = 1
+    """, (lead_id, field_name, field_value, source_hash))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "lead_id": lead_id, "field": field_name}
+
+
+def personalize_set_batch(items: list[dict]) -> dict:
+    conn = get_conn()
+    written = 0
+    errors = []
+    for item in items:
+        lid = item.get("lead_id")
+        fname = item.get("field")
+        fval = item.get("value")
+        if not lid or not fname or fval is None:
+            errors.append({"item": item, "error": "missing lead_id, field, or value"})
+            continue
+        source_hash = _personalization_source_hash(lid, fname)
+        conn.execute("""
+            INSERT INTO lead_personalization (lead_id, field_name, field_value, source_hash, cloud_pending)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT (lead_id, field_name) DO UPDATE SET
+                field_value = excluded.field_value,
+                source_hash = excluded.source_hash,
+                processed_at = datetime('now'),
+                cloud_pending = 1
+        """, (lid, fname, fval, source_hash))
+        written += 1
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "written": written, "errors": errors}
+
+
+def personalize_get(lead_id: int) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT field_name, field_value, source_hash, processed_at FROM lead_personalization WHERE lead_id = ?",
+        (lead_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def personalize_pending(fields: list[str], limit: int = 50) -> list[dict]:
+    conn = get_conn()
+    conditions = " OR ".join(
+        "l.id NOT IN (SELECT lead_id FROM lead_personalization WHERE field_name = ?)"
+        for _ in fields
+    )
+    rows = conn.execute(
+        f"SELECT l.id, l.name, l.email, l.company FROM leads l WHERE {conditions} LIMIT ?",
+        (*fields, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def personalize_status() -> dict:
+    conn = get_conn()
+    total = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+    personalized_ids = conn.execute(
+        "SELECT COUNT(DISTINCT lead_id) FROM lead_personalization"
+    ).fetchone()[0]
+    pending = total - personalized_ids
+
+    stale = 0
+    rows = conn.execute(
+        "SELECT lead_id, field_name, source_hash FROM lead_personalization WHERE source_hash IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        current = _personalization_source_hash(row["lead_id"], row["field_name"])
+        if current and current != row["source_hash"]:
+            stale += 1
+
+    conn.close()
+    return {"total_leads": total, "personalized": personalized_ids, "pending": pending, "stale": stale}
+
+
+def personalize_clear(lead_id: Optional[int] = None, field: Optional[str] = None, clear_all: bool = False) -> dict:
+    conn = get_conn()
+    if clear_all:
+        result = conn.execute("DELETE FROM lead_personalization")
+        count = result.rowcount
+    elif lead_id and field:
+        result = conn.execute(
+            "DELETE FROM lead_personalization WHERE lead_id = ? AND field_name = ?",
+            (lead_id, field),
+        )
+        count = result.rowcount
+    elif lead_id:
+        result = conn.execute("DELETE FROM lead_personalization WHERE lead_id = ?", (lead_id,))
+        count = result.rowcount
+    elif field:
+        result = conn.execute("DELETE FROM lead_personalization WHERE field_name = ?", (field,))
+        count = result.rowcount
+    else:
+        conn.close()
+        return {"status": "error", "error": "Specify --lead-id, --field, or --all"}
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "deleted": count}
+
+
+def cleanup_campaign_rules(dry_run: bool = False) -> dict:
+    conn = get_conn()
+    bad_rows = conn.execute("""
+        SELECT id, workspace_id, source_platform, created_at
+        FROM campaign_workspace_map
+        WHERE campaign_id IS NULL AND campaign_name_normalized IS NULL
+    """).fetchall()
+    count = len(bad_rows)
+    if not dry_run and count > 0:
+        conn.execute("""
+            DELETE FROM campaign_workspace_map
+            WHERE campaign_id IS NULL AND campaign_name_normalized IS NULL
+        """)
+        conn.commit()
+    conn.close()
+    return {"status": "ok", "removed": count if not dry_run else 0, "found": count, "dry_run": dry_run}
+
+
+# ──────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────
 
@@ -5297,6 +5526,34 @@ def main():
     q_replay = q_sub.add_parser("replay", help="Replay assigned quarantine items")
     q_replay.add_argument("--workspace")
     q_replay.add_argument("--limit", type=int, default=100)
+
+    pset = sub.add_parser("personalize-set", help="Write personalization values for a lead")
+    pset.add_argument("--lead-id", type=int, help="Lead ID (single mode)")
+    pset.add_argument("--field", help="Field name (single mode)")
+    pset.add_argument("--value", help="Field value (single mode)")
+    pset.add_argument("--batch", action="store_true", help="Read JSON array from --json")
+    pset.add_argument("--json", dest="json_input", help="JSON array: [{lead_id, field, value}, ...]")
+
+    pget = sub.add_parser("personalize-get", help="Read personalization for a lead")
+    pget.add_argument("--lead-id", type=int, required=True)
+    pget.add_argument("--json", action="store_true")
+
+    ppend = sub.add_parser("personalize-pending", help="List leads missing personalization")
+    ppend.add_argument("--fields", default="first_name,company_name", help="Comma-separated field names")
+    ppend.add_argument("--limit", type=int, default=50)
+    ppend.add_argument("--json", action="store_true")
+
+    pstat = sub.add_parser("personalize-status", help="Personalization summary counts")
+    pstat.add_argument("--json", action="store_true")
+
+    pclear = sub.add_parser("personalize-clear", help="Clear personalization data")
+    pclear.add_argument("--lead-id", type=int, help="Clear one lead")
+    pclear.add_argument("--field", help="Clear specific field across all leads")
+    pclear.add_argument("--all", dest="clear_all", action="store_true", help="Clear everything")
+
+    cleanup_rules_p = sub.add_parser("cleanup-rules", help="Remove invalid campaign mapping rules")
+    cleanup_rules_p.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
+    cleanup_rules_p.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
 
@@ -5746,6 +6003,59 @@ def main():
                 print(json.dumps(list_quarantine(limit=limit), indent=2))
             else:
                 print(format_quarantine_campaign_summary(get_quarantine_campaign_summary()))
+    elif args.command == "personalize-set":
+        if args.batch:
+            items = json.loads(args.json_input or "[]")
+            print(json.dumps(personalize_set_batch(items), indent=2))
+        else:
+            if not args.lead_id or not args.field or args.value is None:
+                print("Error: --lead-id, --field, and --value are required (or use --batch --json)")
+                sys.exit(1)
+            print(json.dumps(personalize_set(args.lead_id, args.field, args.value), indent=2))
+    elif args.command == "personalize-get":
+        result = personalize_get(args.lead_id)
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            if not result:
+                print(f"No personalization for lead {args.lead_id}")
+            else:
+                for row in result:
+                    print(f"  {row['field_name']}: {row['field_value']}  (at {row['processed_at']})")
+    elif args.command == "personalize-pending":
+        fields = [f.strip() for f in args.fields.split(",") if f.strip()]
+        result = personalize_pending(fields, limit=args.limit)
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"{len(result)} leads pending personalization (fields: {', '.join(fields)})")
+            for r in result:
+                print(f"  [{r['id']}] {r['name'] or '?'} — {r['email'] or ''} — {r['company'] or ''}")
+    elif args.command == "personalize-status":
+        result = personalize_status()
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"Total leads: {result['total_leads']}")
+            print(f"Personalized: {result['personalized']}")
+            print(f"Pending: {result['pending']}")
+            print(f"Stale: {result['stale']}")
+    elif args.command == "personalize-clear":
+        result = personalize_clear(
+            lead_id=args.lead_id,
+            field=args.field,
+            clear_all=getattr(args, "clear_all", False),
+        )
+        print(json.dumps(result, indent=2))
+    elif args.command == "cleanup-rules":
+        result = cleanup_campaign_rules(dry_run=getattr(args, "dry_run", False))
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            if result["dry_run"]:
+                print(f"Would remove {result['found']} invalid rules")
+            else:
+                print(f"Removed {result['removed']} invalid mapping rules")
     else:
         if not db_exists():
             init_db()

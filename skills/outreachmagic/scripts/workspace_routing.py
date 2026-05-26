@@ -312,6 +312,8 @@ def resolve_workspace(
         ).fetchall()
         for rule in rules:
             pattern = rule["campaign_name_normalized"] or ""
+            if not pattern:
+                continue
             if rule["match_strategy"] == "rule_contains" and pattern in name_for_rules:
                 return RoutingResult(
                     workspace_id=rule["workspace_id"],
@@ -593,6 +595,8 @@ def assign_campaign_map(
     match_strategy: str = "id_exact",
     priority: int = 100,
 ) -> str:
+    if not campaign_id and not campaign_name:
+        raise ValueError("At least one of campaign_id or campaign_name is required for a mapping rule")
     map_id = f"map_{source_platform}_{campaign_id or campaign_name or 'rule'}"
     conn.execute(
         """INSERT OR REPLACE INTO campaign_workspace_map (
@@ -629,15 +633,16 @@ def replay_quarantine_item(conn: sqlite3.Connection, queue_id: str, workspace_id
         return {"status": "error", "error": "queue item not found or not pending"}
 
     org_id = row["org_id"]
-    assign_campaign_map(
-        conn,
-        org_id,
-        source_platform="*",
-        workspace_id=workspace_id,
-        campaign_id=row["campaign_id"],
-        campaign_name=row["campaign_name_raw"],
-        match_strategy="id_exact" if row["campaign_id"] else "name_exact",
-    )
+    if row["campaign_id"] or row["campaign_name_raw"]:
+        assign_campaign_map(
+            conn,
+            org_id,
+            source_platform="*",
+            workspace_id=workspace_id,
+            campaign_id=row["campaign_id"],
+            campaign_name=row["campaign_name_raw"],
+            match_strategy="id_exact" if row["campaign_id"] else "name_exact",
+        )
     conn.execute(
         """UPDATE unmapped_campaign_queue
            SET status = 'assigned', resolved_at = datetime('now') WHERE id = ?""",

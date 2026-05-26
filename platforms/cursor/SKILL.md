@@ -287,6 +287,26 @@ python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py import-profiles \
 
 Column aliases (first non-empty wins): `email` / `lead_email`; `linkedin` / `linkedin_url`; `name` / `full_name`; `title` / `job_title`; `company` / `company_name`; `industry`; `headcount` / `company_size`. At least one of **email** or **linkedin** is required per row.
 
+### Personalization (mail-merge fields)
+
+Store agent-computed normalized values for email templates. Default fields: `first_name`, `company_name`. Add custom fields as needed (e.g., `icebreaker`, `ps_line`).
+
+```bash
+# List leads needing personalization (defaults to first_name,company_name)
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py personalize-pending --json
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py personalize-pending --fields first_name,company_name,icebreaker --json
+
+# Write values (single or batch)
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py personalize-set --lead-id 5 --field first_name --value "Spencer"
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py personalize-set --batch --json '[{"lead_id":5,"field":"first_name","value":"Spencer"}]'
+
+# Read values / check status
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py personalize-get --lead-id 5 --json
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py personalize-status
+```
+
+Personalization syncs across platforms via push/pull. The agent decides normalization logic — pipeline.py only stores values.
+
 ### Companies and unified lead identity
 
 - **`companies` table** — canonical company name, domain, industry, headcount. Leads link via `company_id` (business email domain or company name on ingest).
@@ -334,14 +354,6 @@ If the user already has a key, skip the browser flow:
 
 ```bash
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_THEIR_KEY
-```
-
-Legacy per-platform token (not agent key):
-
-```bash
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py connect --key YOUR_TOKEN
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py pull
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py pull --full   # after DB reset
 ```
 
 ### Update skill scripts

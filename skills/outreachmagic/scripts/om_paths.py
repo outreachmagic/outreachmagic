@@ -17,12 +17,18 @@ def _infer_data_root() -> Path:
     ~/.hermes/skills/outreachmagic/scripts/om_paths.py -> ~/.hermes
     ~/.cursor/skills/outreachmagic/scripts/om_paths.py -> ~/.cursor
     ~/.claude/skills/outreachmagic/scripts/om_paths.py -> ~/.claude
+    ~/.hermes/profiles/client/skills/outreachmagic/scripts/om_paths.py -> ~/.hermes
     """
     scripts_dir = Path(__file__).resolve().parent
     skill_dir = scripts_dir.parent
     skills_dir = skill_dir.parent
     if skills_dir.name == "skills" and skill_dir.name == SKILL_NAME:
-        return skills_dir.parent
+        candidate = skills_dir.parent
+        # Hermes WebUI profile detection: if we're inside profiles/<name>/skills/,
+        # resolve to the global Hermes home instead of the profile-isolated dir.
+        if candidate.parent.name == "profiles":
+            return candidate.parent.parent
+        return candidate
     return Path.home() / ".hermes"
 
 

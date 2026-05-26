@@ -950,21 +950,19 @@ def backfill_workspace_routing(conn: sqlite3.Connection):
         status = stage_row["stage"] if stage_row else "prospecting"
         upsert_workspace_lead(conn, DEFAULT_ORG_ID, workspace_id, lid, status=status)
 
-    platforms = ("smartlead", "heyreach", "instantly", "plusvibe", "emailbison", "clay", "prosp")
     campaigns = conn.execute("SELECT name FROM campaigns").fetchall()
     for row in campaigns:
         name = (row["name"] or "").strip()
         if not name:
             continue
-        for platform in platforms:
-            assign_campaign_map(
-                conn,
-                DEFAULT_ORG_ID,
-                source_platform=platform,
-                workspace_id=workspace_id,
-                campaign_name=name,
-                match_strategy="name_exact",
-            )
+        assign_campaign_map(
+            conn,
+            DEFAULT_ORG_ID,
+            source_platform="*",
+            workspace_id=workspace_id,
+            campaign_name=name,
+            match_strategy="name_exact",
+        )
 
 
 def email_domain(email: Optional[str]) -> Optional[str]:
@@ -1743,14 +1741,16 @@ def load_profile_rows_from_file(path: Path) -> list[dict]:
     raise ValueError("JSON file must be an array of objects or a single object")
 
 
-def update_lead_stage(lead_id, stage, next_action=None):
+def update_lead_stage(lead_id, stage, next_action=None, event_at=None):
     if stage not in PIPELINE_STAGES:
         raise ValueError(f"Invalid stage: {stage}. Valid: {PIPELINE_STAGES}")
+    ts_expr = "?" if event_at else "datetime('now')"
     conn = get_conn()
     conn.execute(
-        """UPDATE leads SET stage = ?, updated_at = datetime('now'),
+        f"""UPDATE leads SET stage = ?, updated_at = {ts_expr},
            next_action = CASE WHEN ? IS NOT NULL THEN ? ELSE next_action END WHERE id = ?""",
-        (stage, next_action, next_action, lead_id),
+        (stage, event_at, next_action, next_action, lead_id) if event_at
+        else (stage, next_action, next_action, lead_id),
     )
     conn.commit()
     conn.close()
@@ -1840,24 +1840,39 @@ def backfill_plusvibe_status_metadata(conn=None):
 
 
 def log_event(lead_id, event_type, direction="outbound", channel="email",
-              subject=None, body_preview=None, metadata=None, campaign=None):
+              subject=None, body_preview=None, metadata=None, campaign=None,
+              event_at=None):
     meta = dict(metadata or {})
     campaign_name = campaign or meta.get("campaign")
     conn = get_conn()
     campaign_id = None
     if campaign_name and str(campaign_name).strip():
         campaign_id = ensure_campaign(conn, str(campaign_name).strip(), lead_id)
-    conn.execute(
-        """INSERT INTO events (lead_id, event_type, direction, channel, subject, body_preview,
-                               metadata_json, campaign_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (lead_id, event_type, direction, channel, subject, (body_preview or "")[:200],
-         json.dumps(meta), campaign_id),
-    )
-    conn.execute(
-        "UPDATE leads SET updated_at = datetime('now'), last_contact_at = datetime('now') WHERE id = ?",
-        (lead_id,),
-    )
+    if event_at:
+        conn.execute(
+            """INSERT INTO events (lead_id, event_type, direction, channel, subject, body_preview,
+                                   metadata_json, campaign_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (lead_id, event_type, direction, channel, subject, (body_preview or "")[:200],
+             json.dumps(meta), campaign_id, event_at),
+        )
+        conn.execute(
+            """UPDATE leads SET updated_at = ?, last_contact_at = ?
+               WHERE id = ? AND (last_contact_at IS NULL OR last_contact_at < ?)""",
+            (event_at, event_at, lead_id, event_at),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO events (lead_id, event_type, direction, channel, subject, body_preview,
+                                   metadata_json, campaign_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (lead_id, event_type, direction, channel, subject, (body_preview or "")[:200],
+             json.dumps(meta), campaign_id),
+        )
+        conn.execute(
+            "UPDATE leads SET updated_at = datetime('now'), last_contact_at = datetime('now') WHERE id = ?",
+            (lead_id,),
+        )
     conn.commit()
     conn.close()
 
@@ -2567,10 +2582,17 @@ def get_lead_by_email(email):
 
 def list_workspaces(org_id: str = DEFAULT_ORG_ID) -> list[dict]:
     conn = get_conn()
-    rows = conn.execute(
-        "SELECT id, org_id, name, slug, created_at FROM workspaces WHERE org_id = ? ORDER BY name",
-        (org_id,),
-    ).fetchall()
+    config = get_org_routing_config(conn, org_id)
+    if config.mode == WORKSPACE_ROUTING_MULTI:
+        rows = conn.execute(
+            "SELECT id, org_id, name, slug, created_at FROM workspaces WHERE org_id = ? AND slug != 'default' ORDER BY name",
+            (org_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, org_id, name, slug, created_at FROM workspaces WHERE org_id = ? ORDER BY name",
+            (org_id,),
+        ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -2717,24 +2739,8 @@ def set_workspace_routing(
     return result
 
 
-def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAULT_ORG_ID) -> dict:
+def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAULT_ORG_ID, *, sync: bool = False) -> dict:
     slug = slug or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "workspace"
-    tok = get_token()
-    if routing_cloud.cloud_routing_enabled(load_config, tok):
-        try:
-            bundle = routing_cloud.push_workspace_create(
-                routing_cloud.get_api_base(load_config),
-                tok,
-                name=name,
-                slug=slug,
-            )
-            _apply_cloud_routing_bundle(bundle, org_id)
-            created = next((w for w in bundle.get("workspaces") or [] if w.get("slug") == slug), None)
-            if created:
-                return {"status": "created", "id": created["id"], "name": created["name"], "slug": created["slug"]}
-            return {"status": "created", "name": name, "slug": slug}
-        except RuntimeError as exc:
-            return {"status": "error", "error": str(exc)}
     ws_id = f"ws_{slug}"
     conn = get_conn()
     ensure_organization(conn, org_id)
@@ -2749,26 +2755,311 @@ def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAUL
         conn.close()
         return {"status": "error", "error": f"workspace slug already exists: {slug}"}
     conn.close()
-    return {"status": "created", "id": ws_id, "name": name, "slug": slug}
+
+    result: dict = {"status": "created", "id": ws_id, "name": name, "slug": slug}
+
+    tok = get_token()
+    can_sync = routing_cloud.cloud_routing_enabled(load_config, tok)
+
+    if sync and can_sync:
+        try:
+            bundle = routing_cloud.push_workspace_create(
+                routing_cloud.get_api_base(load_config),
+                tok,
+                name=name,
+                slug=slug,
+            )
+            _apply_cloud_routing_bundle(bundle, org_id)
+            result["synced"] = True
+        except RuntimeError as exc:
+            result["synced"] = False
+            result["sync_error"] = str(exc)
+    elif can_sync:
+        result["synced"] = False
+        result["sync_hint"] = (
+            f"Workspace '{name}' created locally. To make it visible in the webapp, "
+            f"run: pipeline.py workspace sync"
+        )
+    else:
+        result["synced"] = False
+        result["sync_hint"] = (
+            "Workspace created locally only. No cloud token configured — "
+            "set up an agent key to enable syncing to the webapp."
+        )
+
+    return result
 
 
-def list_campaign_maps(org_id: str = DEFAULT_ORG_ID, platform: Optional[str] = None) -> list[dict]:
+def sync_workspaces_to_cloud(org_id: str = DEFAULT_ORG_ID) -> dict:
+    """Push all local workspaces to the cloud webapp."""
+    tok = get_token()
+    if not routing_cloud.cloud_routing_enabled(load_config, tok):
+        return {"status": "error", "error": "No cloud token configured. Set up an agent key first."}
+
     conn = get_conn()
-    q = """SELECT m.*, w.name AS workspace_name FROM campaign_workspace_map m
-           JOIN workspaces w ON w.id = m.workspace_id WHERE m.org_id = ?"""
-    params: list = [org_id]
-    if platform:
-        q += " AND m.source_platform = ?"
-        params.append(platform)
-    q += " ORDER BY m.source_platform, m.priority, m.campaign_name_normalized"
-    rows = conn.execute(q, params).fetchall()
+    config = get_org_routing_config(conn, org_id)
+    rows = conn.execute(
+        "SELECT name, slug FROM workspaces WHERE org_id = ?", (org_id,)
+    ).fetchall()
+    conn.close()
+
+    if config.mode == WORKSPACE_ROUTING_MULTI:
+        workspaces = [dict(r) for r in rows if r["slug"] != "default"]
+    else:
+        workspaces = [dict(r) for r in rows]
+
+    api_base = routing_cloud.get_api_base(load_config)
+    synced = []
+    errors = []
+    for ws in workspaces:
+        try:
+            bundle = routing_cloud.push_workspace_create(api_base, tok, name=ws["name"], slug=ws["slug"])
+            _apply_cloud_routing_bundle(bundle, org_id)
+            synced.append(ws["slug"])
+        except RuntimeError as exc:
+            if "already exists" in str(exc).lower() or "unique" in str(exc).lower():
+                synced.append(ws["slug"])
+            else:
+                errors.append({"slug": ws["slug"], "error": str(exc)})
+
+    return {"status": "ok", "synced": synced, "errors": errors}
+
+
+def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
+    """Compare local state with cloud and return what's pending sync."""
+    tok = get_token()
+    if not routing_cloud.cloud_routing_enabled(load_config, tok):
+        return {"can_sync": False, "reason": "No cloud token configured."}
+
+    try:
+        bundle = routing_cloud.fetch_routing_bundle(
+            routing_cloud.get_api_base(load_config), tok
+        )
+    except Exception as exc:
+        return {"can_sync": False, "reason": f"Could not reach webapp: {exc}"}
+
+    cloud_ws_slugs = {w["slug"] for w in bundle.get("workspaces") or []}
+    cloud_map_ids = {m["id"] for m in bundle.get("campaignMaps") or []}
+
+    conn = get_conn()
+    config = get_org_routing_config(conn, org_id)
+    local_ws = conn.execute(
+        "SELECT name, slug FROM workspaces WHERE org_id = ?", (org_id,)
+    ).fetchall()
+    local_maps = conn.execute(
+        "SELECT id, campaign_name_normalized, campaign_id, match_strategy FROM campaign_workspace_map WHERE org_id = ? AND is_active = 1",
+        (org_id,),
+    ).fetchall()
+    conn.close()
+
+    pending_ws = []
+    for row in local_ws:
+        slug = row["slug"]
+        if config.mode == WORKSPACE_ROUTING_MULTI and slug == "default":
+            continue
+        if slug not in cloud_ws_slugs:
+            pending_ws.append({"name": row["name"], "slug": slug})
+
+    pending_maps = []
+    for row in local_maps:
+        if row["id"] not in cloud_map_ids:
+            pending_maps.append({
+                "id": row["id"],
+                "label": row["campaign_name_normalized"] or row["campaign_id"] or "rule",
+                "match_strategy": row["match_strategy"],
+            })
+
+    conn2 = get_conn()
+    local_lead_count = conn2.execute(
+        """SELECT COUNT(*) AS n FROM leads
+           WHERE id NOT IN (
+               SELECT DISTINCT lead_id FROM relay_ingested WHERE lead_id IS NOT NULL
+           )"""
+    ).fetchone()["n"]
+    local_event_count = conn2.execute(
+        """SELECT COUNT(*) AS n FROM events
+           WHERE metadata_json NOT LIKE '%"source": "relay"%'
+             AND metadata_json NOT LIKE '%"source":"relay"%'
+             AND metadata_json NOT LIKE '%"source": "agent_sync"%'
+             AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
+    ).fetchone()["n"]
+    conn2.close()
+
+    pending_total = len(pending_ws) + len(pending_maps)
+    local_changes = local_lead_count + local_event_count
+    return {
+        "can_sync": True,
+        "pending_workspaces": pending_ws,
+        "pending_rules": pending_maps,
+        "pending_local_leads": local_lead_count,
+        "pending_local_events": local_event_count,
+        "pending_total": pending_total + local_changes,
+        "synced": pending_total == 0 and local_changes == 0,
+    }
+
+
+def format_sync_status(status: dict) -> str:
+    """One-line sync status for display after operations."""
+    if not status.get("can_sync"):
+        return ""
+    if status.get("synced"):
+        return ""
+    parts = []
+    ws = status.get("pending_workspaces") or []
+    rules = status.get("pending_rules") or []
+    local_leads = status.get("pending_local_leads", 0)
+    local_events = status.get("pending_local_events", 0)
+    local_total = local_leads + local_events
+    if ws:
+        names = ", ".join(w["name"] for w in ws[:3])
+        suffix = f" (+{len(ws) - 3} more)" if len(ws) > 3 else ""
+        parts.append(f"{len(ws)} workspace{'s' if len(ws) != 1 else ''} ({names}{suffix})")
+    if rules:
+        parts.append(f"{len(rules)} routing rule{'s' if len(rules) != 1 else ''}")
+    if local_total:
+        parts.append(f"{local_total} agent event{'s' if local_total != 1 else ''}")
+    items = ", ".join(parts)
+    return f"\n⚠ Not synced to cloud: {items}. Run pipeline.py sync to push them."
+
+
+def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
+    """Push all pending workspaces and campaign maps to the cloud."""
+    tok = get_token()
+    if not routing_cloud.cloud_routing_enabled(load_config, tok):
+        return {"status": "error", "error": "No cloud token configured."}
+
+    api_base = routing_cloud.get_api_base(load_config)
+    status = get_sync_status(org_id)
+    if not status.get("can_sync"):
+        return {"status": "error", "error": status.get("reason", "Cannot sync.")}
+    if status.get("synced"):
+        return {"status": "ok", "message": "Everything is already synced."}
+
+    results: dict = {"workspaces_synced": [], "rules_synced": [], "errors": []}
+
+    for ws in status.get("pending_workspaces") or []:
+        try:
+            bundle = routing_cloud.push_workspace_create(api_base, tok, name=ws["name"], slug=ws["slug"])
+            _apply_cloud_routing_bundle(bundle, org_id)
+            results["workspaces_synced"].append(ws["slug"])
+        except RuntimeError as exc:
+            if "already exists" in str(exc).lower() or "unique" in str(exc).lower():
+                results["workspaces_synced"].append(ws["slug"])
+            else:
+                results["errors"].append({"type": "workspace", "slug": ws["slug"], "error": str(exc)})
+
+    conn = get_conn()
+    for rule in status.get("pending_rules") or []:
+        row = conn.execute(
+            """SELECT source_platform, campaign_id, campaign_name_normalized, match_strategy, priority,
+                      w.slug AS workspace_slug
+               FROM campaign_workspace_map m JOIN workspaces w ON w.id = m.workspace_id
+               WHERE m.id = ?""",
+            (rule["id"],),
+        ).fetchone()
+        if not row:
+            continue
+        try:
+            bundle = routing_cloud.push_campaign_map(
+                api_base, tok,
+                source_platform=row["source_platform"],
+                workspace_slug=row["workspace_slug"],
+                campaign_id=row["campaign_id"],
+                campaign_name=row["campaign_name_normalized"],
+                match_strategy=row["match_strategy"],
+                priority=row["priority"],
+            )
+            _apply_cloud_routing_bundle(bundle, org_id)
+            results["rules_synced"].append(rule["label"])
+        except RuntimeError as exc:
+            results["errors"].append({"type": "rule", "label": rule["label"], "error": str(exc)})
+    conn.close()
+
+    total = len(results["workspaces_synced"]) + len(results["rules_synced"])
+    results["status"] = "ok"
+
+    local_leads = status.get("pending_local_leads", 0)
+    local_events = status.get("pending_local_events", 0)
+    local_total = local_leads + local_events
+
+    parts = []
+    if total:
+        parts.append(f"Synced {total} item{'s' if total != 1 else ''} to cloud.")
+    agent_key = get_agent_key()
+    if local_total and agent_key:
+        pushed = _push_agent_events_to_relay(agent_key)
+        results["agent_events_pushed"] = pushed
+        if pushed > 0:
+            parts.append(f"Pushed {pushed} agent event{'s' if pushed != 1 else ''} to relay.")
+        elif local_total:
+            parts.append(f"{local_total} agent event{'s' if local_total != 1 else ''} could not be pushed.")
+    elif local_total:
+        parts.append(
+            f"{local_total} agent event{'s' if local_total != 1 else ''} pending — "
+            f"no agent key configured to push them."
+        )
+    results["message"] = " ".join(parts) or "Everything is already synced."
+    return results
+
+
+def _push_agent_events_to_relay(agent_key: str) -> int:
+    """Push locally-created events to the Cloudflare relay /push endpoint."""
+    export = export_local_changes()
+    entries = export.get("entries") or []
+    if not entries:
+        return 0
+
+    client_id = export.get("client_id", "unknown")
+    total_pushed = 0
+
+    for i in range(0, len(entries), 500):
+        batch = entries[i : i + 500]
+        body = json.dumps({"client_id": client_id, "entries": batch}).encode()
+        req = urllib.request.Request(
+            f"{RELAY_URL}/push",
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {agent_key}",
+                "User-Agent": f"OutreachMagic/{__version__}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read())
+                total_pushed += result.get("pushed", 0)
+        except Exception:
+            break
+
+    return total_pushed
+
+
+def list_campaign_maps(org_id: str = DEFAULT_ORG_ID) -> list[dict]:
+    conn = get_conn()
+    config = get_org_routing_config(conn, org_id)
+    if config.mode == WORKSPACE_ROUTING_MULTI:
+        rows = conn.execute(
+            """SELECT m.*, w.name AS workspace_name FROM campaign_workspace_map m
+               JOIN workspaces w ON w.id = m.workspace_id
+               WHERE m.org_id = ? AND w.slug != 'default'
+               ORDER BY m.priority, m.campaign_name_normalized""",
+            (org_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT m.*, w.name AS workspace_name FROM campaign_workspace_map m
+               JOIN workspaces w ON w.id = m.workspace_id WHERE m.org_id = ?
+               ORDER BY m.priority, m.campaign_name_normalized""",
+            (org_id,),
+        ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
 def add_campaign_map_cli(
-    platform: str,
-    workspace_slug: str,
+    platform: str = "*",
+    workspace_slug: str = "",
     *,
     campaign_id: Optional[str] = None,
     campaign_name: Optional[str] = None,
@@ -2777,6 +3068,11 @@ def add_campaign_map_cli(
 ) -> dict:
     if not campaign_id and not campaign_name:
         return {"status": "error", "error": "provide --campaign-id or --campaign-name"}
+    conn_check = get_conn()
+    config = get_org_routing_config(conn_check, DEFAULT_ORG_ID)
+    conn_check.close()
+    if config.mode == WORKSPACE_ROUTING_MULTI and workspace_slug == "default":
+        return {"status": "error", "error": "Cannot route to the default workspace in multi-workspace mode."}
     strategy = match_strategy or ("id_exact" if campaign_id else "name_exact")
     tok = get_token()
     if routing_cloud.cloud_routing_enabled(load_config, tok):
@@ -2908,19 +3204,18 @@ def format_quarantine_campaign_summary(
         )
         seen_commands: set[str] = set()
         for row in campaigns:
-            platform = str(row.get("source_platform") or "").strip() or "unknown"
             campaign_id = str(row.get("campaign_id") or "").strip()
             campaign_name = str(row.get("campaign") or "unknown").strip() or "unknown"
             if campaign_id:
                 cmd = (
                     "   pipeline.py campaign-map add "
-                    f"--platform {platform} --workspace WORKSPACE_SLUG --campaign-id {campaign_id}"
+                    f"--workspace WORKSPACE_SLUG --campaign-id {campaign_id}"
                 )
             else:
                 escaped = campaign_name.replace('"', '\\"')
                 cmd = (
                     "   pipeline.py campaign-map add "
-                    f'--platform {platform} --workspace WORKSPACE_SLUG --campaign-name "{escaped}"'
+                    f'--workspace WORKSPACE_SLUG --campaign-name "{escaped}"'
                 )
             if cmd in seen_commands:
                 continue
@@ -3671,6 +3966,7 @@ def ack_events(token: str, max_id: int):
     except Exception:
         return {"error": True}
 
+
 def ingest_relay_event(
     event: dict,
     debug_sentiment: bool = False,
@@ -3871,13 +4167,15 @@ def ingest_relay_event(
         subject=subject,
         body_preview=body_preview,
         metadata=metadata,
+        event_at=received_at or None,
     )
 
+    event_time = received_at or None
     target_stage = relay_target_stage(
         platform, envelope_event_type, local_type, raw, metadata
     )
     if target_stage:
-        update_lead_stage(lead_id, target_stage)
+        update_lead_stage(lead_id, target_stage, event_at=event_time)
 
     ws_status = target_stage or "prospecting"
     conn = get_conn()
@@ -3885,9 +4183,10 @@ def ingest_relay_event(
         conn, DEFAULT_ORG_ID, workspace_id, lead_id, status=ws_status
     )
     if target_stage:
+        stage_ts = event_time or datetime.now(timezone.utc).isoformat()
         conn.execute(
-            "UPDATE workspace_leads SET status = ?, stage_entered_at = datetime('now') WHERE id = ?",
-            (target_stage, ws_lead_id),
+            "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
+            (target_stage, stage_ts, ws_lead_id),
         )
     ws_payload = {
         "event": metadata,
@@ -4661,7 +4960,7 @@ def main():
     imp_p.add_argument("--stage", default="prospecting")
     imp_p.add_argument("--notes")
 
-    export_p = sub.add_parser("export-local", help="Export locally-created leads and events")
+    export_p = sub.add_parser("agent-changes", help="Show agent-created leads and events not yet synced")
     export_p.add_argument("--json", action="store_true", help="Output as JSON (default)")
     export_p.add_argument("--file", help="Write CSV to file (import-profiles compatible)")
     export_p.add_argument("--all", action="store_true", help="Include all leads, not just locally-created")
@@ -4698,6 +4997,8 @@ def main():
     webhook_p = sub.add_parser("webhook-url", help="Show webhook URLs for your platforms")
 
     sub.add_parser("status", help="Dashboard-style status: plan, connections, usage, routing")
+    sync_p = sub.add_parser("sync", help="Push pending workspaces and routing rules to the webapp")
+    sync_p.add_argument("--status", action="store_true", help="Show what needs syncing without pushing")
 
     conn_p = sub.add_parser("connections", help="List connected platforms with webhook URLs and stats")
     conn_p.add_argument("--json", action="store_true")
@@ -4769,6 +5070,8 @@ def main():
     ws_create = ws_sub.add_parser("create", help="Create a workspace")
     ws_create.add_argument("--name", required=True)
     ws_create.add_argument("--slug")
+    ws_create.add_argument("--sync", action="store_true", help="Sync to webapp immediately")
+    ws_sub.add_parser("sync", help="Sync all local workspaces to the webapp")
     ws_routing = ws_sub.add_parser("routing", help="Single vs multi-workspace routing mode")
     ws_routing_sub = ws_routing.add_subparsers(dest="workspace_routing_cmd")
     ws_routing_sub.add_parser("show", help="Show current routing mode")
@@ -4788,7 +5091,7 @@ def main():
     cmap_sub = cmap_p.add_subparsers(dest="campaign_map_cmd")
     cmap_sub.add_parser("list", help="List campaign maps")
     cmap_add = cmap_sub.add_parser("add", help="Add campaign map")
-    cmap_add.add_argument("--platform", required=True)
+    cmap_add.add_argument("--platform", default="*")
     cmap_add.add_argument("--workspace", required=True, help="Workspace slug")
     cmap_add.add_argument("--campaign-id")
     cmap_add.add_argument("--campaign-name")
@@ -4846,6 +5149,14 @@ def main():
     # Commands that only talk to the app API (no local DB required)
     if args.command == "status":
         cmd_status()
+        return
+
+    if args.command == "sync":
+        if getattr(args, "status", False):
+            print(json.dumps(get_sync_status(), indent=2))
+        else:
+            result = sync_all()
+            print(json.dumps(result, indent=2))
         return
 
     if args.command == "connections":
@@ -5046,7 +5357,7 @@ def main():
             notes=args.notes,
         )
         print(json.dumps(summary, indent=2))
-    elif args.command == "export-local":
+    elif args.command == "agent-changes":
         result = export_local_changes(
             all_leads=getattr(args, "all", False),
             workspace=getattr(args, "workspace", None),
@@ -5127,7 +5438,9 @@ def main():
         print(json.dumps(insights, indent=2) if args.json else format_segment_insights(insights))
     elif args.command == "workspace":
         if args.workspace_cmd == "create":
-            print(json.dumps(create_workspace(args.name, args.slug), indent=2))
+            print(json.dumps(create_workspace(args.name, args.slug, sync=getattr(args, "sync", False)), indent=2))
+        elif args.workspace_cmd == "sync":
+            print(json.dumps(sync_workspaces_to_cloud(), indent=2))
         elif args.workspace_cmd == "routing":
             if args.workspace_routing_cmd == "set":
                 print(json.dumps(
@@ -5152,7 +5465,7 @@ def main():
                 indent=2,
             ))
         else:
-            print(json.dumps(list_campaign_maps(platform=getattr(args, "platform", None)), indent=2))
+            print(json.dumps(list_campaign_maps(), indent=2))
     elif args.command == "quarantine":
         if args.quarantine_cmd == "assign":
             print(json.dumps(assign_quarantine_and_replay(args.id, args.workspace), indent=2))
@@ -5172,6 +5485,7 @@ def main():
         print(format_pipeline_table(leads))
         print()
         print(format_stats(get_stats()))
+
 
 
 if __name__ == "__main__":

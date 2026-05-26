@@ -2,8 +2,9 @@
 Org-wide leads + workspace-scoped status/events + campaign routing.
 
 Campaign routing priority:
-  platform + campaign_id exact > platform + campaign_name exact >
+  campaign_id exact > campaign_name exact >
   rule_contains / rule_prefix / rule_regex > quarantine
+Rules with source_platform='*' match any incoming platform.
 
 Identity resolution (additive aliases):
   unified_id > email > linkedin_url > phone > provider_id
@@ -245,23 +246,17 @@ def format_unmapped_campaign_message(ctx: CampaignContext) -> str:
         "To fix this:",
         '1. Create a workspace:  pipeline.py workspace create --name "Your Team"',
         "2. Map this campaign to that workspace:",
-        f"     pipeline.py campaign-map add --platform {platform} "
-        f"--workspace WORKSPACE_SLUG --campaign-id ID",
-        f"     pipeline.py campaign-map add --platform {platform} "
-        f"--workspace WORKSPACE_SLUG --campaign-name \"{label}\"",
+        f"     pipeline.py campaign-map add --workspace WORKSPACE_SLUG --campaign-id ID",
+        f'     pipeline.py campaign-map add --workspace WORKSPACE_SLUG --campaign-name "{label}"',
         "   Or use a contains/prefix/regex rule:",
-        f"     pipeline.py campaign-map add --platform {platform} "
-        f"--workspace WORKSPACE_SLUG --match-strategy rule_contains --campaign-name \"substring\"",
-        f"     pipeline.py campaign-map add --platform {platform} "
-        f"--workspace WORKSPACE_SLUG --match-strategy rule_prefix --campaign-name \"prefix\"",
+        f'     pipeline.py campaign-map add --workspace WORKSPACE_SLUG --match-strategy rule_contains --campaign-name "substring"',
         "3. Or assign one quarantined event manually:",
         "     pipeline.py quarantine list",
         "     pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG",
     ]
     if ctx.campaign_id and ctx.campaign_name_raw and ctx.campaign_id != ctx.campaign_name_raw:
-        lines[5] = (
-            f"     pipeline.py campaign-map add --platform {platform} "
-            f"--workspace WORKSPACE_SLUG --campaign-id {ctx.campaign_id}"
+        lines[6] = (
+            f"     pipeline.py campaign-map add --workspace WORKSPACE_SLUG --campaign-id {ctx.campaign_id}"
         )
     return "\n".join(lines)
 
@@ -277,7 +272,7 @@ def resolve_workspace(
     if ctx.campaign_id:
         row = conn.execute(
             """SELECT id, workspace_id, match_strategy FROM campaign_workspace_map
-               WHERE org_id = ? AND source_platform = ? AND is_active = 1
+               WHERE org_id = ? AND source_platform IN (?, '*') AND is_active = 1
                  AND match_strategy = 'id_exact' AND campaign_id = ?
                ORDER BY priority ASC LIMIT 1""",
             (org_id, platform, ctx.campaign_id),
@@ -292,7 +287,7 @@ def resolve_workspace(
     if ctx.campaign_name_normalized:
         row = conn.execute(
             """SELECT id, workspace_id, match_strategy FROM campaign_workspace_map
-               WHERE org_id = ? AND source_platform = ? AND is_active = 1
+               WHERE org_id = ? AND source_platform IN (?, '*') AND is_active = 1
                  AND match_strategy = 'name_exact'
                  AND campaign_name_normalized = ?
                ORDER BY priority ASC LIMIT 1""",
@@ -310,7 +305,7 @@ def resolve_workspace(
         rules = conn.execute(
             """SELECT id, workspace_id, match_strategy, campaign_name_normalized
                FROM campaign_workspace_map
-               WHERE org_id = ? AND source_platform = ? AND is_active = 1
+               WHERE org_id = ? AND source_platform IN (?, '*') AND is_active = 1
                  AND match_strategy IN ('rule_contains', 'rule_prefix', 'rule_regex')
                ORDER BY priority ASC""",
             (org_id, platform),
@@ -591,7 +586,7 @@ def assign_campaign_map(
     conn: sqlite3.Connection,
     org_id: str,
     *,
-    source_platform: str,
+    source_platform: str = "*",
     workspace_id: str,
     campaign_id: Optional[str] = None,
     campaign_name: Optional[str] = None,
@@ -637,7 +632,7 @@ def replay_quarantine_item(conn: sqlite3.Connection, queue_id: str, workspace_id
     assign_campaign_map(
         conn,
         org_id,
-        source_platform=row["source_platform"],
+        source_platform="*",
         workspace_id=workspace_id,
         campaign_id=row["campaign_id"],
         campaign_name=row["campaign_name_raw"],

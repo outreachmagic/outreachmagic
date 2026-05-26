@@ -3882,24 +3882,8 @@ def ingest_agent_entry(
             if workspace_slug:
                 ws_row = resolve_workspace_identity(conn, workspace_slug)
                 workspace_id = ws_row["id"] if ws_row else None
-            if not workspace_id:
-                quarantine_event(
-                    conn, org_id,
-                    CampaignContext(
-                        source_platform="agent",
-                        campaign_id=None,
-                        campaign_name_raw=None,
-                        campaign_name_normalized=None,
-                    ),
-                    reason="agent_entry_no_workspace",
-                    payload=event,
-                    external_event_id=dedupe_key,
-                )
-                conn.commit()
-                conn.close()
-                mark_relay_ingested(dedupe_key, None)
-                return None
 
+        # Org-wide actions: proceed without workspace
         if action == "lead_create":
             conn.close()
             result = resolve_lead(
@@ -3945,7 +3929,12 @@ def ingest_agent_entry(
                     )
                     note_conn.commit()
                     note_conn.close()
+        # Workspace-scoped actions: skip if no workspace (don't quarantine)
         elif action == "stage_change":
+            if not workspace_id:
+                conn.close()
+                mark_relay_ingested(dedupe_key, None)
+                return None
             lead_id = find_lead_by_identifier(conn, entity_key)
             conn.close()
             if lead_id and payload.get("stage"):
@@ -3954,6 +3943,10 @@ def ingest_agent_entry(
                 except ValueError:
                     pass
         elif action == "event_log":
+            if not workspace_id:
+                conn.close()
+                mark_relay_ingested(dedupe_key, None)
+                return None
             lead_id = find_lead_by_identifier(conn, entity_key)
             conn.close()
             if lead_id:
@@ -5121,6 +5114,7 @@ def main():
     add_p.add_argument("--email"); add_p.add_argument("--linkedin")
     add_p.add_argument("--channel", default="email"); add_p.add_argument("--stage", default="prospecting")
     add_p.add_argument("--notes"); add_p.add_argument("--tags")
+    add_p.add_argument("--workspace", help="Optional: associate lead with a workspace")
 
     imp_p = sub.add_parser(
         "import-profiles",
@@ -5147,12 +5141,14 @@ def main():
     up_p = sub.add_parser("update-stage", help="Update lead stage")
     up_p.add_argument("--id", type=int, required=True); up_p.add_argument("--stage", required=True)
     up_p.add_argument("--next-action")
+    up_p.add_argument("--workspace", help="Workspace for this stage change (required in multi-workspace mode)")
 
     log_p = sub.add_parser("log-event", help="Log an outreach event")
     log_p.add_argument("--lead-id", type=int, required=True)
     log_p.add_argument("--type", dest="event_type", required=True)
     log_p.add_argument("--direction", default="outbound"); log_p.add_argument("--channel", default="email")
     log_p.add_argument("--subject"); log_p.add_argument("--body")
+    log_p.add_argument("--workspace", help="Workspace for this event (required in multi-workspace mode)")
 
     # ── Setup & relay commands ──
     setup_p = sub.add_parser("setup", help="Sign up and connect your agent to Outreach Magic (org-wide access)")
@@ -5490,10 +5486,23 @@ def main():
             print("\n".join(lines) if lines else "No campaign data yet.")
     elif args.command == "add-lead":
         tags = json.loads(args.tags) if args.tags else None
-        print(json.dumps(add_lead(name=args.name, company=args.company, title=args.title,
-                                   industry=args.industry, headcount=args.headcount,
-                                   email=args.email, linkedin_url=args.linkedin,
-                                   channel=args.channel, stage=args.stage, notes=args.notes, tags=tags)))
+        result = add_lead(name=args.name, company=args.company, title=args.title,
+                          industry=args.industry, headcount=args.headcount,
+                          email=args.email, linkedin_url=args.linkedin,
+                          channel=args.channel, stage=args.stage, notes=args.notes, tags=tags)
+        ws_slug = getattr(args, "workspace", None)
+        if ws_slug and result.get("id"):
+            conn = get_conn()
+            ws_row = resolve_workspace_identity(conn, ws_slug)
+            if ws_row:
+                upsert_workspace_lead(conn, DEFAULT_ORG_ID, ws_row["id"], result["id"],
+                                      status=args.stage or "prospecting")
+                conn.commit()
+                result["workspace"] = ws_row["slug"]
+            else:
+                result["workspace_error"] = f"workspace not found: {ws_slug}"
+            conn.close()
+        print(json.dumps(result))
     elif args.command == "import-profiles":
         rows: list[dict] = []
         if args.file and args.json_data:
@@ -5545,12 +5554,80 @@ def main():
         else:
             print(json.dumps(result, indent=2))
     elif args.command == "update-stage":
+        ws_slug = getattr(args, "workspace", None)
+        conn = get_conn()
+        routing_config = get_org_routing_config(conn, DEFAULT_ORG_ID)
+        ws_row = None
+        if routing_config.mode == WORKSPACE_ROUTING_MULTI:
+            if not ws_slug:
+                conn.close()
+                print(json.dumps({"error": "Multi-workspace mode: --workspace is required for update-stage"}))
+                sys.exit(1)
+            ws_row = resolve_workspace_identity(conn, ws_slug)
+            if not ws_row:
+                conn.close()
+                print(json.dumps({"error": f"workspace not found: {ws_slug}"}))
+                sys.exit(1)
+        elif ws_slug:
+            ws_row = resolve_workspace_identity(conn, ws_slug)
+        conn.close()
+
         update_lead_stage(args.id, args.stage, args.next_action)
-        print(json.dumps({"status": "updated", "id": args.id, "stage": args.stage}))
+
+        result = {"status": "updated", "id": args.id, "stage": args.stage}
+        if ws_row:
+            conn = get_conn()
+            ws_lead_id = upsert_workspace_lead(
+                conn, DEFAULT_ORG_ID, ws_row["id"], args.id, status=args.stage)
+            stage_ts = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
+                (args.stage, stage_ts, ws_lead_id))
+            conn.commit()
+            conn.close()
+            result["workspace"] = ws_row["slug"]
+        print(json.dumps(result))
     elif args.command == "log-event":
+        ws_slug = getattr(args, "workspace", None)
+        conn = get_conn()
+        routing_config = get_org_routing_config(conn, DEFAULT_ORG_ID)
+        ws_row = None
+        if routing_config.mode == WORKSPACE_ROUTING_MULTI:
+            if not ws_slug:
+                conn.close()
+                print(json.dumps({"error": "Multi-workspace mode: --workspace is required for log-event"}))
+                sys.exit(1)
+            ws_row = resolve_workspace_identity(conn, ws_slug)
+            if not ws_row:
+                conn.close()
+                print(json.dumps({"error": f"workspace not found: {ws_slug}"}))
+                sys.exit(1)
+        elif ws_slug:
+            ws_row = resolve_workspace_identity(conn, ws_slug)
+        conn.close()
+
         log_event(lead_id=args.lead_id, event_type=args.event_type, direction=args.direction,
                   channel=args.channel, subject=args.subject, body_preview=args.body)
-        print(json.dumps({"status": "logged", "lead_id": args.lead_id}))
+
+        result = {"status": "logged", "lead_id": args.lead_id}
+        if ws_row:
+            conn = get_conn()
+            ws_lead_id = upsert_workspace_lead(
+                conn, DEFAULT_ORG_ID, ws_row["id"], args.lead_id,
+                status="contacted" if args.event_type == "email_sent" else "prospecting")
+            idem_key = f"agent_cli_{args.lead_id}_{args.event_type}_{datetime.now(timezone.utc).isoformat()}"
+            append_workspace_event(
+                conn, DEFAULT_ORG_ID, ws_row["id"], args.lead_id, ws_lead_id,
+                event_type=args.event_type,
+                event_at=datetime.now(timezone.utc).isoformat(),
+                source_platform="agent",
+                idempotency_key=idem_key,
+                payload={"subject": args.subject, "direction": args.direction,
+                         "channel": args.channel, "body_preview": args.body})
+            conn.commit()
+            conn.close()
+            result["workspace"] = ws_row["slug"]
+        print(json.dumps(result))
     elif args.command == "merge-leads":
         if args.keep and args.merge:
             result = merge_leads(args.keep, args.merge, reason="manual_cli")

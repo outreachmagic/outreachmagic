@@ -295,6 +295,16 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py add-lead \
   --channel email --stage prospecting
 ```
 
+To also associate the lead with a workspace at creation time:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py add-lead \
+  --name "Jane Doe" --email "jane@acme.com" --company "Acme Corp" \
+  --workspace thesystemsmethod --stage contacted
+```
+
+`--workspace` is optional on `add-lead` — creating a lead is an org-wide operation. Use it when you know which workspace the lead belongs to; omit it when just researching.
+
 If lead exists by email or LinkedIn, returns `{"status": "exists", "id": N}` (does not enrich existing rows — use `import-profiles` for that).
 
 ### Bulk import / enrich (CSV, JSON, research dumps)
@@ -342,15 +352,19 @@ After `pull`, use **`campaigns`** for per-campaign event and lead counts (unchan
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py log-event \
   --lead-id 1 --type email_sent --direction outbound \
-  --subject "Quick intro"
+  --subject "Quick intro" --workspace thesystemsmethod
 ```
+
+`--workspace` is **required** in multi-workspace mode. Outreach events are workspace-scoped — they belong to a specific pipeline. In single-workspace mode it falls back to the default workspace.
 
 ### Update stage and log replies
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update-stage \
-  --id 1 --stage replied --next-action "Send case study"
+  --id 1 --stage replied --next-action "Send case study" --workspace thesystemsmethod
 ```
+
+`--workspace` is **required** in multi-workspace mode. Stage is per-workspace — a lead can be "contacted" in one workspace and "interested" in another.
 
 Stages: `prospecting` -> `contacted` -> `replied` -> `interested` -> `proposal` -> `won` | `lost`
 
@@ -399,6 +413,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 | stage | `--stage` | Pipeline stage (default: prospecting) |
 | notes | `--notes` | Free-form |
 | tags | `--tags` | JSON array string like '["vip","enterprise"]' |
+| workspace | `--workspace` | Optional on `add-lead`; required on `log-event` and `update-stage` in multi-workspace mode |
 
 ## Web Dashboard
 

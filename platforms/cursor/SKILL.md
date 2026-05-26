@@ -208,6 +208,14 @@ python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py show --auto-reply tru
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py show --lead-status interested --json
 ```
 
+Filter by date (created or updated on/after a date):
+
+```bash
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py show --since today
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py show --since 2026-05-26 --json
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py lead-table --workspace popcam --since today --json
+```
+
 Then open full timeline for any lead (all events, not just the status event):
 
 ```bash

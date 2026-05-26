@@ -2305,6 +2305,7 @@ def get_pipeline(
     sort="updated_at",
     order="desc",
     workspace: Optional[str] = None,
+    since: Optional[str] = None,
 ):
     """List leads; optional filters use latest status-bearing event per lead (current-only)."""
     conn = get_conn()
@@ -2385,6 +2386,13 @@ def get_pipeline(
         )
         params.extend([lead_status, lead_status.replace("_", " ")])
 
+    if since:
+        since_date = since.strip()
+        if since_date.lower() == "today":
+            since_date = datetime.now().strftime("%Y-%m-%d")
+        query += " AND (l.created_at >= ? OR l.updated_at >= ?)"
+        params.extend([since_date, since_date])
+
     order_sql = {
         "updated_at": f"l.updated_at {order.upper()}",
         "sentiment": f"rs.current_sentiment {order.upper()}, l.updated_at DESC",
@@ -2448,10 +2456,11 @@ def get_campaign_stats():
                   (SELECT COUNT(*) FROM events e WHERE e.campaign_id = c.id) AS event_count,
                   (SELECT COUNT(*) FROM campaign_leads cl WHERE cl.campaign_id = c.id) AS lead_count,
                   (
-                    SELECT COUNT(*)
-                    FROM events e
-                    WHERE e.campaign_id = c.id
-                      AND lower(coalesce(json_extract(e.metadata_json, '$.lead_status_raw'), '')) = 'interested'
+                    SELECT COUNT(DISTINCT cl2.lead_id)
+                    FROM campaign_leads cl2
+                    JOIN leads l ON l.id = cl2.lead_id
+                    WHERE cl2.campaign_id = c.id
+                      AND l.stage = 'interested'
                   ) AS interested_count
            FROM campaigns c
            ORDER BY event_count DESC, c.name"""
@@ -5080,6 +5089,7 @@ def main():
     show_p.add_argument("--order", choices=("asc", "desc"), default="desc")
     show_p.add_argument("--limit", type=int, default=50)
     show_p.add_argument("--workspace", help="Filter by workspace name or slug")
+    show_p.add_argument("--since", help="Show leads created or updated on/after this date (YYYY-MM-DD or 'today')")
     show_p.add_argument("--json", action="store_true")
 
     lead_table_p = sub.add_parser("lead-table", help="Show canonical lead information table")
@@ -5096,6 +5106,7 @@ def main():
     lead_table_p.add_argument("--order", choices=("asc", "desc"), default="desc")
     lead_table_p.add_argument("--limit", type=int, default=50)
     lead_table_p.add_argument("--workspace", help="Filter by workspace name or slug")
+    lead_table_p.add_argument("--since", help="Show leads created or updated on/after this date (YYYY-MM-DD or 'today')")
     lead_table_p.add_argument("--markdown", action="store_true", help="Render as markdown table")
     lead_table_p.add_argument("--json", action="store_true")
 
@@ -5447,6 +5458,7 @@ def main():
                 sort=getattr(args, "sort", "updated_at"),
                 order=getattr(args, "order", "desc"),
                 workspace=getattr(args, "workspace", None),
+                since=getattr(args, "since", None),
             )
         except ValueError as e:
             print(str(e))
@@ -5466,6 +5478,7 @@ def main():
                 sort=getattr(args, "sort", "updated_at"),
                 order=getattr(args, "order", "desc"),
                 workspace=getattr(args, "workspace", None),
+                since=getattr(args, "since", None),
             )
         except ValueError as e:
             print(str(e))

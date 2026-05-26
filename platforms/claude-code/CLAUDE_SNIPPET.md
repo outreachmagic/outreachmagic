@@ -39,6 +39,8 @@ In multi-workspace mode, workspace-scoped commands require `--workspace SLUG`.
 - `copy-insights --lead-status interested` — Message copy analysis
 - `show --sentiment positive` — Filter by sentiment
 - `show --lead-status interested --json` — JSON output
+- `show --since today` — Filter by date (YYYY-MM-DD or 'today')
+- `lead-table --workspace popcam --since today --json` — Today's leads for a workspace
 - `workspace list` — List available workspaces
 
 ### Rules

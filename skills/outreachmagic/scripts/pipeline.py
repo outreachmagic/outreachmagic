@@ -910,7 +910,7 @@ def migrate_db(conn=None):
         except sqlite3.OperationalError:
             pass
     try:
-        conn.execute("ALTER TABLE leads ADD COLUMN cloud_dirty INTEGER NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE leads ADD COLUMN cloud_pending INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
         pass
     if own_conn:
@@ -1354,7 +1354,7 @@ def merge_leads(keep_id: int, merge_id: int, reason: str = "manual") -> dict:
                industry = COALESCE(NULLIF(trim(industry), ''), ?),
                headcount = COALESCE(NULLIF(trim(headcount), ''), ?),
                stage = ?,
-               cloud_dirty = 1,
+               cloud_pending = 1,
                updated_at = datetime('now')
                WHERE id = ?""",
             (
@@ -1458,7 +1458,7 @@ def resolve_lead(
                          "linkedin_normalized = COALESCE(linkedin_normalized, ?)"])
             params.extend([li_raw, li_norm])
         if sets:
-            sets.append("cloud_dirty = 1")
+            sets.append("cloud_pending = 1")
             sets.append("updated_at = datetime('now')")
             params.append(lead_id)
             conn.execute(f"UPDATE leads SET {', '.join(sets)} WHERE id = ?", params)
@@ -1613,7 +1613,7 @@ def enrich_lead(
             params.append(val)
             filled.append(col)
     if updates:
-        updates.append("cloud_dirty = 1")
+        updates.append("cloud_pending = 1")
         updates.append("updated_at = datetime('now')")
         conn.execute(f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", (*params, lead_id))
         conn.commit()
@@ -1759,7 +1759,7 @@ def update_lead_stage(lead_id, stage, next_action=None, event_at=None):
     ts_expr = "?" if event_at else "datetime('now')"
     conn = get_conn()
     conn.execute(
-        f"""UPDATE leads SET stage = ?, cloud_dirty = 1, updated_at = {ts_expr},
+        f"""UPDATE leads SET stage = ?, cloud_pending = 1, updated_at = {ts_expr},
            next_action = CASE WHEN ? IS NOT NULL THEN ? ELSE next_action END WHERE id = ?""",
         (stage, event_at, next_action, next_action, lead_id) if event_at
         else (stage, next_action, next_action, lead_id),
@@ -2896,20 +2896,20 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
              AND metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
     ).fetchone()["n"]
-    dirty_lead_count = conn2.execute(
-        "SELECT COUNT(*) AS n FROM leads WHERE cloud_dirty = 1"
+    pending_lead_count = conn2.execute(
+        "SELECT COUNT(*) AS n FROM leads WHERE cloud_pending = 1"
     ).fetchone()["n"]
     conn2.close()
 
     pending_total = len(pending_ws) + len(pending_maps)
-    local_changes = local_lead_count + local_event_count + dirty_lead_count
+    local_changes = local_lead_count + local_event_count + pending_lead_count
     return {
         "can_sync": True,
         "pending_workspaces": pending_ws,
         "pending_rules": pending_maps,
         "pending_local_leads": local_lead_count,
         "pending_local_events": local_event_count,
-        "pending_lead_updates": dirty_lead_count,
+        "pending_lead_updates": pending_lead_count,
         "pending_total": pending_total + local_changes,
         "synced": pending_total == 0 and local_changes == 0,
     }
@@ -2969,16 +2969,16 @@ def get_local_pending_counts(org_id: str = DEFAULT_ORG_ID) -> dict:
              AND metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
     ).fetchone()["n"]
-    dirty_leads = conn.execute(
-        "SELECT COUNT(*) AS n FROM leads WHERE cloud_dirty = 1"
+    pending_lead_updates = conn.execute(
+        "SELECT COUNT(*) AS n FROM leads WHERE cloud_pending = 1"
     ).fetchone()["n"]
     conn.close()
     return {
         "workspaces": unsynced_ws,
         "rules": unsynced_rules,
         "events": local_events,
-        "lead_updates": dirty_leads,
-        "total": unsynced_ws + unsynced_rules + local_events + dirty_leads,
+        "lead_updates": pending_lead_updates,
+        "total": unsynced_ws + unsynced_rules + local_events + pending_lead_updates,
     }
 
 
@@ -3081,10 +3081,10 @@ def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
         )
 
     if agent_key:
-        dirty_pushed = _push_dirty_leads(agent_key)
-        results["lead_updates_pushed"] = dirty_pushed
-        if dirty_pushed > 0:
-            parts.append(f"Pushed {dirty_pushed} lead update{'s' if dirty_pushed != 1 else ''} to relay.")
+        leads_pushed = _push_pending_lead_updates(agent_key)
+        results["lead_updates_pushed"] = leads_pushed
+        if leads_pushed > 0:
+            parts.append(f"Pushed {leads_pushed} lead update{'s' if leads_pushed != 1 else ''} to relay.")
 
     results["message"] = " ".join(parts) or "Everything is already synced."
     return results
@@ -3123,14 +3123,14 @@ def _push_agent_events_to_relay(agent_key: str) -> int:
     return total_pushed
 
 
-def _push_dirty_leads(agent_key: str) -> int:
-    """Push leads with cloud_dirty=1 to Cloudflare relay /push endpoint."""
+def _push_pending_lead_updates(agent_key: str) -> int:
+    """Push pending lead updates to Cloudflare relay /push endpoint."""
     conn = get_conn()
     rows = conn.execute(
         """SELECT l.*, COALESCE(co.name, l.company) AS company_display
            FROM leads l
            LEFT JOIN companies co ON l.company_id = co.id
-           WHERE l.cloud_dirty = 1"""
+           WHERE l.cloud_pending = 1"""
     ).fetchall()
     if not rows:
         conn.close()
@@ -3196,7 +3196,7 @@ def _push_dirty_leads(agent_key: str) -> int:
                     mark_conn = get_conn()
                     placeholders = ",".join("?" for _ in batch_ids)
                     mark_conn.execute(
-                        f"UPDATE leads SET cloud_dirty = 0 WHERE id IN ({placeholders})",
+                        f"UPDATE leads SET cloud_pending = 0 WHERE id IN ({placeholders})",
                         batch_ids,
                     )
                     mark_conn.commit()
@@ -3927,7 +3927,7 @@ def ingest_agent_entry(
                 if "tags" in payload:
                     tag_conn = get_conn()
                     tag_conn.execute(
-                        "UPDATE leads SET tags = ?, cloud_dirty = 1, updated_at = datetime('now') WHERE id = ?",
+                        "UPDATE leads SET tags = ?, cloud_pending = 1, updated_at = datetime('now') WHERE id = ?",
                         (json.dumps(payload["tags"]), lead_id),
                     )
                     tag_conn.commit()
@@ -3935,7 +3935,7 @@ def ingest_agent_entry(
                 if "notes" in payload:
                     note_conn = get_conn()
                     note_conn.execute(
-                        "UPDATE leads SET notes = ?, cloud_dirty = 1, updated_at = datetime('now') WHERE id = ?",
+                        "UPDATE leads SET notes = ?, cloud_pending = 1, updated_at = datetime('now') WHERE id = ?",
                         (payload["notes"], lead_id),
                     )
                     note_conn.commit()

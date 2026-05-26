@@ -34,7 +34,7 @@ The skill is open source: github.com/outreachmagic/hermes-skill
 (skill path: skills/outreachmagic/).
 
 Scripts are Python stdlib only — no pip installer, no curl-to-shell install.
-Users install via `hermes skills install outreachmagic/hermes-skill`.
+Users install via `git clone` from `github.com/outreachmagic/hermes-skill`.
 SECURITY.md and LICENSE are in the repo root.
 
 Happy to provide any additional info you need. Thanks!

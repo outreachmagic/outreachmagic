@@ -6,7 +6,7 @@
 
 | Platform | Repo | Install |
 |----------|------|---------|
-| Hermes | [outreachmagic/hermes-skill](https://github.com/outreachmagic/hermes-skill) | `hermes skills install outreachmagic/hermes-skill` |
+| Hermes | [outreachmagic/hermes-skill](https://github.com/outreachmagic/hermes-skill) | See `docs/install.md` (git clone) |
 | Cursor | [outreachmagic/cursor-skill](https://github.com/outreachmagic/cursor-skill) | Copy to `~/.cursor/skills/outreachmagic/` |
 | Claude Code | [outreachmagic/claude-code-skill](https://github.com/outreachmagic/claude-code-skill) | Copy scripts + append `CLAUDE_SNIPPET.md` to `CLAUDE.md` |
 

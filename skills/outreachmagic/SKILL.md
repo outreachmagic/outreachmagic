@@ -98,9 +98,12 @@ Check without installing: `pipeline.py update --check`. Install a specific relea
 ## Install
 
 ```bash
-hermes skills install outreachmagic/hermes-skill
-hermes -s outreachmagic
+git clone https://github.com/outreachmagic/hermes-skill.git /tmp/om-hermes
+mkdir -p ~/.hermes/skills/outreachmagic
+cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
+rm -rf /tmp/om-hermes
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
+hermes -s outreachmagic
 ```
 
 Local dev sync: `bash scripts/sync-local.sh` from a clone. See `docs/install.md`.

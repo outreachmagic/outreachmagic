@@ -60,8 +60,11 @@ hermes-skill agent-skill agentskills cold-email outreach smartlead instantly lem
 
 ```bash
 # End users
-hermes skills inspect outreachmagic/hermes-skill
-hermes skills install outreachmagic/hermes-skill
+git clone https://github.com/outreachmagic/hermes-skill.git /tmp/om-hermes
+mkdir -p ~/.hermes/skills/outreachmagic
+cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
+rm -rf /tmp/om-hermes
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 hermes -s outreachmagic
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 
@@ -174,7 +177,7 @@ git push origin main --tags
 
 ### HermesHub PR target
 
-Submit from `outreachmagic/hermes-skill` (SKILL.md at repo root). Install path: `hermes skills install outreachmagic/hermes-skill`.
+Submit from `outreachmagic/hermes-skill` (SKILL.md at repo root). Install path: `git clone` from GitHub (see docs/install.md).
 
 ### Reviewed Domains request (draft)
 

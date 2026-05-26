@@ -81,7 +81,11 @@ Development overrides (in `outreachmagic_config.json`, not environment variables
 Install through Hermes when possible — Hermes runs its own security scan on hub installs:
 
 ```bash
-hermes skills install outreachmagic/hermes-skill
+git clone https://github.com/outreachmagic/hermes-skill.git /tmp/om-hermes
+mkdir -p ~/.hermes/skills/outreachmagic
+cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
+rm -rf /tmp/om-hermes
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 ```
 
 ## Reporting a vulnerability

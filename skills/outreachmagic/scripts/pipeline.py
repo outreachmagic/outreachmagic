@@ -431,6 +431,14 @@ def set_last_pull(ts: str):
     cfg["last_pull"] = ts
     save_config(cfg)
 
+def get_last_max_id() -> Optional[int]:
+    return load_config().get("last_max_id")
+
+def set_last_max_id(max_id: int):
+    cfg = load_config()
+    cfg["last_max_id"] = max_id
+    save_config(cfg)
+
 
 def get_or_create_client_id() -> str:
     cfg = load_config()
@@ -3551,6 +3559,7 @@ def pull_events_org(agent_key: str, since: Optional[str] = None, after_id: Optio
 def sync_from_relay(
     token: str,
     since: Optional[str] = None,
+    after_id: Optional[int] = None,
     full: bool = False,
     ack: bool = False,
     debug_sentiment: bool = False,
@@ -3559,63 +3568,13 @@ def sync_from_relay(
     """Import relay events locally. Relay keeps all rows; we skip already-ingested keys."""
     maybe_sync_routing_from_cloud(token, quiet=quiet)
     imported = skipped = 0
-    after_id = 0
-    page_since = None if full else since
+    page_after_id = None if full else (after_id or 0)
 
     while True:
         result = pull_events(
             token,
-            since=page_since,
-            after_id=after_id if after_id else None,
-        )
-        if result.get("error"):
-            raise RuntimeError(result.get("message", "pull failed"))
-
-        events = result.get("events") or []
-        if not events:
-            break
-
-        for event in events:
-            if ingest_relay_event(
-                event,
-                debug_sentiment=debug_sentiment,
-                quiet=True,  # print one aggregate quarantine summary at end of pull
-            ) is None:
-                skipped += 1
-            else:
-                imported += 1
-
-        if ack and result.get("max_id"):
-            ack_events(token, result["max_id"])
-
-        if len(events) < 1000:
-            break
-        after_id = result.get("max_id") or 0
-
-    set_last_pull(datetime.now(timezone.utc).isoformat())
-    if not quiet:
-        print_quarantine_guidance()
-    return imported, skipped
-
-
-def sync_from_relay_org(
-    agent_key: str,
-    since: Optional[str] = None,
-    full: bool = False,
-    debug_sentiment: bool = False,
-    quiet: bool = False,
-) -> tuple[int, int]:
-    """Import relay events for the entire org using an agent key."""
-    maybe_sync_routing_from_cloud(agent_key, quiet=quiet)
-    imported = skipped = 0
-    after_id = 0
-    page_since = None if full else since
-
-    while True:
-        result = pull_events_org(
-            agent_key,
-            since=page_since,
-            after_id=after_id if after_id else None,
+            since=None,
+            after_id=page_after_id if page_after_id else None,
         )
         if result.get("error"):
             raise RuntimeError(result.get("message", "pull failed"))
@@ -3634,10 +3593,65 @@ def sync_from_relay_org(
             else:
                 imported += 1
 
+        if ack and result.get("max_id"):
+            ack_events(token, result["max_id"])
+
+        page_after_id = result.get("max_id") or page_after_id
+
         if len(events) < 1000:
             break
-        after_id = result.get("max_id") or 0
 
+    if page_after_id:
+        set_last_max_id(page_after_id)
+    set_last_pull(datetime.now(timezone.utc).isoformat())
+    if not quiet:
+        print_quarantine_guidance()
+    return imported, skipped
+
+
+def sync_from_relay_org(
+    agent_key: str,
+    since: Optional[str] = None,
+    after_id: Optional[int] = None,
+    full: bool = False,
+    debug_sentiment: bool = False,
+    quiet: bool = False,
+) -> tuple[int, int]:
+    """Import relay events for the entire org using an agent key."""
+    maybe_sync_routing_from_cloud(agent_key, quiet=quiet)
+    imported = skipped = 0
+    page_after_id = None if full else (after_id or 0)
+
+    while True:
+        result = pull_events_org(
+            agent_key,
+            since=None,
+            after_id=page_after_id if page_after_id else None,
+        )
+        if result.get("error"):
+            raise RuntimeError(result.get("message", "pull failed"))
+
+        events = result.get("events") or []
+        if not events:
+            break
+
+        for event in events:
+            if ingest_relay_event(
+                event,
+                debug_sentiment=debug_sentiment,
+                quiet=True,
+            ) is None:
+                skipped += 1
+            else:
+                imported += 1
+
+        page_after_id = result.get("max_id") or page_after_id
+
+        if len(events) < 1000:
+            break
+
+    if page_after_id:
+        set_last_max_id(page_after_id)
     set_last_pull(datetime.now(timezone.utc).isoformat())
     if not quiet:
         print_quarantine_guidance()
@@ -3966,7 +3980,7 @@ def setup(agent_key: Optional[str] = None):
     if count > 0:
         print("Importing events...")
         try:
-            imported, skipped = sync_from_relay_org(agent_key, since=get_last_pull(), full=not get_last_pull())
+            imported, skipped = sync_from_relay_org(agent_key, after_id=get_last_max_id(), full=not get_last_max_id())
             print(f"Imported {imported} new, {skipped} already on disk.")
         except RuntimeError as e:
             print(f"Import failed: {e}")
@@ -4014,7 +4028,7 @@ def connect(token: str):
     if count > 0:
         print("Importing events from relay (archive stays on Cloudflare)...")
         try:
-            imported, skipped = sync_from_relay(token, since=get_last_pull(), full=not get_last_pull())
+            imported, skipped = sync_from_relay(token, after_id=get_last_max_id(), full=not get_last_max_id())
             print(f"Imported {imported} new, {skipped} already on disk.\n")
         except RuntimeError as e:
             print(f"Import failed: {e}\n")
@@ -4886,7 +4900,7 @@ def main():
             if agent_key and not args.key:
                 imported, skipped = sync_from_relay_org(
                     agent_key,
-                    since=None if args.full else get_last_pull(),
+                    after_id=None if args.full else get_last_max_id(),
                     full=args.full,
                     debug_sentiment=args.debug_sentiment,
                     quiet=args.cron,
@@ -4894,7 +4908,7 @@ def main():
             else:
                 imported, skipped = sync_from_relay(
                     tok,
-                    since=None if args.full else get_last_pull(),
+                    after_id=None if args.full else get_last_max_id(),
                     full=args.full,
                     ack=args.ack,
                     debug_sentiment=args.debug_sentiment,
@@ -4923,9 +4937,9 @@ def main():
         if agent_key or tok:
             try:
                 if agent_key:
-                    imported, _ = sync_from_relay_org(agent_key, since=get_last_pull(), quiet=True)
+                    imported, _ = sync_from_relay_org(agent_key, after_id=get_last_max_id(), quiet=True)
                 else:
-                    imported, _ = sync_from_relay(tok, since=get_last_pull(), quiet=True)
+                    imported, _ = sync_from_relay(tok, after_id=get_last_max_id(), quiet=True)
                 if imported:
                     print(f"Pulled from relay: {imported} new events imported.")
                 else:

@@ -68,9 +68,26 @@ jobs:
           cp LICENSE staging/
           cp SECURITY.md staging/
 
-          # Rewrite GITHUB_REPO in pipeline.py for platform-specific updates
+          # Rewrite GITHUB_REPO and SKILL_REPO_PATH for platform-specific updates
           sed -i 's|GITHUB_REPO = "outreachmagic/outreachmagic-skill"|GITHUB_REPO = "${{ matrix.github_repo_value }}"|' staging/scripts/pipeline.py
           sed -i 's|GITHUB_REPO = "outreachmagic/hermes-agent"|GITHUB_REPO = "${{ matrix.github_repo_value }}"|' staging/scripts/pipeline.py
+          sed -i 's|SKILL_REPO_PATH = "skills/outreachmagic"|SKILL_REPO_PATH = "."|' staging/scripts/pipeline.py
+
+          # Regenerate update-manifest.json with correct checksums (post-rewrite)
+          python3 -c "
+          import hashlib, json, pathlib
+          files = {}
+          for name in ('pipeline.py', 'relay_extractors.py', 'workspace_routing.py', 'routing_cloud.py', 'om_paths.py', 'VERSION'):
+              p = pathlib.Path('staging/scripts') / name
+              if p.exists():
+                  files[name] = hashlib.sha256(p.read_bytes()).hexdigest()
+          skill_md = pathlib.Path('staging/SKILL.md')
+          if skill_md.exists():
+              files['SKILL.md'] = hashlib.sha256(skill_md.read_bytes()).hexdigest()
+          version = (pathlib.Path('staging/scripts/VERSION').read_text().strip() if pathlib.Path('staging/scripts/VERSION').exists() else '0.0.0')
+          manifest = {'version': version, 'files': files}
+          pathlib.Path('staging/update-manifest.json').write_text(json.dumps(manifest, indent=2))
+          "
 
       - name: Push to platform repo
         env:

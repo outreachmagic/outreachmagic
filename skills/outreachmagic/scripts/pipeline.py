@@ -2669,7 +2669,7 @@ def set_workspace_routing(
             "status": "error",
             "error": f"mode must be one of: {', '.join(VALID_WORKSPACE_ROUTING_MODES)}",
         }
-    tok = get_token()
+    tok = get_agent_key() or get_token()
     if routing_cloud.cloud_routing_enabled(load_config, tok):
         try:
             bundle = routing_cloud.push_routing_mode(
@@ -2758,7 +2758,7 @@ def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAUL
 
     result: dict = {"status": "created", "id": ws_id, "name": name, "slug": slug}
 
-    tok = get_token()
+    tok = get_agent_key() or get_token()
     can_sync = routing_cloud.cloud_routing_enabled(load_config, tok)
 
     if sync and can_sync:
@@ -2792,7 +2792,7 @@ def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAUL
 
 def sync_workspaces_to_cloud(org_id: str = DEFAULT_ORG_ID) -> dict:
     """Push all local workspaces to the cloud webapp."""
-    tok = get_token()
+    tok = get_agent_key() or get_token()
     if not routing_cloud.cloud_routing_enabled(load_config, tok):
         return {"status": "error", "error": "No cloud token configured. Set up an agent key first."}
 
@@ -2827,7 +2827,7 @@ def sync_workspaces_to_cloud(org_id: str = DEFAULT_ORG_ID) -> dict:
 
 def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
     """Compare local state with cloud and return what's pending sync."""
-    tok = get_token()
+    tok = get_agent_key() or get_token()
     if not routing_cloud.cloud_routing_enabled(load_config, tok):
         return {"can_sync": False, "reason": "No cloud token configured."}
 
@@ -2924,7 +2924,7 @@ def format_sync_status(status: dict) -> str:
 
 def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
     """Push all pending workspaces and campaign maps to the cloud."""
-    tok = get_token()
+    tok = get_agent_key() or get_token()
     if not routing_cloud.cloud_routing_enabled(load_config, tok):
         return {"status": "error", "error": "No cloud token configured."}
 
@@ -3074,7 +3074,7 @@ def add_campaign_map_cli(
     if config.mode == WORKSPACE_ROUTING_MULTI and workspace_slug == "default":
         return {"status": "error", "error": "Cannot route to the default workspace in multi-workspace mode."}
     strategy = match_strategy or ("id_exact" if campaign_id else "name_exact")
-    tok = get_token()
+    tok = get_agent_key() or get_token()
     if routing_cloud.cloud_routing_enabled(load_config, tok):
         try:
             bundle = routing_cloud.push_campaign_map(

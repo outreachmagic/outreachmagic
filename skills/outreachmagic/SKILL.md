@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.5.0
+version: 1.6.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -32,6 +32,8 @@ Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
 Config (single source of truth): `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`
 
 Optional config keys: `data_root` (e.g. `~/.claude` for Claude Code), `api_base_url`, `dev_repo` for local development.
+
+Environment variable: `OUTREACHMAGIC_AGENT_KEY` — overrides the config file `agent_key`. Set via `.env`, shell profile, or CI/CD.
 
 ## First-Time Setup (IMPORTANT — read this first)
 
@@ -110,8 +112,9 @@ Local dev sync: `bash scripts/sync-local.sh` from a clone. See `docs/install.md`
 - The user asks "show me my pipeline" or "how is outreach going"
 - The user says "track this" followed by outreach details
 - The user wants to connect a sequencer (paid — requires token)
-
 - The user asks for campaign breakdowns or counts by campaign name
+- The user asks about connection status, webhook URLs, or platform health (`status`, `connections`)
+- The user wants to add or remove a platform connection (`connect-platform`, `disconnect-platform`)
 
 ## Agent Behavior Rules (Important)
 
@@ -122,6 +125,8 @@ Local dev sync: `bash scripts/sync-local.sh` from a clone. See `docs/install.md`
 - When the user asks for message content, use the `history` command on the specific lead.
 - For copy-performance analysis (full subject/body on positive leads + winner), use `copy-insights`.
 - For campaign counts, use `pipeline.py campaigns` (or `stats`, which includes a campaign section). Do not write raw SQL.
+- When the user asks about connections, webhook URLs, or platform health, use `status` or `connections`.
+- When the user wants to connect a new platform, use `connect-platform --platform <id>`.
 - **NEVER use `python3 -c`, `sqlite3` directly, raw SQL, or any inline script to inspect or modify the database.** All database operations must go through `pipeline.py` commands. If a command errors, report the error verbatim and stop — do not attempt to debug by accessing the database directly.
 
 ## MANDATORY: Always Pull First
@@ -162,6 +167,26 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles --file leads.csv
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --file changes.csv
+```
+
+### Status and connection management
+
+Dashboard-style status, connection management, and webhook URL generation — all from the CLI. These commands talk to the app API and do not require a local database.
+
+```bash
+# Dashboard overview: plan, usage, per-platform health, routing
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py status
+
+# List all connections with webhook URLs and 30-day event counts
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connections
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connections --json
+
+# Generate a webhook URL for a new platform
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect-platform --platform smartlead
+
+# Remove a platform connection (webhook URL stops working)
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py disconnect-platform --platform smartlead
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py disconnect-platform --platform smartlead --yes
 ```
 
 ### Export local changes for cross-platform sync
@@ -337,6 +362,14 @@ If the user already has a key, skip the browser flow:
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_THEIR_KEY
+```
+
+Generate webhook URLs for platforms directly from the CLI (requires agent key):
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect-platform --platform smartlead
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect-platform --platform instantly
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connections
 ```
 
 Legacy per-platform token (not agent key):

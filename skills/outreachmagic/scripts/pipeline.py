@@ -75,6 +75,7 @@ from workspace_routing import (
 )
 
 import routing_cloud
+import connections_cloud
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -87,7 +88,7 @@ SKILL_NAME = "outreachmagic"
 RELAY_URL = "https://api.outreachmagic.io"
 
 SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
-UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py", "workspace_routing.py", "routing_cloud.py", "om_paths.py")
+UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py", "workspace_routing.py", "routing_cloud.py", "connections_cloud.py", "om_paths.py")
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
 SKILL_REPO_PATH = "skills/outreachmagic"
 GITHUB_REPO = "outreachmagic/outreachmagic-skill"
@@ -420,7 +421,7 @@ def get_token() -> Optional[str]:
     return load_config().get("token")
 
 def get_agent_key() -> Optional[str]:
-    return load_config().get("agent_key")
+    return os.environ.get("OUTREACHMAGIC_AGENT_KEY") or load_config().get("agent_key")
 
 def get_last_pull() -> Optional[str]:
     return load_config().get("last_pull")
@@ -4031,6 +4032,281 @@ def connect(token: str):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Connection management (via app API)
+# ──────────────────────────────────────────────────────────────────────
+
+PLATFORM_LABELS = {
+    "smartlead": "Smartlead",
+    "instantly": "Instantly",
+    "emailbison": "EmailBison",
+    "plusvibe": "PlusVibe",
+    "masterinbox": "MasterInbox",
+    "heyreach": "HeyReach",
+    "prosp": "Prosp",
+    "clay": "Clay",
+}
+
+
+def _require_agent_key() -> str:
+    key = get_agent_key()
+    if not key:
+        print("No agent key configured. Run: pipeline.py setup")
+        sys.exit(1)
+    return key
+
+
+def _staleness_label(iso_ts: Optional[str]) -> str:
+    if not iso_ts:
+        return "never"
+    try:
+        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return "unknown"
+    delta = datetime.now(timezone.utc) - dt
+    secs = delta.total_seconds()
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs / 60)}m ago"
+    if secs < 86400:
+        return f"{int(secs / 3600)}h ago"
+    return f"{int(secs / 86400)}d ago"
+
+
+def _staleness_indicator(iso_ts: Optional[str]) -> str:
+    """Return a unicode indicator: green dot < 24h, yellow 24h-7d, red > 7d."""
+    if not iso_ts:
+        return "\u26aa"  # white circle
+    try:
+        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return "\u26aa"
+    delta = datetime.now(timezone.utc) - dt
+    secs = delta.total_seconds()
+    if secs < 86400:
+        return "\U0001f7e2"  # green
+    if secs < 7 * 86400:
+        return "\U0001f7e1"  # yellow
+    return "\U0001f534"  # red
+
+
+def cmd_status():
+    """Dashboard-style status: plan, connections, usage, routing."""
+    agent_key = _require_agent_key()
+    api_base = routing_cloud.get_api_base(load_config)
+
+    try:
+        data = connections_cloud.fetch_status(api_base, agent_key)
+    except RuntimeError as exc:
+        print(f"Could not fetch status: {exc}")
+        sys.exit(1)
+
+    plan = (data.get("plan") or "free").capitalize()
+    events_used = data.get("eventsUsed", 0)
+    events_limit = data.get("eventsLimit")
+    resets_at = data.get("resetsAt", "")
+    is_canceling = data.get("isCanceling", False)
+
+    resets_label = ""
+    if resets_at:
+        try:
+            dt = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
+            resets_label = dt.strftime("%b %-d")
+        except ValueError:
+            resets_label = resets_at[:10]
+
+    print()
+    print("Outreach Magic Status")
+    print("\u2500" * 50)
+
+    usage_str = str(events_used)
+    if events_limit:
+        usage_str += f" / {events_limit}"
+    plan_suffix = ""
+    if is_canceling:
+        plan_suffix = " (canceling)"
+    print(f"Plan: {plan}{plan_suffix}  |  Events this month: {usage_str}  |  Resets: {resets_label}")
+    print()
+
+    connections = data.get("connections", [])
+    active = [c for c in connections if c.get("status") == "active"]
+    print(f"Connections ({len(active)} active)")
+    if not connections:
+        print("  No connections. Run: pipeline.py connect-platform --platform smartlead")
+    else:
+        for c in connections:
+            plat = c.get("platform", "?")
+            label = PLATFORM_LABELS.get(plat, plat)
+            status = (c.get("status") or "unknown").capitalize()
+            events_30d = c.get("events30d", 0)
+            last_event = c.get("lastEventAt")
+            indicator = _staleness_indicator(last_event)
+            age = _staleness_label(last_event)
+            print(f"  {indicator} {label:<14} {status:<8}  {events_30d:>5} events (30d)   Last event: {age}")
+    print()
+
+    ws_mode = data.get("workspaceMode", "single")
+    ws_count = data.get("workspacesCount", 1)
+    cfg_version = data.get("routingConfigVersion", "?")
+    print(f"Routing: {ws_mode} workspace{'s' if ws_count > 1 else ''}  |  Config v{cfg_version}")
+
+    key_last_used = data.get("agentKeyLastUsedAt")
+    if key_last_used:
+        print(f"Agent key last used: {_staleness_label(key_last_used)}")
+    print()
+
+
+def cmd_connections(json_output: bool = False):
+    """List connected platforms with webhook URLs and stats."""
+    agent_key = _require_agent_key()
+    api_base = routing_cloud.get_api_base(load_config)
+
+    try:
+        data = connections_cloud.fetch_status(api_base, agent_key)
+    except RuntimeError as exc:
+        print(f"Could not fetch connections: {exc}")
+        sys.exit(1)
+
+    connections = data.get("connections", [])
+
+    if json_output:
+        print(json.dumps(connections, indent=2))
+        return
+
+    if not connections:
+        print("No connections. Run: pipeline.py connect-platform --platform smartlead")
+        return
+
+    print()
+    print("Platform Connections")
+    print("\u2500" * 70)
+    for c in connections:
+        plat = c.get("platform", "?")
+        label = PLATFORM_LABELS.get(plat, plat)
+        status = (c.get("status") or "unknown").capitalize()
+        events_30d = c.get("events30d", 0)
+        last_event = c.get("lastEventAt")
+        webhook_url = c.get("webhookUrl")
+        indicator = _staleness_indicator(last_event)
+        age = _staleness_label(last_event)
+
+        print(f"\n  {indicator} {label} ({status})")
+        print(f"    Events (30d): {events_30d}   |   Last event: {age}")
+        if webhook_url:
+            print(f"    Webhook URL:  {webhook_url}")
+        else:
+            print(f"    Webhook URL:  (paused/revoked)")
+    print()
+
+
+PLATFORM_SETUP_HINTS = {
+    "smartlead": "In Smartlead → Settings → Webhooks, paste the URL. Enable: Email Sent, Email Reply, Email Bounced.",
+    "instantly": "In Instantly → Settings → Integrations → Webhooks, paste the URL. Enable all event types.",
+    "heyreach": "In HeyReach → Settings → Webhooks, paste the URL. Enable all campaign events.",
+    "plusvibe": "In PlusVibe → Settings → Webhooks, paste the URL. Enable: ALL_EMAIL_REPLIES, LEAD_MARKED_AS_* events.",
+    "emailbison": "In EmailBison → Integrations → Webhooks, paste the URL and enable relevant events.",
+    "masterinbox": "In MasterInbox → Settings → Webhooks, paste the URL.",
+    "prosp": "In Prosp → Settings → Webhooks, paste the URL.",
+    "clay": "In Clay → Settings → Webhooks, paste the URL.",
+}
+
+
+def cmd_connect_platform(platform: str):
+    """Generate a webhook URL for a platform via the app API."""
+    agent_key = _require_agent_key()
+    api_base = routing_cloud.get_api_base(load_config)
+    platform = platform.lower().strip()
+
+    try:
+        result = connections_cloud.create_token(api_base, agent_key, platform=platform)
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "409" in msg:
+            print(f"Platform '{platform}' already has a connection.")
+            print("Fetching existing webhook URL...")
+            try:
+                status = connections_cloud.fetch_status(api_base, agent_key)
+                for c in status.get("connections", []):
+                    if c.get("platform") == platform and c.get("webhookUrl"):
+                        print(f"\n  Webhook URL: {c['webhookUrl']}")
+                        hint = PLATFORM_SETUP_HINTS.get(platform)
+                        if hint:
+                            print(f"\n  Setup: {hint}")
+                        return
+                print("Could not retrieve the existing webhook URL.")
+            except RuntimeError:
+                pass
+            return
+        print(f"Failed to create connection: {exc}")
+        sys.exit(1)
+
+    token_data = result.get("token", {})
+    webhook_url = token_data.get("webhookUrl")
+    label = PLATFORM_LABELS.get(platform, platform)
+
+    print(f"\n  {label} connected!")
+    if webhook_url:
+        print(f"\n  Webhook URL: {webhook_url}")
+        print(f"\n  Copy this URL and paste it into your {label} webhook settings.")
+        hint = PLATFORM_SETUP_HINTS.get(platform)
+        if hint:
+            print(f"\n  Setup: {hint}")
+    else:
+        print("  Token created but webhook URL could not be resolved.")
+    print()
+
+
+def cmd_disconnect_platform(platform: str, skip_confirm: bool = False):
+    """Delete a platform webhook token. The webhook URL stops working immediately."""
+    agent_key = _require_agent_key()
+    api_base = routing_cloud.get_api_base(load_config)
+    platform = platform.lower().strip()
+
+    try:
+        status = connections_cloud.fetch_status(api_base, agent_key)
+    except RuntimeError as exc:
+        print(f"Could not fetch connections: {exc}")
+        sys.exit(1)
+
+    match = None
+    for c in status.get("connections", []):
+        if c.get("platform") == platform:
+            match = c
+            break
+
+    if not match:
+        print(f"No connection found for platform '{platform}'.")
+        return
+
+    label = PLATFORM_LABELS.get(platform, platform)
+    token_id = match.get("tokenId")
+    if not token_id:
+        print(f"Cannot disconnect: token ID not available for {label}.")
+        return
+
+    if not skip_confirm:
+        print(f"\n  WARNING: This will permanently delete the {label} webhook token.")
+        print(f"  The webhook URL will stop working immediately.")
+        print(f"  Events (30d): {match.get('events30d', 0)}")
+        try:
+            answer = input("\n  Type 'yes' to confirm: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Cancelled.")
+            return
+        if answer != "yes":
+            print("  Cancelled.")
+            return
+
+    try:
+        connections_cloud.delete_token(api_base, agent_key, platform=platform, token_id=token_id)
+        print(f"\n  {label} disconnected. Webhook URL is no longer active.")
+    except RuntimeError as exc:
+        print(f"Failed to disconnect: {exc}")
+        sys.exit(1)
+    print()
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Formatting
 # ──────────────────────────────────────────────────────────────────────
 
@@ -4398,6 +4674,20 @@ def main():
 
     webhook_p = sub.add_parser("webhook-url", help="Show webhook URLs for your platforms")
 
+    sub.add_parser("status", help="Dashboard-style status: plan, connections, usage, routing")
+
+    conn_p = sub.add_parser("connections", help="List connected platforms with webhook URLs and stats")
+    conn_p.add_argument("--json", action="store_true")
+
+    cp_p = sub.add_parser("connect-platform", help="Generate a webhook URL for a platform")
+    cp_p.add_argument("--platform", required=True,
+                       help="Platform id (smartlead, instantly, heyreach, plusvibe, emailbison, etc.)")
+
+    dp_p = sub.add_parser("disconnect-platform", help="Delete a platform webhook token (URL stops working)")
+    dp_p.add_argument("--platform", required=True,
+                       help="Platform id to disconnect")
+    dp_p.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+
     hist_p = sub.add_parser("history", help="Show event history for a lead")
     hist_p.add_argument("--id", type=int, help="Lead ID")
     hist_p.add_argument("--email", help="Find lead by email")
@@ -4527,6 +4817,23 @@ def main():
         print(f"Database initialized: {get_db_path()}")
         print()
         print("Next: run 'pipeline.py setup' to connect your agent to Outreach Magic.")
+        return
+
+    # Commands that only talk to the app API (no local DB required)
+    if args.command == "status":
+        cmd_status()
+        return
+
+    if args.command == "connections":
+        cmd_connections(json_output=getattr(args, "json", False))
+        return
+
+    if args.command == "connect-platform":
+        cmd_connect_platform(args.platform)
+        return
+
+    if args.command == "disconnect-platform":
+        cmd_disconnect_platform(args.platform, skip_confirm=getattr(args, "yes", False))
         return
 
     if not db_exists():

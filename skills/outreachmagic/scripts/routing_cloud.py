@@ -119,11 +119,11 @@ def apply_routing_bundle_to_sqlite(
         placeholders = ",".join("?" for _ in cloud_workspace_ids)
         conn.execute(
             f"""DELETE FROM workspaces
-                WHERE org_id = ? AND id NOT IN ({placeholders})""",
+                WHERE org_id = ? AND cloud_synced = 1 AND id NOT IN ({placeholders})""",
             [org_id, *cloud_workspace_ids],
         )
     else:
-        conn.execute("DELETE FROM workspaces WHERE org_id = ?", (org_id,))
+        conn.execute("DELETE FROM workspaces WHERE org_id = ? AND cloud_synced = 1", (org_id,))
 
     cloud_map_ids: list[str] = []
     for item in bundle.get("campaignMaps") or []:
@@ -160,11 +160,11 @@ def apply_routing_bundle_to_sqlite(
         placeholders = ",".join("?" for _ in cloud_map_ids)
         conn.execute(
             f"""DELETE FROM campaign_workspace_map
-                WHERE org_id = ? AND id NOT IN ({placeholders})""",
+                WHERE org_id = ? AND cloud_synced = 1 AND id NOT IN ({placeholders})""",
             [org_id, *cloud_map_ids],
         )
     else:
-        conn.execute("DELETE FROM campaign_workspace_map WHERE org_id = ?", (org_id,))
+        conn.execute("DELETE FROM campaign_workspace_map WHERE org_id = ? AND cloud_synced = 1", (org_id,))
 
 
 def sync_routing_from_cloud(

@@ -909,6 +909,10 @@ def migrate_db(conn=None):
             conn.execute(f"ALTER TABLE {tbl} ADD COLUMN cloud_synced INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+    try:
+        conn.execute("ALTER TABLE leads ADD COLUMN cloud_dirty INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     if own_conn:
         conn.commit()
         conn.close()
@@ -1350,6 +1354,7 @@ def merge_leads(keep_id: int, merge_id: int, reason: str = "manual") -> dict:
                industry = COALESCE(NULLIF(trim(industry), ''), ?),
                headcount = COALESCE(NULLIF(trim(headcount), ''), ?),
                stage = ?,
+               cloud_dirty = 1,
                updated_at = datetime('now')
                WHERE id = ?""",
             (
@@ -1453,6 +1458,7 @@ def resolve_lead(
                          "linkedin_normalized = COALESCE(linkedin_normalized, ?)"])
             params.extend([li_raw, li_norm])
         if sets:
+            sets.append("cloud_dirty = 1")
             sets.append("updated_at = datetime('now')")
             params.append(lead_id)
             conn.execute(f"UPDATE leads SET {', '.join(sets)} WHERE id = ?", params)
@@ -1607,6 +1613,7 @@ def enrich_lead(
             params.append(val)
             filled.append(col)
     if updates:
+        updates.append("cloud_dirty = 1")
         updates.append("updated_at = datetime('now')")
         conn.execute(f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", (*params, lead_id))
         conn.commit()
@@ -1752,7 +1759,7 @@ def update_lead_stage(lead_id, stage, next_action=None, event_at=None):
     ts_expr = "?" if event_at else "datetime('now')"
     conn = get_conn()
     conn.execute(
-        f"""UPDATE leads SET stage = ?, updated_at = {ts_expr},
+        f"""UPDATE leads SET stage = ?, cloud_dirty = 1, updated_at = {ts_expr},
            next_action = CASE WHEN ? IS NOT NULL THEN ? ELSE next_action END WHERE id = ?""",
         (stage, event_at, next_action, next_action, lead_id) if event_at
         else (stage, next_action, next_action, lead_id),
@@ -2768,13 +2775,13 @@ def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAUL
 
     if sync and can_sync:
         try:
-            bundle = routing_cloud.push_workspace_create(
+            routing_cloud.push_workspace_create(
                 routing_cloud.get_api_base(load_config),
                 tok,
                 name=name,
                 slug=slug,
             )
-            _apply_cloud_routing_bundle(bundle, org_id)
+            _mark_workspace_synced(slug, org_id)
             result["synced"] = True
         except RuntimeError as exc:
             result["synced"] = False
@@ -2818,13 +2825,13 @@ def sync_workspaces_to_cloud(org_id: str = DEFAULT_ORG_ID) -> dict:
     errors = []
     for ws in workspaces:
         try:
-            bundle = routing_cloud.push_workspace_create(api_base, tok, name=ws["name"], slug=ws["slug"])
-            _apply_cloud_routing_bundle(bundle, org_id)
+            routing_cloud.push_workspace_create(api_base, tok, name=ws["name"], slug=ws["slug"])
+            _mark_workspace_synced(ws["slug"], org_id)
             synced.append(ws["slug"])
         except RuntimeError as exc:
             if "already exists" in str(exc).lower() or "unique" in str(exc).lower():
-                synced.append(ws["slug"])
                 _mark_workspace_synced(ws["slug"], org_id)
+                synced.append(ws["slug"])
             else:
                 errors.append({"slug": ws["slug"], "error": str(exc)})
 
@@ -2889,16 +2896,20 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
              AND metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
     ).fetchone()["n"]
+    dirty_lead_count = conn2.execute(
+        "SELECT COUNT(*) AS n FROM leads WHERE cloud_dirty = 1"
+    ).fetchone()["n"]
     conn2.close()
 
     pending_total = len(pending_ws) + len(pending_maps)
-    local_changes = local_lead_count + local_event_count
+    local_changes = local_lead_count + local_event_count + dirty_lead_count
     return {
         "can_sync": True,
         "pending_workspaces": pending_ws,
         "pending_rules": pending_maps,
         "pending_local_leads": local_lead_count,
         "pending_local_events": local_event_count,
+        "pending_lead_updates": dirty_lead_count,
         "pending_total": pending_total + local_changes,
         "synced": pending_total == 0 and local_changes == 0,
     }
@@ -2958,12 +2969,16 @@ def get_local_pending_counts(org_id: str = DEFAULT_ORG_ID) -> dict:
              AND metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
     ).fetchone()["n"]
+    dirty_leads = conn.execute(
+        "SELECT COUNT(*) AS n FROM leads WHERE cloud_dirty = 1"
+    ).fetchone()["n"]
     conn.close()
     return {
         "workspaces": unsynced_ws,
         "rules": unsynced_rules,
         "events": local_events,
-        "total": unsynced_ws + unsynced_rules + local_events,
+        "lead_updates": dirty_leads,
+        "total": unsynced_ws + unsynced_rules + local_events + dirty_leads,
     }
 
 
@@ -2978,6 +2993,8 @@ def format_local_sync_hint(counts: dict) -> str:
         parts.append(f"{counts['rules']} routing rule{'s' if counts['rules'] != 1 else ''}")
     if counts["events"]:
         parts.append(f"{counts['events']} agent event{'s' if counts['events'] != 1 else ''}")
+    if counts.get("lead_updates"):
+        parts.append(f"{counts['lead_updates']} lead update{'s' if counts['lead_updates'] != 1 else ''}")
     return f"\n⚠ Not synced: {', '.join(parts)}. Run: pipeline.py sync"
 
 
@@ -2998,13 +3015,13 @@ def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
 
     for ws in status.get("pending_workspaces") or []:
         try:
-            bundle = routing_cloud.push_workspace_create(api_base, tok, name=ws["name"], slug=ws["slug"])
-            _apply_cloud_routing_bundle(bundle, org_id)
+            routing_cloud.push_workspace_create(api_base, tok, name=ws["name"], slug=ws["slug"])
+            _mark_workspace_synced(ws["slug"], org_id)
             results["workspaces_synced"].append(ws["slug"])
         except RuntimeError as exc:
             if "already exists" in str(exc).lower() or "unique" in str(exc).lower():
-                results["workspaces_synced"].append(ws["slug"])
                 _mark_workspace_synced(ws["slug"], org_id)
+                results["workspaces_synced"].append(ws["slug"])
             else:
                 results["errors"].append({"type": "workspace", "slug": ws["slug"], "error": str(exc)})
 
@@ -3020,7 +3037,7 @@ def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
         if not row:
             continue
         try:
-            bundle = routing_cloud.push_campaign_map(
+            routing_cloud.push_campaign_map(
                 api_base, tok,
                 source_platform=row["source_platform"],
                 workspace_slug=row["workspace_slug"],
@@ -3029,10 +3046,14 @@ def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
                 match_strategy=row["match_strategy"],
                 priority=row["priority"],
             )
-            _apply_cloud_routing_bundle(bundle, org_id)
+            conn.execute(
+                "UPDATE campaign_workspace_map SET cloud_synced = 1 WHERE id = ?",
+                (rule["id"],),
+            )
             results["rules_synced"].append(rule["label"])
         except RuntimeError as exc:
             results["errors"].append({"type": "rule", "label": rule["label"], "error": str(exc)})
+    conn.commit()
     conn.close()
 
     total = len(results["workspaces_synced"]) + len(results["rules_synced"])
@@ -3058,6 +3079,13 @@ def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
             f"{local_total} agent event{'s' if local_total != 1 else ''} pending — "
             f"no agent key configured to push them."
         )
+
+    if agent_key:
+        dirty_pushed = _push_dirty_leads(agent_key)
+        results["lead_updates_pushed"] = dirty_pushed
+        if dirty_pushed > 0:
+            parts.append(f"Pushed {dirty_pushed} lead update{'s' if dirty_pushed != 1 else ''} to relay.")
+
     results["message"] = " ".join(parts) or "Everything is already synced."
     return results
 
@@ -3089,6 +3117,90 @@ def _push_agent_events_to_relay(agent_key: str) -> int:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 result = json.loads(resp.read())
                 total_pushed += result.get("pushed", 0)
+        except Exception:
+            break
+
+    return total_pushed
+
+
+def _push_dirty_leads(agent_key: str) -> int:
+    """Push leads with cloud_dirty=1 to Cloudflare relay /push endpoint."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT l.*, COALESCE(co.name, l.company) AS company_display
+           FROM leads l
+           LEFT JOIN companies co ON l.company_id = co.id
+           WHERE l.cloud_dirty = 1"""
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return 0
+
+    client_id = get_or_create_client_id()
+    entries = []
+    pushed_ids = []
+    for row in rows:
+        entity_key = row["email"] or row["linkedin_url"] or ""
+        if not entity_key:
+            continue
+        ws_slug = _lead_workspace_slug(conn, row["id"])
+        payload: dict = {}
+        for field in ("email", "name", "company", "title", "industry", "headcount", "stage", "notes"):
+            val = row[field]
+            if val is not None:
+                payload[field] = val
+        if row["linkedin_url"]:
+            payload["linkedin"] = row["linkedin_url"]
+        try:
+            tags = json.loads(row["tags"] or "[]")
+            if tags:
+                payload["tags"] = tags
+        except (json.JSONDecodeError, TypeError):
+            pass
+        entry: dict = {
+            "action": "lead_update",
+            "entity_key": entity_key,
+            "timestamp": row["updated_at"],
+            "payload": payload,
+        }
+        if ws_slug:
+            entry["workspace"] = ws_slug
+        entries.append(entry)
+        pushed_ids.append(row["id"])
+
+    conn.close()
+    if not entries:
+        return 0
+
+    total_pushed = 0
+    for i in range(0, len(entries), 500):
+        batch = entries[i : i + 500]
+        batch_ids = pushed_ids[i : i + 500]
+        body = json.dumps({"client_id": client_id, "entries": batch}).encode()
+        req = urllib.request.Request(
+            f"{RELAY_URL}/push",
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {agent_key}",
+                "User-Agent": f"OutreachMagic/{__version__}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read())
+                count = result.get("pushed", 0)
+                total_pushed += count
+                if count > 0:
+                    mark_conn = get_conn()
+                    placeholders = ",".join("?" for _ in batch_ids)
+                    mark_conn.execute(
+                        f"UPDATE leads SET cloud_dirty = 0 WHERE id IN ({placeholders})",
+                        batch_ids,
+                    )
+                    mark_conn.commit()
+                    mark_conn.close()
         except Exception:
             break
 
@@ -3135,9 +3247,10 @@ def add_campaign_map_cli(
         return {"status": "error", "error": "Cannot route to the default workspace in multi-workspace mode."}
     strategy = match_strategy or ("id_exact" if campaign_id else "name_exact")
     tok = get_agent_key() or get_token()
-    if routing_cloud.cloud_routing_enabled(load_config, tok):
+    cloud_ok = routing_cloud.cloud_routing_enabled(load_config, tok)
+    if cloud_ok:
         try:
-            bundle = routing_cloud.push_campaign_map(
+            routing_cloud.push_campaign_map(
                 routing_cloud.get_api_base(load_config),
                 tok,
                 source_platform=platform,
@@ -3147,8 +3260,6 @@ def add_campaign_map_cli(
                 match_strategy=strategy,
                 priority=priority,
             )
-            _apply_cloud_routing_bundle(bundle, DEFAULT_ORG_ID)
-            return {"status": "created", "workspace_slug": workspace_slug, "match_strategy": strategy}
         except RuntimeError as exc:
             return {"status": "error", "error": str(exc)}
     conn = get_conn()
@@ -3169,6 +3280,8 @@ def add_campaign_map_cli(
         match_strategy=strategy,
         priority=priority,
     )
+    if cloud_ok:
+        conn.execute("UPDATE campaign_workspace_map SET cloud_synced = 1 WHERE id = ?", (map_id,))
     conn.commit()
     conn.close()
     return {"status": "created", "map_id": map_id, "workspace_id": ws["id"]}
@@ -3814,7 +3927,7 @@ def ingest_agent_entry(
                 if "tags" in payload:
                     tag_conn = get_conn()
                     tag_conn.execute(
-                        "UPDATE leads SET tags = ?, updated_at = datetime('now') WHERE id = ?",
+                        "UPDATE leads SET tags = ?, cloud_dirty = 1, updated_at = datetime('now') WHERE id = ?",
                         (json.dumps(payload["tags"]), lead_id),
                     )
                     tag_conn.commit()
@@ -3822,7 +3935,7 @@ def ingest_agent_entry(
                 if "notes" in payload:
                     note_conn = get_conn()
                     note_conn.execute(
-                        "UPDATE leads SET notes = ?, updated_at = datetime('now') WHERE id = ?",
+                        "UPDATE leads SET notes = ?, cloud_dirty = 1, updated_at = datetime('now') WHERE id = ?",
                         (payload["notes"], lead_id),
                     )
                     note_conn.commit()
@@ -5546,7 +5659,7 @@ def main():
         print()
         print(format_stats(get_stats()))
 
-    if args.command in ("workspace", "campaign-map", "quarantine", "pull", None):
+    if args.command in ("workspace", "campaign-map", "quarantine", "pull", "enrich", "stage", "import-profiles", None):
         try:
             hint = format_local_sync_hint(get_local_pending_counts())
             if hint:

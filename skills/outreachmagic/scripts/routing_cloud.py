@@ -131,6 +131,15 @@ def apply_routing_bundle_to_sqlite(
             continue
         map_id = item["id"]
         cloud_map_ids.append(map_id)
+        # Remove any existing row that would conflict on the partial unique index
+        # (same org/platform/campaign_id but different id)
+        if item.get("campaignId"):
+            conn.execute(
+                """DELETE FROM campaign_workspace_map
+                   WHERE org_id = ? AND source_platform = ? AND campaign_id = ?
+                     AND id != ? AND is_active = 1""",
+                (org_id, item["sourcePlatform"], item["campaignId"], map_id),
+            )
         conn.execute(
             """INSERT INTO campaign_workspace_map (
                    id, org_id, source_platform, campaign_id, campaign_name_normalized,

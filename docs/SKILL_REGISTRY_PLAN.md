@@ -27,7 +27,7 @@ Plan for securing the Outreach Magic Hermes skill and getting it approved on Her
 | Add `docs/install.md` | **Done** |
 | Open Reviewed Domains issue on `amanning3390/hermeshub` for `api.outreachmagic.io` and `dev.outreachmagic.io` | **Ready** — copy from [hermeshub-reviewed-domains-issue.md](./hermeshub-reviewed-domains-issue.md) |
 | Run HermesHub `scan-skill.py` locally; fix CRITICAL findings | **Done** — SKILL.md verified (0 findings); use `bash scripts/skill-scan.sh` |
-| Set GitHub repo topics (hermes-agent, agent-skill, agentskills, etc.) | **Ready** — run `bash scripts/set-repo-topics.sh` or see list below |
+| Set GitHub repo topics (hermes-skill, agent-skill, agentskills, etc.) | **Ready** — run `bash scripts/set-repo-topics.sh` or see list below |
 | Align SKILL.md frontmatter description with registry listing copy | **Done** |
 
 **Last updated:** Phase 0 complete (pre-submission hygiene)
@@ -35,7 +35,7 @@ Plan for securing the Outreach Magic Hermes skill and getting it approved on Her
 ### GitHub repo topics (if not yet applied)
 
 ```
-hermes-agent agent-skill agentskills cold-email outreach smartlead instantly lemlist claude-code sales-automation b2b-sales lead-generation mcp sqlite gtm
+hermes-skill agent-skill agentskills cold-email outreach smartlead instantly lemlist claude-code sales-automation b2b-sales lead-generation mcp sqlite gtm
 ```
 
 ---
@@ -52,7 +52,7 @@ hermes-agent agent-skill agentskills cold-email outreach smartlead instantly lem
 | Update `OUTREACHMAGIC_DEV_REPO` path to `skills/outreachmagic/scripts/` | **Done** |
 | Replace `scripts/install.sh` with dev-only `scripts/sync-local.sh` (no curl pipe) | **Done** |
 | Add `skills/outreachmagic/references/schema.md` | **Done** |
-| Update README with `hermes skills install outreachmagic/hermes-agent/skills/outreachmagic` | **Done** |
+| Update README with `hermes skills install outreachmagic/hermes-skill` | **Done** |
 | Set portal default to `https://dev.outreachmagic.io` (was sandbox Cloud Run URL) | **Done** |
 | Remove deprecated `pipeline/` and `skill/` directories | **Done** |
 
@@ -60,8 +60,8 @@ hermes-agent agent-skill agentskills cold-email outreach smartlead instantly lem
 
 ```bash
 # End users
-hermes skills inspect outreachmagic/hermes-agent/skills/outreachmagic
-hermes skills install outreachmagic/hermes-agent/skills/outreachmagic
+hermes skills inspect outreachmagic/hermes-skill
+hermes skills install outreachmagic/hermes-skill
 hermes -s outreachmagic
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 

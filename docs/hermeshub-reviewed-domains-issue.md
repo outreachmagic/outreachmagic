@@ -30,11 +30,11 @@ The skill makes external calls to these domains:
   - Billing / subscription status
   - Workspace routing config sync (campaign → workspace maps) when connected
 
-The skill is open source: github.com/outreachmagic/hermes-agent
+The skill is open source: github.com/outreachmagic/hermes-skill
 (skill path: skills/outreachmagic/).
 
 Scripts are Python stdlib only — no pip installer, no curl-to-shell install.
-Users install via `hermes skills install outreachmagic/hermes-agent/skills/outreachmagic`.
+Users install via `hermes skills install outreachmagic/hermes-skill`.
 SECURITY.md and LICENSE are in the repo root.
 
 Happy to provide any additional info you need. Thanks!

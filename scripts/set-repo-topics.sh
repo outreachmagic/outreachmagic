@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Set GitHub topics on outreachmagic/hermes-agent (requires gh auth)
+# Set GitHub topics on outreachmagic/hermes-skill (requires gh auth)
 set -euo pipefail
 
 TOPICS=(
-  hermes-agent agent-skill agentskills cold-email outreach
+  hermes-skill agent-skill agentskills cold-email outreach
   smartlead instantly lemlist claude-code sales-automation
   b2b-sales lead-generation mcp sqlite gtm
 )

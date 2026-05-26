@@ -96,7 +96,7 @@ Check without installing: `pipeline.py update --check`. Install a specific relea
 ## Install
 
 ```bash
-hermes skills install outreachmagic/hermes-agent/skills/outreachmagic
+hermes skills install outreachmagic/hermes-skill
 hermes -s outreachmagic
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 ```
@@ -382,7 +382,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/server.py
 - **Relay pass-through.** Webhooks hit `api.outreachmagic.io`; the CLI imports them locally via `pull`. We store tokens and usage on our side, not a searchable cloud copy of your outreach archive.
 - **Portal API.** `dev.outreachmagic.io` (production: app.outreachmagic.io) handles tokens, billing, and optional workspace routing sync when connected.
 - **Credentials.** Store relay tokens in `config/outreachmagic_config.json` only. Never hardcode tokens in SKILL.md or commit them to git.
-- **Read before connect.** See repo root [SECURITY.md](https://github.com/outreachmagic/hermes-agent/blob/main/SECURITY.md) for full data boundaries and vulnerability reporting.
+- **Read before connect.** See repo root [SECURITY.md](https://github.com/outreachmagic/hermes-skill/blob/main/SECURITY.md) for full data boundaries and vulnerability reporting.
 
 ## Common Pitfalls
 

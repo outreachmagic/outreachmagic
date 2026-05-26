@@ -140,6 +140,48 @@ python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py stats
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py campaigns
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py import-profiles --file leads.csv
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py export-local
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py export-local --file changes.csv
+```
+
+### Export local changes for cross-platform sync
+
+Export locally-created leads and events (not from relay) as JSON or CSV. Useful for transferring data between platforms (Cursor, Hermes, Claude Code).
+
+```bash
+# JSON to stdout (pipe to relay push or save to file)
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py export-local
+
+# CSV file (import-profiles compatible)
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py export-local --file local_changes.csv
+
+# Filter to a specific workspace
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py export-local --workspace leadgenph
+
+# Include all leads (not just locally-created)
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py export-local --all
+```
+
+**Push to relay for cross-platform sync (manual):**
+
+```bash
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py export-local \
+  | curl -s -X POST \
+    -H "Authorization: Bearer om_agent_YOUR_KEY" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    https://api.outreachmagic.io/push
+```
+
+Other platforms pick up the changes automatically on their next `pull`.
+
+**File-based transfer (no server):**
+
+```bash
+# Machine A: export
+pipeline.py export-local --file changes.csv
+# Machine B: import
+pipeline.py import-profiles --file changes.csv --overwrite
 ```
 
 ### Campaign breakdown

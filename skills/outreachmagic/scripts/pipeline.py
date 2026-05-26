@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import re
 import shutil
+import uuid
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -50,6 +51,7 @@ from relay_extractors import (
     name_from_email,
 )
 from workspace_routing import (
+    CampaignContext,
     DEFAULT_ORG_ID,
     VALID_WORKSPACE_ROUTING_MODES,
     WORKSPACE_ROUTING_MULTI,
@@ -427,6 +429,17 @@ def set_last_pull(ts: str):
     cfg = load_config()
     cfg["last_pull"] = ts
     save_config(cfg)
+
+
+def get_or_create_client_id() -> str:
+    cfg = load_config()
+    cid = cfg.get("client_id")
+    if cid:
+        return cid
+    cid = str(uuid.uuid4())
+    cfg["client_id"] = cid
+    save_config(cfg)
+    return cid
 
 
 def get_workspace_routing_mode_from_config() -> Optional[str]:
@@ -3184,6 +3197,307 @@ def mark_relay_ingested(dedupe_key: str, lead_id: int):
     conn.close()
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Export local changes & agent entry replay
+# ──────────────────────────────────────────────────────────────────────
+
+
+def find_lead_by_identifier(conn: sqlite3.Connection, entity_key: str) -> Optional[int]:
+    """Resolve an entity_key (email or linkedin URL) to a local lead ID."""
+    if not entity_key:
+        return None
+    if "@" in entity_key:
+        return find_lead_by_email(conn, entity_key)
+    if "linkedin" in entity_key.lower():
+        _, norm = normalize_linkedin(entity_key)
+        return find_lead_by_linkedin(conn, norm) if norm else None
+    return None
+
+
+def _lead_workspace_slug(conn: sqlite3.Connection, lead_id: int) -> Optional[str]:
+    """Return the workspace slug for a lead, or None."""
+    row = conn.execute(
+        """SELECT w.slug FROM workspace_leads wl
+           JOIN workspaces w ON wl.workspace_id = w.id
+           WHERE wl.lead_id = ? LIMIT 1""",
+        (lead_id,),
+    ).fetchone()
+    return row["slug"] if row else None
+
+
+def export_local_changes(
+    *,
+    all_leads: bool = False,
+    workspace: Optional[str] = None,
+) -> dict:
+    """Export locally-created leads and events as a JSON structure
+    suitable for pushing to the relay or importing on another machine."""
+    client_id = get_or_create_client_id()
+    conn = get_conn()
+
+    workspace_filter = ""
+    workspace_params: list = []
+    if workspace:
+        ws_row = resolve_workspace_identity(conn, workspace)
+        if ws_row:
+            workspace_filter = """
+                AND l.id IN (
+                    SELECT lead_id FROM workspace_leads WHERE workspace_id = ?
+                )"""
+            workspace_params.append(ws_row["id"])
+
+    if all_leads:
+        lead_rows = conn.execute(
+            f"""SELECT l.*, COALESCE(co.name, l.company) AS company_display
+                FROM leads l
+                LEFT JOIN companies co ON l.company_id = co.id
+                WHERE 1=1 {workspace_filter}
+                ORDER BY l.created_at ASC""",
+            workspace_params,
+        ).fetchall()
+    else:
+        lead_rows = conn.execute(
+            f"""SELECT l.*, COALESCE(co.name, l.company) AS company_display
+                FROM leads l
+                LEFT JOIN companies co ON l.company_id = co.id
+                WHERE l.id NOT IN (
+                    SELECT DISTINCT lead_id FROM relay_ingested
+                    WHERE lead_id IS NOT NULL
+                ) {workspace_filter}
+                ORDER BY l.created_at ASC""",
+            workspace_params,
+        ).fetchall()
+
+    entries = []
+    lead_ids = set()
+    for row in lead_rows:
+        lead_id = row["id"]
+        lead_ids.add(lead_id)
+        ws_slug = _lead_workspace_slug(conn, lead_id)
+        entry = {
+            "action": "lead_create",
+            "entity_key": row["email"] or row["linkedin_url"] or "",
+            "timestamp": row["created_at"],
+        }
+        if ws_slug:
+            entry["workspace"] = ws_slug
+        payload: dict = {}
+        for field in ("email", "name", "company", "title", "industry", "headcount", "stage", "notes"):
+            val = row[field]
+            if val is not None:
+                payload[field] = val
+        if row["linkedin_url"]:
+            payload["linkedin"] = row["linkedin_url"]
+        try:
+            tags = json.loads(row["tags"] or "[]")
+            if tags:
+                payload["tags"] = tags
+        except (json.JSONDecodeError, TypeError):
+            pass
+        entry["payload"] = payload
+        entries.append(entry)
+
+        if row["stage"] and row["stage"] != "prospecting":
+            stage_entry: dict = {
+                "action": "stage_change",
+                "entity_key": entry["entity_key"],
+                "timestamp": row["updated_at"],
+                "payload": {"stage": row["stage"]},
+            }
+            if ws_slug:
+                stage_entry["workspace"] = ws_slug
+            if row["next_action"]:
+                stage_entry["payload"]["next_action"] = row["next_action"]
+            entries.append(stage_entry)
+
+    event_rows = conn.execute(
+        """SELECT e.*, l.email, l.linkedin_url
+           FROM events e
+           JOIN leads l ON e.lead_id = l.id
+           WHERE e.metadata_json NOT LIKE '%"source": "relay"%'
+             AND e.metadata_json NOT LIKE '%"source":"relay"%'
+             AND e.metadata_json NOT LIKE '%"source": "agent_sync"%'
+             AND e.metadata_json NOT LIKE '%"source":"agent_sync"%'
+           ORDER BY e.created_at ASC""",
+    ).fetchall()
+
+    for row in event_rows:
+        entity_key = row["email"] or row["linkedin_url"] or ""
+        ws_slug = _lead_workspace_slug(conn, row["lead_id"])
+        event_entry: dict = {
+            "action": "event_log",
+            "entity_key": entity_key,
+            "timestamp": row["created_at"],
+            "payload": {
+                "event_type": row["event_type"],
+                "direction": row["direction"],
+                "channel": row["channel"],
+            },
+        }
+        if ws_slug:
+            event_entry["workspace"] = ws_slug
+        if row["subject"]:
+            event_entry["payload"]["subject"] = row["subject"]
+        if row["body_preview"]:
+            event_entry["payload"]["body_preview"] = row["body_preview"]
+        entries.append(event_entry)
+
+    conn.close()
+    return {
+        "version": 1,
+        "client_id": client_id,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "entries": entries,
+    }
+
+
+def write_export_csv(result: dict, path: str):
+    """Write lead entries from an export as a CSV compatible with import-profiles."""
+    lead_entries = [e for e in result.get("entries", []) if e["action"] == "lead_create"]
+    if not lead_entries:
+        print(json.dumps({"status": "empty", "message": "No local leads to export"}))
+        return
+    fieldnames = ["email", "linkedin", "name", "company", "title", "industry", "headcount", "stage", "notes"]
+    out_path = Path(path).expanduser()
+    with open(out_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for entry in lead_entries:
+            writer.writerow(entry.get("payload", {}))
+    print(json.dumps({"status": "exported", "file": str(out_path), "leads": len(lead_entries)}))
+
+
+def ingest_agent_entry(
+    event: dict,
+    quiet: bool = False,
+) -> Optional[int]:
+    """Replay an agent-originated mutation from another client during pull."""
+    action = event.get("action", "")
+    payload = event.get("payload", {})
+    client_id = event.get("client_id", "")
+    entity_key = event.get("entity_key", "")
+    timestamp = event.get("timestamp", "")
+    workspace_slug = event.get("workspace")
+
+    local_client_id = get_or_create_client_id()
+    if client_id == local_client_id:
+        return None
+
+    dedupe_key = f"agent:{client_id}:{entity_key}:{action}:{timestamp}"
+    if relay_already_ingested(dedupe_key):
+        return None
+
+    conn = get_conn()
+    lead_id = None
+    try:
+        org_id = DEFAULT_ORG_ID
+        routing_config = get_org_routing_config(conn, org_id)
+        workspace_id = None
+
+        if routing_config.mode == WORKSPACE_ROUTING_SINGLE:
+            workspace_id = routing_config.default_workspace_id
+        elif routing_config.mode == WORKSPACE_ROUTING_MULTI:
+            if workspace_slug:
+                ws_row = resolve_workspace_identity(conn, workspace_slug)
+                workspace_id = ws_row["id"] if ws_row else None
+            if not workspace_id:
+                quarantine_event(
+                    conn, org_id,
+                    CampaignContext(
+                        source_platform="agent",
+                        campaign_id=None,
+                        campaign_name_raw=None,
+                        campaign_name_normalized=None,
+                    ),
+                    reason="agent_entry_no_workspace",
+                    payload=event,
+                    external_event_id=dedupe_key,
+                )
+                conn.commit()
+                conn.close()
+                mark_relay_ingested(dedupe_key, 0)
+                return None
+
+        if action == "lead_create":
+            conn.close()
+            result = resolve_lead(
+                email=payload.get("email"),
+                linkedin_url=payload.get("linkedin"),
+                name=payload.get("name", "Unknown"),
+                company=payload.get("company"),
+                title=payload.get("title"),
+                industry=payload.get("industry"),
+                headcount=payload.get("headcount"),
+                stage=payload.get("stage", "prospecting"),
+                notes=payload.get("notes"),
+            )
+            lead_id = result.get("id")
+            if lead_id and workspace_id:
+                conn = get_conn()
+                upsert_workspace_lead(conn, org_id, workspace_id, lead_id)
+                conn.commit()
+                conn.close()
+        elif action == "lead_update":
+            lead_id = find_lead_by_identifier(conn, entity_key)
+            conn.close()
+            if lead_id:
+                update_fields = {
+                    k: v for k, v in payload.items()
+                    if k in ("name", "title", "industry", "company", "headcount") and v is not None
+                }
+                if update_fields:
+                    enrich_lead(lead_id, overwrite=True, **update_fields)
+                if "tags" in payload:
+                    tag_conn = get_conn()
+                    tag_conn.execute(
+                        "UPDATE leads SET tags = ?, updated_at = datetime('now') WHERE id = ?",
+                        (json.dumps(payload["tags"]), lead_id),
+                    )
+                    tag_conn.commit()
+                    tag_conn.close()
+                if "notes" in payload:
+                    note_conn = get_conn()
+                    note_conn.execute(
+                        "UPDATE leads SET notes = ?, updated_at = datetime('now') WHERE id = ?",
+                        (payload["notes"], lead_id),
+                    )
+                    note_conn.commit()
+                    note_conn.close()
+        elif action == "stage_change":
+            lead_id = find_lead_by_identifier(conn, entity_key)
+            conn.close()
+            if lead_id and payload.get("stage"):
+                try:
+                    update_lead_stage(lead_id, payload["stage"], payload.get("next_action"))
+                except ValueError:
+                    pass
+        elif action == "event_log":
+            lead_id = find_lead_by_identifier(conn, entity_key)
+            conn.close()
+            if lead_id:
+                log_event(
+                    lead_id,
+                    event_type=payload.get("event_type", "email_sent"),
+                    direction=payload.get("direction", "outbound"),
+                    channel=payload.get("channel", "email"),
+                    subject=payload.get("subject"),
+                    body_preview=payload.get("body_preview"),
+                    metadata={"source": "agent_sync", "origin_client": client_id},
+                )
+        else:
+            conn.close()
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
+
+    if lead_id:
+        mark_relay_ingested(dedupe_key, lead_id)
+    return lead_id
+
+
 def pull_events(token: str, since: Optional[str] = None, after_id: Optional[int] = None) -> dict:
     """Pull events from the relay (events stay on Cloudflare; client dedupes)."""
     params = []
@@ -3349,6 +3663,9 @@ def ingest_relay_event(
     quiet: bool = False,
 ) -> Optional[int]:
     """Take a relay event and write it to the local SQLite database. Returns None if duplicate."""
+    if event.get("platform") == "agent":
+        return ingest_agent_entry(event, quiet=quiet)
+
     dedupe_key = relay_dedupe_key(event)
     ws_idempotency = f"ws:{dedupe_key}"
     conn = get_conn()
@@ -4045,6 +4362,12 @@ def main():
     imp_p.add_argument("--stage", default="prospecting")
     imp_p.add_argument("--notes")
 
+    export_p = sub.add_parser("export-local", help="Export locally-created leads and events")
+    export_p.add_argument("--json", action="store_true", help="Output as JSON (default)")
+    export_p.add_argument("--file", help="Write CSV to file (import-profiles compatible)")
+    export_p.add_argument("--all", action="store_true", help="Include all leads, not just locally-created")
+    export_p.add_argument("--workspace", help="Filter export to a specific workspace")
+
     up_p = sub.add_parser("update-stage", help="Update lead stage")
     up_p.add_argument("--id", type=int, required=True); up_p.add_argument("--stage", required=True)
     up_p.add_argument("--next-action")
@@ -4375,6 +4698,15 @@ def main():
             notes=args.notes,
         )
         print(json.dumps(summary, indent=2))
+    elif args.command == "export-local":
+        result = export_local_changes(
+            all_leads=getattr(args, "all", False),
+            workspace=getattr(args, "workspace", None),
+        )
+        if getattr(args, "file", None):
+            write_export_csv(result, args.file)
+        else:
+            print(json.dumps(result, indent=2))
     elif args.command == "update-stage":
         update_lead_stage(args.id, args.stage, args.next_action)
         print(json.dumps({"status": "updated", "id": args.id, "stage": args.stage}))

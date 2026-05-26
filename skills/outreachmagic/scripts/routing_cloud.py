@@ -65,6 +65,10 @@ def apply_routing_bundle_to_sqlite(
     *,
     org_id: str,
 ) -> None:
+    # Defer FK checks so workspace-id migrations (child update → parent update)
+    # don't fail mid-transaction; constraints are enforced at commit time.
+    conn.execute("PRAGMA defer_foreign_keys = ON")
+
     mode = (bundle.get("mode") or WORKSPACE_ROUTING_SINGLE).strip().lower()
     default_ws_id = bundle.get("defaultWorkspaceId")
     conn.execute(
@@ -84,9 +88,6 @@ def apply_routing_bundle_to_sqlite(
         ws_id = ws["id"]
         cloud_workspace_ids.append(ws_id)
 
-        # A locally-generated workspace (e.g. id="ws_default") may already exist
-        # with the same (org_id, slug) but a different id. Migrate child-table
-        # references first (foreign_keys=ON means the parent update must come last).
         row = conn.execute(
             "SELECT id FROM workspaces WHERE org_id = ? AND slug = ? AND id != ?",
             (org_id, ws["slug"], ws_id),

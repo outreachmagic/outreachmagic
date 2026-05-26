@@ -3959,7 +3959,7 @@ def setup(agent_key: Optional[str] = None):
 
     try:
         maybe_sync_routing_from_cloud(agent_key, quiet=True)
-    except RuntimeError:
+    except Exception:
         pass
 
     count = result.get("count", 0) if not result.get("error") else 0

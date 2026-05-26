@@ -4203,7 +4203,7 @@ PLATFORM_SETUP_HINTS = {
     "smartlead": "In Smartlead → Settings → Webhooks, paste the URL. Enable: Email Sent, Email Reply, Email Bounced.",
     "instantly": "In Instantly → Settings → Integrations → Webhooks, paste the URL. Enable all event types.",
     "heyreach": "In HeyReach → Settings → Webhooks, paste the URL. Enable all campaign events.",
-    "plusvibe": "In PlusVibe → Settings → Webhooks, paste the URL. Enable: ALL_EMAIL_REPLIES, LEAD_MARKED_AS_* events.",
+    "plusvibe": "In PlusVibe → Settings → Webhooks, paste the URL. Subscribe to: ALL_EMAIL_REPLIES, LEAD_MARKED_AS_INTERESTED, LEAD_MARKED_AS_NOT_INTERESTED, LEAD_MARKED_AS_OUT_OF_OFFICE, and any other custom LEAD_MARKED_AS_<label> events you use. Set camp_ids to ALL. Optionally enable ignore_ooo and ignore_automatic to filter noise.",
     "emailbison": "In EmailBison → Integrations → Webhooks, paste the URL and enable relevant events.",
     "masterinbox": "In MasterInbox → Settings → Webhooks, paste the URL.",
     "prosp": "In Prosp → Settings → Webhooks, paste the URL.",
@@ -4325,7 +4325,12 @@ def format_pipeline_table(leads):
                 dt = datetime.fromisoformat(last)
                 now = datetime.now(timezone.utc)
                 delta = now - dt.replace(tzinfo=timezone.utc)
-                last = f"{delta.days}d ago" if delta.days else f"{delta.seconds//3600}h ago"
+                if delta.days:
+                    last = f"{delta.days}d ago"
+                elif delta.seconds >= 3600:
+                    last = f"{delta.seconds // 3600}h ago"
+                else:
+                    last = f"{delta.seconds // 60}m ago"
             except (ValueError, TypeError):
                 last = last[:10]
         next_action = (lead.get("next_action") or "")[:30]
@@ -4578,6 +4583,7 @@ def main():
     update_p.add_argument("--tag", help="Install a specific release tag (e.g. v1.4.5)")
 
     show_p = sub.add_parser("show", help="Show pipeline")
+    show_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
     show_p.add_argument("--stage")
     show_p.add_argument("--sentiment", choices=("positive", "negative", "neutral", "invalid"),
                         help="Filter by current lead status sentiment (latest status event)")
@@ -4593,6 +4599,7 @@ def main():
     show_p.add_argument("--json", action="store_true")
 
     lead_table_p = sub.add_parser("lead-table", help="Show canonical lead information table")
+    lead_table_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
     lead_table_p.add_argument("--stage")
     lead_table_p.add_argument("--sentiment", choices=("positive", "negative", "neutral", "invalid"),
                               help="Filter by current lead status sentiment (latest status event)")
@@ -4609,9 +4616,11 @@ def main():
     lead_table_p.add_argument("--json", action="store_true")
 
     stats_p = sub.add_parser("stats", help="Pipeline statistics")
+    stats_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
     stats_p.add_argument("--json", action="store_true")
 
     camp_p = sub.add_parser("campaigns", help="Event and lead counts by campaign name")
+    camp_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
     camp_p.add_argument("--json", action="store_true")
 
     add_p = sub.add_parser("add-lead", help="Add a lead")
@@ -4814,6 +4823,7 @@ def main():
 
     if args.command == "init":
         init_db()
+        print(f"Outreach Magic v{__version__} installed.")
         print(f"Database initialized: {get_db_path()}")
         print()
         print("Next: run 'pipeline.py setup' to connect your agent to Outreach Magic.")
@@ -4906,6 +4916,23 @@ def main():
                 print("Full replay complete.")
             print("Run 'pipeline.py show' to see your updated pipeline.")
         return
+
+    if args.command in ("show", "lead-table", "stats", "campaigns") and getattr(args, "pull", False):
+        agent_key = get_agent_key()
+        tok = get_token()
+        if agent_key or tok:
+            try:
+                if agent_key:
+                    imported, _ = sync_from_relay_org(agent_key, since=get_last_pull(), quiet=True)
+                else:
+                    imported, _ = sync_from_relay(tok, since=get_last_pull(), quiet=True)
+                if imported:
+                    print(f"Pulled from relay: {imported} new events imported.")
+                else:
+                    print("Pulled from relay: 0 new events imported.")
+            except RuntimeError:
+                pass
+        print()
 
     if args.command == "show":
         auto_reply = None

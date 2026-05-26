@@ -86,3 +86,14 @@ jobs:
           git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/${{ matrix.org }}/${{ matrix.platform }}.git"
           git push origin main --force
           git push origin "${{ github.ref_name }}" --force
+
+      - name: Create GitHub Release on platform repo
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ matrix.org }}/${{ matrix.platform }}" \
+            --title "${{ github.ref_name }}" \
+            --notes "Released from outreachmagic-skill ${{ github.ref_name }}" \
+            --latest 2>/dev/null || \
+          echo "Release already exists or could not be created"

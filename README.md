@@ -32,8 +32,10 @@ docs/                          # Install guide, registry plan
 1. Bump `skills/outreachmagic/scripts/VERSION`
 2. `python3 scripts/generate-update-manifest.py`
 3. Commit and tag: `git tag vX.Y.Z && git push origin main --tags`
-4. CI runs tests + SkillScan, builds tarball, publishes GitHub Release
-5. `publish-platforms.yml` assembles and pushes to all three public repos
+4. CI runs tests + SkillScan, builds tarball, publishes GitHub Release here
+5. `publish-platforms.yml` assembles platform bundles, pushes to public repos, and creates GitHub Releases
+
+> **Full details:** See [docs/RELEASING.md](docs/RELEASING.md) for the complete architecture, troubleshooting, and manual release instructions.
 
 ## Local Development
 

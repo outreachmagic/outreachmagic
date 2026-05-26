@@ -526,7 +526,8 @@ CREATE TABLE IF NOT EXISTS leads (
     updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
     last_contact_at     TEXT,
     next_action         TEXT,
-    next_action_at      TEXT
+    next_action_at      TEXT,
+    cloud_pending       INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -597,6 +598,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     org_id          TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
     slug            TEXT NOT NULL,
+    cloud_synced    INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (org_id, slug)
@@ -663,6 +665,7 @@ CREATE TABLE IF NOT EXISTS campaign_workspace_map (
     match_strategy          TEXT NOT NULL DEFAULT 'id_exact',
     priority                INTEGER NOT NULL DEFAULT 100,
     is_active               INTEGER NOT NULL DEFAULT 1,
+    cloud_synced            INTEGER NOT NULL DEFAULT 0,
     created_at              TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -770,6 +773,7 @@ def migrate_db(conn=None):
             org_id TEXT NOT NULL,
             name TEXT NOT NULL,
             slug TEXT NOT NULL,
+            cloud_synced INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE (org_id, slug)
@@ -823,6 +827,7 @@ def migrate_db(conn=None):
             match_strategy TEXT NOT NULL DEFAULT 'id_exact',
             priority INTEGER NOT NULL DEFAULT 100,
             is_active INTEGER NOT NULL DEFAULT 1,
+            cloud_synced INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );

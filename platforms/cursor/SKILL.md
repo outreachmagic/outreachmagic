@@ -165,12 +165,7 @@ python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py export-local --all
 **Push to relay for cross-platform sync (manual):**
 
 ```bash
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py export-local \
-  | curl -s -X POST \
-    -H "Authorization: Bearer om_agent_YOUR_KEY" \
-    -H "Content-Type: application/json" \
-    -d @- \
-    https://api.outreachmagic.io/push
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py push
 ```
 
 Other platforms pick up the changes automatically on their next `pull`.

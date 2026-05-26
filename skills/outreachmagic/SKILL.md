@@ -101,7 +101,7 @@ Check without installing: `pipeline.py update --check`. Install a specific relea
 git clone https://github.com/outreachmagic/hermes-skill.git /tmp/om-hermes
 mkdir -p ~/.hermes/skills/outreachmagic
 cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
-rm -rf /tmp/om-hermes
+rm -r /tmp/om-hermes
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 hermes -s outreachmagic
 ```
@@ -213,12 +213,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --all
 **Push to relay for cross-platform sync (manual):**
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local \
-  | curl -s -X POST \
-    -H "Authorization: Bearer om_agent_YOUR_KEY" \
-    -H "Content-Type: application/json" \
-    -d @- \
-    https://api.outreachmagic.io/push
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py push
 ```
 
 Other platforms pick up the changes automatically on their next `pull`.

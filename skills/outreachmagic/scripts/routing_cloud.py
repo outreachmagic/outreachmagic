@@ -105,11 +105,12 @@ def apply_routing_bundle_to_sqlite(
             )
 
         conn.execute(
-            """INSERT INTO workspaces (id, org_id, name, slug, created_at, updated_at)
-               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+            """INSERT INTO workspaces (id, org_id, name, slug, cloud_synced, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 1, datetime('now'), datetime('now'))
                ON CONFLICT(id) DO UPDATE SET
                  name = excluded.name,
                  slug = excluded.slug,
+                 cloud_synced = 1,
                  updated_at = datetime('now')""",
             (ws_id, org_id, ws["name"], ws["slug"]),
         )
@@ -131,8 +132,8 @@ def apply_routing_bundle_to_sqlite(
         conn.execute(
             """INSERT INTO campaign_workspace_map (
                    id, org_id, source_platform, campaign_id, campaign_name_normalized,
-                   workspace_id, match_strategy, priority, is_active, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+                   workspace_id, match_strategy, priority, is_active, cloud_synced, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), datetime('now'))
                ON CONFLICT(id) DO UPDATE SET
                  source_platform = excluded.source_platform,
                  campaign_id = excluded.campaign_id,
@@ -141,6 +142,7 @@ def apply_routing_bundle_to_sqlite(
                  match_strategy = excluded.match_strategy,
                  priority = excluded.priority,
                  is_active = 1,
+                 cloud_synced = 1,
                  updated_at = datetime('now')""",
             (
                 map_id,

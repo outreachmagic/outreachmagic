@@ -904,6 +904,11 @@ def migrate_db(conn=None):
         except sqlite3.OperationalError:
             pass
     backfill_workspace_routing(conn)
+    for tbl in ("workspaces", "campaign_workspace_map"):
+        try:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN cloud_synced INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
     if own_conn:
         conn.commit()
         conn.close()
@@ -2819,6 +2824,7 @@ def sync_workspaces_to_cloud(org_id: str = DEFAULT_ORG_ID) -> dict:
         except RuntimeError as exc:
             if "already exists" in str(exc).lower() or "unique" in str(exc).lower():
                 synced.append(ws["slug"])
+                _mark_workspace_synced(ws["slug"], org_id)
             else:
                 errors.append({"slug": ws["slug"], "error": str(exc)})
 
@@ -2922,6 +2928,59 @@ def format_sync_status(status: dict) -> str:
     return f"\n⚠ Not synced to cloud: {items}. Run pipeline.py sync to push them."
 
 
+def _mark_workspace_synced(slug: str, org_id: str = DEFAULT_ORG_ID) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE workspaces SET cloud_synced = 1 WHERE org_id = ? AND slug = ?",
+        (org_id, slug),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_local_pending_counts(org_id: str = DEFAULT_ORG_ID) -> dict:
+    """Check local DB for unsynced items — no network calls."""
+    conn = get_conn()
+    config = get_org_routing_config(conn, org_id)
+    ws_filter = " AND slug != 'default'" if config.mode == WORKSPACE_ROUTING_MULTI else ""
+    unsynced_ws = conn.execute(
+        f"SELECT COUNT(*) AS n FROM workspaces WHERE org_id = ? AND cloud_synced = 0{ws_filter}",
+        (org_id,),
+    ).fetchone()["n"]
+    unsynced_rules = conn.execute(
+        "SELECT COUNT(*) AS n FROM campaign_workspace_map WHERE org_id = ? AND is_active = 1 AND cloud_synced = 0",
+        (org_id,),
+    ).fetchone()["n"]
+    local_events = conn.execute(
+        """SELECT COUNT(*) AS n FROM events
+           WHERE metadata_json NOT LIKE '%"source": "relay"%'
+             AND metadata_json NOT LIKE '%"source":"relay"%'
+             AND metadata_json NOT LIKE '%"source": "agent_sync"%'
+             AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
+    ).fetchone()["n"]
+    conn.close()
+    return {
+        "workspaces": unsynced_ws,
+        "rules": unsynced_rules,
+        "events": local_events,
+        "total": unsynced_ws + unsynced_rules + local_events,
+    }
+
+
+def format_local_sync_hint(counts: dict) -> str:
+    """One-line hint about unsynced items. Pure local check, no network."""
+    if counts["total"] == 0:
+        return ""
+    parts = []
+    if counts["workspaces"]:
+        parts.append(f"{counts['workspaces']} workspace{'s' if counts['workspaces'] != 1 else ''}")
+    if counts["rules"]:
+        parts.append(f"{counts['rules']} routing rule{'s' if counts['rules'] != 1 else ''}")
+    if counts["events"]:
+        parts.append(f"{counts['events']} agent event{'s' if counts['events'] != 1 else ''}")
+    return f"\n⚠ Not synced: {', '.join(parts)}. Run: pipeline.py sync"
+
+
 def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
     """Push all pending workspaces and campaign maps to the cloud."""
     tok = get_agent_key() or get_token()
@@ -2945,6 +3004,7 @@ def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
         except RuntimeError as exc:
             if "already exists" in str(exc).lower() or "unique" in str(exc).lower():
                 results["workspaces_synced"].append(ws["slug"])
+                _mark_workspace_synced(ws["slug"], org_id)
             else:
                 results["errors"].append({"type": "workspace", "slug": ws["slug"], "error": str(exc)})
 
@@ -5485,6 +5545,14 @@ def main():
         print(format_pipeline_table(leads))
         print()
         print(format_stats(get_stats()))
+
+    if args.command in ("workspace", "campaign-map", "quarantine", "pull", None):
+        try:
+            hint = format_local_sync_hint(get_local_pending_counts())
+            if hint:
+                print(hint, file=sys.stderr)
+        except Exception:
+            pass
 
 
 

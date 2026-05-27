@@ -323,6 +323,9 @@ def test_campaign_stats_splits_workspace_and_counts_interested():
         (int(lead_a), "lead_status_updated", "inbound", "email", '{"lead_status_raw":"interested"}', campaign_id),
     )
     conn.execute(
+        "UPDATE leads SET stage = 'interested' WHERE id = ?", (int(lead_a),)
+    )
+    conn.execute(
         """INSERT INTO events (lead_id, event_type, direction, channel, metadata_json, campaign_id, created_at)
            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
         (int(lead_b), "email_sent", "outbound", "email", "{}", campaign_id),

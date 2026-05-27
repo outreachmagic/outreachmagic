@@ -96,9 +96,11 @@ import connections_cloud
 
 from om_paths import (
     ensure_project_layout,
+    get_agent_resources_dir,
     get_config_path,
     get_db_path,
     get_export_dir,
+    get_input_dir,
     get_project_root,
     get_skill_home,
     resolve_project_path,

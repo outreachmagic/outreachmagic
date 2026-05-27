@@ -65,7 +65,7 @@ Relay URL is fixed in code (`api.outreachmagic.io`). Updates install from GitHub
 ## Credentials
 
 - **Never** commit tokens, API keys, or `.env` files.
-- Store relay tokens only in `outreachmagic_config.json` (local) or pass via `connect --key` once.
+- Store your agent key only in `outreachmagic_config.json` (local) or `OUTREACHMAGIC_AGENT_KEY` in the environment. Run `pipeline.py setup --key om_agent_...` once.
 - Do not paste tokens into SKILL.md, issues, or chat logs.
 
 ## Skill updates

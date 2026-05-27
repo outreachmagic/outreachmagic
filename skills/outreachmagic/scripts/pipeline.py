@@ -11,7 +11,7 @@ Architecture:
 
 Usage:
   pipeline.py init                          # Create database
-  pipeline.py connect --key abc123          # Connect to relay
+  pipeline.py setup --key om_agent_...      # Connect agent to relay
   pipeline.py pull                          # Pull events from relay
   pipeline.py show                          # Print pipeline table
   pipeline.py lead-table                    # Print canonical lead info table
@@ -80,6 +80,8 @@ from workspace_routing import (
     resolve_workspace_for_ingest,
     upsert_all_identities,
     upsert_identity_alias,
+    normalize_linkedin,
+    parse_linkedin_value,
     upsert_linkedin_status,
     upsert_workspace_lead,
 )
@@ -92,7 +94,15 @@ import connections_cloud
 # Configuration
 # ──────────────────────────────────────────────────────────────────────
 
-from om_paths import get_config_path, get_db_path, get_skill_home
+from om_paths import (
+    ensure_project_layout,
+    get_config_path,
+    get_db_path,
+    get_export_dir,
+    get_project_root,
+    get_skill_home,
+    resolve_project_path,
+)
 
 SKILL_NAME = "outreachmagic"
 RELAY_URL = "https://api.outreachmagic.io"
@@ -427,9 +437,6 @@ def save_config(cfg: dict):
     path.write_text(json.dumps(cfg, indent=2))
     _chmod_best_effort(path, 0o600)
 
-def get_token() -> Optional[str]:
-    return load_config().get("token")
-
 def get_agent_key() -> Optional[str]:
     return os.environ.get("OUTREACHMAGIC_AGENT_KEY") or load_config().get("agent_key")
 
@@ -532,7 +539,6 @@ CREATE TABLE IF NOT EXISTS leads (
     email                    TEXT,
     email_domain             TEXT,
     linkedin_url             TEXT,
-    linkedin_normalized      TEXT,
     location_city            TEXT,
     location_state           TEXT,
     location_country         TEXT,
@@ -554,7 +560,9 @@ CREATE TABLE IF NOT EXISTS leads (
     last_contact_at          TEXT,
     next_action              TEXT,
     next_action_at           TEXT,
-    cloud_pending            INTEGER NOT NULL DEFAULT 0
+    cloud_pending            INTEGER NOT NULL DEFAULT 0,
+    latest_sender            TEXT,
+    latest_sender_platform   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -575,6 +583,7 @@ CREATE TABLE IF NOT EXISTS events (
     body_preview    TEXT,
     metadata_json   TEXT DEFAULT '{}',
     campaign_id     INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
+    sender          TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -593,7 +602,7 @@ CREATE INDEX IF NOT EXISTS idx_events_lead_created ON events(lead_id, created_at
 CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_unique ON leads(email) WHERE email IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_linkedin_unique ON leads(linkedin_normalized) WHERE linkedin_normalized IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_linkedin_unique ON leads(linkedin_url) WHERE linkedin_url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain) WHERE domain IS NOT NULL;
 
@@ -657,6 +666,7 @@ CREATE TABLE IF NOT EXISTS workspace_leads (
     current_status_label     TEXT,
     current_status_sentiment TEXT,
     contact_priority         INTEGER,
+    latest_sender            TEXT,
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (workspace_id, lead_id)
@@ -1010,7 +1020,7 @@ def migrate_db(conn=None):
     """)
     for col, col_type in [
         ("industry", "TEXT"), ("headcount", "TEXT"), ("email_domain", "TEXT"),
-        ("company_id", "INTEGER"), ("linkedin_normalized", "TEXT"),
+        ("company_id", "INTEGER"),
     ]:
         try:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {col_type}")
@@ -1019,12 +1029,6 @@ def migrate_db(conn=None):
     conn.execute(
         """UPDATE leads SET email_domain = lower(substr(email, instr(email, '@') + 1))
            WHERE email LIKE '%@%' AND (email_domain IS NULL OR email_domain = '')"""
-    )
-    conn.execute(
-        """UPDATE leads SET linkedin_normalized = lower(trim(replace(replace(
-               replace(linkedin_url, 'https://', ''), 'http://', ''), 'www.', '')))
-           WHERE linkedin_url IS NOT NULL AND linkedin_url != ''
-             AND (linkedin_normalized IS NULL OR linkedin_normalized = '')"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_email_domain ON leads(email_domain)")
     try:
@@ -1043,7 +1047,7 @@ def migrate_db(conn=None):
     )
     conn.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_linkedin_unique
-           ON leads(linkedin_normalized) WHERE linkedin_normalized IS NOT NULL"""
+           ON leads(linkedin_url) WHERE linkedin_url IS NOT NULL"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id)")
     conn.execute(
@@ -1115,6 +1119,22 @@ def migrate_db(conn=None):
             conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
+    for col, col_type in [
+        ("latest_sender", "TEXT"),
+        ("latest_sender_platform", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+    try:
+        conn.execute("ALTER TABLE events ADD COLUMN sender TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE workspace_leads ADD COLUMN latest_sender TEXT")
+    except sqlite3.OperationalError:
+        pass
     if own_conn:
         conn.commit()
         conn.close()
@@ -1126,7 +1146,7 @@ def backfill_workspace_routing(conn: sqlite3.Connection):
     config = get_org_routing_config(conn, DEFAULT_ORG_ID)
 
     leads = conn.execute(
-        "SELECT id, email, linkedin_normalized FROM leads"
+        "SELECT id, email, linkedin_url FROM leads"
     ).fetchall()
     for lead in leads:
         lid = lead["id"]
@@ -1140,7 +1160,7 @@ def backfill_workspace_routing(conn: sqlite3.Connection):
                    )""",
                 (f"id_email_{lid}", DEFAULT_ORG_ID, lid, lead["email"]),
             )
-        if lead["linkedin_normalized"]:
+        if lead["linkedin_url"]:
             conn.execute(
                 """INSERT OR IGNORE INTO lead_identities (
                        id, org_id, lead_id, identity_type, identity_value_normalized,
@@ -1148,7 +1168,7 @@ def backfill_workspace_routing(conn: sqlite3.Connection):
                    ) VALUES (
                        ?, ?, ?, 'linkedin_url', ?, 'backfill', 1, datetime('now')
                    )""",
-                (f"id_li_{lid}", DEFAULT_ORG_ID, lid, lead["linkedin_normalized"]),
+                (f"id_li_{lid}", DEFAULT_ORG_ID, lid, lead["linkedin_url"]),
             )
 
     if config.mode == WORKSPACE_ROUTING_MULTI:
@@ -1206,34 +1226,37 @@ def normalize_email(email: Optional[str]) -> Optional[str]:
     return str(email).strip().lower()
 
 
-def normalize_linkedin(url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """Return (raw_url_stored, normalized_key) for matching."""
-    if not url or not str(url).strip():
-        return None, None
-    raw = str(url).strip()
-    norm = raw.lower()
-    for prefix in ("https://", "http://"):
-        if norm.startswith(prefix):
-            norm = norm[len(prefix):]
-    if norm.startswith("www."):
-        norm = norm[4:]
-    norm = norm.rstrip("/")
-    return raw, norm or None
+_LINKEDIN_PLATFORMS = frozenset({"prosp", "heyreach"})
+
+_CONNECTION_SENT_TYPES = frozenset({
+    "send_connection", "linkedin_connection_sent", "linkedin_connect",
+    "connection_request_sent",
+})
+_CONNECTION_ACCEPTED_TYPES = frozenset({
+    "linkedin_connection_accepted", "connection_request_accepted",
+    "connection_accepted", "linkedin_invite_accepted",
+})
 
 
-def normalize_linkedin_profile(url: str) -> Optional[str]:
-    """Extract canonical 'linkedin.com/in/slug' from any LinkedIn URL variant."""
-    raw = (url or "").strip()
-    if not raw:
+def normalize_event_sender(platform: str, sender: str) -> Optional[str]:
+    """Normalize relay sender for storage; None if missing or unknown."""
+    raw = (sender or "").strip()
+    if not raw or raw.lower() == "unknown":
         return None
-    norm = raw.lower()
-    for prefix in ("https://", "http://"):
-        if norm.startswith(prefix):
-            norm = norm[len(prefix):]
-    if norm.startswith("www."):
-        norm = norm[4:]
-    match = re.match(r'(linkedin\.com/in/[^/?#]+)', norm)
-    return match.group(1) if match else norm.rstrip("/")
+    plat = (platform or "").lower()
+    if plat in _LINKEDIN_PLATFORMS:
+        return normalize_linkedin(raw)
+    return raw.lower()
+
+
+def map_relay_local_event_type(envelope_event_type: str) -> str:
+    """Map vendor webhook labels to local event_type for logging and LinkedIn status."""
+    et = (envelope_event_type or "unknown").strip().lower()
+    if et in _CONNECTION_SENT_TYPES:
+        return "linkedin_connect"
+    if et in _CONNECTION_ACCEPTED_TYPES:
+        return "linkedin_connection_accepted"
+    return et
 
 
 def normalize_tag(tag: str) -> str:
@@ -1431,7 +1454,7 @@ def find_lead_by_email(conn: sqlite3.Connection, email: str) -> Optional[int]:
 
 def find_lead_by_linkedin(conn: sqlite3.Connection, linkedin_norm: str) -> Optional[int]:
     row = conn.execute(
-        "SELECT id FROM leads WHERE linkedin_normalized = ?", (linkedin_norm,)
+        "SELECT id FROM leads WHERE linkedin_url = ?", (linkedin_norm,)
     ).fetchone()
     return row["id"] if row else None
 
@@ -1501,14 +1524,14 @@ def find_lead(
                 tuple(params),
             ).fetchone()
     elif linkedin:
-        _, norm = normalize_linkedin(linkedin)
+        norm = normalize_linkedin(linkedin)
         if norm:
             params = [*workspace_params, norm]
             row = conn.execute(
                 f"""SELECT l.*, COALESCE(c.name, l.company) AS company_display
                    FROM leads l LEFT JOIN companies c ON l.company_id = c.id
                    {workspace_join}
-                   WHERE l.linkedin_normalized = ?""",
+                   WHERE l.linkedin_url = ?""",
                 tuple(params),
             ).fetchone()
     elif name:
@@ -1601,8 +1624,12 @@ def merge_leads(keep_id: int, merge_id: int, reason: str = "manual") -> dict:
                 )
 
         email = keep["email"] or other["email"]
-        linkedin_url = keep["linkedin_url"] or other["linkedin_url"]
-        _, linkedin_norm = normalize_linkedin(linkedin_url)
+        li_merged = (
+            normalize_linkedin(keep["linkedin_url"])
+            or normalize_linkedin(other["linkedin_url"])
+            or keep["linkedin_url"]
+            or other["linkedin_url"]
+        )
         domain = email_domain(email)
         new_stage = furthest_stage(keep["stage"] or "prospecting", other["stage"] or "prospecting")
         company = (keep["company"] or "") or (other["company"] or "") or None
@@ -1627,7 +1654,6 @@ def merge_leads(keep_id: int, merge_id: int, reason: str = "manual") -> dict:
                email = COALESCE(email, ?),
                email_domain = COALESCE(email_domain, ?),
                linkedin_url = COALESCE(linkedin_url, ?),
-               linkedin_normalized = COALESCE(linkedin_normalized, ?),
                company_id = COALESCE(company_id, ?),
                company = COALESCE(NULLIF(trim(company), ''), ?),
                title = COALESCE(NULLIF(trim(title), ''), ?),
@@ -1638,7 +1664,7 @@ def merge_leads(keep_id: int, merge_id: int, reason: str = "manual") -> dict:
                updated_at = datetime('now')
                WHERE id = ?""",
             (
-                email, domain, linkedin_url, linkedin_norm, company_id,
+                email, domain, li_merged, company_id,
                 company, title, industry, headcount, new_stage, keep_id,
             ),
         )
@@ -1690,7 +1716,8 @@ def resolve_lead(
 ) -> dict:
     """Match or create lead by tiered identities (email, external_id, name+company, etc.)."""
     email_norm = normalize_email(email)
-    li_raw, li_norm = normalize_linkedin(linkedin_url)
+    li_parsed = parse_linkedin_value(linkedin_url) if linkedin_url else []
+    li_public = next((v for t, v in li_parsed if t == "linkedin_url"), None)
 
     if identities is None:
         profile = {
@@ -1705,12 +1732,11 @@ def resolve_lead(
             import_batch=import_batch,
             company_domain=company_domain,
         )
-        if not identities and (email_norm or li_norm):
+        if not identities and (email_norm or li_parsed):
             identities = []
             if email_norm:
                 identities.append(("email", email_norm))
-            if li_norm:
-                identities.append(("linkedin_url", li_norm))
+            identities.extend(li_parsed)
 
     if not identities:
         return {"status": "error", "error": "no identity: need email, linkedin, external_id, or name+company"}
@@ -1720,7 +1746,7 @@ def resolve_lead(
         conn = get_conn()
 
     by_email = find_lead_by_email(conn, email_norm) if email_norm else None
-    by_li = find_lead_by_linkedin(conn, li_norm) if li_norm else None
+    by_li = find_lead_by_linkedin(conn, li_public) if li_public else None
 
     lead_id: Optional[int] = None
     created = True
@@ -1743,7 +1769,10 @@ def resolve_lead(
                 lead_id = found
                 match_method = itype
                 created = False
-            elif lead_id != found and itype in ("email", "linkedin_url", "external_id"):
+            elif lead_id != found and itype in (
+                "email", "linkedin_url", "linkedin_sales_nav_id",
+                "linkedin_member_id", "external_id",
+            ):
                 pass
             elif lead_id != found:
                 break
@@ -1758,7 +1787,7 @@ def resolve_lead(
             conn.close()
         conf = match_confidence_for_type(match_method or identities[0][0])
         base = {
-            "email": email_norm, "linkedin": li_norm, "dry_run": True,
+            "email": email_norm, "linkedin": li_public, "dry_run": True,
             "match_method": match_method or (identities[0][0] if identities else None),
             "match_confidence": conf if not created else None,
         }
@@ -1778,20 +1807,20 @@ def resolve_lead(
         )
         cur = conn.execute(
             """INSERT INTO leads (name, company_id, company, title, industry, headcount, headcount_numeric,
-               email, email_domain, linkedin_url, linkedin_normalized,
+               email, email_domain, linkedin_url,
                location_city, location_state, location_country,
                channel, stage, notes, cloud_pending,
                original_source, original_source_detail, original_source_platform, original_source_at,
                latest_source, latest_source_detail, latest_source_platform, latest_source_at)
                VALUES (?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?,
+                       ?, ?, ?,
                        ?, ?, ?,
                        ?, ?, ?, 1,
                        ?, ?, ?, ?,
                        ?, ?, ?, ?)""",
             (
                 name, company_id, company, title, industry, headcount, parse_headcount_numeric(headcount),
-                email_norm, domain_from_email, li_raw, li_norm,
+                email_norm, domain_from_email, li_public,
                 location_city, location_state, location_country,
                 channel, stage, notes,
                 source, source_detail, source_platform, now_ts,
@@ -1806,10 +1835,9 @@ def resolve_lead(
         if email_norm:
             sets.extend(["email = COALESCE(email, ?)", "email_domain = COALESCE(email_domain, ?)"])
             params.extend([email_norm, domain_from_email])
-        if li_norm:
-            sets.extend(["linkedin_url = COALESCE(linkedin_url, ?)",
-                         "linkedin_normalized = COALESCE(linkedin_normalized, ?)"])
-            params.extend([li_raw, li_norm])
+        if li_public:
+            sets.append("linkedin_url = COALESCE(linkedin_url, ?)")
+            params.append(li_public)
         if source:
             sets.extend([
                 "latest_source = ?",
@@ -1860,7 +1888,7 @@ def resolve_lead(
         "status": "created" if created else "matched",
         "id": lead_id,
         "email": email_norm,
-        "linkedin": li_norm,
+        "linkedin": li_public,
         "filled": filled,
         "match_method": method,
         "match_confidence": match_confidence_for_type(method),
@@ -2114,6 +2142,12 @@ def _extract_extra_import_fields(raw: dict) -> dict[str, str]:
             text = str(val).strip()
             if text:
                 out[key] = text
+    for key, val in raw.items():
+        if not key.startswith("mailmerge_"):
+            continue
+        text = str(val).strip() if val is not None else ""
+        if text:
+            out[key] = text
     if not out.get("external_id"):
         ext = pick_external_id_from_raw(raw)
         if ext:
@@ -2180,7 +2214,7 @@ def import_profiles(
             summary["errors"].append({"error": f"Workspace not found: {workspace}"})
             return summary
 
-    sender_normalized = normalize_linkedin_profile(sender_profile) if sender_profile else None
+    sender_normalized = normalize_linkedin(sender_profile) if sender_profile else None
 
     if not workspace_id:
         skip_features = []
@@ -2196,13 +2230,12 @@ def import_profiles(
 
     ws_pending: list[tuple[int, dict]] = []
 
-    personalize_columns_detected = []
+    personalize_columns_detected: list[str] = []
     if rows:
-        sample = rows[0]
-        if "mailmerge_first_name" in sample:
-            personalize_columns_detected.append("mailmerge_first_name -> first_name")
-        if "mailmerge_company_name" in sample:
-            personalize_columns_detected.append("mailmerge_company_name -> company_name")
+        for key in sorted(rows[0].keys()):
+            if key.startswith("mailmerge_") and str(rows[0].get(key) or "").strip():
+                field = key[len("mailmerge_"):]
+                personalize_columns_detected.append(f"{key} -> {field}")
     if personalize_columns_detected and dry_run:
         summary["personalization_detected"] = personalize_columns_detected
 
@@ -2268,14 +2301,14 @@ def import_profiles(
 
         lead_id = result["id"]
 
-        # Personalization: explicit mailmerge columns only, no fallback
         p_items = []
-        mm_first = extra.get("mailmerge_first_name")
-        if mm_first:
-            p_items.append({"lead_id": lead_id, "field": "first_name", "value": mm_first})
-        mm_company = extra.get("mailmerge_company_name")
-        if mm_company:
-            p_items.append({"lead_id": lead_id, "field": "company_name", "value": mm_company})
+        for key, val in extra.items():
+            if key.startswith("mailmerge_") and val:
+                p_items.append({
+                    "lead_id": lead_id,
+                    "field": key[len("mailmerge_"):],
+                    "value": val,
+                })
         if p_items:
             personalize_set_batch(p_items)
             summary["personalized"] += 1
@@ -2830,33 +2863,37 @@ def backfill_plusvibe_status_metadata(conn=None):
 
 def log_event(lead_id, event_type, direction="outbound", channel="email",
               subject=None, body_preview=None, metadata=None, campaign=None,
-              event_at=None):
+              event_at=None, sender=None):
     meta = dict(metadata or {})
     campaign_name = campaign or meta.get("campaign")
     conn = get_conn()
     campaign_id = None
     if campaign_name and str(campaign_name).strip():
         campaign_id = ensure_campaign(conn, str(campaign_name).strip(), lead_id)
-    if event_at:
+    preview = (body_preview or "")[:200]
+    created = event_at or None
+    if created:
         conn.execute(
-            """INSERT INTO events (lead_id, event_type, direction, channel, subject, body_preview,
-                                   metadata_json, campaign_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (lead_id, event_type, direction, channel, subject, (body_preview or "")[:200],
-             json.dumps(meta), campaign_id, event_at),
+            """INSERT INTO events (
+                   lead_id, event_type, direction, channel, subject, body_preview,
+                   metadata_json, campaign_id, sender, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (lead_id, event_type, direction, channel, subject, preview,
+             json.dumps(meta), campaign_id, sender, created),
         )
         conn.execute(
             """UPDATE leads SET updated_at = ?, last_contact_at = ?
                WHERE id = ? AND (last_contact_at IS NULL OR last_contact_at < ?)""",
-            (event_at, event_at, lead_id, event_at),
+            (created, created, lead_id, created),
         )
     else:
         conn.execute(
-            """INSERT INTO events (lead_id, event_type, direction, channel, subject, body_preview,
-                                   metadata_json, campaign_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (lead_id, event_type, direction, channel, subject, (body_preview or "")[:200],
-             json.dumps(meta), campaign_id),
+            """INSERT INTO events (
+                   lead_id, event_type, direction, channel, subject, body_preview,
+                   metadata_json, campaign_id, sender
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (lead_id, event_type, direction, channel, subject, preview,
+             json.dumps(meta), campaign_id, sender),
         )
         conn.execute(
             "UPDATE leads SET updated_at = datetime('now'), last_contact_at = datetime('now') WHERE id = ?",
@@ -2865,12 +2902,33 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
     conn.commit()
     conn.close()
 
+
+def _update_lead_sender(
+    conn: sqlite3.Connection,
+    lead_id: int,
+    workspace_id: Optional[str],
+    sender: str,
+    platform: str,
+    event_at: str,
+) -> None:
+    conn.execute(
+        """UPDATE leads SET latest_sender = ?, latest_sender_platform = ?, updated_at = ?
+           WHERE id = ?""",
+        (sender, platform, event_at, lead_id),
+    )
+    if workspace_id:
+        conn.execute(
+            """UPDATE workspace_leads SET latest_sender = ?, updated_at = ?
+               WHERE workspace_id = ? AND lead_id = ?""",
+            (sender, event_at, workspace_id, lead_id),
+        )
+
 def get_lead_events(lead_id, limit=50):
     """Get all events for a lead, newest first."""
     conn = get_conn()
     rows = conn.execute(
         """SELECT id, event_type, direction, channel, subject, body_preview,
-                  metadata_json, created_at
+                  metadata_json, sender, created_at
            FROM events WHERE lead_id = ? ORDER BY created_at DESC LIMIT ?""",
         (lead_id, limit),
     ).fetchall()
@@ -3377,6 +3435,207 @@ def get_pipeline(
     conn.close()
     return [dict(r) for r in rows]
 
+
+def enrich_lead_rows(
+    leads: list[dict],
+    *,
+    workspace: Optional[str] = None,
+) -> list[dict]:
+    """Attach personalization, tags, sender, and sync snapshot fields for JSON/export."""
+    if not leads:
+        return []
+    conn = get_conn()
+    ws_slug = workspace
+    try:
+        if workspace:
+            ws_row = resolve_workspace_identity(conn, workspace)
+            ws_slug = ws_row["slug"] if ws_row else workspace
+        enriched: list[dict] = []
+        for lead in leads:
+            row = dict(lead)
+            snap = build_lead_sync_payload(
+                conn, DEFAULT_ORG_ID, int(lead["id"]), workspace_slug=ws_slug,
+            )
+            for key in (
+                "personalization", "personalization_at", "tags", "linkedin_status",
+                "latest_sender", "latest_sender_platform", "linkedin",
+                "lead_status", "lead_sentiment", "contact_order", "workspace_stage",
+                "external_id", "company_domain", "hq_city", "hq_state", "hq_country",
+            ):
+                if key in snap and snap[key] is not None:
+                    row[key] = snap[key]
+            if not row.get("latest_sender") and lead.get("latest_sender"):
+                row["latest_sender"] = lead["latest_sender"]
+            if not row.get("latest_sender_platform") and lead.get("latest_sender_platform"):
+                row["latest_sender_platform"] = lead["latest_sender_platform"]
+            enriched.append(row)
+        return enriched
+    finally:
+        conn.close()
+
+
+_EXPORT_CSV_BASE_COLUMNS = [
+    "email", "linkedin", "name", "company", "title", "industry", "headcount",
+    "stage", "notes", "location_city", "location_state", "location_country",
+    "hq_city", "hq_state", "hq_country", "company_domain",
+    "workspace_stage", "lead_status", "lead_sentiment", "contact_order",
+    "latest_sender", "latest_sender_platform", "tags",
+    "external_id", "event_count", "last_event", "last_event_at",
+]
+
+
+def _flatten_lead_for_csv(lead: dict) -> dict:
+    """Flatten enrich_lead_rows output for CSV export."""
+    row: dict = {}
+    company = lead.get("company_display") or lead.get("company")
+    row["email"] = lead.get("email") or ""
+    row["linkedin"] = lead.get("linkedin") or lead.get("linkedin_url") or ""
+    row["name"] = lead.get("name") or ""
+    row["company"] = company or ""
+    row["title"] = lead.get("title") or ""
+    row["industry"] = lead.get("industry") or ""
+    row["headcount"] = lead.get("headcount") or ""
+    row["stage"] = lead.get("stage") or ""
+    row["notes"] = lead.get("notes") or ""
+    row["location_city"] = lead.get("location_city") or ""
+    row["location_state"] = lead.get("location_state") or ""
+    row["location_country"] = lead.get("location_country") or ""
+    row["hq_city"] = lead.get("hq_city") or ""
+    row["hq_state"] = lead.get("hq_state") or ""
+    row["hq_country"] = lead.get("hq_country") or ""
+    row["company_domain"] = lead.get("company_domain") or ""
+    row["workspace_stage"] = lead.get("workspace_stage") or ""
+    row["lead_status"] = lead.get("lead_status") or ""
+    row["lead_sentiment"] = lead.get("lead_sentiment") or ""
+    row["contact_order"] = lead.get("contact_order") if lead.get("contact_order") is not None else ""
+    row["latest_sender"] = lead.get("latest_sender") or ""
+    row["latest_sender_platform"] = lead.get("latest_sender_platform") or ""
+    tags = lead.get("tags")
+    if isinstance(tags, list):
+        row["tags"] = ";".join(tags)
+    else:
+        row["tags"] = tags or ""
+    row["external_id"] = lead.get("external_id") or ""
+    row["event_count"] = lead.get("event_count") or 0
+    row["last_event"] = lead.get("last_event") or ""
+    row["last_event_at"] = lead.get("last_event_at") or ""
+    pers = lead.get("personalization") or {}
+    if isinstance(pers, dict):
+        for field, val in sorted(pers.items()):
+            row[f"personalized_{field}"] = val
+    return row
+
+
+def query_leads_for_export(
+    *,
+    workspace: str,
+    tag: Optional[str] = None,
+    stage: Optional[str] = None,
+    since: Optional[str] = None,
+    limit: int = 5000,
+) -> tuple[list[dict], bool]:
+    """Load leads for export; returns (rows, truncated)."""
+    conn = get_conn()
+    workspace_row = resolve_workspace_identity(conn, workspace)
+    if not workspace_row:
+        conn.close()
+        raise ValueError(f"workspace not found: {workspace}")
+    ws_id = workspace_row["id"]
+    join_tags = ""
+    if tag:
+        join_tags = (
+            " INNER JOIN workspace_lead_tags wlt "
+            " ON wlt.workspace_id = wl.workspace_id AND wlt.lead_id = l.id "
+            " AND wlt.tag = ? "
+        )
+    query = f"""
+        SELECT l.*,
+               COALESCE(co.name, l.company) AS company_display,
+               co.domain AS company_domain,
+               co.hq_city AS hq_city,
+               co.hq_state AS hq_state,
+               co.hq_country AS hq_country,
+               wl.status AS workspace_stage,
+               wl.latest_sender AS workspace_latest_sender,
+               (SELECT event_type FROM events WHERE lead_id = l.id
+                ORDER BY created_at DESC LIMIT 1) AS last_event,
+               (SELECT created_at FROM events WHERE lead_id = l.id
+                ORDER BY created_at DESC LIMIT 1) AS last_event_at,
+               (SELECT COUNT(*) FROM events WHERE lead_id = l.id) AS event_count
+        FROM leads l
+        INNER JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?
+        LEFT JOIN companies co ON l.company_id = co.id
+        {join_tags}
+        WHERE 1=1
+    """
+    params: list = [ws_id]
+    if tag:
+        params.append(normalize_tag(tag))
+    if stage:
+        query += " AND wl.status = ?"
+        params.append(stage)
+    if since:
+        since_date = since.strip()
+        if since_date.lower() == "today":
+            since_date = datetime.now().strftime("%Y-%m-%d")
+        query += " AND (l.created_at >= ? OR l.updated_at >= ?)"
+        params.extend([since_date, since_date])
+    query += " ORDER BY l.updated_at DESC LIMIT ?"
+    params.append(limit)
+    rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+    conn.close()
+    truncated = len(rows) >= limit
+    return rows, truncated
+
+
+def export_leads(
+    *,
+    workspace: str,
+    tag: Optional[str] = None,
+    stage: Optional[str] = None,
+    since: Optional[str] = None,
+    limit: int = 5000,
+    fmt: str = "csv",
+    file_path: Optional[str] = None,
+) -> dict:
+    rows, truncated = query_leads_for_export(
+        workspace=workspace, tag=tag, stage=stage, since=since, limit=limit,
+    )
+    enriched = enrich_lead_rows(rows, workspace=workspace)
+    for row in enriched:
+        if row.get("workspace_latest_sender"):
+            row["latest_sender"] = row["workspace_latest_sender"]
+    if fmt == "json":
+        if file_path:
+            out = resolve_project_path(file_path, kind="export", for_write=True)
+            out.write_text(json.dumps(enriched, indent=2), encoding="utf-8")
+            result = {"status": "exported", "format": "json", "file": str(out), "count": len(enriched)}
+        else:
+            result = {"count": len(enriched), "leads": enriched}
+        if truncated:
+            result["truncated"] = True
+            result["limit"] = limit
+        return result
+    flat = [_flatten_lead_for_csv(lead) for lead in enriched]
+    pers_cols = sorted({k for r in flat for k in r if k.startswith("personalized_")})
+    fieldnames = list(_EXPORT_CSV_BASE_COLUMNS) + pers_cols
+    if not file_path:
+        ws_slug = workspace
+        tag_part = normalize_tag(tag) if tag else "all"
+        date_part = datetime.now().strftime("%Y-%m-%d")
+        file_path = f"{ws_slug}-{tag_part}-{date_part}.csv"
+    out = resolve_project_path(file_path, kind="export", for_write=True)
+    with open(out, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(flat)
+    result = {"status": "exported", "format": "csv", "file": str(out), "count": len(flat)}
+    if truncated:
+        result["truncated"] = True
+        result["limit"] = limit
+    return result
+
+
 def get_stage_counts():
     conn = get_conn()
     rows = conn.execute("SELECT stage, COUNT(*) as count FROM leads GROUP BY stage ORDER BY count DESC").fetchall()
@@ -3634,9 +3893,9 @@ def _apply_cloud_routing_bundle(bundle: dict, org_id: str = DEFAULT_ORG_ID) -> N
     save_config(cfg)
 
 
-def maybe_sync_routing_from_cloud(token: Optional[str] = None, *, quiet: bool = False) -> bool:
-    """Pull routing config from wbhk-app when an agent key or relay token is configured."""
-    tok = token or get_agent_key() or get_token()
+def maybe_sync_routing_from_cloud(*, quiet: bool = False) -> bool:
+    """Pull routing config from wbhk-app when an agent key is configured."""
+    tok = get_agent_key()
     if not routing_cloud.cloud_routing_enabled(load_config, tok):
         return False
     conn = get_conn()
@@ -3667,7 +3926,7 @@ def set_workspace_routing(
             "status": "error",
             "error": f"mode must be one of: {', '.join(VALID_WORKSPACE_ROUTING_MODES)}",
         }
-    tok = get_agent_key() or get_token()
+    tok = get_agent_key()
     if routing_cloud.cloud_routing_enabled(load_config, tok):
         try:
             bundle = routing_cloud.push_routing_mode(
@@ -3756,7 +4015,7 @@ def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAUL
 
     result: dict = {"status": "created", "id": ws_id, "name": name, "slug": slug}
 
-    tok = get_agent_key() or get_token()
+    tok = get_agent_key()
     can_sync = routing_cloud.cloud_routing_enabled(load_config, tok)
 
     if sync and can_sync:
@@ -3790,7 +4049,7 @@ def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAUL
 
 def sync_workspaces_to_cloud(org_id: str = DEFAULT_ORG_ID) -> dict:
     """Push all local workspaces to the cloud webapp."""
-    tok = get_agent_key() or get_token()
+    tok = get_agent_key()
     if not routing_cloud.cloud_routing_enabled(load_config, tok):
         return {"status": "error", "error": "No cloud token configured. Set up an agent key first."}
 
@@ -3826,7 +4085,7 @@ def sync_workspaces_to_cloud(org_id: str = DEFAULT_ORG_ID) -> dict:
 
 def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
     """Compare local state with cloud and return what's pending sync."""
-    tok = get_agent_key() or get_token()
+    tok = get_agent_key()
     if not routing_cloud.cloud_routing_enabled(load_config, tok):
         return {"can_sync": False, "reason": "No cloud token configured."}
 
@@ -3990,7 +4249,7 @@ def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
     Network push only runs when the user invokes `pipeline.py sync` (never on
     import, init, pull, or show). Requires a configured agent key.
     """
-    tok = get_agent_key() or get_token()
+    tok = get_agent_key()
     if not routing_cloud.cloud_routing_enabled(load_config, tok):
         return {"status": "error", "error": "No cloud token configured."}
 
@@ -4117,6 +4376,17 @@ def build_lead_sync_payload(
         payload["email"] = row["email"]
     if row["linkedin_url"]:
         payload["linkedin"] = row["linkedin_url"]
+    for id_row in conn.execute(
+        """SELECT identity_type, identity_value_normalized FROM lead_identities
+           WHERE org_id = ? AND lead_id = ?
+             AND identity_type IN ('linkedin_sales_nav_id', 'linkedin_member_id')""",
+        (org_id, lead_id),
+    ).fetchall():
+        payload[id_row["identity_type"]] = id_row["identity_value_normalized"]
+    if row["latest_sender"]:
+        payload["latest_sender"] = row["latest_sender"]
+    if row["latest_sender_platform"]:
+        payload["latest_sender_platform"] = row["latest_sender_platform"]
     if row["email_verified_at"]:
         payload["email_verified_at"] = row["email_verified_at"]
     if row["company_domain"]:
@@ -4340,7 +4610,7 @@ def apply_agent_lead_sync_payload(
                     (tag_id, workspace_id, lead_id, normalize_tag(str(tag))),
                 )
         for li in payload.get("linkedin_status") or []:
-            sender = normalize_linkedin_profile(li.get("sender_profile"))
+            sender = normalize_linkedin(li.get("sender_profile"))
             if not sender:
                 continue
             is_connected = bool(li.get("is_connected"))
@@ -4552,7 +4822,7 @@ def add_campaign_map_cli(
     if config.mode == WORKSPACE_ROUTING_MULTI and workspace_slug == "default":
         return {"status": "error", "error": "Cannot route to the default workspace in multi-workspace mode."}
     strategy = match_strategy or ("id_exact" if campaign_id else "name_exact")
-    tok = get_agent_key() or get_token()
+    tok = get_agent_key()
     cloud_ok = routing_cloud.cloud_routing_enabled(load_config, tok)
     if cloud_ok:
         try:
@@ -4996,8 +5266,12 @@ def find_lead_by_identifier(conn: sqlite3.Connection, entity_key: str) -> Option
     key = entity_key.strip()
     if "@" in key:
         return find_lead_by_email(conn, key.lower())
-    if "linkedin" in key.lower() or key.startswith("http"):
-        _, norm = normalize_linkedin(key)
+    if "linkedin" in key.lower() or key.startswith("http") or key.startswith("ACwAA") or key.lower().startswith("urn:li:"):
+        for itype, val in parse_linkedin_value(key):
+            found = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
+            if found:
+                return found
+        norm = normalize_linkedin(key)
         return find_lead_by_linkedin(conn, norm) if norm else None
     itype, val = parse_entity_key(key)
     if itype and val:
@@ -5249,27 +5523,6 @@ def ingest_agent_entry(
     return lead_id
 
 
-def pull_events(token: str, since: Optional[str] = None, after_id: Optional[int] = None) -> dict:
-    """Pull events from the relay (events stay on Cloudflare; client dedupes)."""
-    params = []
-    if since:
-        params.append(f"since={urllib.parse.quote(since)}")
-    if after_id:
-        params.append(f"after_id={after_id}")
-    qs = f"?{'&'.join(params)}" if params else ""
-    url = f"{RELAY_URL}/pull/{token}{qs}"
-
-    req = urllib.request.Request(url, headers={"User-Agent": f"OutreachMagic/{__version__}"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode() if e.fp else ""
-        return {"error": True, "status": e.code, "message": body}
-    except urllib.error.URLError as e:
-        return {"error": True, "message": str(e.reason)}
-
-
 def pull_events_org(agent_key: str, since: Optional[str] = None, after_id: Optional[int] = None, platform: Optional[str] = None) -> dict:
     """Pull all org events from relay using an agent key (org-wide access)."""
     params = []
@@ -5298,59 +5551,6 @@ def pull_events_org(agent_key: str, since: Optional[str] = None, after_id: Optio
     except urllib.error.URLError as e:
         return {"error": True, "message": str(e.reason)}
 
-def sync_from_relay(
-    token: str,
-    since: Optional[str] = None,
-    after_id: Optional[int] = None,
-    full: bool = False,
-    ack: bool = False,
-    debug_sentiment: bool = False,
-    quiet: bool = False,
-) -> tuple[int, int]:
-    """Import relay events locally. Relay keeps all rows; we skip already-ingested keys."""
-    maybe_sync_routing_from_cloud(token, quiet=quiet)
-    imported = skipped = 0
-    page_after_id = None if full else (after_id or 0)
-
-    while True:
-        result = pull_events(
-            token,
-            since=None,
-            after_id=page_after_id if page_after_id else None,
-        )
-        if result.get("error"):
-            raise RuntimeError(result.get("message", "pull failed"))
-
-        events = result.get("events") or []
-        if not events:
-            break
-
-        for event in events:
-            if ingest_relay_event(
-                event,
-                debug_sentiment=debug_sentiment,
-                quiet=True,
-            ) is None:
-                skipped += 1
-            else:
-                imported += 1
-
-        if ack and result.get("max_id"):
-            ack_events(token, result["max_id"])
-
-        page_after_id = result.get("max_id") or page_after_id
-
-        if len(events) < 1000:
-            break
-
-    if page_after_id:
-        set_last_max_id(page_after_id)
-    set_last_pull(datetime.now(timezone.utc).isoformat())
-    if not quiet:
-        print_quarantine_guidance()
-    return imported, skipped
-
-
 def sync_from_relay_org(
     agent_key: str,
     since: Optional[str] = None,
@@ -5360,7 +5560,7 @@ def sync_from_relay_org(
     quiet: bool = False,
 ) -> tuple[int, int]:
     """Import relay events for the entire org using an agent key."""
-    maybe_sync_routing_from_cloud(agent_key, quiet=quiet)
+    maybe_sync_routing_from_cloud(quiet=quiet)
     imported = skipped = 0
     page_after_id = None if full else (after_id or 0)
 
@@ -5400,20 +5600,6 @@ def sync_from_relay_org(
     return imported, skipped
 
 
-def ack_events(token: str, max_id: int):
-    """Optional: hide events on relay (default pull does not ack — relay keeps archive)."""
-    url = f"{RELAY_URL}/pull/{token}/ack"
-    data = json.dumps({"max_id": max_id}).encode()
-    req = urllib.request.Request(url, data=data, method="POST",
-                                  headers={"Content-Type": "application/json",
-                                           "User-Agent": "OutreachMagic/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
-    except Exception:
-        return {"error": True}
-
-
 def ingest_relay_event(
     event: dict,
     debug_sentiment: bool = False,
@@ -5446,9 +5632,10 @@ def ingest_relay_event(
         return None
 
     envelope_lead = event.get("lead") or ""
-    envelope_event_type = event.get("event_type", "unknown")
+    envelope_event_type = (event.get("event_type") or "unknown").lower()
     platform = event.get("platform", "unknown")
-    sender = event.get("sender", "")
+    sender_raw = event.get("sender", "")
+    sender_norm = normalize_event_sender(platform, sender_raw)
     received_at = event.get("received_at", "")
     raw = event.get("raw") or {}
 
@@ -5562,25 +5749,36 @@ def ingest_relay_event(
             "linkedin_message": "linkedin_message",
             "linkedin_reply": "linkedin_message",
         }
-        local_type = event_type_map.get(envelope_event_type, envelope_event_type)
+        local_type = map_relay_local_event_type(envelope_event_type)
+        if envelope_event_type in event_type_map:
+            local_type = event_type_map[envelope_event_type]
         direction = (
             "inbound"
             if envelope_event_type in (
                 "email_reply", "email_open", "email_click",
                 "linkedin_connection_accepted", "linkedin_reply",
             )
+            or local_type == "linkedin_connection_accepted"
             else "outbound"
         )
 
     subject = event_fields.get("subject") or f"{platform}: {envelope_event_type}"
     body = event_fields.get("body") or ""
-    body_preview = body[:200] if body else (f"From {sender}" if sender else "")
+    if body:
+        body_preview = body[:200]
+    elif sender_norm:
+        body_preview = f"From {sender_norm}"[:200]
+    else:
+        body_preview = ""
 
     metadata = {
         "source": "relay",
         "platform": platform,
         "relay_received_at": received_at,
+        "webhook_event": envelope_event_type,
     }
+    if sender_norm:
+        metadata["sender"] = sender_norm
     if event_fields.get("campaign"):
         metadata["campaign"] = event_fields["campaign"]
     if body:
@@ -5619,6 +5817,7 @@ def ingest_relay_event(
         body_preview=body_preview,
         metadata=metadata,
         event_at=received_at or None,
+        sender=sender_norm,
     )
 
     event_time = received_at or None
@@ -5679,9 +5878,12 @@ def ingest_relay_event(
             f"UPDATE workspace_leads SET {', '.join(mat_sets)} WHERE id = ?", mat_params
         )
 
-    # Auto-update LinkedIn connection status from platform events
+    if sender_norm:
+        event_at_ts = received_at or datetime.now(timezone.utc).isoformat()
+        _update_lead_sender(conn, lead_id, workspace_id, sender_norm, platform, event_at_ts)
+
     if local_type in ("linkedin_connect", "linkedin_connection_accepted") and workspace_id:
-        sender_li = normalize_linkedin_profile(sender)
+        sender_li = sender_norm or normalize_linkedin(sender_raw)
         if sender_li:
             event_at_ts = received_at or datetime.now(timezone.utc).isoformat()
             upsert_linkedin_status(
@@ -5733,11 +5935,12 @@ def setup(agent_key: Optional[str] = None):
 
     if not agent_key.startswith("om_agent_"):
         print("Invalid key format. Agent keys start with 'om_agent_'.")
-        print("(If you have a webhook token instead, use: pipeline.py connect --key <token>)")
+        print("Create one at your Outreach Magic setup URL (see setup prompt).")
         sys.exit(1)
 
     cfg = load_config()
     cfg["agent_key"] = agent_key
+    cfg.pop("token", None)
     save_config(cfg)
 
     print("\nValidating key...")
@@ -5758,7 +5961,7 @@ def setup(agent_key: Optional[str] = None):
         print(f"Connected to org {org_id} — {count} events available.")
 
     try:
-        maybe_sync_routing_from_cloud(agent_key, quiet=True)
+        maybe_sync_routing_from_cloud(quiet=True)
     except Exception:
         pass
 
@@ -5776,59 +5979,12 @@ def setup(agent_key: Optional[str] = None):
         print()
         print(format_stats(get_stats()))
 
+    project_root = ensure_project_layout()
+    print()
+    print(f"Project folders: {project_root}")
+    print(f"  input/  export/  agent_resources/")
     print()
     print("Setup complete. Run 'pull' to sync events, 'show' to view pipeline.")
-
-
-def connect(token: str):
-    """Connect to the relay. Saves token and tests connection."""
-    cfg = load_config()
-    cfg["token"] = token
-    save_config(cfg)
-
-    api_base = routing_cloud.get_api_base(load_config)
-    print(f"Routing API: {api_base}/api/routing-config")
-    print(f"Relay pull:  {RELAY_URL}/pull/{{token}}")
-    print()
-
-    try:
-        maybe_sync_routing_from_cloud(token)
-    except RuntimeError as exc:
-        print(f"Warning: could not sync routing config from app ({exc}). Using local routing.")
-
-    result = pull_events(token)
-    if result.get("error"):
-        print(f"Connection test failed: {result.get('message', 'unknown error')}")
-        print("Is your token correct?")
-        sys.exit(1)
-
-    count = result.get("count", 0)
-    print(f"Connected! Found {count} buffered events on the relay.")
-    print()
-    print("Webhook URLs to paste into your platforms:")
-    platforms = ["smartlead", "heyreach", "instantly", "plusvibe", "emailbison"]
-    for p in platforms:
-        print(f"  {p}: {RELAY_URL}/{p}/{token}")
-    print()
-
-    if count > 0:
-        print("Importing events from relay (archive stays on Cloudflare)...")
-        try:
-            imported, skipped = sync_from_relay(token, after_id=get_last_max_id(), full=not get_last_max_id())
-            print(f"Imported {imported} new, {skipped} already on disk.\n")
-        except RuntimeError as e:
-            print(f"Import failed: {e}\n")
-        leads = get_pipeline()
-        print(format_pipeline_table(leads))
-        print()
-        print(format_stats(get_stats()))
-    else:
-        print("No events yet. Run 'pipeline.py pull' after your platforms start sending webhooks.")
-
-    print()
-    print("Tip: Add a cron job to auto-pull every 15 minutes:")
-    print("  hermes cron create --name 'outreach-pull' --schedule '*/15 * * * *' \\")
-    print("    --command 'cd ~/.hermes/skills/outreachmagic/scripts && python3 pipeline.py pull --cron'")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -6653,11 +6809,20 @@ def main():
     verp_p.add_argument("--limit", type=int, default=50)
     verp_p.add_argument("--json", action="store_true")
 
-    export_p = sub.add_parser("agent-changes", help="Show agent-created leads and events not yet synced")
-    export_p.add_argument("--json", action="store_true", help="Output as JSON (default)")
-    export_p.add_argument("--file", help="Write CSV to file (import-profiles compatible)")
-    export_p.add_argument("--all", action="store_true", help="Include all leads, not just locally-created")
-    export_p.add_argument("--workspace", help="Filter export to a specific workspace")
+    export_p = sub.add_parser("export", help="Export leads with personalization, tags, and sender")
+    export_p.add_argument("--workspace", required=True, help="Workspace slug")
+    export_p.add_argument("--tag", help="Filter by workspace tag")
+    export_p.add_argument("--stage", help="Filter by workspace stage")
+    export_p.add_argument("--since", help="Created/updated on or after date (YYYY-MM-DD or today)")
+    export_p.add_argument("--limit", type=int, default=5000)
+    export_p.add_argument("--format", choices=("csv", "json"), default="csv")
+    export_p.add_argument("--file", help="Output path under project export/ (default auto-named)")
+
+    agent_export_p = sub.add_parser("agent-changes", help="Show agent-created leads and events not yet synced")
+    agent_export_p.add_argument("--json", action="store_true", help="Output as JSON (default)")
+    agent_export_p.add_argument("--file", help="Write CSV to file (import-profiles compatible)")
+    agent_export_p.add_argument("--all", action="store_true", help="Include all leads, not just locally-created")
+    agent_export_p.add_argument("--workspace", help="Filter export to a specific workspace")
 
     up_p = sub.add_parser("update-stage", help="Update lead stage")
     up_p.add_argument("--id", type=int, required=True); up_p.add_argument("--stage", required=True)
@@ -6675,21 +6840,14 @@ def main():
     setup_p = sub.add_parser("setup", help="Sign up and connect your agent to Outreach Magic (org-wide access)")
     setup_p.add_argument("--key", help="Agent key (om_agent_...) — skips browser prompt")
 
-    connect_p = sub.add_parser("connect", help="Connect to OutreachMagic webhook relay (legacy per-token)")
-    connect_p.add_argument("--key", required=True, help="Your Outreach Magic token")
-
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
-    pull_p.add_argument("--key", help="Override token (legacy per-token pull)")
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
     pull_p.add_argument("--full", action="store_true", help="Re-import all relay events (after DB reset)")
-    pull_p.add_argument("--ack", action="store_true", help="Mark events pulled on relay (legacy; default keeps archive)")
     pull_p.add_argument(
         "--debug-sentiment",
         action="store_true",
         help="Print raw vs normalized sentiment mapping during ingest",
     )
-
-    webhook_p = sub.add_parser("webhook-url", help="Show webhook URLs for your platforms")
 
     sub.add_parser("status", help="Dashboard-style status: plan, connections, usage, routing")
     sync_p = sub.add_parser("sync", help="Push pending workspaces and routing rules to the webapp")
@@ -6863,8 +7021,13 @@ def main():
 
     if args.command == "init":
         init_db()
+        project_root = ensure_project_layout()
         print(f"Outreach Magic v{__version__} installed.")
         print(f"Database initialized: {get_db_path()}")
+        print(f"Project root: {project_root}")
+        print(f"  input/            → {get_input_dir()}")
+        print(f"  export/           → {get_export_dir()}")
+        print(f"  agent_resources/  → {get_agent_resources_dir()}")
         print()
         print("Next: run 'pipeline.py setup' to connect your agent to Outreach Magic.")
         return
@@ -6905,49 +7068,17 @@ def main():
         setup(agent_key=args.key)
         return
 
-    if args.command == "connect":
-        connect(args.key)
-        return
-
-    if args.command == "webhook-url":
-        tok = get_token()
-        if not tok:
-            print("Not connected. Run: pipeline.py connect --key YOUR_TOKEN")
-            sys.exit(1)
-        print(f"Relay: {RELAY_URL}")
-        print(f"Token: {tok}")
-        print()
-        for p in ["smartlead", "heyreach", "instantly", "plusvibe", "emailbison"]:
-            print(f"  {RELAY_URL}/{p}/{tok}")
-        return
-
     if args.command == "pull":
-        agent_key = get_agent_key()
-        tok = args.key or get_token()
-
-        if not agent_key and not tok:
-            print("Not connected. Run: pipeline.py setup  (recommended)")
-            print("  or legacy:    pipeline.py connect --key YOUR_TOKEN")
-            sys.exit(1)
+        agent_key = _require_agent_key()
 
         try:
-            if agent_key and not args.key:
-                imported, skipped = sync_from_relay_org(
-                    agent_key,
-                    after_id=None if args.full else get_last_max_id(),
-                    full=args.full,
-                    debug_sentiment=args.debug_sentiment,
-                    quiet=args.cron,
-                )
-            else:
-                imported, skipped = sync_from_relay(
-                    tok,
-                    after_id=None if args.full else get_last_max_id(),
-                    full=args.full,
-                    ack=args.ack,
-                    debug_sentiment=args.debug_sentiment,
-                    quiet=args.cron,
-                )
+            imported, skipped = sync_from_relay_org(
+                agent_key,
+                after_id=None if args.full else get_last_max_id(),
+                full=args.full,
+                debug_sentiment=args.debug_sentiment,
+                quiet=args.cron,
+            )
         except RuntimeError as e:
             if not args.cron:
                 print(f"Pull failed: {e}")
@@ -6967,13 +7098,11 @@ def main():
 
     if args.command in ("show", "lead-table", "stats", "campaigns") and getattr(args, "pull", False):
         agent_key = get_agent_key()
-        tok = get_token()
-        if agent_key or tok:
+        if agent_key:
             try:
-                if agent_key:
-                    imported, _ = sync_from_relay_org(agent_key, after_id=get_last_max_id(), quiet=True)
-                else:
-                    imported, _ = sync_from_relay(tok, after_id=get_last_max_id(), quiet=True)
+                imported, _ = sync_from_relay_org(
+                    agent_key, after_id=get_last_max_id(), quiet=True,
+                )
                 if imported:
                     print(f"Pulled from relay: {imported} new events imported.")
                 else:
@@ -7001,7 +7130,11 @@ def main():
         except ValueError as e:
             print(str(e))
             sys.exit(1)
-        print(json.dumps(leads, indent=2) if getattr(args, "json", False) else format_pipeline_table(leads))
+        if getattr(args, "json", False):
+            leads = enrich_lead_rows(leads, workspace=getattr(args, "workspace", None))
+            print(json.dumps(leads, indent=2))
+        else:
+            print(format_pipeline_table(leads))
     elif args.command == "lead-table":
         auto_reply = None
         if getattr(args, "auto_reply", None) is not None:
@@ -7022,9 +7155,28 @@ def main():
             print(str(e))
             sys.exit(1)
         if getattr(args, "json", False):
+            leads = enrich_lead_rows(leads, workspace=getattr(args, "workspace", None))
             print(json.dumps(leads, indent=2))
         else:
             print(format_lead_table(leads, markdown=getattr(args, "markdown", False)))
+    elif args.command == "export":
+        try:
+            result = export_leads(
+                workspace=args.workspace,
+                tag=getattr(args, "tag", None),
+                stage=getattr(args, "stage", None),
+                since=getattr(args, "since", None),
+                limit=args.limit,
+                fmt=args.format,
+                file_path=getattr(args, "file", None),
+            )
+        except ValueError as e:
+            print(json.dumps({"error": str(e)}))
+            sys.exit(1)
+        if args.format == "json" and not getattr(args, "file", None):
+            print(json.dumps(result, indent=2))
+        else:
+            print(json.dumps(result))
     elif args.command == "stats":
         stats = get_stats()
         print(json.dumps(stats, indent=0) if getattr(args, "json", False) else format_stats(stats))
@@ -7059,7 +7211,11 @@ def main():
             print(json.dumps({"error": "Use --file or --json, not both"}))
             sys.exit(1)
         if args.file:
-            path = Path(args.file).expanduser()
+            try:
+                path = resolve_project_path(args.file, kind="input")
+            except ValueError as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
             if not path.is_file():
                 print(json.dumps({"error": f"File not found: {path}"}))
                 sys.exit(1)
@@ -7276,8 +7432,12 @@ def main():
             print(json.dumps({"error": "Lead not found"}))
             sys.exit(1)
         events = get_lead_events(lead["id"], args.limit)
-        print(json.dumps({"lead": lead, "events": events}, indent=2)
-              if args.json else format_event_timeline(lead, events))
+        if args.json:
+            enriched = enrich_lead_rows([lead], workspace=getattr(args, "workspace", None))
+            lead_out = enriched[0] if enriched else dict(lead)
+            print(json.dumps({"lead": lead_out, "events": events}, indent=2))
+        else:
+            print(format_event_timeline(lead, events))
     elif args.command == "copy-insights":
         try:
             insights = get_copy_insights(

@@ -30,7 +30,6 @@ if [[ -f "$SKILL_SRC/references/schema.md" ]]; then
 fi
 
 chmod +x "$SKILL_DIR/scripts/pipeline.py" 2>/dev/null || true
-chmod +x "$SKILL_DIR/scripts/server.py" 2>/dev/null || true
 
 VER="$(cat "$SKILL_DIR/scripts/VERSION" 2>/dev/null || echo "0.0.0")"
 if [[ -f "$SKILL_DIR/SKILL.md" ]]; then
@@ -57,4 +56,4 @@ echo "  After git pull, re-run:"
 echo "    bash scripts/sync-local.sh"
 echo
 echo "  Connect relay:"
-echo "    python3 $SKILL_DIR/scripts/pipeline.py connect --key YOUR_KEY"
+echo "    python3 $SKILL_DIR/scripts/pipeline.py setup --key om_agent_YOUR_KEY"

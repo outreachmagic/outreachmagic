@@ -1,31 +1,26 @@
 """
 Skill install paths. Infers data root from script location; falls back to ~/.hermes.
-Optional data_root override in config.
+Optional data_root and project_root overrides in config.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 SKILL_NAME = "outreachmagic"
 
+_PROJECT_ROOT_OVERRIDE: Optional[Path] = None
+
 
 def _infer_data_root() -> Path:
-    """Derive data root from where this script actually lives on disk.
-    ~/.hermes/skills/outreachmagic/scripts/om_paths.py -> ~/.hermes
-    ~/.cursor/skills/outreachmagic/scripts/om_paths.py -> ~/.cursor
-    ~/.claude/skills/outreachmagic/scripts/om_paths.py -> ~/.claude
-    ~/.hermes/profiles/client/skills/outreachmagic/scripts/om_paths.py -> ~/.hermes
-    """
+    """Derive data root from where this script actually lives on disk."""
     scripts_dir = Path(__file__).resolve().parent
     skill_dir = scripts_dir.parent
     skills_dir = skill_dir.parent
     if skills_dir.name == "skills" and skill_dir.name == SKILL_NAME:
         candidate = skills_dir.parent
-        # Hermes WebUI profile detection: if we're inside profiles/<name>/skills/,
-        # resolve to the global Hermes home instead of the profile-isolated dir.
         if candidate.parent.name == "profiles":
             return candidate.parent.parent
         return candidate
@@ -43,15 +38,24 @@ def set_data_root_override(path: Optional[Path]) -> None:
     _DATA_ROOT_OVERRIDE = path
 
 
-def _read_bootstrap_data_root(default_root: Path) -> Path:
+def set_project_root_override(path: Optional[Path]) -> None:
+    """Tests only: redirect project folders."""
+    global _PROJECT_ROOT_OVERRIDE
+    _PROJECT_ROOT_OVERRIDE = path
+
+
+def _read_bootstrap_config(default_root: Path) -> dict:
     cfg_path = default_root / "skills" / SKILL_NAME / "config" / "outreachmagic_config.json"
     if not cfg_path.exists():
-        return default_root
+        return {}
     try:
-        cfg = json.loads(cfg_path.read_text())
+        return json.loads(cfg_path.read_text())
     except (OSError, json.JSONDecodeError):
-        return default_root
-    raw = (cfg.get("data_root") or "").strip()
+        return {}
+
+
+def _read_bootstrap_data_root(default_root: Path) -> Path:
+    raw = (_read_bootstrap_config(default_root).get("data_root") or "").strip()
     if raw:
         return Path(raw).expanduser()
     return default_root
@@ -73,3 +77,65 @@ def get_config_path() -> Path:
 
 def get_db_path() -> Path:
     return get_skill_home() / "databases" / "outreachmagic.db"
+
+
+def _config_project_root() -> Optional[Path]:
+    if _PROJECT_ROOT_OVERRIDE is not None:
+        return _PROJECT_ROOT_OVERRIDE
+    raw = (_read_bootstrap_config(get_data_root()).get("project_root") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return None
+
+
+def get_project_root() -> Path:
+    return _config_project_root() or (get_skill_home() / "project")
+
+
+def get_input_dir() -> Path:
+    return get_project_root() / "input"
+
+
+def get_export_dir() -> Path:
+    return get_project_root() / "export"
+
+
+def get_agent_resources_dir() -> Path:
+    return get_project_root() / "agent_resources"
+
+
+def ensure_project_layout() -> Path:
+    """Create input/, export/, agent_resources/ under project_root."""
+    root = get_project_root()
+    for sub in ("input", "export", "agent_resources"):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+        gitkeep = root / sub / ".gitkeep"
+        if not gitkeep.exists():
+            gitkeep.touch()
+    return root
+
+
+def resolve_project_path(
+    path: str,
+    *,
+    kind: Literal["input", "export"] = "input",
+    for_write: bool = False,
+) -> Path:
+    """Resolve a user path under project_root (no cwd fallback)."""
+    raw = (path or "").strip()
+    if not raw:
+        raise ValueError("path is required")
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        if for_write:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+    root = get_project_root()
+    if raw.startswith("input/") or raw.startswith("export/"):
+        resolved = root / raw
+    else:
+        base = get_input_dir() if kind == "input" else get_export_dir()
+        resolved = base / raw
+    if for_write:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+    return resolved

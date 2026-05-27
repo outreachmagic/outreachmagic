@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.15.0
+version: 1.17.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -63,8 +63,11 @@ If `pull` returns an error like "No agent key or token configured", the user nee
 Then wait for the user to paste a key (starts with `om_agent_`). Once they do, run:
 
 ```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup --key <PASTED_KEY>
 ```
+
+`init` creates the database and project folders (`input/`, `export/`, `agent_resources/` under `~/.hermes/skills/outreachmagic/project` by default). Override with `"project_root"` in config.
 
 That's it. Don't list other commands, don't offer alternatives. Just: go get a key, paste it, done.
 
@@ -293,7 +296,26 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
 ```
 
-Web API: `/api/leads?sentiment=positive&auto_reply=true`
+`show --json` and `lead-table --json` include `personalization`, `tags`, and `latest_sender` when available.
+
+### Export full profiles (CSV / JSON)
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export --workspace popcam --tag nace --format csv
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export --workspace popcam --since today --format json
+```
+
+Writes to `export/` by default. CSV uses `personalized_first_name`, `personalized_company_name`, plus lead fields, tags, HQ, and `latest_sender`.
+
+### Reset local database (schema upgrade)
+
+```bash
+rm ~/.hermes/skills/outreachmagic/databases/outreachmagic.db
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --full
+```
+
+**LinkedIn IDs (v1.17):** Public profiles are stored in `linkedin_url` as `linkedin.com/in/handle` (no `https://`). Sales Nav (`ACwAA…`) and member IDs (`urn:li:member:…`) are stored as identity aliases and used for matching when the public slug arrives later.
 
 ## Core Workflow
 
@@ -337,7 +359,7 @@ If lead exists by email or LinkedIn, returns `{"status": "exists", "id": N}` (do
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
-  --file /path/to/contacts_enriched.csv
+  --file input/contacts_enriched.csv
 
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
   --file leads.json
@@ -526,13 +548,6 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 | notes | `--notes` | Free-form |
 | tags | `--tags` | JSON array string like '["vip","enterprise"]' |
 | workspace | `--workspace` | Optional on `add-lead`; required on `log-event` and `update-stage` in multi-workspace mode |
-
-## Web Dashboard
-
-```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/server.py
-# http://localhost:3100
-```
 
 ## Privacy & Security
 

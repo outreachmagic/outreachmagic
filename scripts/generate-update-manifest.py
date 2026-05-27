@@ -16,7 +16,7 @@ MANIFEST_FILES = (
     "workspace_routing.py",
     "routing_cloud.py",
     "om_paths.py",
-    "server.py",
+    "connections_cloud.py",
     "VERSION",
     "SKILL.md",
 )

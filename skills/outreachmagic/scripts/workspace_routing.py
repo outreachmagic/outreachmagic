@@ -7,8 +7,9 @@ Campaign routing priority:
 Rules with source_platform='*' match any incoming platform.
 
 Identity resolution (additive aliases):
-  external_id > email > linkedin_url > phone > name_company_domain >
-  name_company > import_key > provider_id
+  external_id > email > linkedin_url > linkedin_sales_nav_id >
+  linkedin_member_id > phone > name_company_domain > name_company >
+  import_key > provider_id
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ IDENTITY_PRECEDENCE = (
     "external_id",
     "email",
     "linkedin_url",
+    "linkedin_sales_nav_id",
+    "linkedin_member_id",
     "phone",
     "name_company_domain",
     "name_company_domain_title",
@@ -70,21 +73,6 @@ class OrgRoutingConfig:
     default_workspace_id: Optional[str] = None
 
 
-def normalize_linkedin_profile(url: str) -> Optional[str]:
-    """Extract canonical 'linkedin.com/in/slug' from any LinkedIn URL variant."""
-    raw = (url or "").strip()
-    if not raw:
-        return None
-    norm = raw.lower()
-    for prefix in ("https://", "http://"):
-        if norm.startswith(prefix):
-            norm = norm[len(prefix):]
-    if norm.startswith("www."):
-        norm = norm[4:]
-    match = re.match(r'(linkedin\.com/in/[^/?#]+)', norm)
-    return match.group(1) if match else norm.rstrip("/")
-
-
 def normalize_campaign_name(name: Optional[str]) -> Optional[str]:
     if not name or not str(name).strip():
         return None
@@ -100,15 +88,76 @@ def normalize_email(email: Optional[str]) -> Optional[str]:
 
 
 def normalize_linkedin(url: Optional[str]) -> Optional[str]:
-    if not url or not str(url).strip():
+    """Public profile slug only: linkedin.com/in/handle (no scheme/www)."""
+    raw = (url or "").strip()
+    if not raw:
         return None
-    norm = str(url).strip().lower()
+    norm = raw.lower()
     for prefix in ("https://", "http://"):
         if norm.startswith(prefix):
-            norm = norm[len(prefix) :]
+            norm = norm[len(prefix):]
     if norm.startswith("www."):
         norm = norm[4:]
+    match = re.match(r"(linkedin\.com/in/[^/?#]+)", norm)
+    if match:
+        return match.group(1)
     return norm.rstrip("/") or None
+
+
+def normalize_linkedin_sales_nav_id(value: str) -> Optional[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    m = re.match(r"^ACwAA[\w-]+$", raw)
+    if m:
+        return m.group(0)
+    m = re.search(r"urn:li:fs_salesProfile:\((ACwAA[^,]+)", raw, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
+
+
+def normalize_linkedin_member_id(value: str) -> Optional[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    m = re.search(r"urn:li:member:(\d+)", raw, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    if re.match(r"^\d{5,12}$", raw):
+        return raw
+    return None
+
+
+def parse_linkedin_value(raw: str) -> list[tuple[str, str]]:
+    """Classify one string into 0..n (identity_type, normalized_value) pairs."""
+    text = (raw or "").strip()
+    if not text:
+        return []
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    lower = text.lower()
+
+    def add(itype: str, norm: Optional[str]):
+        if not norm:
+            return
+        key = (itype, norm)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(key)
+
+    if "urn:li:member:" in lower:
+        add("linkedin_member_id", normalize_linkedin_member_id(text))
+    if "fs_salesprofile" in lower or text.startswith("ACwAA"):
+        add("linkedin_sales_nav_id", normalize_linkedin_sales_nav_id(text))
+    public = normalize_linkedin(text)
+    if public and "linkedin.com/in/" in public:
+        add("linkedin_url", public)
+
+    order = {t: i for i, t in enumerate(IDENTITY_PRECEDENCE)}
+    out.sort(key=lambda x: order.get(x[0], 99))
+    return out
 
 
 def normalize_phone(phone: Optional[str]) -> Optional[str]:
@@ -197,7 +246,10 @@ def build_import_key_fingerprint(
 
 
 def match_confidence_for_type(identity_type: str) -> str:
-    if identity_type in ("external_id", "email", "linkedin_url"):
+    if identity_type in (
+        "external_id", "email", "linkedin_url",
+        "linkedin_sales_nav_id", "linkedin_member_id",
+    ):
         return "high"
     if identity_type in ("phone", "name_company_domain", "name_company_domain_title"):
         return "medium"
@@ -242,7 +294,8 @@ def build_import_identities(
     add("email", profile.get("email"))
     li = profile.get("linkedin")
     if li:
-        add("linkedin_url", li)
+        for itype, val in parse_linkedin_value(li):
+            add(itype, val)
     add("phone", profile.get("phone") or extra.get("phone"))
 
     norm_name = normalize_person_name(profile.get("name"))
@@ -324,6 +377,10 @@ def normalize_identity_value(identity_type: str, value: str) -> Optional[str]:
         return normalize_email(value)
     if identity_type == "linkedin_url":
         return normalize_linkedin(value)
+    if identity_type == "linkedin_sales_nav_id":
+        return normalize_linkedin_sales_nav_id(value)
+    if identity_type == "linkedin_member_id":
+        return normalize_linkedin_member_id(value)
     if identity_type == "phone":
         return normalize_phone(value)
     if identity_type == "external_id":
@@ -644,7 +701,10 @@ def collect_identities_from_event(
     if ext:
         add("external_id", ext)
     add("email", identity.get("email"))
-    add("linkedin_url", identity.get("linkedin_url"))
+    li = identity.get("linkedin_url")
+    if li:
+        for itype, val in parse_linkedin_value(li):
+            add(itype, val)
     add("phone", identity.get("phone"))
     provider_lead = (raw or {}).get("lead_id") or (raw or {}).get("sl_lead_email")
     if provider_lead and platform:
@@ -676,7 +736,7 @@ def find_lead_by_identity(
         return int(row["id"]) if row else None
     if identity_type == "linkedin_url":
         row = conn.execute(
-            "SELECT id FROM leads WHERE linkedin_normalized = ?", (value_normalized,)
+            "SELECT id FROM leads WHERE linkedin_url = ?", (value_normalized,)
         ).fetchone()
         return int(row["id"]) if row else None
     return None

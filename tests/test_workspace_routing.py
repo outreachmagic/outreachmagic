@@ -31,6 +31,7 @@ from workspace_routing import (  # noqa: E402
     normalize_external_id,
     normalize_linkedin,
     parse_entity_key,
+    parse_linkedin_value,
     resolve_workspace,
     resolve_workspace_for_ingest,
 )
@@ -40,6 +41,44 @@ def test_normalization():
     assert normalize_email("  Jane@Example.COM ") == "jane@example.com"
     assert normalize_linkedin("https://www.linkedin.com/in/jane/") == "linkedin.com/in/jane"
     assert normalize_campaign_name("  Foo   Bar  ") == "foo bar"
+
+
+def test_parse_linkedin_value():
+    sales = "ACwAAAN-JhcBW3CyV59ymKdIvvot8il9llc-L8w"
+    parsed = dict(parse_linkedin_value("urn:li:member:58598935"))
+    assert parsed.get("linkedin_member_id") == "58598935"
+    parsed = dict(parse_linkedin_value(f"urn:li:fs_salesProfile:({sales},NAME_SEARCH,OWos)"))
+    assert parsed.get("linkedin_sales_nav_id") == sales
+    parsed = dict(parse_linkedin_value(sales))
+    assert parsed.get("linkedin_sales_nav_id") == sales
+    parsed = dict(parse_linkedin_value("https://www.linkedin.com/in/jane/"))
+    assert parsed.get("linkedin_url") == "linkedin.com/in/jane"
+
+
+def test_linkedin_sales_nav_then_public_slug_same_lead():
+    om.init_db()
+    sales = "ACwAAAN-JhcBW3CyV59ymKdIvvot8il9llc-L8w"
+    r1 = om.resolve_lead(
+        name="Jane", email="jane-linkedin@test.com",
+        linkedin_url=sales,
+    )
+    assert r1["status"] == "created"
+    conn = om.get_conn()
+    row = conn.execute(
+        "SELECT linkedin_url FROM leads WHERE id = ?", (r1["id"],),
+    ).fetchone()
+    assert not row["linkedin_url"]
+    r2 = om.resolve_lead(
+        name="Jane", email="jane-linkedin@test.com",
+        linkedin_url="https://www.linkedin.com/in/jane-doe",
+    )
+    assert r2["status"] == "matched"
+    assert r2["id"] == r1["id"]
+    row = conn.execute(
+        "SELECT linkedin_url FROM leads WHERE id = ?", (r1["id"],),
+    ).fetchone()
+    conn.close()
+    assert row["linkedin_url"] == "linkedin.com/in/jane-doe"
 
 
 def test_campaign_routing():

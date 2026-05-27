@@ -56,6 +56,21 @@ class OrgRoutingConfig:
     default_workspace_id: Optional[str] = None
 
 
+def normalize_linkedin_profile(url: str) -> Optional[str]:
+    """Extract canonical 'linkedin.com/in/slug' from any LinkedIn URL variant."""
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    norm = raw.lower()
+    for prefix in ("https://", "http://"):
+        if norm.startswith(prefix):
+            norm = norm[len(prefix):]
+    if norm.startswith("www."):
+        norm = norm[4:]
+    match = re.match(r'(linkedin\.com/in/[^/?#]+)', norm)
+    return match.group(1) if match else norm.rstrip("/")
+
+
 def normalize_campaign_name(name: Optional[str]) -> Optional[str]:
     if not name or not str(name).strip():
         return None
@@ -514,16 +529,32 @@ def upsert_workspace_lead(
     *,
     status: str = "prospecting",
     owner_user_id: Optional[str] = None,
+    current_status_label: Optional[str] = None,
+    current_status_sentiment: Optional[str] = None,
+    contact_priority: Optional[int] = None,
 ) -> str:
     row = conn.execute(
         "SELECT id, status FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
         (workspace_id, lead_id),
     ).fetchone()
     if row:
+        extra_sets = []
+        extra_params = []
+        if current_status_label is not None:
+            extra_sets.append("current_status_label = ?")
+            extra_params.append(current_status_label)
+        if current_status_sentiment is not None:
+            extra_sets.append("current_status_sentiment = ?")
+            extra_params.append(current_status_sentiment)
+        if contact_priority is not None:
+            extra_sets.append("contact_priority = ?")
+            extra_params.append(contact_priority)
+        sets = "last_activity_at = datetime('now'), updated_at = datetime('now')"
+        if extra_sets:
+            sets += ", " + ", ".join(extra_sets)
         conn.execute(
-            """UPDATE workspace_leads SET last_activity_at = datetime('now'),
-               updated_at = datetime('now') WHERE id = ?""",
-            (row["id"],),
+            f"UPDATE workspace_leads SET {sets} WHERE id = ?",
+            (*extra_params, row["id"]),
         )
         return row["id"]
 
@@ -531,10 +562,12 @@ def upsert_workspace_lead(
     conn.execute(
         """INSERT INTO workspace_leads (
                id, org_id, workspace_id, lead_id, status, owner_user_id,
+               current_status_label, current_status_sentiment, contact_priority,
                stage_entered_at, last_activity_at, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'),
-                     datetime('now'), datetime('now'))""",
-        (ws_lead_id, org_id, workspace_id, lead_id, status, owner_user_id),
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     datetime('now'), datetime('now'), datetime('now'), datetime('now'))""",
+        (ws_lead_id, org_id, workspace_id, lead_id, status, owner_user_id,
+         current_status_label, current_status_sentiment, contact_priority),
     )
     return ws_lead_id
 
@@ -582,6 +615,61 @@ def append_workspace_event(
         ),
     )
     return event_id
+
+
+def upsert_linkedin_status(
+    conn: sqlite3.Connection,
+    workspace_id: str,
+    lead_id: int,
+    sender_profile_normalized: str,
+    event_type: str,
+    event_at: str,
+) -> None:
+    """Update LinkedIn connection status with timestamp guards to prevent stale writes."""
+    row = conn.execute(
+        """SELECT id, is_connected, connected_at, request_sent_at
+           FROM workspace_lead_linkedin_status
+           WHERE workspace_id = ? AND lead_id = ? AND sender_profile = ?""",
+        (workspace_id, lead_id, sender_profile_normalized),
+    ).fetchone()
+
+    if event_type == "linkedin_connect":
+        if row and row["is_connected"] and row["connected_at"] and row["connected_at"] <= event_at:
+            return
+        if not row:
+            row_id = f"lis_{workspace_id}_{lead_id}_{sender_profile_normalized[:20]}"
+            conn.execute(
+                """INSERT INTO workspace_lead_linkedin_status
+                   (id, workspace_id, lead_id, sender_profile, is_request_pending, request_sent_at)
+                   VALUES (?, ?, ?, ?, 1, ?)""",
+                (row_id, workspace_id, lead_id, sender_profile_normalized, event_at),
+            )
+        else:
+            conn.execute(
+                """UPDATE workspace_lead_linkedin_status
+                   SET is_request_pending = 1, request_sent_at = ?, updated_at = datetime('now')
+                   WHERE id = ? AND is_connected = 0""",
+                (event_at, row["id"]),
+            )
+
+    elif event_type == "linkedin_connection_accepted":
+        if not row:
+            row_id = f"lis_{workspace_id}_{lead_id}_{sender_profile_normalized[:20]}"
+            conn.execute(
+                """INSERT INTO workspace_lead_linkedin_status
+                   (id, workspace_id, lead_id, sender_profile, is_connected, is_request_pending,
+                    connected_at)
+                   VALUES (?, ?, ?, ?, 1, 0, ?)""",
+                (row_id, workspace_id, lead_id, sender_profile_normalized, event_at),
+            )
+        else:
+            conn.execute(
+                """UPDATE workspace_lead_linkedin_status
+                   SET is_connected = 1, is_request_pending = 0, connected_at = ?,
+                       updated_at = datetime('now')
+                   WHERE id = ?""",
+                (event_at, row["id"]),
+            )
 
 
 def assign_campaign_map(

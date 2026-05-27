@@ -1,13 +1,13 @@
 {
-  "version": "1.11.1",
+  "version": "1.12.0",
   "files": {
-    "pipeline.py": "5e82b4fee67dd3fd70c0b9fd3862c900f552b778cc9596b4219de75cd4f83dc6",
+    "pipeline.py": "ed12190588e05564275e572b88247eb1cd1847d11534b4ba40086d31c939bde3",
     "relay_extractors.py": "6252997a0fef17c059c3050282bb3711ce7cf6a07af7f9c7a1ae3f98998f2d74",
-    "workspace_routing.py": "f4c3569b6e6cf144fab43f3ed88baa2b7fe563d3da2fcb2bbec6f477c553e0eb",
+    "workspace_routing.py": "a63ec2fd67c85d37c81b8cb0c4183739636753f07e9b01185e241e97550573c3",
     "routing_cloud.py": "63c4e7f5a2cd6886a0386e02fd434f774a90a37698d4d68a3851ac0242bfe101",
     "om_paths.py": "802ce2a91e3643a290e6c0ac6008a94275d8b8e24c8aec861be2b0e0f63420e1",
     "server.py": "d75ec5f35f27b0cc25f6c7be2f69351c4f875d6b99e61bbaf1497e195c0154d4",
-    "VERSION": "4f9416d650bd28343244b868dfebdb11e70d7b32423536cb87b8c31fde62f993",
+    "VERSION": "c92df6bdde330be219d62f48ec6490b01889436f2f59027aab200e74de619168",
     "SKILL.md": "8b3a81bfae2154418eb421a022e8d14e4c665f40609750f28ff9b596ba30548b"
   }
 }

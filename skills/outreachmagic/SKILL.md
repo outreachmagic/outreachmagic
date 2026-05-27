@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.17.2
+version: 1.19.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -140,6 +140,9 @@ Install and update paths are in the **Install** and **Updates** sections above.
 - For campaign counts, use `pipeline.py campaigns` (or `stats`, which includes a campaign section). Do not write raw SQL.
 - When the user asks about connections, webhook URLs, or platform health, use `status` or `connections`.
 - When the user wants to connect a new platform, use `connect-platform --platform <id>`.
+- If the user reports slowness, disk use, or pipeline oddities: run **`db-health`** first (local, no network). Explain `rulesTriggered` hints; suggest `archive --workspace <slug> --dry-run` when size rules fire.
+- **Never run `sync` unless the user asked** to push to the cloud. `sync` also sends aggregate DB health (~1 KB, no lead content) unless `--no-health-report`.
+- **Never run `archive --purge` without explicit user confirmation** after reviewing `--dry-run` counts.
 - **NEVER use `python3 -c`, `sqlite3` directly, raw SQL, or any inline script to inspect or modify the database.** All database operations must go through `pipeline.py` commands. If a command errors, report the error verbatim and stop — do not attempt to debug by accessing the database directly.
 
 ## MANDATORY: Always Pull First
@@ -226,7 +229,25 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --all
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py sync
 ```
 
-`sync` pushes pending lead snapshots (profile, `external_id`, `company_domain`, HQ/location, tags, mailmerge, workspace status, LinkedIn connection flags) plus local events. Other machines run `pull --full` after a DB reset to restore everything that was synced.
+`sync` pushes pending lead snapshots (profile, `external_id`, `company_domain`, HQ/location, tags, mailmerge, workspace status, LinkedIn connection flags) plus local events. At the end of the same command it may POST aggregate local DB health to the portal (file size, row counts, top tables — throttled ~6h). Skip with `sync --no-health-report`. Other machines run `pull --full` after a DB reset to restore everything that was synced.
+
+### Local database health
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py db-health
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py db-health --json
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py db-health --full
+```
+
+Read `healthStatus`, `rulesTriggered` (each has a `hint`), `rowCounts`, and `tableBreakdown`. Cloud copy: `GET /api/agent/status` → `localDb` after user has run `sync`.
+
+### Archive a workspace (local only)
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py archive --workspace popcam --dry-run
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py archive --workspace popcam --output ~/archives/popcam.db
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py archive --workspace popcam --output ~/archives/popcam.db --purge
+```
 
 **Fresh DB + full CSV round-trip:**
 
@@ -309,11 +330,30 @@ Writes to `export/` by default. CSV uses `personalized_first_name`, `personalize
 
 ### Reset local database (schema upgrade)
 
+Prefer the guarded refresh command (syncs first, backs up, then rebuilds):
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py refresh --yes
+```
+
+Preview tag fixes without writing:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py tag repair --dry-run
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py tag repair
+```
+
+Manual equivalent (no pre-sync backup):
+
 ```bash
 rm ~/.hermes/skills/outreachmagic/databases/outreachmagic.db
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --full
 ```
+
+**Tell your agent (rare):** “Run `pipeline.py refresh --yes` to back up, sync local changes to the relay, wipe the local DB, and re-import from the cloud. Do not use `pull --full` alone — it skips already-imported rows.”
+
+`pull --full` only re-downloads relay pages; it does **not** clear `relay_ingested`. Use `refresh` when you need a true rebuild.
 
 **LinkedIn IDs (v1.17):** Public profiles are stored in `linkedin_url` as `linkedin.com/in/handle` (no `https://`). Sales Nav (`ACwAA…`) and member IDs (`urn:li:member:…`) are stored as identity aliases and used for matching when the public slug arrives later.
 
@@ -564,5 +604,6 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 3. Not updating stage after reply
 4. Setup requires an Agent Key — get one at https://dev.outreachmagic.io/setup/agent
 5. **Version:** run `pipeline.py version` — do not guess from SKILL.md frontmatter alone.
-6. Relay archive stays on api.outreachmagic.io; `pull` dedupes locally. Use `pull --full` after deleting the local DB.
-7. **`add-lead` on an existing email does not enrich** — use `import-profiles` or rely on relay `pull` for fill-if-empty updates.
+6. Relay archive stays on api.outreachmagic.io; `pull` dedupes locally. Use `refresh --yes` for a true rebuild (sync + backup + wipe + `pull --full`). `pull --full` alone only helps after deleting the DB manually.
+7. **Tags:** always pass plain names (`nace`, `vip`) — not JSON list strings like `['nace']`. Run `tag repair` if legacy rows used bracket form.
+8. **`add-lead` on an existing email does not enrich** — use `import-profiles` or rely on relay `pull` for fill-if-empty updates.

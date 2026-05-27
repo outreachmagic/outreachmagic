@@ -4,49 +4,56 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 
 ## Install
 
-Copy the skill to your Cursor skills directory:
+Get your Agent Key at [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent), then run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/main/install.sh | bash -s -- om_agent_YOUR_KEY
+```
+
+That's it. Restart Cursor and in Agent chat run:
+
+> /outreachmagic
+
+Or ask: "show me my pipeline"
+
+## Update
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/main/install.sh | bash
+```
+
+(Re-running without a key updates the skill in place; your local database and config are preserved.)
+
+## Manual install
+
+If you'd rather not pipe a script to bash:
 
 ```bash
 git clone https://github.com/outreachmagic/cursor-outreachmagic.git /tmp/om-cursor
 mkdir -p ~/.cursor/skills/outreachmagic
-cp -r /tmp/om-cursor/{SKILL.md,scripts,references} ~/.cursor/skills/outreachmagic/
+cp -a /tmp/om-cursor/. ~/.cursor/skills/outreachmagic/
 rm -rf /tmp/om-cursor
-```
-
-Then initialize and connect:
-
-```bash
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py init
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_YOUR_KEY
 ```
 
-Get your Agent Key at [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent).
+### Project-level rule (optional)
 
-### Project-level rule (alternative)
-
-If you only want the skill in a specific project, copy the `.mdc` rule file:
+For a single repo only, copy the rule file into that project:
 
 ```bash
 mkdir -p .cursor/rules
-cp /tmp/om-cursor/outreachmagic.mdc .cursor/rules/
+cp ~/.cursor/skills/outreachmagic/outreachmagic.mdc .cursor/rules/
 ```
 
-## Quick Start
+## Usage
 
-Open any project in Cursor and ask:
+Open any project in Cursor. In Agent chat, run `/outreachmagic` or ask:
 
 - "Show me my pipeline"
 - "How is outreach going?"
 - "Pull latest events and show stats"
 - "Show my campaigns"
-
-The skill auto-loads when Cursor detects relevant queries.
-
-## Update
-
-```bash
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py update
-```
 
 ## Pricing
 

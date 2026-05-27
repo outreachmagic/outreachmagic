@@ -27,6 +27,7 @@ Usage:
   pipeline.py update --check                # Check for newer release without installing
 """
 
+import ast
 import sqlite3
 import json
 import os
@@ -88,6 +89,8 @@ from workspace_routing import (
 
 import routing_cloud
 import connections_cloud
+import db_health
+import workspace_archive
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -109,8 +112,21 @@ from om_paths import (
 SKILL_NAME = "outreachmagic"
 RELAY_URL = "https://api.outreachmagic.io"
 
+# Max chars stored in events.metadata_json["body"] (full copy for history / copy-insights).
+# body_preview stays 200 chars. Prevents runaway HTML/base64 from bloating SQLite.
+MAX_EVENT_BODY_STORAGE_CHARS = 65536
+
 SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
-UPDATE_SCRIPT_FILES = ("pipeline.py", "relay_extractors.py", "workspace_routing.py", "routing_cloud.py", "connections_cloud.py", "om_paths.py")
+UPDATE_SCRIPT_FILES = (
+    "pipeline.py",
+    "relay_extractors.py",
+    "workspace_routing.py",
+    "workspace_archive.py",
+    "routing_cloud.py",
+    "connections_cloud.py",
+    "db_health.py",
+    "om_paths.py",
+)
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
 SKILL_REPO_PATH = "skills/outreachmagic"
 GITHUB_REPO = "outreachmagic/outreachmagic-skill"
@@ -1139,9 +1155,63 @@ def migrate_db(conn=None):
         conn.execute("ALTER TABLE workspace_leads ADD COLUMN latest_sender TEXT")
     except sqlite3.OperationalError:
         pass
+    repair_malformed_tags(conn)
+    conn.commit()
     if own_conn:
-        conn.commit()
         conn.close()
+
+
+def repair_malformed_tags(conn: sqlite3.Connection, *, dry_run: bool = False) -> dict:
+    """Fix workspace tags stored as list literals (e.g. \"['nace']\" -> \"nace\")."""
+    rows = conn.execute(
+        "SELECT id, workspace_id, lead_id, tag FROM workspace_lead_tags ORDER BY id"
+    ).fetchall()
+    fixed_rows = 0
+    removed_rows = 0
+    inserted_tags = 0
+    examples: list[dict] = []
+
+    for row in rows:
+        raw_tag = row["tag"] or ""
+        parsed = parse_tags_value(raw_tag)
+        if len(parsed) == 1 and parsed[0] == normalize_tag(raw_tag):
+            continue
+        if not parsed:
+            removed_rows += 1
+            if len(examples) < 5:
+                examples.append({"from": raw_tag, "to": []})
+            if not dry_run:
+                conn.execute("DELETE FROM workspace_lead_tags WHERE id = ?", (row["id"],))
+            continue
+
+        fixed_rows += 1
+        if len(examples) < 5:
+            examples.append({"from": raw_tag, "to": parsed})
+        if dry_run:
+            inserted_tags += len(parsed)
+            continue
+
+        conn.execute("DELETE FROM workspace_lead_tags WHERE id = ?", (row["id"],))
+        for tag in parsed:
+            tag_id = (
+                f"wlt_{row['workspace_id']}_{row['lead_id']}_"
+                f"{hashlib.md5(tag.encode()).hexdigest()[:8]}"
+            )
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
+                   VALUES (?, ?, ?, ?)""",
+                (tag_id, row["workspace_id"], row["lead_id"], tag),
+            )
+            inserted_tags += cur.rowcount
+
+    return {
+        "status": "ok",
+        "dry_run": dry_run,
+        "rows_fixed": fixed_rows,
+        "rows_removed": removed_rows,
+        "tags_inserted": inserted_tags,
+        "examples": examples,
+    }
 
 
 def backfill_workspace_routing(conn: sqlite3.Connection):
@@ -1266,6 +1336,59 @@ def map_relay_local_event_type(envelope_event_type: str) -> str:
 def normalize_tag(tag: str) -> str:
     """Lowercase, strip whitespace, collapse internal whitespace."""
     return " ".join(tag.strip().lower().split())
+
+
+def _dedupe_tags(tags: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for tag in tags:
+        norm = normalize_tag(tag)
+        if norm and norm not in seen:
+            seen.add(norm)
+            out.append(norm)
+    return out
+
+
+def parse_tags_value(val) -> list[str]:
+    """Parse tags from CSV/JSON/CLI/sync payloads into normalized tag strings."""
+    if val is None:
+        return []
+    if isinstance(val, list):
+        out: list[str] = []
+        for item in val:
+            out.extend(parse_tags_value(item))
+        return _dedupe_tags(out)
+    if isinstance(val, (int, float)):
+        val = str(val)
+    if not isinstance(val, str):
+        val = str(val)
+    raw = val.strip()
+    if not raw:
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                out = []
+                for item in parsed:
+                    out.extend(parse_tags_value(item))
+                return _dedupe_tags(out)
+        except json.JSONDecodeError:
+            pass
+        try:
+            parsed = ast.literal_eval(raw)
+            if isinstance(parsed, list):
+                out = []
+                for item in parsed:
+                    out.extend(parse_tags_value(item))
+                return _dedupe_tags(out)
+        except (ValueError, SyntaxError):
+            pass
+        inner = raw[1:-1].strip().strip("'\"")
+        if inner and ";" not in inner and "," not in inner:
+            norm = normalize_tag(inner)
+            return [norm] if norm else []
+    return _parse_tags(raw)
 
 
 def parse_headcount_numeric(raw: Optional[str]) -> Optional[int]:
@@ -2154,35 +2277,9 @@ def _extract_extra_import_fields(raw: dict) -> dict[str, str]:
         val = raw.get(key)
         if val is not None:
             if key == "tags":
-                # Accept tags provided as:
-                # - ["nace", "vip"] (JSON list)
-                # - 'vip; nace' (string)
-                # - '["nace"]' (JSON array string)
-                if isinstance(val, list):
-                    text = ";".join(str(v).strip() for v in val if str(v).strip())
-                    if text:
-                        out[key] = text
-                    continue
-                if isinstance(val, str):
-                    raw_txt = val.strip()
-                    if raw_txt.startswith("[") and raw_txt.endswith("]"):
-                        try:
-                            parsed = json.loads(raw_txt)
-                            if isinstance(parsed, list):
-                                text = ";".join(str(v).strip() for v in parsed if str(v).strip())
-                                if text:
-                                    out[key] = text
-                                continue
-                        except Exception:
-                            pass
-                    text = raw_txt
-                    if text:
-                        out[key] = text
-                    continue
-                # Fallback: store as string
-                text = str(val).strip()
-                if text:
-                    out[key] = text
+                parsed = parse_tags_value(val)
+                if parsed:
+                    out[key] = ";".join(parsed)
                 continue
 
             if key == "notes":
@@ -2220,15 +2317,28 @@ def _parse_tags(raw_tags: str) -> list[str]:
     for sep in (";", ","):
         if sep in raw_tags:
             for t in raw_tags.split(sep):
-                t = normalize_tag(t)
-                if t and t not in seen:
-                    tags.append(t)
-                    seen.add(t)
+                norm = normalize_tag(t)
+                if norm and norm not in seen:
+                    tags.append(norm)
+                    seen.add(norm)
             return tags
-    t = normalize_tag(raw_tags)
-    if t:
-        return [t]
+    norm = normalize_tag(raw_tags)
+    if norm:
+        return [norm]
     return []
+
+
+def _parse_cli_tags(raw: str) -> list[str]:
+    """Parse --tags CLI argument (comma-separated and/or JSON/list literals)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    if "," in raw and not (raw.startswith("[") and raw.endswith("]")):
+        out: list[str] = []
+        for part in raw.split(","):
+            out.extend(parse_tags_value(part.strip()))
+        return _dedupe_tags(out)
+    return parse_tags_value(raw)
 
 
 def import_profiles(
@@ -2444,9 +2554,13 @@ def import_profiles(
 
 def tag_add(workspace_id: str, lead_id: int, tag: str) -> dict:
     """Add a tag to a lead in a workspace."""
-    tag = normalize_tag(tag)
-    if not tag:
+    parsed = parse_tags_value(tag)
+    if len(parsed) > 1:
+        results = [tag_add(workspace_id, lead_id, t) for t in parsed]
+        return {"status": "added", "tags": [r.get("tag") for r in results], "lead_id": lead_id}
+    if not parsed:
         return {"status": "error", "error": "empty tag"}
+    tag = parsed[0]
     tag_id = f"wlt_{workspace_id}_{lead_id}_{hashlib.md5(tag.encode()).hexdigest()[:8]}"
     conn = get_conn()
     try:
@@ -2920,10 +3034,28 @@ def backfill_plusvibe_status_metadata(conn=None):
         conn.close()
 
 
+def cap_event_body(body: str) -> tuple[str, bool]:
+    """Truncate stored email/HTML body to MAX_EVENT_BODY_STORAGE_CHARS. Returns (text, was_truncated)."""
+    if not body:
+        return "", False
+    limit = MAX_EVENT_BODY_STORAGE_CHARS
+    if len(body) <= limit:
+        return body, False
+    return body[:limit], True
+
+
 def log_event(lead_id, event_type, direction="outbound", channel="email",
               subject=None, body_preview=None, metadata=None, campaign=None,
               event_at=None, sender=None):
     meta = dict(metadata or {})
+    if meta.get("body"):
+        raw_body = str(meta["body"])
+        original_len = len(raw_body)
+        capped, truncated = cap_event_body(raw_body)
+        meta["body"] = capped
+        if truncated:
+            meta["body_truncated"] = True
+            meta["body_original_length"] = original_len
     campaign_name = campaign or meta.get("campaign")
     conn = get_conn()
     campaign_id = None
@@ -4302,7 +4434,7 @@ def format_local_sync_hint(counts: dict) -> str:
     return f"\n⚠ Not synced: {', '.join(parts)}. Run: pipeline.py sync"
 
 
-def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
+def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) -> dict:
     """Push pending workspaces, rules, and lead snapshots to the cloud.
 
     Network push only runs when the user invokes `pipeline.py sync` (never on
@@ -4396,6 +4528,28 @@ def sync_all(org_id: str = DEFAULT_ORG_ID) -> dict:
             parts.append(f"Pushed {leads_pushed} lead update{'s' if leads_pushed != 1 else ''} to relay.")
 
     results["message"] = " ".join(parts) or "Everything is already synced."
+
+    conn = get_conn()
+    try:
+        health_result = db_health.maybe_report_db_health_to_cloud(
+            conn,
+            org_id=org_id,
+            pipeline_version=__version__,
+            get_agent_key_fn=get_agent_key,
+            load_config_fn=load_config,
+            save_config_fn=save_config,
+            get_client_id_fn=get_or_create_client_id,
+            cloud_routing_enabled_fn=routing_cloud.cloud_routing_enabled,
+            get_api_base_fn=routing_cloud.get_api_base,
+            push_db_health_fn=routing_cloud.push_db_health,
+            fast=True,
+            force=False,
+            skip=no_health_report,
+        )
+        results.update(health_result)
+    finally:
+        conn.close()
+
     return results
 
 
@@ -4661,12 +4815,12 @@ def apply_agent_lead_sync_payload(
                 "DELETE FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ?",
                 (workspace_id, lead_id),
             )
-            for tag in (payload["tags"] or []):
-                tag_id = f"wlt_{workspace_id}_{lead_id}_{hashlib.md5(str(tag).encode()).hexdigest()[:8]}"
+            for tag in parse_tags_value(payload.get("tags")):
+                tag_id = f"wlt_{workspace_id}_{lead_id}_{hashlib.md5(tag.encode()).hexdigest()[:8]}"
                 ws_conn.execute(
                     """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
                        VALUES (?, ?, ?, ?)""",
-                    (tag_id, workspace_id, lead_id, normalize_tag(str(tag))),
+                    (tag_id, workspace_id, lead_id, tag),
                 )
         for li in payload.get("linkedin_status") or []:
             sender = normalize_linkedin(li.get("sender_profile"))
@@ -4883,6 +5037,8 @@ def add_campaign_map_cli(
     strategy = match_strategy or ("id_exact" if campaign_id else "name_exact")
     tok = get_agent_key()
     cloud_ok = routing_cloud.cloud_routing_enabled(load_config, tok)
+    cloud_synced = False
+    cloud_warning: Optional[str] = None
     if cloud_ok:
         try:
             routing_cloud.push_campaign_map(
@@ -4895,8 +5051,9 @@ def add_campaign_map_cli(
                 match_strategy=strategy,
                 priority=priority,
             )
+            cloud_synced = True
         except RuntimeError as exc:
-            return {"status": "error", "error": str(exc)}
+            cloud_warning = str(exc)
     conn = get_conn()
     ws = conn.execute(
         "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
@@ -4915,11 +5072,14 @@ def add_campaign_map_cli(
         match_strategy=strategy,
         priority=priority,
     )
-    if cloud_ok:
+    if cloud_synced:
         conn.execute("UPDATE campaign_workspace_map SET cloud_synced = 1 WHERE id = ?", (map_id,))
     conn.commit()
     conn.close()
-    return {"status": "created", "map_id": map_id, "workspace_id": ws["id"]}
+    result = {"status": "created", "map_id": map_id, "workspace_id": ws["id"]}
+    if cloud_warning:
+        result["cloud_warning"] = cloud_warning
+    return result
 
 
 def list_quarantine(org_id: str = DEFAULT_ORG_ID, status: str = "pending", limit: int = 50) -> list[dict]:
@@ -5659,6 +5819,147 @@ def sync_from_relay_org(
     return imported, skipped
 
 
+REFRESH_WARNING = """
+⚠ LOCAL DATABASE REFRESH — destructive, use rarely
+
+This will:
+  1. Push pending local changes to the relay (sync) unless you pass --skip-sync
+  2. Back up your local SQLite file
+  3. Delete the local database and re-import everything from api.outreachmagic.io
+
+You will lose any local-only data that was NOT synced to the relay.
+pull --full alone does NOT refresh — it still skips rows already in relay_ingested.
+
+Re-run with: pipeline.py refresh --yes
+""".strip()
+
+
+def _clear_pull_cursors() -> None:
+    cfg = load_config()
+    cfg.pop("last_pull", None)
+    cfg.pop("last_max_id", None)
+    save_config(cfg)
+
+
+def refresh_local_database(
+    *,
+    yes: bool = False,
+    skip_sync: bool = False,
+    backup: Optional[str] = None,
+    org_id: str = DEFAULT_ORG_ID,
+    quiet: bool = False,
+) -> dict:
+    """Wipe local SQLite and rebuild from the relay archive (sync first by default)."""
+    if not yes:
+        return {
+            "status": "error",
+            "error": "confirmation_required",
+            "message": REFRESH_WARNING,
+        }
+
+    result: dict = {"status": "ok", "steps": []}
+
+    if not skip_sync:
+        tok = get_agent_key()
+        if not tok:
+            return {
+                "status": "error",
+                "error": "no_agent_key",
+                "message": "Agent key required. Run setup first, or pass --skip-sync (not recommended).",
+            }
+        if not routing_cloud.cloud_routing_enabled(load_config, tok):
+            return {
+                "status": "error",
+                "error": "cloud_not_configured",
+                "message": "Cloud routing not configured. Run setup first.",
+            }
+        sync_result = sync_all(org_id=org_id)
+        result["sync"] = sync_result
+        result["steps"].append("sync")
+        status = get_sync_status(org_id)
+        pending = int(status.get("pending_total") or 0)
+        if pending > 0:
+            return {
+                "status": "error",
+                "error": "sync_incomplete",
+                "message": (
+                    f"Still {pending} item(s) pending after sync. "
+                    "Resolve sync issues or re-run with --skip-sync (you may lose unsynced data)."
+                ),
+                "pending": status,
+                "sync": sync_result,
+            }
+    else:
+        result["steps"].append("sync_skipped")
+
+    db_path = get_db_path()
+    backup_path = Path(backup).expanduser() if backup else db_path.with_suffix(
+        f".backup-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.db"
+    )
+    if db_path.exists():
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(db_path, backup_path)
+        result["backup"] = str(backup_path)
+        result["steps"].append("backup")
+        db_path.unlink()
+        result["steps"].append("delete_db")
+    else:
+        result["steps"].append("no_existing_db")
+
+    _clear_pull_cursors()
+    result["steps"].append("clear_pull_cursors")
+
+    init_db()
+    result["steps"].append("init")
+
+    agent_key = get_agent_key()
+    if not agent_key:
+        return {
+            "status": "error",
+            "error": "no_agent_key",
+            "message": "Database wiped but no agent key to pull from relay. Run setup, then pull --full.",
+            **result,
+        }
+
+    try:
+        imported, skipped = sync_from_relay_org(
+            agent_key,
+            full=True,
+            quiet=quiet,
+        )
+    except RuntimeError as exc:
+        return {
+            "status": "error",
+            "error": "pull_failed",
+            "message": str(exc),
+            **result,
+        }
+
+    result["imported"] = imported
+    result["skipped"] = skipped
+    result["steps"].append("pull_full")
+    result["message"] = (
+        f"Refresh complete. Imported {imported} events, skipped {skipped} duplicates. "
+        f"Backup: {result.get('backup', '(none)')}"
+    )
+    return result
+
+
+def cmd_refresh(args) -> None:
+    result = refresh_local_database(
+        yes=getattr(args, "yes", False),
+        skip_sync=getattr(args, "skip_sync", False),
+        backup=getattr(args, "backup", None),
+        quiet=False,
+    )
+    if result.get("status") == "error" and result.get("error") == "confirmation_required":
+        print(result["message"])
+        sys.exit(1)
+    print(json.dumps(result, indent=2))
+    if result.get("status") != "ok":
+        sys.exit(1)
+
+
 def ingest_relay_event(
     event: dict,
     debug_sentiment: bool = False,
@@ -5824,6 +6125,7 @@ def ingest_relay_event(
     subject = event_fields.get("subject") or f"{platform}: {envelope_event_type}"
     body = event_fields.get("body") or ""
     if body:
+        body, _ = cap_event_body(body)
         body_preview = body[:200]
     elif sender_norm:
         body_preview = f"From {sender_norm}"[:200]
@@ -6849,6 +7151,11 @@ def main():
     tag_bulk_p.add_argument("--lead-ids", required=True, help="Comma-separated lead IDs")
     tag_bulk_p.add_argument("--tags", required=True, help="Comma-separated tags")
     tag_bulk_p.add_argument("--remove", action="store_true", help="Remove instead of add")
+    tag_repair_p = tag_sub.add_parser(
+        "repair",
+        help="Fix malformed workspace tags (e.g. \"['nace']\" -> nace)",
+    )
+    tag_repair_p.add_argument("--dry-run", action="store_true", help="Preview fixes without writing")
 
     ver_p = sub.add_parser("verify-email", help="Record email verification result")
     ver_p.add_argument("--lead-id", type=int, help="Lead ID (single mode)")
@@ -6908,9 +7215,43 @@ def main():
         help="Print raw vs normalized sentiment mapping during ingest",
     )
 
+    refresh_p = sub.add_parser(
+        "refresh",
+        help="DANGER: sync, backup, wipe local DB, and pull --full from relay (rare)",
+    )
+    refresh_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm destructive refresh after reading the warning",
+    )
+    refresh_p.add_argument(
+        "--skip-sync",
+        action="store_true",
+        help="Skip pre-refresh sync (not recommended — may lose unsynced local data)",
+    )
+    refresh_p.add_argument(
+        "--backup",
+        help="Backup path for the current database (default: outreachmagic.db.backup-<timestamp>.db)",
+    )
+
     sub.add_parser("status", help="Dashboard-style status: plan, connections, usage, routing")
     sync_p = sub.add_parser("sync", help="Push pending workspaces and routing rules to the webapp")
     sync_p.add_argument("--status", action="store_true", help="Show what needs syncing without pushing")
+    sync_p.add_argument(
+        "--no-health-report",
+        action="store_true",
+        help="Skip aggregate local DB health POST to portal (lead sync still runs)",
+    )
+    db_health_p = sub.add_parser("db-health", help="Local SQLite health (aggregates only)")
+    db_health_p.add_argument("--json", action="store_true", help="Print JSON")
+    db_health_p.add_argument("--full", action="store_true", help="Run full integrity_check (slower on large DBs)")
+    db_health_p.add_argument("--push", action="store_true", help="POST health to portal (debug)")
+    archive_p = sub.add_parser("archive", help="Export workspace data to a separate SQLite file")
+    archive_p.add_argument("--workspace", required=True, help="Workspace slug")
+    archive_p.add_argument("--output", help="Output .db path (required unless --dry-run)")
+    archive_p.add_argument("--dry-run", action="store_true", help="Show counts only")
+    archive_p.add_argument("--purge", action="store_true", help="Remove exported data from main DB (requires --output)")
+    archive_p.add_argument("--vacuum", action="store_true", help="Run VACUUM after --purge")
 
     conn_p = sub.add_parser("connections", help="List connected platforms with webhook URLs and stats")
     conn_p.add_argument("--json", action="store_true")
@@ -7096,12 +7437,117 @@ def main():
         cmd_status()
         return
 
+    if args.command == "refresh":
+        cmd_refresh(args)
+        return
+
     if args.command == "sync":
         if getattr(args, "status", False):
             print(json.dumps(get_sync_status(), indent=2))
         else:
-            result = sync_all()
+            result = sync_all(no_health_report=getattr(args, "no_health_report", False))
             print(json.dumps(result, indent=2))
+        return
+
+    if args.command == "db-health":
+        conn = get_conn()
+        try:
+            health = db_health.collect_db_health(
+                conn,
+                org_id=DEFAULT_ORG_ID,
+                fast=not getattr(args, "full", False),
+                pipeline_version=__version__,
+            )
+        finally:
+            conn.close()
+        if getattr(args, "push", False):
+            conn_push = get_conn()
+            try:
+                health["cloud"] = db_health.maybe_report_db_health_to_cloud(
+                    conn_push,
+                    org_id=DEFAULT_ORG_ID,
+                    pipeline_version=__version__,
+                    get_agent_key_fn=get_agent_key,
+                    load_config_fn=load_config,
+                    save_config_fn=save_config,
+                    get_client_id_fn=get_or_create_client_id,
+                    cloud_routing_enabled_fn=routing_cloud.cloud_routing_enabled,
+                    get_api_base_fn=routing_cloud.get_api_base,
+                    push_db_health_fn=routing_cloud.push_db_health,
+                    fast=not getattr(args, "full", False),
+                    force=True,
+                    skip=False,
+                )
+            finally:
+                conn_push.close()
+        out = json.dumps(health, indent=2) if getattr(args, "json", False) or getattr(args, "push", False) else json.dumps(health)
+        print(out)
+        return
+
+    if args.command == "archive":
+        ws = args.workspace
+        if args.dry_run:
+            conn = get_conn()
+            try:
+                _ids, meta = workspace_archive.resolve_archive_lead_ids(
+                    conn,
+                    DEFAULT_ORG_ID,
+                    ws,
+                    resolve_workspace_identity_fn=resolve_workspace_identity,
+                )
+                ev_count = 0
+                if _ids:
+                    ph = ",".join("?" for _ in _ids)
+                    ev_count = conn.execute(
+                        f"SELECT COUNT(*) FROM events WHERE lead_id IN ({ph})",
+                        tuple(_ids),
+                    ).fetchone()[0]
+                print(
+                    json.dumps(
+                        {
+                            "workspace": ws,
+                            "dry_run": True,
+                            "lead_count": len(_ids),
+                            "event_count": ev_count,
+                            **meta,
+                        },
+                        indent=2,
+                    )
+                )
+            finally:
+                conn.close()
+            return
+        if not args.output:
+            print(json.dumps({"error": "--output required (or use --dry-run)"}))
+            sys.exit(1)
+        out_path = Path(args.output).expanduser()
+
+        def _init_archive_schema(c):
+            c.executescript(SCHEMA_SQL)
+            migrate_db(c)
+
+        conn = get_conn()
+        try:
+            manifest = workspace_archive.export_workspace_archive(
+                conn,
+                DEFAULT_ORG_ID,
+                ws,
+                out_path,
+                resolve_workspace_identity_fn=resolve_workspace_identity,
+                init_schema_fn=_init_archive_schema,
+            )
+            if args.purge:
+                purge_result = workspace_archive.purge_workspace_archive(
+                    conn,
+                    DEFAULT_ORG_ID,
+                    ws,
+                    resolve_workspace_identity_fn=resolve_workspace_identity,
+                    vacuum=getattr(args, "vacuum", False),
+                )
+                manifest["purge"] = purge_result
+        finally:
+            conn.close()
+        print(json.dumps(manifest, indent=2))
         return
 
     if args.command == "connections":
@@ -7314,6 +7760,18 @@ def main():
         )
         print(json.dumps(summary, indent=2))
     elif args.command == "tag":
+        action = getattr(args, "tag_action", None)
+        if action == "repair":
+            if not db_exists():
+                print(json.dumps({"error": "Database not initialized. Run: pipeline.py init"}))
+                sys.exit(1)
+            migrate_db()
+            conn = get_conn()
+            try:
+                print(json.dumps(repair_malformed_tags(conn, dry_run=getattr(args, "dry_run", False)), indent=2))
+            finally:
+                conn.close()
+            return
         tag_ws = getattr(args, "workspace", None)
         if not tag_ws:
             print(json.dumps({"error": "--workspace required"}))
@@ -7325,22 +7783,21 @@ def main():
             print(json.dumps({"error": f"workspace not found: {tag_ws}"}))
             sys.exit(1)
         ws_id = ws_row["id"]
-        action = getattr(args, "tag_action", None)
         if action == "add":
             print(json.dumps(tag_add(ws_id, args.lead_id, args.tag)))
         elif action == "remove":
             print(json.dumps(tag_remove(ws_id, args.lead_id, args.tag)))
         elif action == "set":
-            tags_list = [t.strip() for t in args.tags.split(",") if t.strip()]
+            tags_list = _parse_cli_tags(args.tags)
             print(json.dumps(tag_set(ws_id, args.lead_id, tags_list)))
         elif action == "list":
             print(json.dumps(tag_list(ws_id, lead_id=getattr(args, "lead_id", None))))
         elif action == "bulk":
             lead_ids = [int(x.strip()) for x in args.lead_ids.split(",") if x.strip()]
-            tags_list = [t.strip() for t in args.tags.split(",") if t.strip()]
+            tags_list = _parse_cli_tags(args.tags)
             print(json.dumps(tag_bulk(ws_id, lead_ids, tags_list, remove=getattr(args, "remove", False))))
         else:
-            print(json.dumps({"error": "tag subcommand required: add, remove, set, list, bulk"}))
+            print(json.dumps({"error": "tag subcommand required: add, remove, set, list, bulk, repair"}))
     elif args.command == "verify-email":
         if getattr(args, "batch", False):
             items = json.loads(getattr(args, "json_input", None) or "[]")

@@ -14,9 +14,11 @@ MANIFEST_FILES = (
     "pipeline.py",
     "relay_extractors.py",
     "workspace_routing.py",
+    "workspace_archive.py",
     "routing_cloud.py",
     "om_paths.py",
     "connections_cloud.py",
+    "db_health.py",
     "VERSION",
     "SKILL.md",
 )

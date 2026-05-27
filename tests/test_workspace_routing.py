@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Lightweight tests for workspace routing."""
 
+import os
 import sys
 import tempfile
 from pathlib import Path
+
+# Tests use an isolated temp data root; never pull live routing from env agent keys.
+os.environ.pop("OUTREACHMAGIC_AGENT_KEY", None)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
@@ -577,6 +581,36 @@ def test_import_profiles_accepts_tags_json_list():
     assert not any("[" in t or "]" in t for t in tags)
 
 
+def test_parse_tags_value_rejects_bracket_literal_string():
+    assert om.parse_tags_value("['nace']") == ["nace"]
+    assert om.parse_tags_value('["vip", "nace"]') == ["vip", "nace"]
+    assert om.parse_tags_value("nace") == ["nace"]
+
+
+def test_repair_malformed_tags_fixes_bracket_form():
+    om.init_db()
+    ws = om.create_workspace("Repair Tag WS", slug="repairtagws")
+    lead_id = om.add_lead(name="Repair Lead", email="repairtag@test.com")["id"]
+    conn = om.get_conn()
+    conn.execute(
+        """INSERT INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
+           VALUES (?, ?, ?, ?)""",
+        ("wlt_repair_bad", ws["id"], lead_id, "['nace']"),
+    )
+    conn.commit()
+    result = om.repair_malformed_tags(conn)
+    after = [
+        r["tag"]
+        for r in conn.execute(
+            "SELECT tag FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ?",
+            (ws["id"], lead_id),
+        ).fetchall()
+    ]
+    conn.close()
+    assert result["rows_fixed"] >= 1
+    assert after == ["nace"]
+
+
 def test_campaign_stats_normalizes_linkedin_sent_and_reply_counts():
     om.init_db()
     lead_id = om.add_lead(name="LinkedIn Lead", email="linkedinlead@test.com").get("id")
@@ -633,5 +667,7 @@ if __name__ == "__main__":
     test_import_profiles_weak_identity_and_entity_key()
     test_import_profiles_persists_row_notes_and_overwrite_behavior()
     test_import_profiles_accepts_tags_json_list()
+    test_parse_tags_value_rejects_bracket_literal_string()
+    test_repair_malformed_tags_fixes_bracket_form()
     test_agent_sync_full_payload_roundtrip()
     print("ok")

@@ -27,7 +27,7 @@ jobs:
             org: outreachmagic
             skill_md: platforms/cursor/SKILL.md
             readme: platforms/cursor/README.md
-            extras: "platforms/cursor/outreachmagic.mdc"
+            extras: "platforms/cursor/outreachmagic.mdc platforms/cursor/install.sh"
             github_repo_value: outreachmagic/cursor-outreachmagic
           - platform: claude-code-outreachmagic
             org: outreachmagic
@@ -80,7 +80,7 @@ jobs:
           python3 -c "
           import hashlib, json, pathlib
           files = {}
-          for name in ('pipeline.py', 'relay_extractors.py', 'workspace_routing.py', 'routing_cloud.py', 'om_paths.py', 'VERSION'):
+          for name in ('pipeline.py', 'relay_extractors.py', 'workspace_routing.py', 'workspace_archive.py', 'routing_cloud.py', 'connections_cloud.py', 'db_health.py', 'om_paths.py', 'VERSION'):
               p = pathlib.Path('staging/scripts') / name
               if p.exists():
                   files[name] = hashlib.sha256(p.read_bytes()).hexdigest()

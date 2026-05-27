@@ -252,3 +252,8 @@ def push_campaign_map(
     if match_strategy:
         body["matchStrategy"] = match_strategy
     return _request_json("POST", f"{api_base}/api/routing-config/campaign-maps", token, body=body)
+
+
+def push_db_health(api_base: str, token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """POST aggregate local DB health (no lead PII). Explicit sync only."""
+    return _request_json("POST", f"{api_base}/api/agent/db-health", token, body=payload)

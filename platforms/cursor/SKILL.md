@@ -116,7 +116,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 hermes -s outreachmagic
 ```
 
-Local dev sync: `bash scripts/sync-local.sh` from a clone. See `docs/install.md`.
+Install and update paths are in the **Install** and **Updates** sections above.
 
 ## When to Use
 

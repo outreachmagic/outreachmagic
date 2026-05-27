@@ -32,9 +32,10 @@ cp ~/.hermes/skills/lead-enrich/config.example.json ~/.hermes/skills/lead-enrich
 | Cursor | `~/.cursor/skills/lead-enrich/` |
 | Claude Code | `~/.claude/skills/lead-enrich/` |
 
-**Monorepo dev:** if both skills live under `skills/` in
-[outreachmagic-skill](https://github.com/magic-creators/outreachmagic-skill),
-outreachmagic is auto-detected as a sibling — no copy step required.
+If [outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) is installed
+in the same skills directory (e.g. `~/.hermes/skills/outreachmagic` next to
+`lead-enrich`), `enrich.py` auto-detects it. Override with `outreachmagic_home` in
+`config.json` or `OUTREACHMAGIC_HOME` if needed.
 
 ## Prerequisites
 
@@ -88,4 +89,4 @@ See `config.example.json`. Key flags:
 
 ## License
 
-MIT — see [LICENSE](../../LICENSE) in the monorepo root when developing here.
+MIT — see [LICENSE](LICENSE) in this repository.

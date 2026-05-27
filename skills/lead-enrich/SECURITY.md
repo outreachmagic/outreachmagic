@@ -21,5 +21,6 @@ installed, saving uses `import-profiles` locally — same trust model as the cor
 
 ## Reporting vulnerabilities
 
-Email security concerns for Outreach Magic products to the address listed in the
-root [SECURITY.md](../../SECURITY.md) of the development monorepo.
+Email security concerns for Outreach Magic products to the address in
+[SECURITY.md](https://github.com/outreachmagic/hermes-outreachmagic/blob/main/SECURITY.md)
+for the core outreachmagic skill, or contact **security@outreachmagic.io**.

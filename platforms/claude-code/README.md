@@ -4,31 +4,36 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 
 ## Install
 
+Get your Agent Key at [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent), then run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/claude-code-outreachmagic/main/install.sh | bash -s -- om_agent_YOUR_KEY
+```
+
+That's it. Restart Claude Code and ask:
+
+> "show me my pipeline"
+
+## Update
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/claude-code-outreachmagic/main/install.sh | bash
+```
+
+(Re-running without a key updates the skill in place; your local database and config are preserved.)
+
+## Manual install
+
+If you'd rather not pipe a script to bash:
+
 ```bash
 git clone https://github.com/outreachmagic/claude-code-outreachmagic.git /tmp/om-claude
 mkdir -p ~/.claude/skills/outreachmagic
-cp -r /tmp/om-claude/{scripts,references} ~/.claude/skills/outreachmagic/
+cp -a /tmp/om-claude/. ~/.claude/skills/outreachmagic/
 rm -rf /tmp/om-claude
-```
-
-Then initialize and connect:
-
-```bash
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py init
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_YOUR_KEY
 ```
-
-Get your Agent Key at [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent).
-
-### Add to your project
-
-Append the OutreachMagic instructions to your project's `CLAUDE.md`:
-
-```bash
-cat /tmp/om-claude/CLAUDE_SNIPPET.md >> CLAUDE.md
-```
-
-Or copy the snippet manually from `CLAUDE_SNIPPET.md` into your existing `CLAUDE.md`.
 
 ## Usage
 
@@ -38,12 +43,6 @@ Start Claude Code in your project directory and ask:
 - "How is outreach going?"
 - "Pull latest events and show stats"
 - "Show my campaigns"
-
-## Update
-
-```bash
-python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py update
-```
 
 ## Pricing
 

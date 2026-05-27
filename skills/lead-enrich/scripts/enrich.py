@@ -86,15 +86,15 @@ def find_outreachmagic(config: dict[str, Any]) -> Optional[Path]:
 
     Checks:
       1. Config `outreachmagic_home` / OUTREACHMAGIC_HOME env
-      2. Sibling skill in monorepo (skills/outreachmagic next to lead-enrich)
-      3. Common skill install paths (~/.hermes|cursor|claude/skills/)
+      2. Sibling under same skills parent (e.g. ~/.hermes/skills/outreachmagic)
+      3. Standard install paths (~/.hermes|cursor|claude/skills/outreachmagic)
     """
     candidates: list[Path] = []
 
     if config.get("outreachmagic_home"):
         candidates.append(Path(config["outreachmagic_home"]).expanduser())
 
-    # Monorepo dev: skills/lead-enrich + skills/outreachmagic
+    # Sibling: .../skills/lead-enrich and .../skills/outreachmagic
     candidates.append(_find_skill_dir().parent / OUTREACHMAGIC_NAME)
 
     for skills_dir in SKILL_SEARCH_PATHS:

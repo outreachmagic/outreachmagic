@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill.
-version: 1.1.1
+version: 1.1.2
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -382,4 +382,4 @@ outreachmagic relative to the skills directory.
 | `import-profiles` rejects row | Requires email or LinkedIn. Use `add-lead` for stub records |
 | Empty extraction | Serper results too thin — try broad queries, or mark confidence `low` |
 | `ambiguous` on check | Name matched wrong company — run Serper or `check --force` |
-| Monorepo dev | Sibling `skills/outreachmagic` auto-detected; or set `outreachmagic_home` |
+| outreachmagic not found | Install [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) or set `outreachmagic_home` |

@@ -1,6 +1,9 @@
-<!-- OutreachMagic -->
-<!-- Deprecated: append this block to CLAUDE.md only if you installed before SKILL.md auto-discovery. New installs use install.sh + SKILL.md; you can remove this block from CLAUDE.md after updating. -->
-## Outreach Pipeline (OutreachMagic)
+---
+name: outreachmagic
+description: Track and manage the user's outbound sales pipeline. Auto-logs leads, events, and stages to a local SQLite database. Use whenever the user asks about their pipeline, leads, campaigns, sequencer activity (Smartlead, Heyreach, Instantly, PlusVibe), or wants to add/update/import leads, log outreach events, or update pipeline stages. ALWAYS run `pipeline.py pull` before showing data.
+---
+
+# OutreachMagic
 
 All pipeline commands use: `python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py`
 
@@ -66,4 +69,3 @@ If not yet connected, get an Agent Key at https://dev.outreachmagic.io/setup/age
 ```bash
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_YOUR_KEY
 ```
-<!-- /OutreachMagic -->

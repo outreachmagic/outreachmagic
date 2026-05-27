@@ -31,9 +31,9 @@ jobs:
             github_repo_value: outreachmagic/cursor-outreachmagic
           - platform: claude-code-outreachmagic
             org: outreachmagic
-            skill_md: ""
+            skill_md: platforms/claude-code/SKILL.md
             readme: platforms/claude-code/README.md
-            extras: "platforms/claude-code/CLAUDE_SNIPPET.md"
+            extras: "platforms/claude-code/CLAUDE_SNIPPET.md platforms/claude-code/install.sh"
             github_repo_value: outreachmagic/claude-code-outreachmagic
     steps:
       - name: Checkout
@@ -57,11 +57,14 @@ jobs:
           # Copy README
           cp "${{ matrix.readme }}" staging/README.md
 
-          # Copy extras (mdc file, CLAUDE_SNIPPET, etc.)
+          # Copy extras (mdc file, CLAUDE_SNIPPET, install.sh, etc.)
           if [ -n "${{ matrix.extras }}" ]; then
             for f in ${{ matrix.extras }}; do
               cp "$f" staging/
             done
+          fi
+          if [ -f staging/install.sh ]; then
+            chmod +x staging/install.sh
           fi
 
           # Copy root-level files
@@ -111,6 +114,6 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --repo "${{ matrix.org }}/${{ matrix.platform }}" \
             --title "${{ github.ref_name }}" \
-            --notes "Released from outreachmagic-skill ${{ github.ref_name }}" \
+            --notes "Outreach Magic release ${{ github.ref_name }}" \
             --latest 2>/dev/null || \
           echo "Release already exists or could not be created"

@@ -67,7 +67,7 @@ class TestCurlRedaction(unittest.TestCase):
 
 
 class TestFindOutreachmagic(unittest.TestCase):
-    def test_sibling_monorepo_path(self):
+    def test_sibling_skills_directory_path(self):
         sibling = enrich._find_skill_dir().parent / "outreachmagic"
         if (sibling / "scripts" / "pipeline.py").exists():
             found = enrich.find_outreachmagic({})

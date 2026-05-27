@@ -52,5 +52,5 @@ jobs:
           gh release create "${TAG}" \
             --repo "outreachmagic/lead-enrich" \
             --title "${TAG}" \
-            --notes "Released from outreachmagic-skill ${GITHUB_REF_NAME}" \
+            --notes "Lead Enrich release ${TAG}" \
             --latest 2>/dev/null || echo "Release already exists or repo not created yet"

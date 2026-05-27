@@ -16,7 +16,7 @@
 |-------|------|---------|
 | lead-enrich | [outreachmagic/lead-enrich](https://github.com/outreachmagic/lead-enrich) | Serper person research; dedup against local SQLite before spending credits |
 
-Source in this monorepo: `skills/lead-enrich/`. Publish with tag `lead-enrich-vX.Y.Z`.
+Companion source lives in `skills/lead-enrich/`. Publish with tag `lead-enrich-vX.Y.Z`.
 
 ## Repository Layout
 

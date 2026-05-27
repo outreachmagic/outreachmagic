@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.12.1
+version: 1.13.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -349,21 +349,33 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
 | `company` | `company_name`, `organization`, `org` | No |
 | `industry` | — | No |
 | `headcount` | `company_size`, `employees`, `employee_count` | No |
+| `location_city` | `city`, `lead_city` | No |
+| `location_state` | `state`, `region`, `lead_state` | No |
+| `location_country` | `country`, `lead_country` | No |
+
+**Headcount normalization:** `headcount` is stored as-is (text) plus a computed `headcount_numeric` (integer midpoint). Ranges like `"11-50"` become `30`, `"500+"` becomes `500`, exact numbers pass through. Both leads and companies get the numeric column for sorting/filtering (`WHERE headcount_numeric BETWEEN 10 AND 100`).
 
 **Extra fields** (auto-detected from CSV columns):
 
 | Column | Effect |
 |---|---|
 | `company_domain` | Stored in `companies` table, normalized (strips protocol/www/path) |
+| `hq_city` / `hq_state` / `hq_country` | Company HQ location, stored on `companies` table |
 | `mailmerge_first_name` | Auto-populated as `first_name` in personalization table |
 | `mailmerge_company_name` | Auto-populated as `company_name` in personalization table |
 | `import_name` / `list_source` | Used as `original_source_detail` / `latest_source_detail` for attribution |
-| `lead_status` | Requires `--workspace`; sets `current_status_label` on workspace_leads |
-| `lead_sentiment` | Requires `--workspace`; sets `current_status_sentiment` on workspace_leads |
-| `tags` | Requires `--workspace`; semicolon or comma separated, stored in `workspace_lead_tags` |
+| `lead_status` | Requires `--workspace`; normalized (lowercase, spaces) and set on workspace_leads |
+| `lead_sentiment` | Requires `--workspace`; normalized (lowercase) and set on workspace_leads |
+| `tags` | Requires `--workspace`; semicolon or comma separated, normalized (lowercase), stored in `workspace_lead_tags` |
 | `contact_order` | Requires `--workspace`; integer priority stored as `contact_priority` on workspace_leads |
 | `is_connected_linkedin` | Requires `--workspace` + `--sender-profile`; `true`/`1`/`yes` sets connected status |
 | `is_linkedin_request_pending` | Requires `--workspace` + `--sender-profile`; `true`/`1`/`yes` sets pending status |
+
+**Normalization rules:**
+- **Tags:** lowercased, whitespace collapsed — `"VIP"` and `"vip"` are the same tag
+- **Status/sentiment:** lowercased, underscores to spaces — `"Not_Interested"` becomes `"not interested"`
+- **Headcount:** range string preserved + numeric midpoint computed (`"11-50"` → 30)
+- **Location:** stored as-is (city/state/country text)
 
 **Attribution** is automatic: every import sets `original_source` (immutable first touch) and `latest_source` (updates each time) on the lead, following the Salesforce/HubSpot model. The `--source-detail` flag or `import_name`/`list_source` columns provide the detail.
 
@@ -387,9 +399,34 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py personalize-status
 
 Personalization syncs across platforms via push/pull. The agent decides normalization logic — pipeline.py only stores values.
 
+### Email verification tracking (org-wide)
+
+Record verification results from tools like ZeroBounce, NeverBounce, etc. Results are org-wide (not workspace-scoped). Platform bounces from Smartlead, Instantly, etc. are auto-recorded during relay sync.
+
+```bash
+# Record a verification result
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-email \
+  --lead-id 5 --status valid --source zerobounce
+
+# Batch verify from JSON
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-email --batch \
+  --json '[{"lead_id":5,"status":"valid","source":"zerobounce"}]'
+
+# Check verification status for a lead
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-status --lead-id 5
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-status --email j@acme.com
+
+# List leads needing verification
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-pending --limit 50 --json
+```
+
+**Verification status values:** `valid`, `invalid`, `catch-all`, `unknown`, `spamtrap`, `abuse`, `do_not_mail`, `risky`, `bounced`, `soft_bounce`
+
+**Bounce handling:** Platform bounces (from relay sync) are auto-recorded in `lead_email_verification` with `source="platform_bounce"`. Hard bounces override soft bounces. Tool verifications (ZeroBounce, etc.) take precedence over platform bounces — a tool "valid" result is only overridden by a hard bounce that came after the verification. The consolidated status is materialized on `leads.email_verification_status` for fast filtering.
+
 ### Companies and unified lead identity
 
-- **`companies` table** — canonical company name, domain, industry, headcount. Leads link via `company_id` (business email domain or company name on ingest).
+- **`companies` table** — canonical company name, domain, industry, headcount (text + numeric midpoint), HQ location (city, state, country). Leads link via `company_id` (business email domain or company name on ingest).
 - **Match by email and/or LinkedIn** — a lead can have email only, LinkedIn only, or both. Relay ingest resolves identity from webhook payload + envelope `lead` field.
 - **Merge duplicates** when email and LinkedIn history were separate rows:
   - **Auto:** ingest with both identifiers matching two leads merges them (keeps row with more events).

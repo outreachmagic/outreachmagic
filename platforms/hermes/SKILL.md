@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.4.5
+version: 1.13.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -32,6 +32,8 @@ Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
 Config (single source of truth): `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`
 
 Optional config keys: `data_root` (e.g. `~/.claude` for Claude Code), `api_base_url`, `dev_repo` for local development.
+
+Environment variable: `OUTREACHMAGIC_AGENT_KEY` — overrides the config file `agent_key`. Set via `.env`, shell profile, or CI/CD.
 
 ## First-Time Setup (IMPORTANT — read this first)
 
@@ -113,8 +115,9 @@ Local dev sync: `bash scripts/sync-local.sh` from a clone. See `docs/install.md`
 - The user asks "show me my pipeline" or "how is outreach going"
 - The user says "track this" followed by outreach details
 - The user wants to connect a sequencer (paid — requires token)
-
 - The user asks for campaign breakdowns or counts by campaign name
+- The user asks about connection status, webhook URLs, or platform health (`status`, `connections`)
+- The user wants to add or remove a platform connection (`connect-platform`, `disconnect-platform`)
 
 ## Agent Behavior Rules (Important)
 
@@ -125,6 +128,8 @@ Local dev sync: `bash scripts/sync-local.sh` from a clone. See `docs/install.md`
 - When the user asks for message content, use the `history` command on the specific lead.
 - For copy-performance analysis (full subject/body on positive leads + winner), use `copy-insights`.
 - For campaign counts, use `pipeline.py campaigns` (or `stats`, which includes a campaign section). Do not write raw SQL.
+- When the user asks about connections, webhook URLs, or platform health, use `status` or `connections`.
+- When the user wants to connect a new platform, use `connect-platform --platform <id>`.
 - **NEVER use `python3 -c`, `sqlite3` directly, raw SQL, or any inline script to inspect or modify the database.** All database operations must go through `pipeline.py` commands. If a command errors, report the error verbatim and stop — do not attempt to debug by accessing the database directly.
 
 ## MANDATORY: Always Pull First
@@ -165,6 +170,26 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles --file leads.csv
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --file changes.csv
+```
+
+### Status and connection management
+
+Dashboard-style status, connection management, and webhook URL generation — all from the CLI. These commands talk to the app API and do not require a local database.
+
+```bash
+# Dashboard overview: plan, usage, per-platform health, routing
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py status
+
+# List all connections with webhook URLs and 30-day event counts
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connections
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connections --json
+
+# Generate a webhook URL for a new platform
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect-platform --platform smartlead
+
+# Remove a platform connection (webhook URL stops working)
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py disconnect-platform --platform smartlead
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py disconnect-platform --platform smartlead --yes
 ```
 
 ### Export local changes for cross-platform sync
@@ -278,6 +303,16 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py add-lead \
   --channel email --stage prospecting
 ```
 
+To also associate the lead with a workspace at creation time:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py add-lead \
+  --name "Jane Doe" --email "jane@acme.com" --company "Acme Corp" \
+  --workspace thesystemsmethod --stage contacted
+```
+
+`--workspace` is optional on `add-lead` — creating a lead is an org-wide operation. Use it when you know which workspace the lead belongs to; omit it when just researching.
+
 If lead exists by email or LinkedIn, returns `{"status": "exists", "id": N}` (does not enrich existing rows — use `import-profiles` for that).
 
 ### Bulk import / enrich (CSV, JSON, research dumps)
@@ -314,21 +349,33 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
 | `company` | `company_name`, `organization`, `org` | No |
 | `industry` | — | No |
 | `headcount` | `company_size`, `employees`, `employee_count` | No |
+| `location_city` | `city`, `lead_city` | No |
+| `location_state` | `state`, `region`, `lead_state` | No |
+| `location_country` | `country`, `lead_country` | No |
+
+**Headcount normalization:** `headcount` is stored as-is (text) plus a computed `headcount_numeric` (integer midpoint). Ranges like `"11-50"` become `30`, `"500+"` becomes `500`, exact numbers pass through. Both leads and companies get the numeric column for sorting/filtering (`WHERE headcount_numeric BETWEEN 10 AND 100`).
 
 **Extra fields** (auto-detected from CSV columns):
 
 | Column | Effect |
 |---|---|
 | `company_domain` | Stored in `companies` table, normalized (strips protocol/www/path) |
+| `hq_city` / `hq_state` / `hq_country` | Company HQ location, stored on `companies` table |
 | `mailmerge_first_name` | Auto-populated as `first_name` in personalization table |
 | `mailmerge_company_name` | Auto-populated as `company_name` in personalization table |
 | `import_name` / `list_source` | Used as `original_source_detail` / `latest_source_detail` for attribution |
-| `lead_status` | Requires `--workspace`; sets `current_status_label` on workspace_leads |
-| `lead_sentiment` | Requires `--workspace`; sets `current_status_sentiment` on workspace_leads |
-| `tags` | Requires `--workspace`; semicolon or comma separated, stored in `workspace_lead_tags` |
+| `lead_status` | Requires `--workspace`; normalized (lowercase, spaces) and set on workspace_leads |
+| `lead_sentiment` | Requires `--workspace`; normalized (lowercase) and set on workspace_leads |
+| `tags` | Requires `--workspace`; semicolon or comma separated, normalized (lowercase), stored in `workspace_lead_tags` |
 | `contact_order` | Requires `--workspace`; integer priority stored as `contact_priority` on workspace_leads |
 | `is_connected_linkedin` | Requires `--workspace` + `--sender-profile`; `true`/`1`/`yes` sets connected status |
 | `is_linkedin_request_pending` | Requires `--workspace` + `--sender-profile`; `true`/`1`/`yes` sets pending status |
+
+**Normalization rules:**
+- **Tags:** lowercased, whitespace collapsed — `"VIP"` and `"vip"` are the same tag
+- **Status/sentiment:** lowercased, underscores to spaces — `"Not_Interested"` becomes `"not interested"`
+- **Headcount:** range string preserved + numeric midpoint computed (`"11-50"` → 30)
+- **Location:** stored as-is (city/state/country text)
 
 **Attribution** is automatic: every import sets `original_source` (immutable first touch) and `latest_source` (updates each time) on the lead, following the Salesforce/HubSpot model. The `--source-detail` flag or `import_name`/`list_source` columns provide the detail.
 
@@ -352,9 +399,34 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py personalize-status
 
 Personalization syncs across platforms via push/pull. The agent decides normalization logic — pipeline.py only stores values.
 
+### Email verification tracking (org-wide)
+
+Record verification results from tools like ZeroBounce, NeverBounce, etc. Results are org-wide (not workspace-scoped). Platform bounces from Smartlead, Instantly, etc. are auto-recorded during relay sync.
+
+```bash
+# Record a verification result
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-email \
+  --lead-id 5 --status valid --source zerobounce
+
+# Batch verify from JSON
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-email --batch \
+  --json '[{"lead_id":5,"status":"valid","source":"zerobounce"}]'
+
+# Check verification status for a lead
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-status --lead-id 5
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-status --email j@acme.com
+
+# List leads needing verification
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-pending --limit 50 --json
+```
+
+**Verification status values:** `valid`, `invalid`, `catch-all`, `unknown`, `spamtrap`, `abuse`, `do_not_mail`, `risky`, `bounced`, `soft_bounce`
+
+**Bounce handling:** Platform bounces (from relay sync) are auto-recorded in `lead_email_verification` with `source="platform_bounce"`. Hard bounces override soft bounces. Tool verifications (ZeroBounce, etc.) take precedence over platform bounces — a tool "valid" result is only overridden by a hard bounce that came after the verification. The consolidated status is materialized on `leads.email_verification_status` for fast filtering.
+
 ### Companies and unified lead identity
 
-- **`companies` table** — canonical company name, domain, industry, headcount. Leads link via `company_id` (business email domain or company name on ingest).
+- **`companies` table** — canonical company name, domain, industry, headcount (text + numeric midpoint), HQ location (city, state, country). Leads link via `company_id` (business email domain or company name on ingest).
 - **Match by email and/or LinkedIn** — a lead can have email only, LinkedIn only, or both. Relay ingest resolves identity from webhook payload + envelope `lead` field.
 - **Merge duplicates** when email and LinkedIn history were separate rows:
   - **Auto:** ingest with both identifiers matching two leads merges them (keeps row with more events).
@@ -377,15 +449,19 @@ After `pull`, use **`campaigns`** for per-campaign event and lead counts (unchan
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py log-event \
   --lead-id 1 --type email_sent --direction outbound \
-  --subject "Quick intro"
+  --subject "Quick intro" --workspace thesystemsmethod
 ```
+
+`--workspace` is **required** in multi-workspace mode. Outreach events are workspace-scoped — they belong to a specific pipeline. In single-workspace mode it falls back to the default workspace.
 
 ### Update stage and log replies
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update-stage \
-  --id 1 --stage replied --next-action "Send case study"
+  --id 1 --stage replied --next-action "Send case study" --workspace thesystemsmethod
 ```
+
+`--workspace` is **required** in multi-workspace mode. Stage is per-workspace — a lead can be "contacted" in one workspace and "interested" in another.
 
 Stages: `prospecting` -> `contacted` -> `replied` -> `interested` -> `proposal` -> `won` | `lost`
 
@@ -395,6 +471,14 @@ If the user already has a key, skip the browser flow:
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_THEIR_KEY
+```
+
+Generate webhook URLs for platforms directly from the CLI (requires agent key):
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect-platform --platform smartlead
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect-platform --platform instantly
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connections
 ```
 
 ### Update skill scripts
@@ -418,6 +502,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 | stage | `--stage` | Pipeline stage (default: prospecting) |
 | notes | `--notes` | Free-form |
 | tags | `--tags` | JSON array string like '["vip","enterprise"]' |
+| workspace | `--workspace` | Optional on `add-lead`; required on `log-event` and `update-stage` in multi-workspace mode |
 
 ## Web Dashboard
 

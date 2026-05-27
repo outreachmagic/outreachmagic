@@ -503,6 +503,10 @@ CREATE TABLE IF NOT EXISTS companies (
     domain          TEXT,
     industry        TEXT,
     headcount       TEXT,
+    headcount_numeric   INTEGER,
+    hq_city             TEXT,
+    hq_state            TEXT,
+    hq_country          TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -515,10 +519,14 @@ CREATE TABLE IF NOT EXISTS leads (
     title                    TEXT,
     industry                 TEXT,
     headcount                TEXT,
+    headcount_numeric        INTEGER,
     email                    TEXT,
     email_domain             TEXT,
     linkedin_url             TEXT,
     linkedin_normalized      TEXT,
+    location_city            TEXT,
+    location_state           TEXT,
+    location_country         TEXT,
     channel                  TEXT NOT NULL DEFAULT 'email',
     stage                    TEXT NOT NULL DEFAULT 'prospecting',
     notes                    TEXT,
@@ -530,6 +538,8 @@ CREATE TABLE IF NOT EXISTS leads (
     latest_source_detail     TEXT,
     latest_source_platform   TEXT,
     latest_source_at         TEXT,
+    email_verification_status TEXT,
+    email_verified_at         TEXT,
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
     last_contact_at          TEXT,
@@ -764,6 +774,28 @@ CREATE TABLE IF NOT EXISTS workspace_lead_linkedin_status (
 
 CREATE INDEX IF NOT EXISTS idx_li_status_workspace ON workspace_lead_linkedin_status(workspace_id, sender_profile);
 CREATE INDEX IF NOT EXISTS idx_li_status_lead ON workspace_lead_linkedin_status(lead_id);
+
+CREATE TABLE IF NOT EXISTS lead_email_verification (
+    id              TEXT PRIMARY KEY,
+    org_id          TEXT NOT NULL,
+    lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    email           TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    sub_status      TEXT,
+    source          TEXT NOT NULL,
+    source_detail   TEXT,
+    bounce_message  TEXT,
+    free_email      INTEGER,
+    mx_found        INTEGER,
+    smtp_provider   TEXT,
+    verified_at     TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (org_id, lead_id, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_verification_email ON lead_email_verification(email);
+CREATE INDEX IF NOT EXISTS idx_verification_status ON lead_email_verification(org_id, status);
+CREATE INDEX IF NOT EXISTS idx_verification_lead ON lead_email_verification(lead_id);
 """
 
 
@@ -803,6 +835,10 @@ def migrate_db(conn=None):
             domain TEXT,
             industry TEXT,
             headcount TEXT,
+            headcount_numeric INTEGER,
+            hq_city TEXT,
+            hq_state TEXT,
+            hq_country TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -942,6 +978,26 @@ def migrate_db(conn=None):
         );
         CREATE INDEX IF NOT EXISTS idx_li_status_workspace ON workspace_lead_linkedin_status(workspace_id, sender_profile);
         CREATE INDEX IF NOT EXISTS idx_li_status_lead ON workspace_lead_linkedin_status(lead_id);
+        CREATE TABLE IF NOT EXISTS lead_email_verification (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+            email TEXT NOT NULL,
+            status TEXT NOT NULL,
+            sub_status TEXT,
+            source TEXT NOT NULL,
+            source_detail TEXT,
+            bounce_message TEXT,
+            free_email INTEGER,
+            mx_found INTEGER,
+            smtp_provider TEXT,
+            verified_at TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (org_id, lead_id, source)
+        );
+        CREATE INDEX IF NOT EXISTS idx_verification_email ON lead_email_verification(email);
+        CREATE INDEX IF NOT EXISTS idx_verification_status ON lead_email_verification(org_id, status);
+        CREATE INDEX IF NOT EXISTS idx_verification_lead ON lead_email_verification(lead_id);
     """)
     for col, col_type in [
         ("industry", "TEXT"), ("headcount", "TEXT"), ("email_domain", "TEXT"),
@@ -1026,6 +1082,28 @@ def migrate_db(conn=None):
     ]:
         try:
             conn.execute(f"ALTER TABLE workspace_leads ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+    for col, col_type in [
+        ("headcount_numeric", "INTEGER"),
+        ("location_city", "TEXT"),
+        ("location_state", "TEXT"),
+        ("location_country", "TEXT"),
+        ("email_verification_status", "TEXT"),
+        ("email_verified_at", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+    for col, col_type in [
+        ("headcount_numeric", "INTEGER"),
+        ("hq_city", "TEXT"),
+        ("hq_state", "TEXT"),
+        ("hq_country", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
     if own_conn:
@@ -1149,6 +1227,28 @@ def normalize_linkedin_profile(url: str) -> Optional[str]:
     return match.group(1) if match else norm.rstrip("/")
 
 
+def normalize_tag(tag: str) -> str:
+    """Lowercase, strip whitespace, collapse internal whitespace."""
+    return " ".join(tag.strip().lower().split())
+
+
+def parse_headcount_numeric(raw: Optional[str]) -> Optional[int]:
+    """Extract a numeric midpoint from headcount strings like '11-50' or '500+'."""
+    if not raw:
+        return None
+    text = re.sub(r'[^\d\-+]', '', str(raw).strip())
+    if not text:
+        return None
+    range_match = re.match(r'(\d+)-(\d+)', text)
+    if range_match:
+        lo, hi = int(range_match.group(1)), int(range_match.group(2))
+        return (lo + hi) // 2
+    plus_match = re.match(r'(\d+)\+?$', text)
+    if plus_match:
+        return int(plus_match.group(1))
+    return None
+
+
 def furthest_stage(stage_a: str, stage_b: str) -> str:
     def rank(s: str) -> int:
         try:
@@ -1164,6 +1264,9 @@ def ensure_company(
     domain: Optional[str] = None,
     industry: Optional[str] = None,
     headcount: Optional[str] = None,
+    hq_city: Optional[str] = None,
+    hq_state: Optional[str] = None,
+    hq_country: Optional[str] = None,
 ) -> Optional[int]:
     """Find or create company row; match business domain first, then exact name."""
     domain = (domain or "").strip().lower() or None
@@ -1176,7 +1279,8 @@ def ensure_company(
         row = conn.execute("SELECT id FROM companies WHERE domain = ?", (domain,)).fetchone()
         if row:
             cid = row["id"]
-            _update_company_fields(conn, cid, name, industry, headcount)
+            _update_company_fields(conn, cid, name, industry, headcount,
+                                   hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
             return cid
     if name:
         row = conn.execute(
@@ -1190,13 +1294,16 @@ def ensure_company(
                        updated_at = datetime('now') WHERE id = ?""",
                     (domain, cid),
                 )
-            _update_company_fields(conn, cid, None, industry, headcount)
+            _update_company_fields(conn, cid, None, industry, headcount,
+                                   hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
             return cid
     display_name = name or (domain or "Unknown")
     cid = conn.execute(
-        """INSERT INTO companies (name, domain, industry, headcount)
-           VALUES (?, ?, ?, ?)""",
-        (display_name, domain, industry, headcount),
+        """INSERT INTO companies (name, domain, industry, headcount, headcount_numeric,
+                                  hq_city, hq_state, hq_country)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (display_name, domain, industry, headcount, parse_headcount_numeric(headcount),
+         hq_city, hq_state, hq_country),
     ).lastrowid
     return cid
 
@@ -1207,6 +1314,9 @@ def _update_company_fields(
     name: Optional[str],
     industry: Optional[str],
     headcount: Optional[str],
+    hq_city: Optional[str] = None,
+    hq_state: Optional[str] = None,
+    hq_country: Optional[str] = None,
 ):
     sets, params = [], []
     if name:
@@ -1218,6 +1328,19 @@ def _update_company_fields(
     if headcount:
         sets.append("headcount = COALESCE(headcount, ?)")
         params.append(headcount)
+        hc_num = parse_headcount_numeric(headcount)
+        if hc_num is not None:
+            sets.append("headcount_numeric = COALESCE(headcount_numeric, ?)")
+            params.append(hc_num)
+    if hq_city:
+        sets.append("hq_city = COALESCE(hq_city, ?)")
+        params.append(hq_city)
+    if hq_state:
+        sets.append("hq_state = COALESCE(hq_state, ?)")
+        params.append(hq_state)
+    if hq_country:
+        sets.append("hq_country = COALESCE(hq_country, ?)")
+        params.append(hq_country)
     if sets:
         sets.append("updated_at = datetime('now')")
         params.append(company_id)
@@ -1546,6 +1669,12 @@ def resolve_lead(
     source_detail: Optional[str] = None,
     source_platform: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
+    location_city: Optional[str] = None,
+    location_state: Optional[str] = None,
+    location_country: Optional[str] = None,
+    hq_city: Optional[str] = None,
+    hq_state: Optional[str] = None,
+    hq_country: Optional[str] = None,
 ) -> dict:
     """Match or create lead by email and/or LinkedIn; optionally auto-merge duplicates."""
     email_norm = normalize_email(email)
@@ -1598,17 +1727,26 @@ def resolve_lead(
     if created:
         company_id = ensure_company(
             conn, name=company, domain=effective_domain, industry=industry, headcount=headcount,
+            hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
         )
         cur = conn.execute(
-            """INSERT INTO leads (name, company_id, company, title, industry, headcount,
-               email, email_domain, linkedin_url, linkedin_normalized, channel, stage, notes,
+            """INSERT INTO leads (name, company_id, company, title, industry, headcount, headcount_numeric,
+               email, email_domain, linkedin_url, linkedin_normalized,
+               location_city, location_state, location_country,
+               channel, stage, notes,
                original_source, original_source_detail, original_source_platform, original_source_at,
                latest_source, latest_source_detail, latest_source_platform, latest_source_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?,
+                       ?, ?, ?,
+                       ?, ?, ?,
+                       ?, ?, ?, ?,
+                       ?, ?, ?, ?)""",
             (
-                name, company_id, company, title, industry, headcount,
-                email_norm, domain_from_email, li_raw, li_norm, channel, stage, notes,
+                name, company_id, company, title, industry, headcount, parse_headcount_numeric(headcount),
+                email_norm, domain_from_email, li_raw, li_norm,
+                location_city, location_state, location_country,
+                channel, stage, notes,
                 source, source_detail, source_platform, now_ts,
                 source, source_detail, source_platform, now_ts,
             ),
@@ -1660,7 +1798,8 @@ def resolve_lead(
                       industry=industry, headcount=headcount)
     if domain_explicit:
         ensure_company(link_conn, name=company, domain=domain_explicit,
-                       industry=industry, headcount=headcount)
+                       industry=industry, headcount=headcount,
+                       hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
     link_conn.commit()
     link_conn.close()
 
@@ -1714,6 +1853,9 @@ PROFILE_ALIASES: dict[str, tuple[str, ...]] = {
     "company": ("company", "company_name", "organization", "org"),
     "industry": ("industry",),
     "headcount": ("headcount", "company_size", "employees", "employee_count"),
+    "location_city": ("location_city", "city", "lead_city"),
+    "location_state": ("location_state", "state", "region", "lead_state"),
+    "location_country": ("location_country", "country", "lead_country"),
 }
 
 
@@ -1845,6 +1987,9 @@ def upsert_lead_profile(
     source_detail: Optional[str] = None,
     source_platform: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
+    hq_city: Optional[str] = None,
+    hq_state: Optional[str] = None,
+    hq_country: Optional[str] = None,
 ) -> dict:
     """Match by email and/or LinkedIn; create if missing; enrich profile and company link."""
     email = profile.get("email")
@@ -1876,6 +2021,12 @@ def upsert_lead_profile(
         source_detail=source_detail,
         source_platform=source_platform,
         conn=conn,
+        location_city=profile.get("location_city"),
+        location_state=profile.get("location_state"),
+        location_country=profile.get("location_country"),
+        hq_city=hq_city,
+        hq_state=hq_state,
+        hq_country=hq_country,
     )
 
 
@@ -1884,6 +2035,7 @@ IMPORT_EXTRA_FIELDS = (
     "is_connected_linkedin", "is_linkedin_request_pending",
     "lead_status", "lead_sentiment", "import_name", "list_source",
     "tags", "contact_order",
+    "hq_city", "hq_state", "hq_country",
 )
 
 
@@ -1906,14 +2058,14 @@ def _parse_tags(raw_tags: str) -> list[str]:
     for sep in (";", ","):
         if sep in raw_tags:
             for t in raw_tags.split(sep):
-                t = t.strip()
+                t = normalize_tag(t)
                 if t and t not in seen:
                     tags.append(t)
                     seen.add(t)
             return tags
-    raw_tags = raw_tags.strip()
-    if raw_tags:
-        return [raw_tags]
+    t = normalize_tag(raw_tags)
+    if t:
+        return [t]
     return []
 
 
@@ -1989,6 +2141,9 @@ def import_profiles(
         extra = _extract_extra_import_fields(raw)
         row_source_detail = extra.get("import_name") or extra.get("list_source") or source_detail
         row_company_domain = normalize_company_domain(extra.get("company_domain"))
+        row_hq_city = extra.get("hq_city")
+        row_hq_state = extra.get("hq_state")
+        row_hq_country = extra.get("hq_country")
 
         try:
             result = upsert_lead_profile(
@@ -2002,6 +2157,9 @@ def import_profiles(
                 source="csv_import",
                 source_detail=row_source_detail,
                 source_platform="csv",
+                hq_city=row_hq_city,
+                hq_state=row_hq_state,
+                hq_country=row_hq_country,
             )
         except Exception as e:
             summary["errors"].append({"row": i + 1, "email": profile.get("email"), "error": str(e)})
@@ -2042,8 +2200,8 @@ def import_profiles(
         ws_conn = get_conn()
         ensure_organization(ws_conn)
         for lead_id, extra in ws_pending:
-            status_label = extra.get("lead_status")
-            status_sentiment = extra.get("lead_sentiment")
+            status_label = (extra.get("lead_status") or "").strip().lower().replace("_", " ") or None
+            status_sentiment = (extra.get("lead_sentiment") or "").strip().lower() or None
             contact_pri = None
             if extra.get("contact_order"):
                 try:
@@ -2106,7 +2264,7 @@ def import_profiles(
 
 def tag_add(workspace_id: str, lead_id: int, tag: str) -> dict:
     """Add a tag to a lead in a workspace."""
-    tag = tag.strip()
+    tag = normalize_tag(tag)
     if not tag:
         return {"status": "error", "error": "empty tag"}
     tag_id = f"wlt_{workspace_id}_{lead_id}_{hashlib.md5(tag.encode()).hexdigest()[:8]}"
@@ -2130,7 +2288,7 @@ def tag_remove(workspace_id: str, lead_id: int, tag: str) -> dict:
     conn = get_conn()
     cur = conn.execute(
         "DELETE FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ? AND tag = ?",
-        (workspace_id, lead_id, tag.strip()),
+        (workspace_id, lead_id, normalize_tag(tag)),
     )
     conn.commit()
     conn.close()
@@ -2148,7 +2306,7 @@ def tag_set(workspace_id: str, lead_id: int, tags: list[str]) -> dict:
     )
     added = []
     for tag in tags:
-        tag = tag.strip()
+        tag = normalize_tag(tag)
         if not tag:
             continue
         tag_id = f"wlt_{workspace_id}_{lead_id}_{hashlib.md5(tag.encode()).hexdigest()[:8]}"
@@ -2188,7 +2346,7 @@ def tag_bulk(workspace_id: str, lead_ids: list[int], tags: list[str], *, remove:
     changed = 0
     for lead_id in lead_ids:
         for tag in tags:
-            tag = tag.strip()
+            tag = normalize_tag(tag)
             if not tag:
                 continue
             if remove:
@@ -2212,6 +2370,259 @@ def tag_bulk(workspace_id: str, lead_ids: list[int], tags: list[str], *, remove:
     conn.close()
     action = "removed" if remove else "added"
     return {"status": action, "changed": changed, "leads": len(lead_ids), "tags": tags}
+
+
+def _extract_bounce_details(raw: dict, platform: str) -> tuple:
+    """Extract (bounce_type, bounce_reason) with platform-aware field mapping."""
+    bounce_type = (
+        raw.get("bounce_type")
+        or raw.get("type")
+        or "unknown"
+    )
+    if isinstance(bounce_type, str):
+        bounce_type = bounce_type.strip().lower()
+    else:
+        bounce_type = "unknown"
+    bounce_reason = (
+        raw.get("bounce_reason")
+        or raw.get("reason")
+        or raw.get("error")
+        or ""
+    )
+    if isinstance(bounce_reason, str):
+        bounce_reason = bounce_reason.strip()
+    else:
+        bounce_reason = ""
+    if "hard" in bounce_type:
+        bounce_type = "hard"
+    elif "soft" in bounce_type or "temporary" in bounce_type:
+        bounce_type = "soft"
+    return bounce_type, bounce_reason
+
+
+def _compute_verification_status(conn: sqlite3.Connection, lead_id: int):
+    """Compute consolidated verification status from all sources and materialize on leads."""
+    rows = conn.execute(
+        """SELECT status, sub_status, source, verified_at FROM lead_email_verification
+           WHERE lead_id = ? ORDER BY verified_at DESC""",
+        (lead_id,),
+    ).fetchall()
+    if not rows:
+        return
+    tool_rows = [r for r in rows if r["source"] != "platform_bounce"]
+    bounce_rows = [r for r in rows if r["source"] == "platform_bounce"]
+    status, verified_at = None, None
+    if tool_rows:
+        latest_tool = tool_rows[0]
+        status, verified_at = latest_tool["status"], latest_tool["verified_at"]
+        if latest_tool["status"] == "valid" and bounce_rows:
+            hard_after = [
+                b for b in bounce_rows
+                if "hard" in (b["sub_status"] or "")
+                and b["verified_at"] > latest_tool["verified_at"]
+            ]
+            if hard_after:
+                status, verified_at = "bounced", hard_after[0]["verified_at"]
+    elif bounce_rows:
+        latest = bounce_rows[0]
+        if "hard" in (latest["sub_status"] or ""):
+            status, verified_at = "bounced", latest["verified_at"]
+        else:
+            status, verified_at = "soft_bounce", latest["verified_at"]
+    if status:
+        conn.execute(
+            """UPDATE leads SET email_verification_status = ?, email_verified_at = ?,
+               updated_at = datetime('now') WHERE id = ?""",
+            (status, verified_at, lead_id),
+        )
+
+
+def _record_platform_bounce(
+    conn: sqlite3.Connection,
+    lead_id: int,
+    email: str,
+    platform: str,
+    bounce_type: str,
+    bounce_reason: str,
+    event_at: Optional[str] = None,
+):
+    """Record a platform bounce in lead_email_verification and recompute materialized status."""
+    org_id = DEFAULT_ORG_ID
+    sub = "hard_bounce" if bounce_type == "hard" else "soft_bounce"
+    ver_id = f"ver_{lead_id}_platform_bounce"
+    now_ts = event_at or datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO lead_email_verification
+           (id, org_id, lead_id, email, status, sub_status, source, source_detail,
+            bounce_message, verified_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (org_id, lead_id, source) DO UPDATE SET
+               status = excluded.status,
+               sub_status = excluded.sub_status,
+               source_detail = excluded.source_detail,
+               bounce_message = excluded.bounce_message,
+               verified_at = excluded.verified_at""",
+        (ver_id, org_id, lead_id, email or "",
+         "bounced" if bounce_type == "hard" else "soft_bounce",
+         sub, "platform_bounce", f"{platform}:{bounce_type}",
+         bounce_reason, now_ts),
+    )
+    _compute_verification_status(conn, lead_id)
+
+
+def verify_email(
+    lead_id: int,
+    status: str,
+    source: str,
+    *,
+    sub_status: Optional[str] = None,
+    source_detail: Optional[str] = None,
+    free_email: Optional[bool] = None,
+    mx_found: Optional[bool] = None,
+    smtp_provider: Optional[str] = None,
+) -> dict:
+    """Record an email verification result (from ZeroBounce, NeverBounce, etc.)."""
+    conn = get_conn()
+    row = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"status": "error", "error": f"Lead {lead_id} not found"}
+    email = row["email"] or ""
+    org_id = DEFAULT_ORG_ID
+    ver_id = f"ver_{lead_id}_{source}"
+    now_ts = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO lead_email_verification
+           (id, org_id, lead_id, email, status, sub_status, source, source_detail,
+            free_email, mx_found, smtp_provider, verified_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (org_id, lead_id, source) DO UPDATE SET
+               email = excluded.email,
+               status = excluded.status,
+               sub_status = excluded.sub_status,
+               source_detail = excluded.source_detail,
+               free_email = excluded.free_email,
+               mx_found = excluded.mx_found,
+               smtp_provider = excluded.smtp_provider,
+               verified_at = excluded.verified_at""",
+        (ver_id, org_id, lead_id, email, status, sub_status, source, source_detail,
+         1 if free_email else (0 if free_email is not None else None),
+         1 if mx_found else (0 if mx_found is not None else None),
+         smtp_provider, now_ts),
+    )
+    _compute_verification_status(conn, lead_id)
+    conn.commit()
+    conn.close()
+    return {"status": "recorded", "lead_id": lead_id, "verification_status": status, "source": source}
+
+
+def verify_email_batch(results: list[dict]) -> dict:
+    """Record multiple verification results at once."""
+    conn = get_conn()
+    org_id = DEFAULT_ORG_ID
+    recorded = 0
+    errors = []
+    for item in results:
+        lid = item.get("lead_id")
+        if not lid:
+            errors.append({"error": "missing lead_id", "item": item})
+            continue
+        row = conn.execute("SELECT email FROM leads WHERE id = ?", (lid,)).fetchone()
+        if not row:
+            errors.append({"error": f"Lead {lid} not found", "lead_id": lid})
+            continue
+        email = item.get("email") or row["email"] or ""
+        status = item.get("status", "unknown")
+        source = item.get("source", "unknown")
+        ver_id = f"ver_{lid}_{source}"
+        now_ts = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO lead_email_verification
+               (id, org_id, lead_id, email, status, sub_status, source, source_detail,
+                free_email, mx_found, smtp_provider, verified_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (org_id, lead_id, source) DO UPDATE SET
+                   email = excluded.email,
+                   status = excluded.status,
+                   sub_status = excluded.sub_status,
+                   source_detail = excluded.source_detail,
+                   free_email = excluded.free_email,
+                   mx_found = excluded.mx_found,
+                   smtp_provider = excluded.smtp_provider,
+                   verified_at = excluded.verified_at""",
+            (ver_id, org_id, lid, email, status, item.get("sub_status"),
+             source, item.get("source_detail"),
+             item.get("free_email"), item.get("mx_found"),
+             item.get("smtp_provider"), now_ts),
+        )
+        _compute_verification_status(conn, lid)
+        recorded += 1
+    conn.commit()
+    conn.close()
+    return {"status": "batch_recorded", "recorded": recorded, "errors": errors}
+
+
+def verify_status(lead_id: Optional[int] = None, email: Optional[str] = None) -> dict:
+    """Check verification status for a lead."""
+    conn = get_conn()
+    if lead_id:
+        row = conn.execute(
+            "SELECT email_verification_status, email_verified_at FROM leads WHERE id = ?",
+            (lead_id,),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return {"status": "error", "error": f"Lead {lead_id} not found"}
+        records = conn.execute(
+            """SELECT status, sub_status, source, source_detail, bounce_message,
+                      verified_at FROM lead_email_verification
+               WHERE lead_id = ? ORDER BY verified_at DESC""",
+            (lead_id,),
+        ).fetchall()
+    elif email:
+        email = normalize_email(email)
+        row = conn.execute(
+            "SELECT id, email_verification_status, email_verified_at FROM leads WHERE email = ?",
+            (email,),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return {"status": "error", "error": f"No lead with email {email}"}
+        lead_id = row["id"]
+        records = conn.execute(
+            """SELECT status, sub_status, source, source_detail, bounce_message,
+                      verified_at FROM lead_email_verification
+               WHERE lead_id = ? ORDER BY verified_at DESC""",
+            (lead_id,),
+        ).fetchall()
+    else:
+        conn.close()
+        return {"status": "error", "error": "Provide --lead-id or --email"}
+    conn.close()
+    return {
+        "lead_id": lead_id,
+        "consolidated_status": row["email_verification_status"],
+        "verified_at": row["email_verified_at"],
+        "records": [dict(r) for r in records],
+    }
+
+
+def verify_pending(limit: int = 50) -> list[dict]:
+    """List leads that have no verification record."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT l.id, l.email, l.name, l.company
+           FROM leads l
+           WHERE l.email IS NOT NULL
+             AND l.email_verification_status IS NULL
+             AND NOT EXISTS (
+                 SELECT 1 FROM lead_email_verification v WHERE v.lead_id = l.id
+             )
+           ORDER BY l.updated_at DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def load_profile_rows_from_file(path: Path) -> list[dict]:
@@ -4961,6 +5372,15 @@ def ingest_relay_event(
                 conn, workspace_id, lead_id, sender_li, local_type, event_at_ts
             )
 
+    if local_type == "email_bounce":
+        bounce_type, bounce_reason = _extract_bounce_details(raw, platform)
+        _record_platform_bounce(
+            conn, lead_id, email_hint, platform,
+            bounce_type=bounce_type,
+            bounce_reason=bounce_reason,
+            event_at=received_at,
+        )
+
     conn.commit()
     conn.close()
 
@@ -5894,6 +6314,24 @@ def main():
     tag_bulk_p.add_argument("--tags", required=True, help="Comma-separated tags")
     tag_bulk_p.add_argument("--remove", action="store_true", help="Remove instead of add")
 
+    ver_p = sub.add_parser("verify-email", help="Record email verification result")
+    ver_p.add_argument("--lead-id", type=int, help="Lead ID (single mode)")
+    ver_p.add_argument("--status", help="Verification status (valid, invalid, catch-all, unknown, risky, etc.)")
+    ver_p.add_argument("--source", help="Verification source (zerobounce, neverbounce, etc.)")
+    ver_p.add_argument("--sub-status", dest="sub_status", help="Sub-status detail")
+    ver_p.add_argument("--source-detail", dest="source_detail")
+    ver_p.add_argument("--smtp-provider", dest="smtp_provider")
+    ver_p.add_argument("--batch", action="store_true", help="Read JSON array from --json")
+    ver_p.add_argument("--json", dest="json_input", help="JSON array for batch mode")
+
+    vers_p = sub.add_parser("verify-status", help="Check verification status for a lead")
+    vers_p.add_argument("--lead-id", type=int)
+    vers_p.add_argument("--email")
+
+    verp_p = sub.add_parser("verify-pending", help="List leads needing email verification")
+    verp_p.add_argument("--limit", type=int, default=50)
+    verp_p.add_argument("--json", action="store_true")
+
     export_p = sub.add_parser("agent-changes", help="Show agent-created leads and events not yet synced")
     export_p.add_argument("--json", action="store_true", help="Output as JSON (default)")
     export_p.add_argument("--file", help="Write CSV to file (import-profiles compatible)")
@@ -6366,6 +6804,36 @@ def main():
             print(json.dumps(tag_bulk(ws_id, lead_ids, tags_list, remove=getattr(args, "remove", False))))
         else:
             print(json.dumps({"error": "tag subcommand required: add, remove, set, list, bulk"}))
+    elif args.command == "verify-email":
+        if getattr(args, "batch", False):
+            items = json.loads(getattr(args, "json_input", None) or "[]")
+            print(json.dumps(verify_email_batch(items), indent=2))
+        else:
+            lid = getattr(args, "lead_id", None)
+            st = getattr(args, "status", None)
+            src = getattr(args, "source", None)
+            if not lid or not st or not src:
+                print(json.dumps({"error": "--lead-id, --status, and --source required (or use --batch --json)"}))
+                sys.exit(1)
+            print(json.dumps(verify_email(
+                lid, st, src,
+                sub_status=getattr(args, "sub_status", None),
+                source_detail=getattr(args, "source_detail", None),
+                smtp_provider=getattr(args, "smtp_provider", None),
+            ), indent=2))
+    elif args.command == "verify-status":
+        print(json.dumps(verify_status(
+            lead_id=getattr(args, "lead_id", None),
+            email=getattr(args, "email", None),
+        ), indent=2))
+    elif args.command == "verify-pending":
+        result = verify_pending(limit=args.limit)
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"{len(result)} leads pending verification:")
+            for r in result:
+                print(f"  [{r['id']}] {r.get('name') or '?'} — {r.get('email') or ''}")
     elif args.command == "agent-changes":
         result = export_local_changes(
             all_leads=getattr(args, "all", False),

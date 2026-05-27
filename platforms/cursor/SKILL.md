@@ -283,9 +283,41 @@ python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py import-profiles \
 
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py import-profiles \
   --file contacts.csv --dry-run
+
+# With workspace association, tags, and LinkedIn status tracking
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py import-profiles \
+  --file contacts.csv --workspace default --sender-profile "https://linkedin.com/in/myprofile" \
+  --source-detail "Q2 Apollo list"
 ```
 
-Column aliases (first non-empty wins): `email` / `lead_email`; `linkedin` / `linkedin_url`; `name` / `full_name`; `title` / `job_title`; `company` / `company_name`; `industry`; `headcount` / `company_size`. At least one of **email** or **linkedin** is required per row.
+**Core profile fields** (column aliases — first non-empty wins):
+
+| Canonical field | Aliases | Required |
+|---|---|---|
+| `email` | `lead_email`, `work_email` | At least one of email or linkedin |
+| `linkedin` | `linkedin_url`, `lead_linkedin_url`, `profile_url` | At least one of email or linkedin |
+| `name` | `full_name`, `display_name` (or `first_name` + `last_name`) | No |
+| `title` | `job_title`, `role` | No |
+| `company` | `company_name`, `organization`, `org` | No |
+| `industry` | — | No |
+| `headcount` | `company_size`, `employees`, `employee_count` | No |
+
+**Extra fields** (auto-detected from CSV columns):
+
+| Column | Effect |
+|---|---|
+| `company_domain` | Stored in `companies` table, normalized (strips protocol/www/path) |
+| `mailmerge_first_name` | Auto-populated as `first_name` in personalization table |
+| `mailmerge_company_name` | Auto-populated as `company_name` in personalization table |
+| `import_name` / `list_source` | Used as `original_source_detail` / `latest_source_detail` for attribution |
+| `lead_status` | Requires `--workspace`; sets `current_status_label` on workspace_leads |
+| `lead_sentiment` | Requires `--workspace`; sets `current_status_sentiment` on workspace_leads |
+| `tags` | Requires `--workspace`; semicolon or comma separated, stored in `workspace_lead_tags` |
+| `contact_order` | Requires `--workspace`; integer priority stored as `contact_priority` on workspace_leads |
+| `is_connected_linkedin` | Requires `--workspace` + `--sender-profile`; `true`/`1`/`yes` sets connected status |
+| `is_linkedin_request_pending` | Requires `--workspace` + `--sender-profile`; `true`/`1`/`yes` sets pending status |
+
+**Attribution** is automatic: every import sets `original_source` (immutable first touch) and `latest_source` (updates each time) on the lead, following the Salesforce/HubSpot model. The `--source-detail` flag or `import_name`/`list_source` columns provide the detail.
 
 ### Personalization (mail-merge fields)
 

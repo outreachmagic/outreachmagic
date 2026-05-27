@@ -10,7 +10,8 @@
 
 ## Secrets
 
-- Store `serper_api_key` in `config.json` (gitignored) or `SERPER_API_KEY` env.
+- Store `SERPER_API_KEY` in `~/.hermes/.env` (preferred on Hermes), `config.json`
+  (gitignored), or shell env. `OUTREACHMAGIC_AGENT_KEY` belongs in the same file.
 - CLI output masks keys in `config` and uses `$SERPER_API_KEY` in generated curl
   examples — do not paste live keys into chat.
 

@@ -22,9 +22,10 @@ Given a name + company, the agent:
 
 ```bash
 git clone https://github.com/outreachmagic/lead-enrich.git ~/.hermes/skills/lead-enrich
-cp ~/.hermes/skills/lead-enrich/config.example.json ~/.hermes/skills/lead-enrich/config.json
-# Edit config.json → paste Serper API key
+# Add keys to ~/.hermes/.env (see default.env in the skill for variable names)
 ```
+
+Or use per-skill `config.json` (`cp config.example.json config.json`).
 
 | Platform | Path |
 |----------|------|
@@ -41,12 +42,14 @@ in the same skills directory (e.g. `~/.hermes/skills/outreachmagic` next to
 
 ### Serper.dev API key
 
-[serper.dev](https://serper.dev) → API key → `config.json` or `export SERPER_API_KEY=...`
+[serper.dev](https://serper.dev) → add `SERPER_API_KEY=...` to `~/.hermes/.env`
+(template: `default.env` in this repo). Also works via `config.json` or shell export.
 
 ### outreachmagic (recommended)
 
 [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) for dedup + `import-profiles`.
-Override path: `OUTREACHMAGIC_HOME` or `outreachmagic_home` in config.
+Set `OUTREACHMAGIC_AGENT_KEY=om_agent_...` in `~/.hermes/.env` (same file as Serper).
+Override install path: `OUTREACHMAGIC_HOME` or `outreachmagic_home` in config.
 
 **Standalone mode:** use `normalize`, `serper-queries`, `serper-search`, and
 `serper-format` without outreachmagic; export JSON manually.

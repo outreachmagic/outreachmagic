@@ -2,6 +2,7 @@
 """Tests for skills/lead-enrich/scripts/enrich.py"""
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -106,6 +107,62 @@ class TestSerperSearch(unittest.TestCase):
     def test_missing_key_raises(self):
         with self.assertRaises(ValueError):
             enrich.serper_search("test", {"serper_endpoint": "https://example.com"})
+
+
+class TestHermesEnv(unittest.TestCase):
+    def setUp(self):
+        enrich._HERMES_ENV_LOADED = False
+        self._saved = {
+            k: os.environ[k]
+            for k in ("SERPER_API_KEY", "OUTREACHMAGIC_AGENT_KEY", "HERMES_HOME")
+            if k in os.environ
+        }
+        for k in self._saved:
+            del os.environ[k]
+
+    def tearDown(self):
+        enrich._HERMES_ENV_LOADED = False
+        for k in ("SERPER_API_KEY", "OUTREACHMAGIC_AGENT_KEY", "HERMES_HOME"):
+            os.environ.pop(k, None)
+        os.environ.update(self._saved)
+
+    def test_parse_dotenv_line(self):
+        self.assertEqual(
+            enrich._parse_dotenv_line('export SERPER_API_KEY="abc123"'),
+            ("SERPER_API_KEY", "abc123"),
+        )
+        self.assertIsNone(enrich._parse_dotenv_line("# comment"))
+
+    def test_loads_serper_from_hermes_env_file(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".env").write_text(
+                "SERPER_API_KEY=from-hermes-env\n"
+                "OUTREACHMAGIC_AGENT_KEY=om_agent_test\n"
+            )
+            os.environ["HERMES_HOME"] = str(home)
+            enrich._HERMES_ENV_LOADED = False
+            enrich.ensure_hermes_env_loaded()
+            self.assertEqual(os.environ.get("SERPER_API_KEY"), "from-hermes-env")
+            self.assertEqual(
+                os.environ.get("OUTREACHMAGIC_AGENT_KEY"), "om_agent_test"
+            )
+            cfg = enrich.load_config()
+            self.assertEqual(cfg["serper_api_key"], "from-hermes-env")
+
+    def test_does_not_override_existing_shell_env(self):
+        import tempfile
+
+        os.environ["SERPER_API_KEY"] = "shell-wins"
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".env").write_text("SERPER_API_KEY=from-file\n")
+            os.environ["HERMES_HOME"] = str(home)
+            enrich._HERMES_ENV_LOADED = False
+            enrich.ensure_hermes_env_loaded()
+            self.assertEqual(os.environ["SERPER_API_KEY"], "shell-wins")
 
 
 if __name__ == "__main__":

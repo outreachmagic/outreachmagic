@@ -44,13 +44,77 @@ SKILL_SEARCH_PATHS = [
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
+_HERMES_ENV_LOADED = False
+
+
+def _hermes_home() -> Path:
+    return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")).expanduser()
+
+
+def _parse_dotenv_line(line: str) -> Optional[tuple[str, str]]:
+    """Parse one KEY=VALUE line (stdlib; supports quotes and export prefix)."""
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    if line.startswith("export "):
+        line = line[7:].lstrip()
+    if "=" not in line:
+        return None
+    key, _, value = line.partition("=")
+    key = key.strip()
+    if not key:
+        return None
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return key, value
+
+
+def _load_dotenv_file(path: Path) -> None:
+    """Merge KEY=VALUE pairs into os.environ (do not override existing)."""
+    if not path.is_file():
+        return
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        try:
+            text = path.read_text(encoding="latin-1")
+        except OSError:
+            return
+    for line in text.splitlines():
+        parsed = _parse_dotenv_line(line)
+        if not parsed:
+            continue
+        key, value = parsed
+        if key not in os.environ:
+            os.environ[key] = value
+
+
+def ensure_hermes_env_loaded() -> None:
+    """Load Hermes secrets from ~/.hermes/.env (and default.env fallback)."""
+    global _HERMES_ENV_LOADED
+    if _HERMES_ENV_LOADED:
+        return
+    home = _hermes_home()
+    for name in (".env", "default.env"):
+        _load_dotenv_file(home / name)
+    _HERMES_ENV_LOADED = True
+
+
+def _subprocess_env() -> dict[str, str]:
+    """Environment for outreachmagic pipeline subprocesses."""
+    ensure_hermes_env_loaded()
+    return {**os.environ, "PYTHONUNBUFFERED": "1"}
+
+
 def _find_skill_dir() -> Path:
     """Find this skill's directory (where SKILL.md lives)."""
     return Path(__file__).resolve().parent.parent
 
 
 def load_config() -> dict[str, Any]:
-    """Load config.json, falling back to env vars and defaults."""
+    """Load config.json, falling back to Hermes .env, env vars, and defaults."""
+    ensure_hermes_env_loaded()
     skill_dir = _find_skill_dir()
     cfg_path = skill_dir / "config.json"
 
@@ -61,9 +125,10 @@ def load_config() -> dict[str, Any]:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Env var overrides
-    if os.environ.get("SERPER_API_KEY"):
-        cfg["serper_api_key"] = os.environ["SERPER_API_KEY"]
+    # Env var overrides (shell + ~/.hermes/.env via ensure_hermes_env_loaded)
+    serper = os.environ.get("SERPER_API_KEY", "").strip()
+    if serper:
+        cfg["serper_api_key"] = serper
     if os.environ.get("OUTREACHMAGIC_HOME"):
         cfg["outreachmagic_home"] = os.environ["OUTREACHMAGIC_HOME"]
 
@@ -169,7 +234,7 @@ def _history_lookup(
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            env=_subprocess_env(),
         )
         if proc.returncode != 0 or not proc.stdout.strip():
             return None
@@ -500,7 +565,10 @@ def serper_search(query: str, config: dict[str, Any]) -> dict[str, Any]:
     """Run one Serper search via stdlib HTTP. Raises ValueError on missing key or HTTP error."""
     api_key = (config.get("serper_api_key") or "").strip()
     if not api_key:
-        raise ValueError("serper_api_key not set — use config.json or SERPER_API_KEY")
+        raise ValueError(
+            "serper_api_key not set — add SERPER_API_KEY to ~/.hermes/.env, "
+            "config.json, or export SERPER_API_KEY"
+        )
 
     payload = json.dumps({
         "q": query,
@@ -772,6 +840,7 @@ def format_report(results: list[dict[str, Any]]) -> str:
 
 def cmd_config() -> None:
     """Print loaded config (mask API key)."""
+    ensure_hermes_env_loaded()
     cfg = load_config()
     if cfg.get("serper_api_key"):
         key = cfg["serper_api_key"]
@@ -779,6 +848,10 @@ def cmd_config() -> None:
 
     om_dir = find_outreachmagic(cfg)
     cfg["_outreachmagic_detected"] = str(om_dir) if om_dir else "NOT FOUND"
+    cfg["_hermes_env"] = str(_hermes_home() / ".env")
+    cfg["_outreachmagic_agent_key_set"] = bool(
+        os.environ.get("OUTREACHMAGIC_AGENT_KEY", "").strip()
+    )
 
     print(json.dumps(cfg, indent=2))
 

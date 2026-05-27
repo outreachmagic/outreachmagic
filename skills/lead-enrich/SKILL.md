@@ -6,10 +6,19 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill.
-version: 1.1.2
+version: 1.1.3
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
+required_environment_variables:
+  - name: SERPER_API_KEY
+    prompt: Serper.dev API key
+    help: Get a key at https://serper.dev
+    required_for: Google Search during person/company research
+  - name: OUTREACHMAGIC_AGENT_KEY
+    prompt: Outreach Magic agent key
+    help: Create at https://dev.outreachmagic.io/setup/agent (starts with om_agent_)
+    required_for: outreachmagic dedup checks and saving enriched leads
 metadata:
   hermes:
     tags: [sales, outreach, crm, enrichment, leads, research, linkedin, serper]
@@ -36,16 +45,32 @@ for extraction, and the **outreachmagic** skill for persistence.
 
 ### 1. Serper.dev API key
 
-Sign up at https://serper.dev → get API key → copy `config.example.json` to
-`config.json` and paste it there. Or set `SERPER_API_KEY` in your environment.
+Sign up at https://serper.dev → get API key.
+
+**Hermes (recommended):** add to `~/.hermes/.env` (see `default.env` in this skill
+for a copy-paste template):
+
+```bash
+SERPER_API_KEY=your_serper_key_here
+```
+
+`enrich.py` loads `~/.hermes/.env` automatically (also checks `default.env` in the
+same folder). Hermes forwards these vars when the skill is loaded.
+
+**Alternatives:** `config.json` (`serper_api_key`) or `export SERPER_API_KEY=...`.
 
 ### 2. outreachmagic skill
 
-Required for saving results. Must be installed and set up (agent key configured).
-The script auto-detects it in `~/.hermes/skills/outreachmagic/`,
-`~/.cursor/skills/outreachmagic/`, or `~/.claude/skills/outreachmagic/`.
+Required for saving results. Install outreachmagic and set the agent key in the
+same Hermes env file:
 
-Set `outreachmagic_home` in `config.json` to override.
+```bash
+OUTREACHMAGIC_AGENT_KEY=om_agent_your_key_here
+```
+
+The script auto-detects outreachmagic in `~/.hermes/skills/outreachmagic/`,
+`~/.cursor/skills/outreachmagic/`, or `~/.claude/skills/outreachmagic/`.
+Set `outreachmagic_home` in `config.json` to override the path.
 
 ## When to Use
 
@@ -338,7 +363,7 @@ Max 50 people per run.
 
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
-| `serper_api_key` | Yes | — | Serper.dev API key |
+| `serper_api_key` | Yes* | — | Serper.dev API key (*or `SERPER_API_KEY` in `~/.hermes/.env`) |
 | `serper_endpoint` | No | `https://google.serper.dev/search` | API endpoint |
 | `outreachmagic_home` | No | auto-detect | Path to outreachmagic skill |
 | `max_people_per_run` | No | 50 | Batch size limit |

@@ -48,11 +48,24 @@ During publishing, CI rewrites it per-platform:
 
 | Platform   | GITHUB_REPO value                    |
 |------------|--------------------------------------|
-| Hermes     | `outreachmagic/hermes-skill`         |
-| Cursor     | `outreachmagic/cursor-skill`         |
-| Claude Code| `outreachmagic/claude-code-skill`    |
+| Hermes     | `outreachmagic/hermes-outreachmagic`         |
+| Cursor     | `outreachmagic/cursor-outreachmagic`         |
+| Claude Code| `outreachmagic/claude-code-outreachmagic`    |
 
 **Key requirement:** Each public repo must have a GitHub Release (not just a tag) for the update command to find it.
+
+## lead-enrich companion skill
+
+Published separately to **outreachmagic/lead-enrich** when you push a tag:
+
+```bash
+git tag lead-enrich-v1.1.1
+git push origin lead-enrich-v1.1.1
+```
+
+Workflow: `.github/workflows/publish-lead-enrich.yml` (requires `PUBLISH_TOKEN` and the
+public repo to exist). HermesHub domain request template:
+`docs/hermeshub-reviewed-domains-lead-enrich.md`.
 
 ## How to Release
 
@@ -94,9 +107,9 @@ If you need to manually create releases on the public repos:
 gh auth login
 
 # Push latest code (from this repo's publish workflow logic)
-gh release create v1.6.1 --repo outreachmagic/cursor-skill --title "v1.6.1" --notes "Release v1.6.1"
-gh release create v1.6.1 --repo outreachmagic/hermes-skill --title "v1.6.1" --notes "Release v1.6.1"
-gh release create v1.6.1 --repo outreachmagic/claude-code-skill --title "v1.6.1" --notes "Release v1.6.1"
+gh release create v1.6.1 --repo outreachmagic/cursor-outreachmagic --title "v1.6.1" --notes "Release v1.6.1"
+gh release create v1.6.1 --repo outreachmagic/hermes-outreachmagic --title "v1.6.1" --notes "Release v1.6.1"
+gh release create v1.6.1 --repo outreachmagic/claude-code-outreachmagic --title "v1.6.1" --notes "Release v1.6.1"
 ```
 
 ## User Update Commands

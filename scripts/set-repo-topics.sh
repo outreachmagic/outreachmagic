@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set GitHub topics on outreachmagic/hermes-skill (requires gh auth)
+# Set GitHub topics on outreachmagic/hermes-outreachmagic (requires gh auth)
 set -euo pipefail
 
 TOPICS=(
@@ -13,5 +13,5 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
-gh repo edit --add-topic "$(IFS=,; echo "${TOPICS[*]}")"
+gh repo edit outreachmagic/hermes-outreachmagic --add-topic "$(IFS=,; echo "${TOPICS[*]}")"
 echo "Topics set: ${TOPICS[*]}"

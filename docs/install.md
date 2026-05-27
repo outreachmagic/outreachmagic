@@ -3,7 +3,7 @@
 ## Hermes
 
 ```bash
-git clone https://github.com/outreachmagic/hermes-skill.git /tmp/om-hermes
+git clone https://github.com/outreachmagic/hermes-outreachmagic.git /tmp/om-hermes
 mkdir -p ~/.hermes/skills/outreachmagic
 cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
 rm -rf /tmp/om-hermes
@@ -22,7 +22,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_
 Copy the skill into Cursor's skills directory:
 
 ```bash
-git clone https://github.com/outreachmagic/cursor-skill.git /tmp/om-cursor
+git clone https://github.com/outreachmagic/cursor-outreachmagic.git /tmp/om-cursor
 mkdir -p ~/.cursor/skills/outreachmagic
 cp -r /tmp/om-cursor/{SKILL.md,scripts,references} ~/.cursor/skills/outreachmagic/
 rm -rf /tmp/om-cursor
@@ -42,7 +42,7 @@ For project-level only, copy `outreachmagic.mdc` to `.cursor/rules/` instead.
 Copy the skill scripts:
 
 ```bash
-git clone https://github.com/outreachmagic/claude-code-skill.git /tmp/om-claude
+git clone https://github.com/outreachmagic/claude-code-outreachmagic.git /tmp/om-claude
 mkdir -p ~/.claude/skills/outreachmagic
 cp -r /tmp/om-claude/{scripts,references} ~/.claude/skills/outreachmagic/
 rm -rf /tmp/om-claude
@@ -58,7 +58,7 @@ python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_
 Add pipeline instructions to your project:
 
 ```bash
-cat ~/.claude/skills/outreachmagic/../../../outreachmagic/claude-code-skill/CLAUDE_SNIPPET.md >> CLAUDE.md
+cat ~/.claude/skills/outreachmagic/../../../outreachmagic/claude-code-outreachmagic/CLAUDE_SNIPPET.md >> CLAUDE.md
 ```
 
 Or manually copy the contents of `CLAUDE_SNIPPET.md` into your project's `CLAUDE.md`.

@@ -7,7 +7,7 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 Copy the skill to your Cursor skills directory:
 
 ```bash
-git clone https://github.com/outreachmagic/cursor-skill.git /tmp/om-cursor
+git clone https://github.com/outreachmagic/cursor-outreachmagic.git /tmp/om-cursor
 mkdir -p ~/.cursor/skills/outreachmagic
 cp -r /tmp/om-cursor/{SKILL.md,scripts,references} ~/.cursor/skills/outreachmagic/
 rm -rf /tmp/om-cursor

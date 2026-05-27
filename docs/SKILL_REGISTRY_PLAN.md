@@ -52,7 +52,7 @@ hermes-skill agent-skill agentskills cold-email outreach smartlead instantly lem
 | Update `OUTREACHMAGIC_DEV_REPO` path to `skills/outreachmagic/scripts/` | **Done** |
 | Replace `scripts/install.sh` with dev-only `scripts/sync-local.sh` (no curl pipe) | **Done** |
 | Add `skills/outreachmagic/references/schema.md` | **Done** |
-| Update README with `hermes skills install outreachmagic/hermes-skill` | **Done** |
+| Update README with `hermes skills install outreachmagic/hermes-outreachmagic` | **Done** |
 | Set portal default to `https://dev.outreachmagic.io` (was sandbox Cloud Run URL) | **Done** |
 | Remove deprecated `pipeline/` and `skill/` directories | **Done** |
 
@@ -60,7 +60,7 @@ hermes-skill agent-skill agentskills cold-email outreach smartlead instantly lem
 
 ```bash
 # End users
-git clone https://github.com/outreachmagic/hermes-skill.git /tmp/om-hermes
+git clone https://github.com/outreachmagic/hermes-outreachmagic.git /tmp/om-hermes
 mkdir -p ~/.hermes/skills/outreachmagic
 cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
 rm -rf /tmp/om-hermes
@@ -160,11 +160,11 @@ git push origin main --tags
 
 ## Phase 5 — Registry submission (Hermes)
 
-**Goal:** Listed on HermesHub and federated registries via `outreachmagic/hermes-skill` public repo.
+**Goal:** Listed on HermesHub and federated registries via `outreachmagic/hermes-outreachmagic` public repo.
 
 | Task | Status |
 |------|--------|
-| Day 0: Public repo with SKILL.md, SECURITY.md, LICENSE, README | **Done** — `outreachmagic/hermes-skill` |
+| Day 0: Public repo with SKILL.md, SECURITY.md, LICENSE, README | **Done** — `outreachmagic/hermes-outreachmagic` |
 | Day 1: Reviewed Domains issue on HermesHub | **Remaining** |
 | Day 1: Local SkillScan clean | **Remaining** |
 | Day 3–5: HermesHub PR (after domain review) | **Remaining** |
@@ -177,7 +177,7 @@ git push origin main --tags
 
 ### HermesHub PR target
 
-Submit from `outreachmagic/hermes-skill` (SKILL.md at repo root). Install path: `git clone` from GitHub (see docs/install.md).
+Submit from `outreachmagic/hermes-outreachmagic` (SKILL.md at repo root). Install path: `git clone` from GitHub (see docs/install.md).
 
 ### Reviewed Domains request (draft)
 
@@ -197,9 +197,9 @@ Request review for:
 | Multi-platform repo structure (`platforms/hermes`, `platforms/cursor`, `platforms/claude-code`) | **Done** |
 | Universal `om_paths.py` with `_infer_data_root()` | **Done** |
 | `publish-platforms.yml` CI workflow | **Done** |
-| `outreachmagic/hermes-skill` public repo | **Remaining** — create on GitHub |
-| `outreachmagic/cursor-skill` public repo | **Remaining** — create on GitHub |
-| `outreachmagic/claude-code-skill` public repo | **Remaining** — create on GitHub |
+| `outreachmagic/hermes-outreachmagic` public repo | **Remaining** — create on GitHub |
+| `outreachmagic/cursor-outreachmagic` public repo | **Remaining** — create on GitHub |
+| `outreachmagic/claude-code-outreachmagic` public repo | **Remaining** — create on GitHub |
 | `PUBLISH_TOKEN` secret on `magic-creators/outreachmagic-skill` | **Remaining** |
 | First tagged release to populate all platform repos | **Remaining** |
 | Submit to Cursor skill directory (when available) | **Future** |

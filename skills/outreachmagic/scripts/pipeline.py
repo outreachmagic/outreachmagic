@@ -1055,7 +1055,6 @@ def migrate_db(conn=None):
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain) WHERE domain IS NOT NULL"
     )
-    backfill_companies_from_leads(conn)
     backfill_campaigns_from_events(conn)
     backfill_plusvibe_status_metadata(conn)
     for col, col_type in [
@@ -1121,6 +1120,9 @@ def migrate_db(conn=None):
             conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
+    # Backfill companies derived from existing leads only after ensuring
+    # all referenced company columns exist (e.g. `headcount_numeric`).
+    backfill_companies_from_leads(conn)
     for col, col_type in [
         ("latest_sender", "TEXT"),
         ("latest_sender_platform", "TEXT"),
@@ -1855,6 +1857,16 @@ def resolve_lead(
                 source, source_detail, source_platform, now_ts,
                 source, source_detail, source_platform, now_ts,
             ])
+        if notes is not None:
+            # Persist import notes when provided.
+            # - overwrite=False: only fill if notes is currently empty
+            # - overwrite=True: replace notes
+            if overwrite:
+                sets.append("notes = ?")
+                params.append(notes)
+            else:
+                sets.append("notes = CASE WHEN notes IS NULL OR notes = '' THEN ? ELSE notes END")
+                params.append(notes)
         sets.append("cloud_pending = 1")
         sets.append("updated_at = datetime('now')")
         params.append(lead_id)
@@ -2132,7 +2144,7 @@ IMPORT_EXTRA_FIELDS = (
     "lead_status", "lead_sentiment", "import_name", "list_source",
     "tags", "contact_order",
     "hq_city", "hq_state", "hq_country",
-    "external_id",
+    "external_id", "notes",
 )
 
 def _extract_extra_import_fields(raw: dict) -> dict[str, str]:
@@ -2141,6 +2153,50 @@ def _extract_extra_import_fields(raw: dict) -> dict[str, str]:
     for key in IMPORT_EXTRA_FIELDS:
         val = raw.get(key)
         if val is not None:
+            if key == "tags":
+                # Accept tags provided as:
+                # - ["nace", "vip"] (JSON list)
+                # - 'vip; nace' (string)
+                # - '["nace"]' (JSON array string)
+                if isinstance(val, list):
+                    text = ";".join(str(v).strip() for v in val if str(v).strip())
+                    if text:
+                        out[key] = text
+                    continue
+                if isinstance(val, str):
+                    raw_txt = val.strip()
+                    if raw_txt.startswith("[") and raw_txt.endswith("]"):
+                        try:
+                            parsed = json.loads(raw_txt)
+                            if isinstance(parsed, list):
+                                text = ";".join(str(v).strip() for v in parsed if str(v).strip())
+                                if text:
+                                    out[key] = text
+                                continue
+                        except Exception:
+                            pass
+                    text = raw_txt
+                    if text:
+                        out[key] = text
+                    continue
+                # Fallback: store as string
+                text = str(val).strip()
+                if text:
+                    out[key] = text
+                continue
+
+            if key == "notes":
+                # Notes should be a single string blob (not a list).
+                if isinstance(val, str):
+                    text = val.strip()
+                    if text:
+                        out[key] = text
+                else:
+                    text = str(val).strip()
+                    if text:
+                        out[key] = text
+                continue
+
             text = str(val).strip()
             if text:
                 out[key] = text
@@ -2245,6 +2301,7 @@ def import_profiles(
         profile = normalize_profile_row(raw)
         extra = _extract_extra_import_fields(raw)
         row_company_domain = normalize_company_domain(extra.get("company_domain"))
+        row_notes = extra.get("notes") or notes
         idents = build_import_identities(
             profile, extra, import_batch=import_batch_id, company_domain=row_company_domain,
         )
@@ -2264,7 +2321,7 @@ def import_profiles(
                 profile,
                 channel=channel,
                 stage=stage,
-                notes=notes,
+                notes=row_notes,
                 dry_run=dry_run,
                 overwrite=overwrite,
                 company_domain=row_company_domain,

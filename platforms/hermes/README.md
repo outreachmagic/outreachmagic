@@ -5,7 +5,7 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 ## Install
 
 ```bash
-git clone https://github.com/outreachmagic/hermes-skill.git /tmp/om-hermes
+git clone https://github.com/outreachmagic/hermes-outreachmagic.git /tmp/om-hermes
 mkdir -p ~/.hermes/skills/outreachmagic
 cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
 rm -rf /tmp/om-hermes

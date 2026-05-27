@@ -504,6 +504,79 @@ def test_import_profiles_weak_identity_and_entity_key():
     conn.close()
 
 
+def test_import_profiles_persists_row_notes_and_overwrite_behavior():
+    om.init_db()
+    ws = om.create_workspace("Notes WS", slug="notesws")
+
+    row1 = {
+        "email": "notes1@test.com",
+        "name": "Notes Lead",
+        "company": "Acme",
+        "notes": "domain: acme.com",
+    }
+    s1 = om.import_profiles([row1], workspace="notesws")
+    assert s1["created"] == 1
+    lead_id = s1["results"][0]["id"]
+
+    conn = om.get_conn()
+    n1 = conn.execute("SELECT notes FROM leads WHERE id = ?", (lead_id,)).fetchone()["notes"]
+    conn.close()
+    assert n1 == "domain: acme.com"
+
+    # Import again with overwrite=False: should not overwrite existing notes.
+    row2 = {
+        "email": "notes1@test.com",
+        "name": "Notes Lead",
+        "company": "Acme",
+        "notes": "domain: other.com",
+    }
+    s2 = om.import_profiles([row2], workspace="notesws", overwrite=False)
+    assert s2["matched"] == 1
+
+    conn = om.get_conn()
+    n2 = conn.execute("SELECT notes FROM leads WHERE id = ?", (lead_id,)).fetchone()["notes"]
+    conn.close()
+    assert n2 == "domain: acme.com"
+
+    # Import again with overwrite=True: should overwrite notes.
+    s3 = om.import_profiles([row2], workspace="notesws", overwrite=True)
+    assert s3["matched"] == 1
+
+    conn = om.get_conn()
+    n3 = conn.execute("SELECT notes FROM leads WHERE id = ?", (lead_id,)).fetchone()["notes"]
+    conn.close()
+    assert n3 == "domain: other.com"
+
+
+def test_import_profiles_accepts_tags_json_list():
+    om.init_db()
+    ws = om.create_workspace("Tag List WS", slug="tagws")
+
+    row = {
+        "email": "taglist@test.com",
+        "name": "Tag Lead",
+        "company": "Acme",
+        "tags": ["vip", "nace"],
+    }
+    s = om.import_profiles([row], workspace="tagws")
+    assert s["created"] == 1
+    lead_id = s["results"][0]["id"]
+
+    conn = om.get_conn()
+    tags = [
+        r["tag"]
+        for r in conn.execute(
+            "SELECT tag FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ?",
+            (ws["id"], lead_id),
+        ).fetchall()
+    ]
+    conn.close()
+
+    assert "vip" in tags
+    assert "nace" in tags
+    assert not any("[" in t or "]" in t for t in tags)
+
+
 def test_campaign_stats_normalizes_linkedin_sent_and_reply_counts():
     om.init_db()
     lead_id = om.add_lead(name="LinkedIn Lead", email="linkedinlead@test.com").get("id")
@@ -558,5 +631,7 @@ if __name__ == "__main__":
     test_external_id_namespacing()
     test_import_key_stable_within_batch()
     test_import_profiles_weak_identity_and_entity_key()
+    test_import_profiles_persists_row_notes_and_overwrite_behavior()
+    test_import_profiles_accepts_tags_json_list()
     test_agent_sync_full_payload_roundtrip()
     print("ok")

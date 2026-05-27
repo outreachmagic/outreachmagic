@@ -6,9 +6,17 @@
 
 | Platform | Repo | Install |
 |----------|------|---------|
-| Hermes | [outreachmagic/hermes-skill](https://github.com/outreachmagic/hermes-skill) | See `docs/install.md` (git clone) |
-| Cursor | [outreachmagic/cursor-skill](https://github.com/outreachmagic/cursor-skill) | Copy to `~/.cursor/skills/outreachmagic/` |
-| Claude Code | [outreachmagic/claude-code-skill](https://github.com/outreachmagic/claude-code-skill) | Copy scripts + append `CLAUDE_SNIPPET.md` to `CLAUDE.md` |
+| Hermes | [outreachmagic/hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) | See `docs/install.md` (git clone) |
+| Cursor | [outreachmagic/cursor-outreachmagic](https://github.com/outreachmagic/cursor-outreachmagic) | Copy to `~/.cursor/skills/outreachmagic/` |
+| Claude Code | [outreachmagic/claude-code-outreachmagic](https://github.com/outreachmagic/claude-code-outreachmagic) | Copy scripts + append `CLAUDE_SNIPPET.md` to `CLAUDE.md` |
+
+### Companion skills
+
+| Skill | Repo | Purpose |
+|-------|------|---------|
+| lead-enrich | [outreachmagic/lead-enrich](https://github.com/outreachmagic/lead-enrich) | Serper person research; dedup against local SQLite before spending credits |
+
+Source in this monorepo: `skills/lead-enrich/`. Publish with tag `lead-enrich-vX.Y.Z`.
 
 ## Repository Layout
 

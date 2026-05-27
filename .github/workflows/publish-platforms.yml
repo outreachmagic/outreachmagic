@@ -17,24 +17,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: hermes-skill
+          - platform: hermes-outreachmagic
             org: outreachmagic
             skill_md: platforms/hermes/SKILL.md
             readme: platforms/hermes/README.md
             extras: ""
-            github_repo_value: outreachmagic/hermes-skill
-          - platform: cursor-skill
+            github_repo_value: outreachmagic/hermes-outreachmagic
+          - platform: cursor-outreachmagic
             org: outreachmagic
             skill_md: platforms/cursor/SKILL.md
             readme: platforms/cursor/README.md
             extras: "platforms/cursor/outreachmagic.mdc"
-            github_repo_value: outreachmagic/cursor-skill
-          - platform: claude-code-skill
+            github_repo_value: outreachmagic/cursor-outreachmagic
+          - platform: claude-code-outreachmagic
             org: outreachmagic
             skill_md: ""
             readme: platforms/claude-code/README.md
             extras: "platforms/claude-code/CLAUDE_SNIPPET.md"
-            github_repo_value: outreachmagic/claude-code-skill
+            github_repo_value: outreachmagic/claude-code-outreachmagic
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -1,0 +1,56 @@
+name: Publish lead-enrich
+
+on:
+  push:
+    tags:
+      - "lead-enrich-v*"
+
+concurrency:
+  group: publish-lead-enrich-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish outreachmagic/lead-enrich
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assemble skill repo
+        run: |
+          mkdir -p staging/scripts
+          cp skills/lead-enrich/SKILL.md staging/
+          cp skills/lead-enrich/README.md staging/
+          cp skills/lead-enrich/SECURITY.md staging/
+          cp skills/lead-enrich/config.example.json staging/
+          cp skills/lead-enrich/.gitignore staging/
+          cp skills/lead-enrich/scripts/enrich.py staging/scripts/
+          cp LICENSE staging/
+
+      - name: Push to outreachmagic/lead-enrich
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME#lead-enrich-}"
+          cd staging
+          git init -b main
+          git config user.name "OutreachMagic Bot"
+          git config user.email "bot@outreachmagic.io"
+          git add -A
+          git commit -m "Release ${TAG}"
+          git tag "${TAG}"
+          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/lead-enrich.git"
+          git push origin main --force
+          git push origin "${TAG}" --force
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME#lead-enrich-}"
+          gh release create "${TAG}" \
+            --repo "outreachmagic/lead-enrich" \
+            --title "${TAG}" \
+            --notes "Released from outreachmagic-skill ${GITHUB_REF_NAME}" \
+            --latest 2>/dev/null || echo "Release already exists or repo not created yet"

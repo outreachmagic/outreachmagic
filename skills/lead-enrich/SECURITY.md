@@ -1,0 +1,25 @@
+# Security — lead-enrich
+
+## Data boundaries
+
+- **Local:** Reads lead records via the outreachmagic `pipeline.py history` CLI
+  (your machine's SQLite database only).
+- **External:** Calls **google.serper.dev** with your Serper API key when the
+  agent runs `serper-search` or equivalent HTTP requests.
+- **No** Outreach Magic cloud person-research API. **No** scraping of Google or LinkedIn HTML.
+
+## Secrets
+
+- Store `serper_api_key` in `config.json` (gitignored) or `SERPER_API_KEY` env.
+- CLI output masks keys in `config` and uses `$SERPER_API_KEY` in generated curl
+  examples — do not paste live keys into chat.
+
+## Optional dependency
+
+outreachmagic is recommended but not required for search/format helpers. When
+installed, saving uses `import-profiles` locally — same trust model as the core skill.
+
+## Reporting vulnerabilities
+
+Email security concerns for Outreach Magic products to the address listed in the
+root [SECURITY.md](../../SECURITY.md) of the development monorepo.

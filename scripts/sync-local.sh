@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Outreach Magic — Dev sync: copy skills/outreachmagic from this repo into ~/.hermes
 # For local development only. End users should install via:
-#   See docs/install.md (git clone from github.com/outreachmagic/hermes-skill)
+#   See docs/install.md (git clone from github.com/outreachmagic/hermes-outreachmagic)
 
 set -euo pipefail
 
@@ -47,7 +47,7 @@ echo "  Database:  $SKILL_DIR/databases/outreachmagic.db"
 echo "  Version:   $VER"
 echo
 echo "  Hermes:"
-echo "    git clone https://github.com/outreachmagic/hermes-skill.git /tmp/om-hermes"
+echo "    git clone https://github.com/outreachmagic/hermes-outreachmagic.git /tmp/om-hermes"
 echo "    cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/"
 echo "    rm -rf /tmp/om-hermes"
 echo "    hermes -s outreachmagic"

@@ -5,7 +5,7 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 ## Install
 
 ```bash
-git clone https://github.com/outreachmagic/claude-code-skill.git /tmp/om-claude
+git clone https://github.com/outreachmagic/claude-code-outreachmagic.git /tmp/om-claude
 mkdir -p ~/.claude/skills/outreachmagic
 cp -r /tmp/om-claude/{scripts,references} ~/.claude/skills/outreachmagic/
 rm -rf /tmp/om-claude

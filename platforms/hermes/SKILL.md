@@ -210,13 +210,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --worksp
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --all
 ```
 
-**Push to relay for cross-platform sync (manual):**
-
-```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py push
-```
-
-Other platforms pick up the changes automatically on their next `pull`.
+**Push to relay:** `pipeline.py sync` (full lead snapshot + events). After a DB reset, `pull --full` restores synced data including CSV imports.
 
 **File-based transfer (no server):**
 
@@ -317,7 +311,7 @@ If lead exists by email or LinkedIn, returns `{"status": "exists", "id": N}` (do
 
 ### Bulk import / enrich (CSV, JSON, research dumps)
 
-**Use `import-profiles` for spreadsheets, enriched exports, or batched research** — not repeated `add-lead` calls. Match key is **email and/or LinkedIn**. Fills empty fields only (same as relay/PlusVibe); use `--overwrite` to replace existing values.
+**Use `import-profiles` for spreadsheets, enriched exports, or batched research** — not repeated `add-lead` calls. Matching uses **tiered identities** (strongest first): `external_id` → email → LinkedIn → phone → name+domain → name+company → `import_key` (name-only rows). CSV columns `unified_lead_id` / `source_id` map to `external_id`. Fills empty fields only (same as relay/PlusVibe); use `--overwrite` to replace existing values.
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \

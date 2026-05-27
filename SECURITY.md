@@ -44,10 +44,19 @@ We do **not** use our servers as the long-term store for webhook payload content
 
 | Domain | Purpose | Auth | Data sent |
 |--------|---------|------|-----------|
-| `api.outreachmagic.io` | Relay pull, ack, webhook routing | Bearer token in URL path / headers | Token, pull cursor; returns event payloads for local import |
+| `api.outreachmagic.io` | Relay **pull** (import webhooks + agent snapshots) | Bearer token in URL path / headers | Token, pull cursor; returns event payloads for local import |
+| `api.outreachmagic.io` | Relay **push** (`pipeline.py sync` only) | `Authorization: Bearer <om_agent_…>` | Lead snapshots and local agent events the user chose to sync — **never** sent on `import-profiles`, `init`, or `pull` |
 | `dev.outreachmagic.io` | Portal API (tokens, billing, routing config sync) | Bearer token | Routing config, account metadata — **not** full local DB export |
-| `api.github.com` | Latest release lookup for update checks | None | Public releases API only |
+| `api.github.com` | Latest release lookup for update checks | None | Public releases API only (read-only; at most once per hour) |
 | `raw.githubusercontent.com` | Tagged release downloads (`pipeline.py update`) | None | Only on explicit user-triggered update |
+
+### No automatic upload
+
+- **`import-profiles`** — local SQLite only; sets `cloud_pending` but does **not** call the network.
+- **`pull`** — downloads from relay only (plus optional routing config **pull** from portal).
+- **`sync`** — the **only** command that POSTs lead data to `api.outreachmagic.io/push`. The agent or user must run it explicitly.
+- **`setup`** — validates the agent key and may **import** existing relay events (pull); it does not push local data.
+- Hermes cron examples in docs use `pull --cron` (inbound only), not `sync`.
 
 Override portal API: `"api_base_url"` in config (default `https://dev.outreachmagic.io`).
 

@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.13.0
+version: 1.15.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -74,6 +74,13 @@ That's it. Don't list other commands, don't offer alternatives. Just: go get a k
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show
 ```
+
+## Network & privacy (Hermes / hub review)
+
+- **Default:** All lead and pipeline data stays in local SQLite.
+- **Inbound only:** `pull` imports webhook/agent events from `api.outreachmagic.io` (user- or cron-initiated).
+- **Outbound upload:** Only when the user (or agent following user instruction) runs **`pipeline.py sync`**. Import and local edits never auto-upload.
+- **Update check:** The CLI may query GitHub for a newer release tag (read-only, no lead data; at most once per hour). See [SECURITY.md](SECURITY.md).
 
 ## Version
 
@@ -210,13 +217,22 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --worksp
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --all
 ```
 
-**Push to relay for cross-platform sync (manual):**
+**Push to relay for cross-platform sync:**
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py push
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py sync
 ```
 
-Other platforms pick up the changes automatically on their next `pull`.
+`sync` pushes pending lead snapshots (profile, `external_id`, `company_domain`, HQ/location, tags, mailmerge, workspace status, LinkedIn connection flags) plus local events. Other machines run `pull --full` after a DB reset to restore everything that was synced.
+
+**Fresh DB + full CSV round-trip:**
+
+```bash
+pipeline.py import-profiles --file nace.csv --workspace popcam --import-batch-id nace-2026
+pipeline.py sync
+# new machine:
+pipeline.py init && pipeline.py pull --full
+```
 
 **File-based transfer (no server):**
 
@@ -317,7 +333,7 @@ If lead exists by email or LinkedIn, returns `{"status": "exists", "id": N}` (do
 
 ### Bulk import / enrich (CSV, JSON, research dumps)
 
-**Use `import-profiles` for spreadsheets, enriched exports, or batched research** — not repeated `add-lead` calls. Match key is **email and/or LinkedIn**. Fills empty fields only (same as relay/PlusVibe); use `--overwrite` to replace existing values.
+**Use `import-profiles` for spreadsheets, enriched exports, or batched research** — not repeated `add-lead` calls. Matching uses **tiered identities** (strongest first): `external_id` → email → LinkedIn → phone → name+domain → name+company → `import_key` (name-only rows). CSV columns `unified_lead_id` / `source_id` are accepted as aliases and stored as `external_id`. Fills empty fields only (same as relay/PlusVibe); use `--overwrite` to replace existing values.
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
@@ -335,15 +351,19 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
 # With workspace association, tags, and LinkedIn status tracking
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
   --file contacts.csv --workspace default --sender-profile "https://linkedin.com/in/myprofile" \
-  --source-detail "Q2 Apollo list"
+  --source-detail "Q2 Apollo list" --import-batch-id "nace-2026-05"
+
+# Rows with only name + company_domain + unified_lead_id (no email/LinkedIn)
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
+  --file nace.csv --workspace popcam --import-batch-id nace-2026-05
 ```
 
 **Core profile fields** (column aliases — first non-empty wins):
 
 | Canonical field | Aliases | Required |
 |---|---|---|
-| `email` | `lead_email`, `work_email` | At least one of email or linkedin |
-| `linkedin` | `linkedin_url`, `lead_linkedin_url`, `profile_url` | At least one of email or linkedin |
+| `email` | `lead_email`, `work_email` | No (see identity tiers below) |
+| `linkedin` | `linkedin_url`, `lead_linkedin_url`, `profile_url` | No |
 | `name` | `full_name`, `display_name` (or `first_name` + `last_name`) | No |
 | `title` | `job_title`, `role` | No |
 | `company` | `company_name`, `organization`, `org` | No |
@@ -363,7 +383,10 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
 | `hq_city` / `hq_state` / `hq_country` | Company HQ location, stored on `companies` table |
 | `mailmerge_first_name` | Auto-populated as `first_name` in personalization table |
 | `mailmerge_company_name` | Auto-populated as `company_name` in personalization table |
-| `import_name` / `list_source` | Used as `original_source_detail` / `latest_source_detail` for attribution |
+| `import_name` / `list_source` | Attribution + namespace for `external_id` when value has no `:` |
+| `external_id` | CRM/list ID in `lead_identities` (namespaced `list_source:id` if bare) |
+| `unified_lead_id`, `source_id` | Import aliases → same as `external_id` |
+| `import_batch_id` (CLI flag) | Stable dedupe for name-only rows via `import_key` within a batch |
 | `lead_status` | Requires `--workspace`; normalized (lowercase, spaces) and set on workspace_leads |
 | `lead_sentiment` | Requires `--workspace`; normalized (lowercase) and set on workspace_leads |
 | `tags` | Requires `--workspace`; semicolon or comma separated, normalized (lowercase), stored in `workspace_lead_tags` |

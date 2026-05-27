@@ -20,11 +20,17 @@ from workspace_routing import (  # noqa: E402
     DEFAULT_ORG_ID,
     WORKSPACE_ROUTING_MULTI,
     WORKSPACE_ROUTING_SINGLE,
+    build_import_identities,
+    build_import_key_fingerprint,
     extract_campaign_context,
+    find_lead_by_identity,
     format_unmapped_campaign_message,
+    lead_entity_key,
     normalize_campaign_name,
     normalize_email,
+    normalize_external_id,
     normalize_linkedin,
+    parse_entity_key,
     resolve_workspace,
     resolve_workspace_for_ingest,
 )
@@ -356,6 +362,109 @@ def test_campaign_stats_splits_workspace_and_counts_interested():
     assert "scholarship" in rendered
 
 
+def test_external_id_namespacing():
+    assert normalize_external_id("ABC", "NACE List") == "nace_list:abc"
+    assert normalize_external_id("crm:123", "nace") == "crm:123"
+    extra = {"external_id": "row-1", "list_source": "nace"}
+    idents = build_import_identities({"name": "Jane Doe"}, extra)
+    assert idents[0] == ("external_id", "nace:row-1")
+
+
+def test_import_key_stable_within_batch():
+    a = build_import_key_fingerprint(name="Jane", import_batch="batch-a")
+    b = build_import_key_fingerprint(name="Jane", import_batch="batch-a")
+    c = build_import_key_fingerprint(name="Jane", import_batch="batch-b")
+    assert a == b
+    assert a != c
+    assert a.startswith("om:")
+
+
+def test_agent_sync_full_payload_roundtrip():
+    om.init_db()
+    row = {
+        "name": "Sync Test",
+        "company": "Acme",
+        "company_domain": "acme.org",
+        "unified_lead_id": "sync-42",
+        "list_source": "test",
+        "tags": "vip; nace",
+        "mailmerge_first_name": "Sync",
+        "lead_status": "warm",
+        "location_city": "Austin",
+    }
+    s1 = om.import_profiles([row], workspace="default")
+    assert s1["created"] == 1
+    lead_id = s1["results"][0]["id"]
+
+    conn = om.get_conn()
+    payload = om.build_lead_sync_payload(conn, DEFAULT_ORG_ID, lead_id)
+    conn.close()
+    assert payload.get("external_id", "").startswith("test:")
+    assert payload.get("company_domain") == "acme.org"
+    assert payload.get("location_city") == "Austin"
+    assert "vip" in (payload.get("tags") or [])
+    assert payload.get("personalization", {}).get("first_name") == "Sync"
+
+    om.init_db()
+    event = {
+        "platform": "agent",
+        "action": "lead_create",
+        "entity_key": f"external_id:{payload['external_id']}",
+        "client_id": "other-client",
+        "timestamp": "2026-05-27T12:00:00Z",
+        "payload": payload,
+    }
+    replay_id = om.ingest_agent_entry(event)
+    assert replay_id is not None
+
+    conn = om.get_conn()
+    from workspace_routing import find_lead_by_identity
+
+    assert find_lead_by_identity(conn, DEFAULT_ORG_ID, "external_id", payload["external_id"]) == replay_id
+    co = conn.execute(
+        "SELECT domain FROM companies co JOIN leads l ON l.company_id = co.id WHERE l.id = ?",
+        (replay_id,),
+    ).fetchone()
+    conn.close()
+    assert co and co["domain"] == "acme.org"
+
+
+def test_import_profiles_weak_identity_and_entity_key():
+    om.init_db()
+    row = {
+        "name": "Melynie Schiel",
+        "company": "ACCJC",
+        "company_domain": "accjc.org",
+        "unified_lead_id": "ul_test_99",
+        "list_source": "nace",
+    }
+    s1 = om.import_profiles([row], import_batch_id="nace-test")
+    assert s1["created"] == 1
+    assert s1["processed"] == 1
+    lead_id = s1["results"][0]["id"]
+    assert s1["results"][0]["match_confidence"] in ("high", "medium", "low")
+
+    s2 = om.import_profiles([row], import_batch_id="nace-test")
+    assert s2["matched"] == 1
+    assert s2["results"][0]["id"] == lead_id
+
+    conn = om.get_conn()
+    ekey = lead_entity_key(conn, DEFAULT_ORG_ID, lead_id)
+    conn.close()
+    assert ekey.startswith("external_id:nace:")
+
+    conn = om.get_conn()
+    found = om.find_lead_by_identifier(conn, ekey)
+    conn.close()
+    assert found == lead_id
+
+    itype, val = parse_entity_key(ekey)
+    assert itype == "external_id"
+    conn = om.get_conn()
+    assert find_lead_by_identity(conn, DEFAULT_ORG_ID, "external_id", val) == lead_id
+    conn.close()
+
+
 def test_campaign_stats_normalizes_linkedin_sent_and_reply_counts():
     om.init_db()
     lead_id = om.add_lead(name="LinkedIn Lead", email="linkedinlead@test.com").get("id")
@@ -407,4 +516,8 @@ if __name__ == "__main__":
     test_replay_pending_quarantine_applies_unknown_name_mapping()
     test_campaign_stats_splits_workspace_and_counts_interested()
     test_campaign_stats_normalizes_linkedin_sent_and_reply_counts()
+    test_external_id_namespacing()
+    test_import_key_stable_within_batch()
+    test_import_profiles_weak_identity_and_entity_key()
+    test_agent_sync_full_payload_roundtrip()
     print("ok")

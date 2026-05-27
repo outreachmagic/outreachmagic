@@ -7,11 +7,13 @@ Campaign routing priority:
 Rules with source_platform='*' match any incoming platform.
 
 Identity resolution (additive aliases):
-  unified_id > email > linkedin_url > phone > provider_id
+  external_id > email > linkedin_url > phone > name_company_domain >
+  name_company > import_key > provider_id
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -27,11 +29,23 @@ WORKSPACE_ROUTING_MULTI = "multi"
 VALID_WORKSPACE_ROUTING_MODES = (WORKSPACE_ROUTING_SINGLE, WORKSPACE_ROUTING_MULTI)
 
 IDENTITY_PRECEDENCE = (
-    "unified_id",
+    "external_id",
     "email",
     "linkedin_url",
     "phone",
+    "name_company_domain",
+    "name_company_domain_title",
+    "name_company",
+    "import_key",
     "provider_id",
+)
+
+ENTITY_KEY_IDENTITY_TYPES = (
+    "external_id",
+    "name_company_domain",
+    "name_company_domain_title",
+    "name_company",
+    "import_key",
 )
 
 
@@ -110,6 +124,198 @@ def normalize_phone(phone: Optional[str]) -> Optional[str]:
     return f"+{digits}"
 
 
+def slugify_identity_source(raw: Optional[str]) -> str:
+    """Stable slug for namespacing external_id values (list_source, import_name, etc.)."""
+    text = (raw or "").strip().lower()
+    if not text:
+        return "csv"
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    return text.strip("_")[:64] or "csv"
+
+
+def normalize_person_name(name: Optional[str]) -> Optional[str]:
+    if not name or not str(name).strip():
+        return None
+    text = re.sub(r"[^\w\s\-']", "", str(name).strip().lower())
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
+
+
+def normalize_company_name_key(company: Optional[str]) -> Optional[str]:
+    if not company or not str(company).strip():
+        return None
+    text = str(company).strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    for suffix in (
+        r",?\s+inc\.?$",
+        r",?\s+incorporated$",
+        r",?\s+llc\.?$",
+        r",?\s+l\.?l\.?c\.?$",
+        r",?\s+corp\.?$",
+        r",?\s+corporation$",
+    ):
+        text = re.sub(suffix, "", text, flags=re.IGNORECASE)
+    return text.strip() or None
+
+
+def pick_external_id_from_raw(raw: Optional[dict]) -> Optional[str]:
+    """First non-empty CRM/list id from a payload row (column aliases only; stored as external_id)."""
+    if not raw:
+        return None
+    for key in ("external_id", "unified_lead_id", "source_id"):
+        val = raw.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return None
+
+
+def normalize_external_id(value: str, source_slug: str) -> Optional[str]:
+    raw = (value or "").strip().lower()
+    if not raw or len(raw) > 128:
+        return None
+    if ":" in raw:
+        return raw
+    slug = slugify_identity_source(source_slug)
+    return f"{slug}:{raw}"
+
+
+def build_import_key_fingerprint(
+    *,
+    name: str,
+    company: Optional[str] = None,
+    company_domain: Optional[str] = None,
+    import_batch: Optional[str] = None,
+) -> str:
+    parts = [
+        normalize_person_name(name) or "",
+        normalize_company_name_key(company) or "",
+        (company_domain or "").strip().lower(),
+        slugify_identity_source(import_batch),
+    ]
+    digest = hashlib.sha256("|".join(parts).encode()).hexdigest()[:24]
+    return f"om:{digest}"
+
+
+def match_confidence_for_type(identity_type: str) -> str:
+    if identity_type in ("external_id", "email", "linkedin_url"):
+        return "high"
+    if identity_type in ("phone", "name_company_domain", "name_company_domain_title"):
+        return "medium"
+    return "low"
+
+
+def build_import_identities(
+    profile: dict[str, str],
+    extra: dict[str, str],
+    *,
+    import_batch: Optional[str] = None,
+    company_domain: Optional[str] = None,
+) -> list[tuple[str, str]]:
+    """Build (identity_type, normalized_value) list for import / resolve_lead."""
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(itype: str, val: Optional[str]):
+        if not val:
+            return
+        norm = normalize_identity_value(itype, val)
+        if not norm:
+            return
+        key = (itype, norm)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(key)
+
+    source_slug = (
+        extra.get("list_source")
+        or extra.get("import_name")
+        or import_batch
+        or "csv"
+    )
+    ext_raw = extra.get("external_id")
+    if ext_raw:
+        namespaced = normalize_external_id(str(ext_raw), source_slug)
+        if namespaced:
+            add("external_id", namespaced)
+
+    add("email", profile.get("email"))
+    li = profile.get("linkedin")
+    if li:
+        add("linkedin_url", li)
+    add("phone", profile.get("phone") or extra.get("phone"))
+
+    norm_name = normalize_person_name(profile.get("name"))
+    domain = (company_domain or extra.get("company_domain") or "").strip().lower()
+    if domain:
+        domain = re.sub(r"^www\.", "", domain.split("/")[0].split("?")[0])
+    company = profile.get("company")
+    title = (profile.get("title") or "").strip().lower()
+
+    if norm_name and domain:
+        if title:
+            add("name_company_domain_title", f"{norm_name}|{domain}|{title}")
+        else:
+            add("name_company_domain", f"{norm_name}|{domain}")
+    elif norm_name and company:
+        ckey = normalize_company_name_key(company)
+        if ckey:
+            add("name_company", f"{norm_name}|{ckey}")
+    elif norm_name:
+        batch = import_batch or extra.get("import_name") or extra.get("list_source")
+        add("import_key", build_import_key_fingerprint(
+            name=profile.get("name") or "",
+            company=company,
+            company_domain=domain or None,
+            import_batch=batch,
+        ))
+
+    order = {t: i for i, t in enumerate(IDENTITY_PRECEDENCE)}
+    out.sort(key=lambda x: order.get(x[0], 99))
+    return out
+
+
+def find_match_method_for_lead(
+    conn: sqlite3.Connection,
+    org_id: str,
+    lead_id: int,
+    identities: list[tuple[str, str]],
+) -> Optional[str]:
+    """Which identity type linked to this lead_id (first in precedence order)."""
+    for itype, val in identities:
+        found = find_lead_by_identity(conn, org_id, itype, val)
+        if found == lead_id:
+            return itype
+    return None
+
+
+def upsert_all_identities(
+    conn: sqlite3.Connection,
+    org_id: str,
+    lead_id: int,
+    identities: list[tuple[str, str]],
+    *,
+    source: Optional[str] = None,
+) -> list[dict]:
+    """Register all identities; return conflict records (does not raise)."""
+    conflicts: list[dict] = []
+    for itype, val in identities:
+        try:
+            upsert_identity_alias(conn, org_id, lead_id, itype, val, source=source)
+        except ValueError:
+            existing = conn.execute(
+                """SELECT lead_id FROM lead_identities
+                   WHERE org_id = ? AND identity_type = ? AND identity_value_normalized = ?""",
+                (org_id, itype, val),
+            ).fetchone()
+            conflicts.append({
+                "identity_type": itype,
+                "value": val,
+                "existing_lead_id": int(existing["lead_id"]) if existing else None,
+            })
+    return conflicts
+
+
 def normalize_identity_value(identity_type: str, value: str) -> Optional[str]:
     value = (value or "").strip()
     if not value:
@@ -120,10 +326,18 @@ def normalize_identity_value(identity_type: str, value: str) -> Optional[str]:
         return normalize_linkedin(value)
     if identity_type == "phone":
         return normalize_phone(value)
-    if identity_type == "unified_id":
-        return value.strip().lower()
+    if identity_type == "external_id":
+        raw = value.strip().lower()
+        return raw[:128] if raw else None
     if identity_type == "provider_id":
         return f"{value.strip()}"
+    if identity_type in (
+        "name_company_domain",
+        "name_company_domain_title",
+        "name_company",
+        "import_key",
+    ):
+        return value.strip().lower()
     return value.strip().lower()
 
 
@@ -426,9 +640,9 @@ def collect_identities_from_event(
         seen.add(key)
         out.append(key)
 
-    unified = (raw or {}).get("unified_lead_id") or (raw or {}).get("lead_id")
-    if unified:
-        add("unified_id", str(unified))
+    ext = pick_external_id_from_raw(raw)
+    if ext:
+        add("external_id", ext)
     add("email", identity.get("email"))
     add("linkedin_url", identity.get("linkedin_url"))
     add("phone", identity.get("phone"))
@@ -466,6 +680,62 @@ def find_lead_by_identity(
         ).fetchone()
         return int(row["id"]) if row else None
     return None
+
+
+def lead_entity_key(conn: sqlite3.Connection, org_id: str, lead_id: int) -> str:
+    """Stable relay push/replay key: email > linkedin > prefixed identity alias."""
+    row = conn.execute(
+        "SELECT email, linkedin_url FROM leads WHERE id = ?", (lead_id,)
+    ).fetchone()
+    if row and row["email"]:
+        return str(row["email"]).strip().lower()
+    if row and row["linkedin_url"]:
+        return str(row["linkedin_url"]).strip()
+    placeholders = ",".join("?" for _ in ENTITY_KEY_IDENTITY_TYPES)
+    id_row = conn.execute(
+        f"""SELECT identity_type, identity_value_normalized FROM lead_identities
+            WHERE org_id = ? AND lead_id = ?
+            AND identity_type IN ({placeholders})
+            ORDER BY identity_type LIMIT 1""",
+        (org_id, lead_id, *ENTITY_KEY_IDENTITY_TYPES),
+    ).fetchone()
+    if id_row:
+        return f"{id_row['identity_type']}:{id_row['identity_value_normalized']}"
+    return ""
+
+
+def parse_entity_key(entity_key: str) -> tuple[Optional[str], Optional[str]]:
+    """Parse 'type:value' entity keys for agent replay."""
+    if not entity_key or "@" in entity_key:
+        return None, None
+    if entity_key.startswith("http") or "linkedin.com" in entity_key.lower():
+        return None, None
+    if ":" not in entity_key:
+        return None, None
+    itype, _, val = entity_key.partition(":")
+    val = val.strip()
+    if not val:
+        return None, None
+    return itype, val
+
+
+def import_extra_from_entity_key(entity_key: str) -> dict[str, str]:
+    """Map a prefixed entity_key into import extra fields (external_id only)."""
+    itype, val = parse_entity_key(entity_key)
+    if itype == "external_id" and val:
+        return {"external_id": val}
+    return {}
+
+
+def lead_external_id_value(
+    conn: sqlite3.Connection, org_id: str, lead_id: int,
+) -> Optional[str]:
+    row = conn.execute(
+        """SELECT identity_value_normalized FROM lead_identities
+           WHERE org_id = ? AND lead_id = ? AND identity_type = 'external_id' LIMIT 1""",
+        (org_id, lead_id),
+    ).fetchone()
+    return row["identity_value_normalized"] if row else None
 
 
 def upsert_identity_alias(

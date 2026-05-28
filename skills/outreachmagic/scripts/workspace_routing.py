@@ -827,6 +827,44 @@ def upsert_identity_alias(
     )
 
 
+def enqueue_identity_conflict_merge(
+    conn: sqlite3.Connection,
+    org_id: str,
+    new_lead_id: int,
+    identity_type: str,
+    value_normalized: str,
+    *,
+    source: Optional[str] = None,
+) -> None:
+    """Queue merge of new_lead_id into the lead that already owns this identity."""
+    owner_id = find_lead_by_identity(conn, org_id, identity_type, value_normalized)
+    if not owner_id or owner_id == new_lead_id:
+        return
+    keep_id = owner_id
+    merge_id = new_lead_id
+    job_id = "merge_" + hashlib.sha256(
+        f"{org_id}:{keep_id}:{merge_id}:{identity_type}:{value_normalized}".encode()
+    ).hexdigest()[:24]
+    conn.execute(
+        """INSERT OR IGNORE INTO lead_merge_jobs (
+               id, org_id, keep_lead_id, merge_lead_id, status, reason, audit_json
+           ) VALUES (?, ?, ?, ?, 'pending', 'identity_conflict', ?)""",
+        (
+            job_id,
+            org_id,
+            keep_id,
+            merge_id,
+            json.dumps(
+                {
+                    "identity_type": identity_type,
+                    "value": value_normalized,
+                    "source": source,
+                }
+            ),
+        ),
+    )
+
+
 def resolve_org_lead_id(
     conn: sqlite3.Connection,
     org_id: str,

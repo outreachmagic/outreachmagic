@@ -11,31 +11,68 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from routing_cloud import get_api_base
 
+_PLATFORM_FROM_DIR = {
+    ".hermes": "hermes",
+    ".cursor": "cursor",
+    ".claude": "claude-code",
+}
 
-def detect_client_platform() -> str:
-    env = (os.environ.get("OUTREACHMAGIC_PLATFORM") or "").strip().lower()
-    if env in ("hermes", "cursor", "claude-code", "claude"):
-        return "claude-code" if env == "claude" else env
-    home = os.path.expanduser("~")
-    if os.path.isdir(os.path.join(home, ".cursor", "skills", "outreachmagic")):
-        return "cursor"
-    if os.path.isdir(os.path.join(home, ".claude", "skills", "outreachmagic")):
+_PLATFORM_LABELS = {
+    "hermes": "Hermes",
+    "cursor": "Cursor",
+    "claude-code": "Claude Code",
+}
+
+
+def _normalize_platform_name(raw: str) -> Optional[str]:
+    key = raw.strip().lower()
+    if key in ("hermes", "cursor", "claude-code"):
+        return key
+    if key in ("claude", "claude_code"):
         return "claude-code"
-    if os.path.isdir(os.path.join(home, ".hermes", "skills", "outreachmagic")):
-        return "hermes"
+    return None
+
+
+def detect_client_platform(*, override: Optional[str] = None) -> str:
+    """Prefer explicit override, then the skill's install path, then env."""
+    if override:
+        normalized = _normalize_platform_name(override)
+        if normalized:
+            return normalized
+
+    env = _normalize_platform_name(os.environ.get("OUTREACHMAGIC_PLATFORM") or "")
+    if env:
+        return env
+
+    # Source of truth: where this script lives (e.g. ~/.hermes/skills/outreachmagic/scripts)
+    try:
+        for parent in Path(__file__).resolve().parents:
+            plat = _PLATFORM_FROM_DIR.get(parent.name)
+            if plat:
+                return plat
+    except OSError:
+        pass
+
     return "unknown"
 
 
-def default_client_label() -> str:
+def default_client_label(*, platform: Optional[str] = None) -> str:
     host = socket.gethostname().split(".")[0] or "Computer"
-    plat = detect_client_platform()
+    plat = platform or detect_client_platform()
     if plat == "unknown":
+        try:
+            skill_root = Path(__file__).resolve().parent.parent.name
+            if skill_root and skill_root != "outreachmagic":
+                return f"{host} ({skill_root})"
+        except OSError:
+            pass
         return host
-    name = {"cursor": "Cursor", "claude-code": "Claude Code", "hermes": "Hermes"}.get(plat, plat)
+    name = _PLATFORM_LABELS.get(plat, plat)
     return f"{host} ({name})"
 
 
@@ -69,10 +106,14 @@ def _post_json(
         raise RuntimeError(f"Network error: {exc.reason}") from exc
 
 
-def run_device_login(load_config_fn: Callable[[], dict]) -> str:
+def run_device_login(
+    load_config_fn: Callable[[], dict],
+    *,
+    platform: Optional[str] = None,
+) -> str:
     api_base = get_api_base(load_config_fn)
-    client_platform = detect_client_platform()
-    client_label = default_client_label()
+    client_platform = detect_client_platform(override=platform)
+    client_label = default_client_label(platform=client_platform)
 
     start = _post_json(
         f"{api_base}/api/device/code",

@@ -81,6 +81,7 @@ from workspace_routing import (
     resolve_workspace_for_ingest,
     upsert_all_identities,
     upsert_identity_alias,
+    enqueue_identity_conflict_merge,
     normalize_linkedin,
     parse_linkedin_value,
     upsert_linkedin_status,
@@ -6033,11 +6034,19 @@ def sync_from_relay_org(
             break
 
         for event in events:
-            if ingest_relay_event(
-                event,
-                debug_sentiment=debug_sentiment,
-                quiet=True,
-            ) is None:
+            try:
+                ingested = ingest_relay_event(
+                    event,
+                    debug_sentiment=debug_sentiment,
+                    quiet=True,
+                )
+            except Exception as exc:
+                if not quiet:
+                    rid = event.get("relay_id") or event.get("id") or "?"
+                    print(f"Warning: skipped relay event {rid}: {exc}")
+                skipped += 1
+                continue
+            if ingested is None:
                 skipped += 1
             else:
                 imported += 1
@@ -6318,17 +6327,13 @@ def ingest_relay_event(
         try:
             upsert_identity_alias(conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform)
         except ValueError:
-            conn.execute(
-                """INSERT INTO lead_merge_jobs (id, org_id, keep_lead_id, merge_lead_id,
-                       status, reason, audit_json)
-                   VALUES (?, ?, ?, ?, 'pending', 'identity_conflict', ?)""",
-                (
-                    f"merge_{lead_id}_{val[:8]}",
-                    DEFAULT_ORG_ID,
-                    lead_id,
-                    find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val) or lead_id,
-                    json.dumps({"identity_type": itype, "value": val}),
-                ),
+            enqueue_identity_conflict_merge(
+                conn,
+                DEFAULT_ORG_ID,
+                lead_id,
+                itype,
+                val,
+                source=platform,
             )
     conn.commit()
     conn.close()
@@ -6503,12 +6508,12 @@ def ingest_relay_event(
     return lead_id
 
 
-def login():
+def login(platform: Optional[str] = None):
     """Connect this machine via browser device authorization (GitHub CLI-style)."""
     import device_login
 
     try:
-        agent_key = device_login.run_device_login(load_config)
+        agent_key = device_login.run_device_login(load_config, platform=platform)
     except RuntimeError as exc:
         print(f"\nLogin failed: {exc}")
         sys.exit(1)
@@ -6558,9 +6563,10 @@ def _save_agent_key_and_validate(agent_key: str):
         print("Importing events...")
         try:
             imported, skipped = sync_from_relay_org(agent_key, after_id=get_last_max_id(), full=not get_last_max_id())
-            print(f"Imported {imported} new, {skipped} already on disk.")
-        except RuntimeError as e:
-            print(f"Import failed: {e}")
+            print(f"Imported {imported} new, {skipped} skipped or already on disk.")
+        except Exception as e:
+            print(f"Import warning: {e}")
+            print("Your agent key is saved — run pull again later or use merge-leads for duplicates.")
         print()
         leads = get_pipeline()
         print(format_pipeline_table(leads))
@@ -7430,7 +7436,12 @@ def main():
     log_p.add_argument("--workspace", help="Workspace for this event (required in multi-workspace mode)")
 
     # ── Setup & relay commands ──
-    sub.add_parser("login", help="Connect this machine via browser (device authorization)")
+    login_p = sub.add_parser("login", help="Connect this machine via browser (device authorization)")
+    login_p.add_argument(
+        "--platform",
+        choices=["hermes", "cursor", "claude-code"],
+        help="Host app (auto-detected from skill install path if omitted)",
+    )
     setup_p = sub.add_parser("setup", help="Alias for login (deprecated)")
 
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
@@ -7797,7 +7808,7 @@ def main():
     sync_workspace_routing_mode_from_config()
 
     if args.command == "login":
-        login()
+        login(platform=getattr(args, "platform", None))
         return
     if args.command == "setup":
         setup()

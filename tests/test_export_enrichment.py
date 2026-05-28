@@ -64,8 +64,8 @@ class ExportEnrichmentTests(unittest.TestCase):
         self.assertNotIn("https://", payload.get("linkedin", ""))
 
     def test_ingest_sender_and_webhook_event(self):
-        ws = om.create_workspace("Popcam", slug="popcam")
-        om.add_campaign_map_cli("prosp", "popcam", campaign_name="popcam test", match_strategy="name_exact")
+        ws = om.create_workspace("Acme Corp", slug="acme_corp")
+        om.add_campaign_map_cli("prosp", "acme_corp", campaign_name="acme_corp test", match_strategy="name_exact")
         event = {
             "platform": "prosp",
             "event_type": "send_connection",
@@ -76,7 +76,7 @@ class ExportEnrichmentTests(unittest.TestCase):
             "raw": {
                 "eventType": "send_connection",
                 "eventData": {
-                    "campaignName": "popcam test",
+                    "campaignName": "acme_corp test",
                     "lead": "https://www.linkedin.com/in/lead-one",
                     "sender": "https://www.linkedin.com/in/sender-one",
                 },

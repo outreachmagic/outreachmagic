@@ -227,7 +227,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py sync
 **Fresh DB + full CSV round-trip:**
 
 ```bash
-pipeline.py import-profiles --file nace.csv --workspace popcam --import-batch-id nace-2026
+pipeline.py import-profiles --file nace.csv --workspace acme_corp --import-batch-id nace-2026
 pipeline.py sync
 # new machine:
 pipeline.py init && pipeline.py pull --full
@@ -276,7 +276,7 @@ Filter by date (created or updated on/after a date):
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --since today
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --since 2026-05-26 --json
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py lead-table --workspace popcam --since today --json
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py lead-table --workspace acme_corp --since today --json
 ```
 
 Then open full timeline for any lead (all events, not just the status event):
@@ -297,8 +297,8 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-
 ### Export full profiles (CSV / JSON)
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export --workspace popcam --tag nace --format csv
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export --workspace popcam --since today --format json
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export --workspace acme_corp --tag nace --format csv
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export --workspace acme_corp --since today --format json
 ```
 
 Writes to `export/` by default. CSV uses `personalized_first_name`, `personalized_company_name`, plus lead fields, tags, HQ, and `latest_sender`.
@@ -373,7 +373,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
 
 # Rows with only name + company_domain + unified_lead_id (no email/LinkedIn)
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
-  --file nace.csv --workspace popcam --import-batch-id nace-2026-05
+  --file nace.csv --workspace acme_corp --import-batch-id nace-2026-05
 ```
 
 **Core profile fields** (column aliases — first non-empty wins):

@@ -115,7 +115,7 @@ def test_prosp_camelcase_campaign_fields_are_extracted():
         "eventType": "send_connection",
         "eventData": {
             "campaignId": "43795293-6fcf-444b-b246-04671a947fcd",
-            "campaignName": "popcam | nace",
+            "campaignName": "acme_corp | nace",
             "lead": "https://www.linkedin.com/in/ashley-m-rose-mba-07a36913",
             "profileInfo": {
                 "linkedinUrl": "https://www.linkedin.com/in/ashley-m-rose-mba-07a36913",
@@ -125,12 +125,12 @@ def test_prosp_camelcase_campaign_fields_are_extracted():
     extracted = extract_relay_fields("prosp", raw)
     event_fields = extracted.get("event", {})
     assert event_fields.get("campaign_id") == "43795293-6fcf-444b-b246-04671a947fcd"
-    assert event_fields.get("campaign_name") == "popcam | nace"
+    assert event_fields.get("campaign_name") == "acme_corp | nace"
 
     ctx = extract_campaign_context("prosp", event_fields, raw)
     assert ctx.campaign_id == "43795293-6fcf-444b-b246-04671a947fcd"
-    assert ctx.campaign_name_raw == "popcam | nace"
-    assert ctx.campaign_name_normalized == "popcam | nace"
+    assert ctx.campaign_name_raw == "acme_corp | nace"
+    assert ctx.campaign_name_normalized == "acme_corp | nace"
 
 
 def test_single_mode_routes_all_to_default():
@@ -336,7 +336,7 @@ def test_replay_pending_quarantine_applies_contains_rules():
 def test_replay_pending_quarantine_applies_unknown_name_mapping():
     om.init_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
-    om.create_workspace("Popcam", slug="popcam")
+    om.create_workspace("Acme Corp", slug="acme_corp")
     event = {
         "platform": "prosp",
         "event_type": "linkedin_message",
@@ -346,7 +346,7 @@ def test_replay_pending_quarantine_applies_unknown_name_mapping():
         "raw": {},
     }
     assert om.ingest_relay_event(event, quiet=True) is None
-    om.add_campaign_map_cli("prosp", "popcam", campaign_name="unknown", match_strategy="name_exact")
+    om.add_campaign_map_cli("prosp", "acme_corp", campaign_name="unknown", match_strategy="name_exact")
 
     result = om.replay_pending_quarantine(limit=100)
     assert result["replayed"] >= 1
@@ -617,7 +617,7 @@ def test_campaign_stats_normalizes_linkedin_sent_and_reply_counts():
     assert lead_id
 
     conn = om.get_conn()
-    campaign_id = om.ensure_campaign(conn, "popcam | nace", int(lead_id))
+    campaign_id = om.ensure_campaign(conn, "acme_corp | nace", int(lead_id))
     conn.execute(
         """INSERT INTO events (lead_id, event_type, direction, channel, metadata_json, campaign_id, created_at)
            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
@@ -637,7 +637,7 @@ def test_campaign_stats_normalizes_linkedin_sent_and_reply_counts():
     conn.close()
 
     stats = om.get_campaign_stats()
-    row = next((c for c in stats["campaigns"] if c.get("campaign") == "popcam | nace"), None)
+    row = next((c for c in stats["campaigns"] if c.get("campaign") == "acme_corp | nace"), None)
     assert row is not None
     assert row.get("normalized_event_type_counts", {}).get("linkedin_connection_sent") == 1
     assert row.get("normalized_event_type_counts", {}).get("linkedin_message_sent") == 1

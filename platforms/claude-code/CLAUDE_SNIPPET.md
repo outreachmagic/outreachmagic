@@ -41,7 +41,7 @@ In multi-workspace mode, workspace-scoped commands require `--workspace SLUG`.
 - `show --sentiment positive` — Filter by sentiment
 - `show --lead-status interested --json` — JSON output
 - `show --since today` — Filter by date (YYYY-MM-DD or 'today')
-- `lead-table --workspace popcam --since today --json` — Today's leads for a workspace
+- `lead-table --workspace acme_corp --since today --json` — Today's leads for a workspace
 - `workspace list` — List available workspaces
 - `personalize-pending --json` — List leads needing personalization (default: first_name, company_name)
 - `personalize-set --lead-id N --field F --value V` — Write a personalization value

@@ -6059,6 +6059,38 @@ def pull_events_org(agent_key: str, since: Optional[str] = None, after_id: Optio
     except urllib.error.URLError as e:
         return {"error": True, "message": str(e.reason)}
 
+def _pull_diagnostics_verdict(stats: dict) -> str:
+    if stats.get("cursor_stalled"):
+        return "cursor stalled"
+    if (stats.get("relay_events_seen") or 0) == 0:
+        return "relay empty"
+    if (stats.get("imported") or 0) == 0 and (stats.get("skipped_duplicates") or 0) > 0:
+        return "relay has events but deduped"
+    if stats.get("cursor_advanced"):
+        return "cursor advanced"
+    return "cursor unchanged"
+
+
+def print_pull_diagnostics(stats: dict):
+    verdict = _pull_diagnostics_verdict(stats)
+    print("Pull diagnostics")
+    print("---------------")
+    print(f"Mode: {stats.get('mode', 'unknown')}")
+    print(f"Newest relay_id seen: {stats.get('newest_relay_id_seen') or '-'}")
+    print(
+        f"Cursor: {stats.get('pull_after_id_start') or '-'} -> "
+        f"{stats.get('pull_after_id_end') or '-'} "
+        f"({'advanced' if stats.get('cursor_advanced') else 'unchanged'})"
+    )
+    print(
+        f"Skips: duplicates={stats.get('skipped_duplicates', 0)} "
+        f"errors={stats.get('skipped_errors', 0)}"
+    )
+    if stats.get("cursor_stalled"):
+        print("Cursor stall guard: triggered")
+    print(f"Verdict: {verdict}")
+
+
 def sync_from_relay_org(
     agent_key: str,
     since: Optional[str] = None,
@@ -6066,15 +6098,25 @@ def sync_from_relay_org(
     full: bool = False,
     debug_sentiment: bool = False,
     quiet: bool = False,
+    stats: Optional[dict] = None,
 ) -> tuple[int, int]:
     """Import relay events for the entire org using an agent key."""
     maybe_sync_routing_from_cloud(quiet=quiet)
     imported = skipped = 0
+    skipped_duplicates = 0
+    skipped_filtered = 0
+    skipped_errors = 0
+    pages = 0
+    relay_events_seen = 0
+    newest_relay_id_seen = 0
+    cursor_stalled = False
     page_after_id = None if full else (after_id or 0)
+    initial_after_id = page_after_id
 
     pull_since = None if full else (since or get_last_pull())
 
     while True:
+        pages += 1
         result = pull_events_org(
             agent_key,
             since=pull_since,
@@ -6086,8 +6128,14 @@ def sync_from_relay_org(
         events = result.get("events") or []
         if not events:
             break
+        relay_events_seen += len(events)
 
         for event in events:
+            relay_id = event.get("relay_id")
+            if isinstance(relay_id, int) and relay_id > newest_relay_id_seen:
+                newest_relay_id_seen = relay_id
+            dedupe_key = relay_dedupe_key(event)
+            was_duplicate = relay_already_ingested(dedupe_key)
             try:
                 ingested = ingest_relay_event(
                     event,
@@ -6099,20 +6147,57 @@ def sync_from_relay_org(
                     rid = event.get("relay_id") or event.get("id") or "?"
                     print(f"Warning: skipped relay event {rid}: {exc}")
                 skipped += 1
+                skipped_errors += 1
                 continue
             if ingested is None:
                 skipped += 1
+                if was_duplicate:
+                    skipped_duplicates += 1
+                else:
+                    skipped_filtered += 1
             else:
                 imported += 1
 
-        page_after_id = result.get("max_id") or page_after_id
+        next_after_id = result.get("max_id") or page_after_id
+        if page_after_id and next_after_id and next_after_id < page_after_id:
+            next_after_id = page_after_id
 
+        if len(events) >= 1000 and next_after_id == page_after_id:
+            cursor_stalled = True
+            break
+
+        page_after_id = next_after_id
         if len(events) < 1000:
             break
 
     if page_after_id:
         set_last_max_id(page_after_id)
     set_last_pull(datetime.now(timezone.utc).isoformat())
+    if stats is not None:
+        stats.update({
+            "mode": "full" if full else "incremental",
+            "config_last_pull_before": pull_since,
+            "config_last_max_id_before": after_id,
+            "pull_after_id_start": initial_after_id,
+            "pull_after_id_end": page_after_id,
+            "cursor_advanced": bool(page_after_id and (not initial_after_id or page_after_id > initial_after_id)),
+            "cursor_stalled": cursor_stalled,
+            "pages": pages,
+            "relay_events_seen": relay_events_seen,
+            "newest_relay_id_seen": newest_relay_id_seen or None,
+            "imported": imported,
+            "skipped_duplicates": skipped_duplicates,
+            "skipped_filtered": skipped_filtered,
+            "skipped_errors": skipped_errors,
+            "skipped_total": skipped,
+            "verdict": _pull_diagnostics_verdict({
+                "cursor_stalled": cursor_stalled,
+                "relay_events_seen": relay_events_seen,
+                "imported": imported,
+                "skipped_duplicates": skipped_duplicates,
+                "cursor_advanced": bool(page_after_id and (not initial_after_id or page_after_id > initial_after_id)),
+            }),
+        })
     if not quiet:
         print_quarantine_guidance()
     return imported, skipped
@@ -7582,6 +7667,11 @@ def main():
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
     pull_p.add_argument("--full", action="store_true", help="Re-import all relay events (after DB reset)")
     pull_p.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="Print pull cursor and dedupe diagnostics",
+    )
+    pull_p.add_argument(
         "--debug-sentiment",
         action="store_true",
         help="Print raw vs normalized sentiment mapping during ingest",
@@ -7959,6 +8049,7 @@ def main():
 
     if args.command == "pull":
         agent_key = _require_agent_key()
+        pull_stats = {}
 
         try:
             imported, skipped = sync_from_relay_org(
@@ -7967,11 +8058,16 @@ def main():
                 full=args.full,
                 debug_sentiment=args.debug_sentiment,
                 quiet=args.cron,
+                stats=pull_stats,
             )
         except RuntimeError as e:
             if not args.cron:
                 print(f"Pull failed: {e}")
             sys.exit(0)
+
+        if args.diagnose and not args.cron:
+            print_pull_diagnostics(pull_stats)
+            print()
 
         if imported == 0 and skipped == 0:
             if not args.cron:
@@ -7979,9 +8075,19 @@ def main():
             sys.exit(0)
 
         if not args.cron:
-            print(f"Pulled {imported} new, {skipped} already imported (relay archive unchanged).")
+            mode = pull_stats.get("mode", "incremental")
+            newest = pull_stats.get("newest_relay_id_seen")
+            dupes = pull_stats.get("skipped_duplicates", 0)
+            errors = pull_stats.get("skipped_errors", 0)
+            print(
+                f"Pulled {imported} new, {skipped} skipped "
+                f"(duplicates={dupes}, errors={errors}) "
+                f"[mode={mode}, newest_relay_id={newest or '-'}]."
+            )
             if args.full:
                 print("Full replay complete.")
+            if pull_stats.get("cursor_stalled"):
+                print("Warning: pull cursor stalled on a 1000-event page; investigate relay max_id pagination.")
             print("Run 'pipeline.py show' to see your updated pipeline.")
         return
 

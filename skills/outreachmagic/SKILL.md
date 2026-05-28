@@ -603,3 +603,24 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 6. Relay archive stays on api.outreachmagic.io; `pull` dedupes locally. Use `refresh --yes` for a true rebuild (sync + backup + wipe + `pull --full`). `pull --full` alone only helps after deleting the DB manually.
 7. **Tags:** always pass plain names (`nace`, `vip`) — not JSON list strings like `['nace']`. Run `tag repair` if legacy rows used bracket form.
 8. **`add-lead` on an existing email does not enrich** — use `import-profiles` or rely on relay `pull` for fill-if-empty updates.
+
+## Pull Troubleshooting Runbook
+
+When relay flow appears stale, diagnose before using destructive reset commands:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --diagnose
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --full --diagnose
+```
+
+Diagnostic verdicts:
+- `relay empty` — no events returned for the current cursor window.
+- `relay has events but deduped` — relay returned events already recorded in local `relay_ingested`.
+- `cursor advanced` — pull cursor moved forward (`last_max_id` increased).
+- `cursor stalled` — relay returned a full page but cursor did not advance; inspect relay pagination.
+
+If events were ingested but still seem missing, inspect a specific lead timeline:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --email "<lead_email>" --json
+```

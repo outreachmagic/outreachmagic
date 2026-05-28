@@ -168,6 +168,21 @@ python3 <path>/scripts/enrich.py update
 python3 <path>/scripts/enrich.py update --tag v1.1.5
 ```
 
+## Release Validation (relay pull changes)
+
+For releases that touch relay ingest/pull behavior, run this smoke test before tagging:
+
+```bash
+# Local repo copy
+python3 skills/outreachmagic/scripts/pipeline.py pull --diagnose
+python3 skills/outreachmagic/scripts/pipeline.py pull --full --diagnose
+```
+
+Expected:
+- Diagnostics prints mode, cursor start/end, pages fetched, newest relay id, and skip breakdown.
+- Full pull completes without cursor stall warning in healthy environments.
+- Incremental pull reports actionable output when no events are returned.
+
 ## Local Development (skip GitHub entirely)
 
 For testing changes before publishing, users or developers can set `dev_repo` in their config:

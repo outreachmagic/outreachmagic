@@ -1,7 +1,7 @@
 {
-  "version": "1.20.3",
+  "version": "1.20.4",
   "files": {
-    "pipeline.py": "fa800c7d20bf6a33b8097998b1a8a66d873ee4919f2b0209e6a2ea7886610a61",
+    "pipeline.py": "07e6ed8d3a8d2cf37bd637ecd65559d909d1a8d56b713c32696da4782066733f",
     "relay_extractors.py": "6252997a0fef17c059c3050282bb3711ce7cf6a07af7f9c7a1ae3f98998f2d74",
     "workspace_routing.py": "cc3c85e99801b733c9b021ba865019544b96cfd4db332d10596cdff3e18c326c",
     "workspace_archive.py": "d150960581f33c365defed0ba8cf038d6c972ea53a33980d1d3062dd4ebf8934",
@@ -10,7 +10,7 @@
     "connections_cloud.py": "6637b182ffd9dcd36781aae1b5bfb78d6f692e8498a5f7ac733ddf2194f86a3e",
     "db_health.py": "5de3432e0cc058a60055993a0b62a553b49aaf948e1b0fc0c750f17ce2a263a3",
     "device_login.py": "ec787ef604fe10ff88f6b91d87d50e8fc66aa4c8cbca10b58f74fe8306624f93",
-    "VERSION": "46109a455156b5fd93791088ad5f99494ac7debd718686cfcefe58ffbfdc740b",
-    "SKILL.md": "94006a1f056ae8aed4a9026d2b338e66a185d969b2e81978b96b096ec5a71d47"
+    "VERSION": "2c695e095cd2f2b53fc4c472996a88157a3bd9c7f4df3aebc2dd45aeb179d836",
+    "SKILL.md": "9ed2aa6af9a28c5ff9b3649748207db8d833d7093432396789e7e35469b9c272"
   }
 }

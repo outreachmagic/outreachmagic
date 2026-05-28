@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.20.1
+version: 1.20.4
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -387,7 +387,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py add-lead \
 
 `--workspace` is optional on `add-lead` — creating a lead is an org-wide operation. Use it when you know which workspace the lead belongs to; omit it when just researching.
 
-If lead exists by email or LinkedIn, returns `{"status": "exists", "id": N}` (does not enrich existing rows — use `import-profiles` for that).
+If lead exists by email, LinkedIn, or (when both are missing) case-insensitive `name+company`, returns `{"status": "exists", "id": N}`.
 
 ### Bulk import / enrich (CSV, JSON, research dumps)
 

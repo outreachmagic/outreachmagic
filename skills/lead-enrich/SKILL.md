@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill.
-version: 1.1.3
+version: 1.1.4
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -91,14 +91,15 @@ Set `outreachmagic_home` in `config.json` to override the path.
 3. **Built-in model only.** You (the agent) extract JSON from Serper results.
    No external LLM APIs (no Gemini, no OpenAI) — your own reasoning is the
    extraction engine.
-4. **Save via outreachmagic.** Use `import-profiles` for leads with LinkedIn.
-   For leads without LinkedIn, use `add-lead` with notes or report unsaved.
-   Never write raw SQL.
-5. **Transparency.** Show which Serper queries ran, confidence, and what was
+4. **Complete research before saving.** Run the full search ladder first, then save once.
+5. **Save via outreachmagic.** Use `import-profiles` for leads with LinkedIn.
+   For leads without LinkedIn, use `add-lead` with notes (absolute last resort) or report unsaved.
+   Never write raw SQL. Never run both save paths for the same person.
+6. **Transparency.** Show which Serper queries ran, confidence, and what was
    saved. The user should see exactly where their credits went.
-6. **Batch wisely.** Cap at 50 people per run. Process sequentially with 1s
+7. **Batch wisely.** Cap at 50 people per run. Process sequentially with 1s
    delay between Serper calls. Skip people who already exist.
-7. **Email guess is separate.** If the user wants email addresses, point them
+8. **Email guess is separate.** If the user wants email addresses, point them
    to the `email-guess` skill — do not guess emails inline.
 
 ## Quick Start
@@ -146,6 +147,14 @@ parses the output. All local, zero API credits.
 
 Only run for people who need it. **2–4 searches per person** depending on
 result quality:
+
+### Serper Credit Budget Estimator
+
+- **Per person minimum:** `0` credits (dedup status `exists_linkedin`).
+- **Common path:** `2` credits (`2a` strict company + `2c` primary LinkedIn).
+- **Per person hard max:** `5` credits when all fallbacks are needed (`2a` + `2b` + `2c` + `2d` + `2e`).
+- **Batch formula:** `min=0`, `max=5*N` where `N` is people in the run.
+- **Batch cap example:** with `N=50`, hard max is `250` credits (worst case).
 
 #### 2a. Company discovery — strict (always)
 

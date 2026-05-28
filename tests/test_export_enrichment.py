@@ -137,6 +137,37 @@ class ExportEnrichmentTests(unittest.TestCase):
         self.assertIn("personalized_first_name", content)
         self.assertIn("latest_sender", content.splitlines()[0])
 
+    def test_add_lead_name_company_matches_existing_without_duplicate(self):
+        first = om.add_lead(name="Jane Doe", company="Acme Corp")
+        second = om.add_lead(name="Jane Doe", company="Acme Corp", title="VP Marketing")
+        self.assertEqual(first["status"], "created")
+        self.assertEqual(second["status"], "exists")
+        self.assertEqual(first["id"], second["id"])
+
+        conn = om.get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) AS c, title FROM leads WHERE LOWER(name)=LOWER(?) AND LOWER(company)=LOWER(?)",
+            ("Jane Doe", "Acme Corp"),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["c"], 1)
+        self.assertEqual(row["title"], "VP Marketing")
+
+    def test_add_lead_name_company_match_is_case_insensitive(self):
+        first = om.add_lead(name="Jane Doe", company="Acme Corp")
+        second = om.add_lead(name="jane doe", company="ACME CORP", industry="Martech")
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(second["status"], "exists")
+
+        conn = om.get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) AS c, industry FROM leads WHERE id = ?",
+            (first["id"],),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["c"], 1)
+        self.assertEqual(row["industry"], "Martech")
+
 
 if __name__ == "__main__":
     unittest.main()

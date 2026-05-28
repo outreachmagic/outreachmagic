@@ -2041,6 +2041,60 @@ def db_exists():
 def add_lead(name, company=None, title=None, industry=None, headcount=None,
              email=None, linkedin_url=None,
              channel="email", stage="prospecting", notes=None):
+    matched_lead_id = None
+    if not email and not linkedin_url and name and company:
+        conn = get_conn()
+        row = conn.execute(
+            """
+            SELECT id
+            FROM leads
+            WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+              AND LOWER(TRIM(company)) = LOWER(TRIM(?))
+            ORDER BY id
+            LIMIT 1
+            """,
+            (name, company),
+        ).fetchone()
+        conn.close()
+        if row:
+            matched_lead_id = row["id"]
+
+    if matched_lead_id is not None:
+        enrich_lead(
+            matched_lead_id,
+            name=name,
+            title=title,
+            industry=industry,
+            company=company,
+            headcount=headcount,
+            overwrite=False,
+        )
+        conn = get_conn()
+        if notes is not None:
+            conn.execute(
+                """
+                UPDATE leads
+                SET notes = CASE WHEN notes IS NULL OR notes = '' THEN ? ELSE notes END,
+                    cloud_pending = 1,
+                    updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (notes, matched_lead_id),
+            )
+            conn.commit()
+        row = conn.execute(
+            "SELECT email, linkedin_url FROM leads WHERE id = ?",
+            (matched_lead_id,),
+        ).fetchone()
+        conn.close()
+        return {
+            "status": "exists",
+            "id": matched_lead_id,
+            "name": name,
+            "email": row["email"] if row else None,
+            "linkedin": row["linkedin_url"] if row else None,
+        }
+
     result = resolve_lead(
         email=email,
         linkedin_url=linkedin_url,

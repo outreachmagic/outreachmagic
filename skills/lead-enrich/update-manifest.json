@@ -1,12 +1,12 @@
 {
-  "version": "1.1.5",
+  "version": "1.1.6",
   "files": {
-    "SKILL.md": "4e1218b7d1c075405e641358176c8739df344a89eadac51ac63e18a10e9cc34a",
+    "SKILL.md": "98638387571c1c1a75896848b366959ad4f482cadeec64fcfd0691e247c4f456",
     "README.md": "8444f8d3646e7c8a5a1693a2120d48c10deccd903a4b2a7a7204b3294b092f9d",
     "SECURITY.md": "5068fbd2c69331c4672ad0fac24225bc5bbcbfe43c4133aa16b7e58adaff139b",
     "config.example.json": "73b79324f9db54abfdc4e24bc81f1d0865986dbc5c193919d5643ce1d5b76ca3",
     "default.env": "64b16b66c822efc8ff873e37b5772ccab50c93c1b9f5325ecb850f8f416f599f",
     ".gitignore": "745e5bfc6d53645da242479825e56d53fb2cffc0a88f26e47bb0fd06740b157b",
-    "scripts/enrich.py": "9cb783482ea76e7c1aa3e5fa3c38464574ce295948725ba00469b7d053e8aad9"
+    "scripts/enrich.py": "c17a53d746e5d0712c0152751ecf58d492a8fda34bdd75cb0d1882665fb140c1"
   }
 }

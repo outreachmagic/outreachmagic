@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill.
-version: 1.1.5
+version: 1.1.6
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]

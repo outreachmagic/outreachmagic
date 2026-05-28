@@ -264,6 +264,25 @@ def get_pipeline_path(om_dir: Path) -> Path:
     return om_dir / "scripts" / "pipeline.py"
 
 
+def _outreachmagic_agent_key_status(om_dir: Optional[Path]) -> tuple[bool, str]:
+    """Detect whether an outreachmagic agent key is available and from where."""
+    env_key = os.environ.get("OUTREACHMAGIC_AGENT_KEY", "").strip()
+    if env_key:
+        return True, "env"
+
+    if not om_dir:
+        return False, "missing"
+
+    cfg_path = om_dir / "config" / "outreachmagic_config.json"
+    try:
+        payload = json.loads(cfg_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False, "missing"
+    if isinstance(payload, dict) and str(payload.get("agent_key", "")).strip():
+        return True, "outreachmagic_config"
+    return False, "missing"
+
+
 # ── Company matching (dedup) ─────────────────────────────────────────────────
 
 _COMPANY_STOPWORDS = frozenset({
@@ -931,9 +950,9 @@ def cmd_config() -> None:
     om_dir = find_outreachmagic(cfg)
     cfg["_outreachmagic_detected"] = str(om_dir) if om_dir else "NOT FOUND"
     cfg["_hermes_env"] = str(_hermes_home() / ".env")
-    cfg["_outreachmagic_agent_key_set"] = bool(
-        os.environ.get("OUTREACHMAGIC_AGENT_KEY", "").strip()
-    )
+    key_set, key_source = _outreachmagic_agent_key_status(om_dir)
+    cfg["_outreachmagic_agent_key_set"] = key_set
+    cfg["_outreachmagic_agent_key_source"] = key_source
 
     print(json.dumps(cfg, indent=2))
 

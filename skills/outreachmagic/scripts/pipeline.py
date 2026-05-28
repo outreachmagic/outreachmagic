@@ -6510,7 +6510,14 @@ def ingest_relay_event(
 
 def login(platform: Optional[str] = None):
     """Connect this machine via browser device authorization (GitHub CLI-style)."""
-    import device_login
+    try:
+        import device_login
+    except ModuleNotFoundError:
+        # Allow `pipeline.py login` to work even when cwd/import paths differ.
+        script_dir = str(Path(__file__).resolve().parent)
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        import device_login
 
     try:
         agent_key = device_login.run_device_login(load_config, platform=platform)

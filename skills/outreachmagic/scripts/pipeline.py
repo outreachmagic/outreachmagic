@@ -135,9 +135,15 @@ UPDATE_SCRIPT_FILES = (
     "device_login.py",
 )
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
+# Monorepo source default; publish-platforms.yml rewrites these per public install repo.
 SKILL_REPO_PATH = "skills/outreachmagic"
 GITHUB_REPO = "outreachmagic/outreachmagic-skill"
-GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+# Install-path fallbacks when an older copy still points at the private monorepo name.
+PLATFORM_RELEASE_TARGETS: dict[str, tuple[str, str]] = {
+    "hermes": ("outreachmagic/hermes-outreachmagic", "."),
+    "cursor": ("outreachmagic/cursor-outreachmagic", "."),
+    "claude": ("outreachmagic/claude-code-outreachmagic", "."),
+}
 
 
 def _read_version_file(path: Path) -> str:
@@ -174,12 +180,61 @@ def release_tag_version(tag: str) -> str:
     return normalize_release_tag(tag).lstrip("vV")
 
 
-def raw_repo_base_for_tag(tag: str) -> str:
-    return f"https://raw.githubusercontent.com/{GITHUB_REPO}/{normalize_release_tag(tag)}"
+def infer_platform_release_target() -> Optional[tuple[str, str]]:
+    """Map install directory to the public repo CI publishes for that platform."""
+    path = str(skill_scripts_dir()).lower()
+    if "/.hermes/" in path or path.startswith(str(Path.home() / ".hermes").lower()):
+        return PLATFORM_RELEASE_TARGETS["hermes"]
+    if "/.cursor/" in path:
+        return PLATFORM_RELEASE_TARGETS["cursor"]
+    if "/.claude/" in path:
+        return PLATFORM_RELEASE_TARGETS["claude"]
+    return None
 
 
-def scripts_base_for_tag(tag: str) -> str:
-    return f"{raw_repo_base_for_tag(tag)}/{SKILL_REPO_PATH}/scripts"
+def effective_update_target() -> tuple[str, str]:
+    """Repo + path prefix used for update downloads on this machine."""
+    if GITHUB_REPO != "outreachmagic/outreachmagic-skill":
+        return GITHUB_REPO, SKILL_REPO_PATH
+    platform = infer_platform_release_target()
+    if platform:
+        return platform
+    return GITHUB_REPO, SKILL_REPO_PATH
+
+
+def raw_repo_base_for_tag(
+    tag: str,
+    *,
+    github_repo: Optional[str] = None,
+    skill_repo_path: Optional[str] = None,
+) -> str:
+    repo, _path = effective_update_target() if github_repo is None else (github_repo, skill_repo_path or SKILL_REPO_PATH)
+    return f"https://raw.githubusercontent.com/{repo}/{normalize_release_tag(tag)}"
+
+
+def scripts_base_for_tag(
+    tag: str,
+    *,
+    github_repo: Optional[str] = None,
+    skill_repo_path: Optional[str] = None,
+) -> str:
+    repo, path = effective_update_target() if github_repo is None else (github_repo, skill_repo_path or SKILL_REPO_PATH)
+    base = f"https://raw.githubusercontent.com/{repo}/{normalize_release_tag(tag)}"
+    if path == ".":
+        return f"{base}/scripts"
+    return f"{base}/{path}/scripts"
+
+
+def update_manifest_url(repo_base: str, skill_repo_path: str) -> str:
+    if skill_repo_path == ".":
+        return f"{repo_base.rstrip('/')}/update-manifest.json"
+    return f"{repo_base.rstrip('/')}/{skill_repo_path}/update-manifest.json"
+
+
+def skill_md_url_for_repo(repo_base: str, skill_repo_path: str) -> str:
+    if skill_repo_path == ".":
+        return f"{repo_base.rstrip('/')}/SKILL.md"
+    return f"{repo_base.rstrip('/')}/{skill_repo_path}/SKILL.md"
 
 
 def _fetch_url(url: str, timeout: int = 30) -> bytes:
@@ -190,27 +245,37 @@ def _fetch_url(url: str, timeout: int = 30) -> bytes:
 
 def fetch_latest_release() -> Optional[dict]:
     """Return latest GitHub release metadata or None if unavailable."""
-    try:
-        req = urllib.request.Request(
-            GITHUB_RELEASES_LATEST,
-            headers={
-                "User-Agent": f"OutreachMagic/{__version__}",
-                "Accept": "application/vnd.github+json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError, ValueError):
-        return None
+    repo, path = effective_update_target()
+    candidates: list[tuple[str, str]] = [ (repo, path) ]
+    if (repo, path) != (GITHUB_REPO, SKILL_REPO_PATH):
+        candidates.append((GITHUB_REPO, SKILL_REPO_PATH))
 
-    tag = str(data.get("tag_name") or "").strip()
-    if not tag:
-        return None
-    return {
-        "tag": normalize_release_tag(tag),
-        "version": release_tag_version(tag),
-        "base": scripts_base_for_tag(tag),
-    }
+    for github_repo, skill_path in candidates:
+        releases_url = f"https://api.github.com/repos/{github_repo}/releases/latest"
+        try:
+            req = urllib.request.Request(
+                releases_url,
+                headers={
+                    "User-Agent": f"OutreachMagic/{__version__}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError, ValueError):
+            continue
+
+        tag = str(data.get("tag_name") or "").strip()
+        if not tag:
+            continue
+        return {
+            "tag": normalize_release_tag(tag),
+            "version": release_tag_version(tag),
+            "base": scripts_base_for_tag(tag, github_repo=github_repo, skill_repo_path=skill_path),
+            "github_repo": github_repo,
+            "skill_repo_path": skill_path,
+        }
+    return None
 
 
 def dev_update_base_url() -> Optional[str]:
@@ -311,8 +376,10 @@ def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def fetch_update_manifest(repo_base: str) -> Optional[dict]:
-    url = f"{repo_base.rstrip('/')}/{SKILL_REPO_PATH}/update-manifest.json"
+def fetch_update_manifest(repo_base: str, skill_repo_path: Optional[str] = None) -> Optional[dict]:
+    _, default_path = effective_update_target()
+    path = skill_repo_path if skill_repo_path is not None else default_path
+    url = update_manifest_url(repo_base, path)
     try:
         payload = json.loads(_fetch_url(url).decode())
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError, ValueError):
@@ -339,17 +406,27 @@ def resolve_update_source(explicit_tag: Optional[str] = None) -> tuple[Optional[
         repo_base = dev_base.rsplit(f"/{SKILL_REPO_PATH}/scripts", 1)[0]
         return None, dev_base, repo_base, "dev_update_url"
 
+    github_repo, skill_path = effective_update_target()
+
     if explicit_tag:
         norm = normalize_release_tag(explicit_tag)
-        return None, scripts_base_for_tag(norm), raw_repo_base_for_tag(norm), norm
+        return (
+            None,
+            scripts_base_for_tag(norm, github_repo=github_repo, skill_repo_path=skill_path),
+            raw_repo_base_for_tag(norm, github_repo=github_repo, skill_repo_path=skill_path),
+            norm,
+        )
 
     release = fetch_latest_release()
     if not release:
         raise RuntimeError(
-            "No GitHub release found. Publish a release tag (e.g. v1.4.5), use "
-            "pipeline.py update --tag v1.4.5, or set dev_repo in config for local development."
+            "No GitHub release found on the platform update repo for this install. "
+            "Publish a release (see docs/RELEASING.md), run "
+            "pipeline.py update --tag vX.Y.Z, or set dev_repo in config."
         )
-    repo_base = release["base"].rsplit(f"/{SKILL_REPO_PATH}/scripts", 1)[0]
+    rel_repo = release.get("github_repo") or github_repo
+    rel_path = release.get("skill_repo_path") or skill_path
+    repo_base = raw_repo_base_for_tag(release["tag"], github_repo=rel_repo, skill_repo_path=rel_path)
     return None, release["base"], repo_base, release["tag"]
 
 
@@ -358,7 +435,8 @@ def update_skill(explicit_tag: Optional[str] = None) -> dict:
     dest = skill_scripts_dir()
     local_src, scripts_base, repo_base, source_label = resolve_update_source(explicit_tag)
     updated: list[str] = []
-    manifest = None if local_src else fetch_update_manifest(repo_base)
+    _, skill_path = effective_update_target()
+    manifest = None if local_src else fetch_update_manifest(repo_base, skill_path)
 
     if local_src:
         for name in UPDATE_MANIFEST_FILES:
@@ -376,7 +454,7 @@ def update_skill(explicit_tag: Optional[str] = None) -> dict:
             (dest / name).write_bytes(content)
             updated.append(name)
         try:
-            skill_md_url = f"{repo_base.rstrip('/')}/{SKILL_REPO_PATH}/SKILL.md"
+            skill_md_url = skill_md_url_for_repo(repo_base, skill_path)
             skill_content = _fetch_url(skill_md_url)
             expected_md = (manifest or {}).get("files", {}).get("SKILL.md")
             if expected_md and _sha256_hex(skill_content) != expected_md:

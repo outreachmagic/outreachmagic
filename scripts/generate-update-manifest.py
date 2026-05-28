@@ -19,6 +19,7 @@ MANIFEST_FILES = (
     "om_paths.py",
     "connections_cloud.py",
     "db_health.py",
+    "device_login.py",
     "VERSION",
     "SKILL.md",
 )

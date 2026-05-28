@@ -7,7 +7,8 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 Get your Agent Key at [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent), then run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/main/install.sh | bash -s -- om_agent_YOUR_KEY
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/main/install.sh | bash
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py login
 ```
 
 That's it. Restart Cursor and in Agent chat run:
@@ -34,7 +35,7 @@ mkdir -p ~/.cursor/skills/outreachmagic
 cp -a /tmp/om-cursor/. ~/.cursor/skills/outreachmagic/
 rm -rf /tmp/om-cursor
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py init
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_YOUR_KEY
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py login
 ```
 
 ### Project-level rule (optional)

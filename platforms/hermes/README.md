@@ -18,7 +18,7 @@ The agent will walk you through setup (getting an Agent Key at [dev.outreachmagi
 If you already have a key:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_YOUR_KEY
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 ```
 
 ## Quick Start

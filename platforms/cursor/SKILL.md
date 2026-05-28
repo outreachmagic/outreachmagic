@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: agent tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.19.0
+version: 1.20.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -55,23 +55,19 @@ If `pull` returns an error like "No agent key or token configured", the user nee
 
 **When setup is needed, tell the user exactly this:**
 
-> To get started, you need an Agent Key. Two steps:
+> Run this in your terminal (not in chat):
 >
-> 1. Go to **https://dev.outreachmagic.io/setup/agent** — sign up (or log in) and click "Create Agent Key"
-> 2. Copy the key and paste it back here
+> `python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py login`
 >
-> I'll handle the rest.
+> A browser window will open — sign in or sign up, then authorize this device. Never paste secrets into chat.
 
-Then wait for the user to paste a key (starts with `om_agent_`). Once they do, run:
-
-```bash
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py init
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py setup --key <PASTED_KEY>
-```
+If the skill is not installed yet, point them to **https://dev.outreachmagic.io/setup/agent** or **https://dev.outreachmagic.io/dashboard/agent** for install commands, then `login`.
 
 `init` creates the database and project folders (`input/`, `export/`, `agent_resources/` under `~/.cursor/skills/outreachmagic/project` by default). Override with `"project_root"` in config.
 
-That's it. Don't list other commands, don't offer alternatives. Just: go get a key, paste it, done.
+If `pull` returns auth errors after a revoked key, tell them to run `login` again.
+
+That's it. Don't list other commands, don't offer alternatives. Just: run `login` in terminal, done.
 
 **When setup is already done** (pull succeeds or returns events), skip setup and go straight to showing data:
 
@@ -110,7 +106,7 @@ Check without installing: `pipeline.py update --check`. Install a specific relea
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/main/install.sh | bash -s -- om_agent_YOUR_KEY
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/main/install.sh | bash
 ```
 
 Get your Agent Key at https://dev.outreachmagic.io/setup/agent
@@ -512,7 +508,7 @@ Stages: `prospecting` -> `contacted` -> `replied` -> `interested` -> `proposal` 
 If the user already has a key, skip the browser flow:
 
 ```bash
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py setup --key om_agent_THEIR_KEY
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py login
 ```
 
 Generate webhook URLs for platforms directly from the CLI (requires agent key):

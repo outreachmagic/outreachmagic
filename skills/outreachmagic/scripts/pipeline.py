@@ -11,7 +11,7 @@ Architecture:
 
 Usage:
   pipeline.py init                          # Create database
-  pipeline.py setup --key om_agent_...      # Connect agent to relay
+  pipeline.py login                         # Connect via browser (device auth)
   pipeline.py pull                          # Pull events from relay
   pipeline.py show                          # Print pipeline table
   pipeline.py lead-table                    # Print canonical lead info table
@@ -126,6 +126,7 @@ UPDATE_SCRIPT_FILES = (
     "connections_cloud.py",
     "db_health.py",
     "om_paths.py",
+    "device_login.py",
 )
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
 SKILL_REPO_PATH = "skills/outreachmagic"
@@ -4553,14 +4554,242 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
     return results
 
 
+def _load_lead_sync_prefetch(
+    conn: sqlite3.Connection,
+    org_id: str,
+    lead_ids: list[int],
+) -> dict:
+    """Bulk-load rows used by build_lead_sync_payload for many leads at once."""
+    if not lead_ids:
+        return {
+            "leads": {},
+            "identities": {},
+            "external_ids": {},
+            "workspace_slugs": {},
+            "workspace_leads": {},
+            "tags": {},
+            "linkedin_status": {},
+            "personalization": {},
+        }
+
+    placeholders = ",".join("?" for _ in lead_ids)
+    leads = {
+        r["id"]: r
+        for r in conn.execute(
+            f"""SELECT l.*,
+                       co.domain AS company_domain,
+                       co.hq_city AS hq_city,
+                       co.hq_state AS hq_state,
+                       co.hq_country AS hq_country,
+                       COALESCE(co.name, l.company) AS company_display
+                FROM leads l
+                LEFT JOIN companies co ON l.company_id = co.id
+                WHERE l.id IN ({placeholders})""",
+            lead_ids,
+        ).fetchall()
+    }
+
+    identities: dict[int, list] = {lid: [] for lid in lead_ids}
+    for r in conn.execute(
+        f"""SELECT lead_id, identity_type, identity_value_normalized
+            FROM lead_identities
+            WHERE org_id = ? AND lead_id IN ({placeholders})
+              AND identity_type IN ('linkedin_sales_nav_id', 'linkedin_member_id')""",
+        [org_id, *lead_ids],
+    ).fetchall():
+        identities[r["lead_id"]].append(r)
+
+    external_ids: dict[int, str] = {}
+    for r in conn.execute(
+        f"""SELECT lead_id, identity_value_normalized
+            FROM lead_identities
+            WHERE org_id = ? AND lead_id IN ({placeholders}) AND identity_type = 'external_id'""",
+        [org_id, *lead_ids],
+    ).fetchall():
+        external_ids[r["lead_id"]] = r["identity_value_normalized"]
+
+    workspace_slugs: dict[int, str] = {}
+    for r in conn.execute(
+        f"""SELECT wl.lead_id, w.slug
+            FROM workspace_leads wl
+            JOIN workspaces w ON wl.workspace_id = w.id
+            WHERE wl.lead_id IN ({placeholders})""",
+        lead_ids,
+    ).fetchall():
+        workspace_slugs.setdefault(r["lead_id"], r["slug"])
+
+    workspace_leads: dict[int, sqlite3.Row] = {}
+    for r in conn.execute(
+        f"""SELECT wl.lead_id, wl.workspace_id, wl.status, wl.current_status_label,
+                   wl.current_status_sentiment, wl.contact_priority
+            FROM workspace_leads wl
+            WHERE wl.lead_id IN ({placeholders})""",
+        lead_ids,
+    ).fetchall():
+        workspace_leads.setdefault(r["lead_id"], r)
+
+    tags: dict[int, list] = {lid: [] for lid in lead_ids}
+    for r in conn.execute(
+        f"""SELECT wl.lead_id, wlt.tag
+            FROM workspace_lead_tags wlt
+            JOIN workspace_leads wl ON wl.workspace_id = wlt.workspace_id AND wl.lead_id = wlt.lead_id
+            WHERE wl.lead_id IN ({placeholders})
+            ORDER BY wlt.created_at""",
+        lead_ids,
+    ).fetchall():
+        tags[r["lead_id"]].append(r["tag"])
+
+    linkedin_status: dict[int, list] = {lid: [] for lid in lead_ids}
+    for r in conn.execute(
+        f"""SELECT wl.lead_id, lis.sender_profile, lis.is_connected, lis.is_request_pending
+            FROM workspace_lead_linkedin_status lis
+            JOIN workspace_leads wl ON wl.workspace_id = lis.workspace_id AND wl.lead_id = lis.lead_id
+            WHERE wl.lead_id IN ({placeholders})""",
+        lead_ids,
+    ).fetchall():
+        linkedin_status[r["lead_id"]].append(r)
+
+    personalization: dict[int, list] = {lid: [] for lid in lead_ids}
+    for r in conn.execute(
+        f"""SELECT lead_id, field_name, field_value, processed_at
+            FROM lead_personalization
+            WHERE lead_id IN ({placeholders})""",
+        lead_ids,
+    ).fetchall():
+        personalization[r["lead_id"]].append(r)
+
+    return {
+        "leads": leads,
+        "identities": identities,
+        "external_ids": external_ids,
+        "workspace_slugs": workspace_slugs,
+        "workspace_leads": workspace_leads,
+        "tags": tags,
+        "linkedin_status": linkedin_status,
+        "personalization": personalization,
+    }
+
+
+def _entity_key_from_prefetch(prefetch: dict, lead_id: int) -> str:
+    row = prefetch["leads"].get(lead_id)
+    if not row:
+        return ""
+    if row["email"]:
+        return str(row["email"]).strip().lower()
+    if row["linkedin_url"]:
+        return str(row["linkedin_url"]).strip()
+    id_rows = prefetch["identities"].get(lead_id) or []
+    if id_rows:
+        r = id_rows[0]
+        return f"{r['identity_type']}:{r['identity_value_normalized']}"
+    return ""
+
+
+def _build_lead_sync_payload_from_prefetch(
+    conn: sqlite3.Connection,
+    org_id: str,
+    lead_id: int,
+    prefetch: dict,
+    *,
+    workspace_slug: Optional[str] = None,
+) -> dict:
+    """Same output as build_lead_sync_payload using preloaded maps."""
+    row = prefetch["leads"].get(lead_id)
+    if not row:
+        return {}
+
+    payload: dict = {}
+    for field in (
+        "name", "company", "title", "industry", "headcount", "stage", "notes",
+        "location_city", "location_state", "location_country",
+        "email_verification_status",
+    ):
+        val = row[field]
+        if val is not None and str(val).strip():
+            payload[field] = val
+    if row["email"]:
+        payload["email"] = row["email"]
+    if row["linkedin_url"]:
+        payload["linkedin"] = row["linkedin_url"]
+    for id_row in prefetch["identities"].get(lead_id) or []:
+        payload[id_row["identity_type"]] = id_row["identity_value_normalized"]
+    if row["latest_sender"]:
+        payload["latest_sender"] = row["latest_sender"]
+    if row["latest_sender_platform"]:
+        payload["latest_sender_platform"] = row["latest_sender_platform"]
+    if row["email_verified_at"]:
+        payload["email_verified_at"] = row["email_verified_at"]
+    if row["company_domain"]:
+        payload["company_domain"] = row["company_domain"]
+    for hq in ("hq_city", "hq_state", "hq_country"):
+        if row[hq]:
+            payload[hq] = row[hq]
+    ext = prefetch["external_ids"].get(lead_id)
+    if ext:
+        payload["external_id"] = ext
+    if row["latest_source_detail"]:
+        payload["list_source"] = row["latest_source_detail"]
+    if row["original_source_detail"] and row["original_source_detail"] != row["latest_source_detail"]:
+        payload["import_name"] = row["original_source_detail"]
+
+    ws_id = None
+    if workspace_slug:
+        ws_row = resolve_workspace_identity(conn, workspace_slug)
+        ws_id = ws_row["id"] if ws_row else None
+    if ws_id is None:
+        wl = prefetch["workspace_leads"].get(lead_id)
+        if wl:
+            ws_id = wl["workspace_id"]
+
+    if ws_id:
+        wl_row = prefetch["workspace_leads"].get(lead_id)
+        if wl_row:
+            if wl_row["current_status_label"]:
+                payload["lead_status"] = wl_row["current_status_label"]
+            if wl_row["current_status_sentiment"]:
+                payload["lead_sentiment"] = wl_row["current_status_sentiment"]
+            if wl_row["contact_priority"] is not None:
+                payload["contact_order"] = wl_row["contact_priority"]
+            if wl_row["status"] and wl_row["status"] != row["stage"]:
+                payload["workspace_stage"] = wl_row["status"]
+
+        tag_rows = prefetch["tags"].get(lead_id) or []
+        if tag_rows:
+            payload["tags"] = tag_rows
+
+        li_rows = prefetch["linkedin_status"].get(lead_id) or []
+        if li_rows:
+            payload["linkedin_status"] = [
+                {
+                    "sender_profile": r["sender_profile"],
+                    "is_connected": bool(r["is_connected"]),
+                    "is_request_pending": bool(r["is_request_pending"]),
+                }
+                for r in li_rows
+            ]
+
+    p_rows = prefetch["personalization"].get(lead_id) or []
+    if p_rows:
+        payload["personalization"] = {r["field_name"]: r["field_value"] for r in p_rows}
+        payload["personalization_at"] = max(r["processed_at"] for r in p_rows)
+
+    return payload
+
+
 def build_lead_sync_payload(
     conn: sqlite3.Connection,
     org_id: str,
     lead_id: int,
     *,
     workspace_slug: Optional[str] = None,
+    prefetch: Optional[dict] = None,
 ) -> dict:
     """Full lead snapshot for relay push / agent replay (CSV import round-trip)."""
+    if prefetch is not None:
+        return _build_lead_sync_payload_from_prefetch(
+            conn, org_id, lead_id, prefetch, workspace_slug=workspace_slug,
+        )
+
     row = conn.execute(
         """SELECT l.*,
                   co.domain AS company_domain,
@@ -4929,16 +5158,21 @@ def _push_pending_lead_updates(agent_key: str) -> int:
         conn.close()
         return 0
 
+    lead_ids = [row["id"] for row in rows]
+    prefetch = _load_lead_sync_prefetch(conn, DEFAULT_ORG_ID, lead_ids)
+
     client_id = get_or_create_client_id()
     entries = []
     pushed_ids = []
     for row in rows:
-        entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, row["id"])
+        entity_key = _entity_key_from_prefetch(prefetch, row["id"])
+        if not entity_key:
+            entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, row["id"])
         if not entity_key:
             continue
-        ws_slug = _lead_workspace_slug(conn, row["id"])
+        ws_slug = prefetch["workspace_slugs"].get(row["id"]) or _lead_workspace_slug(conn, row["id"])
         payload = build_lead_sync_payload(
-            conn, DEFAULT_ORG_ID, row["id"], workspace_slug=ws_slug,
+            conn, DEFAULT_ORG_ID, row["id"], workspace_slug=ws_slug, prefetch=prefetch,
         )
         entry: dict = {
             "action": "lead_update",
@@ -5783,10 +6017,12 @@ def sync_from_relay_org(
     imported = skipped = 0
     page_after_id = None if full else (after_id or 0)
 
+    pull_since = None if full else (since or get_last_pull())
+
     while True:
         result = pull_events_org(
             agent_key,
-            since=None,
+            since=pull_since,
             after_id=page_after_id if page_after_id else None,
         )
         if result.get("error"):
@@ -5865,13 +6101,13 @@ def refresh_local_database(
             return {
                 "status": "error",
                 "error": "no_agent_key",
-                "message": "Agent key required. Run setup first, or pass --skip-sync (not recommended).",
+                "message": "Agent key required. Run login first, or pass --skip-sync (not recommended).",
             }
         if not routing_cloud.cloud_routing_enabled(load_config, tok):
             return {
                 "status": "error",
                 "error": "cloud_not_configured",
-                "message": "Cloud routing not configured. Run setup first.",
+                "message": "Cloud routing not configured. Run login first.",
             }
         sync_result = sync_all(org_id=org_id)
         result["sync"] = sync_result
@@ -5917,7 +6153,7 @@ def refresh_local_database(
         return {
             "status": "error",
             "error": "no_agent_key",
-            "message": "Database wiped but no agent key to pull from relay. Run setup, then pull --full.",
+            "message": "Database wiped but no agent key to pull from relay. Run login, then pull --full.",
             **result,
         }
 
@@ -6267,36 +6503,27 @@ def ingest_relay_event(
     return lead_id
 
 
-def setup(agent_key: Optional[str] = None):
-    """Interactive setup: sign up / log in to Outreach Magic and configure the agent key."""
-    import webbrowser
+def login():
+    """Connect this machine via browser device authorization (GitHub CLI-style)."""
+    import device_login
 
-    api_base = routing_cloud.get_api_base(load_config)
-    signup_url = f"{api_base}/setup/agent"
-
-    if not agent_key:
-        print()
-        print("  1. Go to: " + signup_url)
-        print("  2. Sign up (or log in) and click 'Create Agent Key'")
-        print("  3. Paste the key below")
-        print()
-
-        try:
-            webbrowser.open(signup_url)
-            print(f"(Opening {signup_url} in your browser)")
-        except Exception:
-            pass
-
-        print()
-        agent_key = input("Paste your Agent Key (om_agent_...): ").strip()
-
-    if not agent_key:
-        print("No key provided. Run 'pipeline.py setup' again when ready.")
+    try:
+        agent_key = device_login.run_device_login(load_config)
+    except RuntimeError as exc:
+        print(f"\nLogin failed: {exc}")
         sys.exit(1)
+    _save_agent_key_and_validate(agent_key)
 
+
+def setup():
+    """Deprecated alias — use login."""
+    print("Note: use 'pipeline.py login' for device authorization.\n")
+    login()
+
+
+def _save_agent_key_and_validate(agent_key: str):
     if not agent_key.startswith("om_agent_"):
         print("Invalid key format. Agent keys start with 'om_agent_'.")
-        print("Create one at your Outreach Magic setup URL (see setup prompt).")
         sys.exit(1)
 
     cfg = load_config()
@@ -6309,9 +6536,9 @@ def setup(agent_key: Optional[str] = None):
     if result.get("error"):
         status = result.get("status", "")
         message = result.get("message", "")
-        if "401" in str(status) or "Invalid" in message:
+        if "401" in str(status) or "Invalid" in message or "revoked" in message.lower():
             print(f"Authentication failed: {message}")
-            print("Check your agent key and try again.")
+            print("Run: pipeline.py login")
             cfg.pop("agent_key", None)
             save_config(cfg)
             sys.exit(1)
@@ -6345,7 +6572,7 @@ def setup(agent_key: Optional[str] = None):
     print(f"Project folders: {project_root}")
     print(f"  input/  export/  agent_resources/")
     print()
-    print("Setup complete. Run 'pull' to sync events, 'show' to view pipeline.")
+    print("Connected. Run 'pull' to sync events, 'show' to view pipeline.")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -6367,7 +6594,7 @@ PLATFORM_LABELS = {
 def _require_agent_key() -> str:
     key = get_agent_key()
     if not key:
-        print("No agent key configured. Run: pipeline.py setup")
+        print("No agent key configured. Run: pipeline.py login")
         sys.exit(1)
     return key
 
@@ -7203,8 +7430,8 @@ def main():
     log_p.add_argument("--workspace", help="Workspace for this event (required in multi-workspace mode)")
 
     # ── Setup & relay commands ──
-    setup_p = sub.add_parser("setup", help="Sign up and connect your agent to Outreach Magic (org-wide access)")
-    setup_p.add_argument("--key", help="Agent key (om_agent_...) — skips browser prompt")
+    sub.add_parser("login", help="Connect this machine via browser (device authorization)")
+    setup_p = sub.add_parser("setup", help="Alias for login (deprecated)")
 
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
@@ -7429,7 +7656,7 @@ def main():
         print(f"  export/           → {get_export_dir()}")
         print(f"  agent_resources/  → {get_agent_resources_dir()}")
         print()
-        print("Next: run 'pipeline.py setup' to connect your agent to Outreach Magic.")
+        print("Next: run 'pipeline.py login' to connect your agent to Outreach Magic.")
         return
 
     # Commands that only talk to the app API (no local DB required)
@@ -7569,8 +7796,11 @@ def main():
     migrate_db()
     sync_workspace_routing_mode_from_config()
 
+    if args.command == "login":
+        login()
+        return
     if args.command == "setup":
-        setup(agent_key=args.key)
+        setup()
         return
 
     if args.command == "pull":

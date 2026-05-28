@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AGENT_KEY="${1:-}"
 SKILL_DIR="$HOME/.claude/skills/outreachmagic"
 TMP_DIR="$(mktemp -d -t om-claude-XXXXXX)"
 REPO_URL="https://github.com/outreachmagic/claude-code-outreachmagic.git"
@@ -25,15 +24,8 @@ done
 echo "→ Initializing..."
 python3 "$SKILL_DIR/scripts/pipeline.py" init
 
-if [ -n "$AGENT_KEY" ]; then
-  echo "→ Connecting agent key..."
-  python3 "$SKILL_DIR/scripts/pipeline.py" setup --key "$AGENT_KEY"
-  echo ""
-  echo "✓ OutreachMagic installed and connected."
-  echo "  Restart Claude Code, then ask: \"show me my pipeline\""
-else
-  echo ""
-  echo "✓ OutreachMagic installed."
-  echo "  Connect your agent key:"
-  echo "    python3 $SKILL_DIR/scripts/pipeline.py setup --key om_agent_YOUR_KEY"
-fi
+echo ""
+echo "✓ OutreachMagic installed."
+echo "  Connect your account:"
+echo "    python3 $SKILL_DIR/scripts/pipeline.py login"
+echo "  Restart Claude Code, then ask: \"show me my pipeline\""

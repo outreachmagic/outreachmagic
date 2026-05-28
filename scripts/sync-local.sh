@@ -56,4 +56,4 @@ echo "  After git pull, re-run:"
 echo "    bash scripts/sync-local.sh"
 echo
 echo "  Connect relay:"
-echo "    python3 $SKILL_DIR/scripts/pipeline.py setup --key om_agent_YOUR_KEY"
+echo "    python3 $SKILL_DIR/scripts/pipeline.py login"

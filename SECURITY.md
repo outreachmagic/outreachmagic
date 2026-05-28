@@ -47,6 +47,7 @@ We do **not** use our servers as the long-term store for webhook payload content
 | `api.outreachmagic.io` | Relay **pull** (import webhooks + agent snapshots) | Bearer token in URL path / headers | Token, pull cursor; returns event payloads for local import |
 | `api.outreachmagic.io` | Relay **push** (`pipeline.py sync` only) | `Authorization: Bearer <om_agent_…>` | Lead snapshots and local agent events the user chose to sync — **never** sent on `import-profiles`, `init`, or `pull` |
 | `dev.outreachmagic.io` | Portal API (tokens, billing, routing config sync) | Bearer token | Routing config, account metadata — **not** full local DB export |
+| `dev.outreachmagic.io` | Device authorization (`POST /api/device/code`, `/token`) during `pipeline.py login` only | None / device code | Client label, platform, hostname — **no** lead data |
 | `dev.outreachmagic.io` | Portal **`POST /api/agent/db-health`** (end of explicit `sync` only) | Bearer agent key | Aggregate local DB stats only (~1 KB): file size, row counts, top table names, health status — **no** emails, bodies, or lead names |
 | `api.github.com` | Latest release lookup for update checks | None | Public releases API only (read-only; at most once per hour) |
 | `raw.githubusercontent.com` | Tagged release downloads (`pipeline.py update`) | None | Only on explicit user-triggered update |
@@ -68,7 +69,7 @@ Relay URL is fixed in code (`api.outreachmagic.io`). Updates install from GitHub
 ## Credentials
 
 - **Never** commit tokens, API keys, or `.env` files.
-- Store your agent key only in `outreachmagic_config.json` (local) or `OUTREACHMAGIC_AGENT_KEY` in the environment. Run `pipeline.py setup --key om_agent_...` once.
+- Store your agent key only in `outreachmagic_config.json` (local) or `OUTREACHMAGIC_AGENT_KEY` in the environment. Run `pipeline.py login` once (browser device authorization). Do not pass keys on `curl | bash` install lines.
 - Do not paste tokens into SKILL.md, issues, or chat logs.
 
 ## Skill updates

@@ -1,5 +1,5 @@
 {
-  "version": "1.20.1",
+  "version": "1.20.2",
   "files": {
     "pipeline.py": "ec9ca9ec37c8c696826708e2ced1a06a58263979bf9e9418b3234d2db365ad46",
     "relay_extractors.py": "6252997a0fef17c059c3050282bb3711ce7cf6a07af7f9c7a1ae3f98998f2d74",
@@ -10,7 +10,7 @@
     "connections_cloud.py": "6637b182ffd9dcd36781aae1b5bfb78d6f692e8498a5f7ac733ddf2194f86a3e",
     "db_health.py": "5de3432e0cc058a60055993a0b62a553b49aaf948e1b0fc0c750f17ce2a263a3",
     "device_login.py": "17f66179e658c4ef6540db213c01f23646d02a5e8c2d0ab2af98ee0d9144dade",
-    "VERSION": "e1c7e65a18da18a6d1673796e2f01affdf337744a3bd040a004a1df69683671b",
+    "VERSION": "5d61572af383d9294076b4e2850f85e404eeddf40caf790d940c036c82ab0b2c",
     "SKILL.md": "94006a1f056ae8aed4a9026d2b338e66a185d969b2e81978b96b096ec5a71d47"
   }
 }

@@ -14,17 +14,28 @@ SKILL_NAME = "outreachmagic"
 _PROJECT_ROOT_OVERRIDE: Optional[Path] = None
 
 
-def _infer_data_root() -> Path:
-    """Derive data root from where this script actually lives on disk."""
-    scripts_dir = Path(__file__).resolve().parent
+def _data_root_from_scripts_dir(scripts_dir: Path) -> Path:
+    """Map a scripts/ directory to the shared data root (Hermes home, .cursor, etc.)."""
     skill_dir = scripts_dir.parent
     skills_dir = skill_dir.parent
     if skills_dir.name == "skills" and skill_dir.name == SKILL_NAME:
         candidate = skills_dir.parent
+        # Hermes WebUI profiles: ~/.hermes/profiles/<name>/skills/outreachmagic/scripts
+        # → shared ~/.hermes (database + config live under skills/outreachmagic there).
         if candidate.parent.name == "profiles":
             return candidate.parent.parent
         return candidate
     return Path.home() / ".hermes"
+
+
+def _infer_data_root() -> Path:
+    """Derive data root from where this script actually lives on disk."""
+    return _data_root_from_scripts_dir(Path(__file__).resolve().parent)
+
+
+def get_install_dir() -> Path:
+    """Skill install directory (profile-scoped or global); scripts live in install_dir/scripts."""
+    return Path(__file__).resolve().parent.parent
 
 
 DEFAULT_DATA_ROOT = _infer_data_root()

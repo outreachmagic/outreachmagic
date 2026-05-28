@@ -31,6 +31,8 @@ SQLite database. Free forever. Connect Smartlead, Heyreach, Instantly via paid r
 Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
 Config (single source of truth): `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`
 
+**Hermes WebUI profiles:** Scripts may live under `~/.hermes/profiles/<name>/skills/outreachmagic/`, but the database and config always resolve to the shared paths above (not under `profiles/<name>/`). Run `pipeline.py paths` to print the resolved paths on your machine.
+
 Optional config keys: `data_root` (e.g. `~/.claude` for Claude Code), `api_base_url`, `dev_repo` for local development.
 
 Environment variable: `OUTREACHMAGIC_AGENT_KEY` — overrides the config file `agent_key`. Set via `.env`, shell profile, or CI/CD.

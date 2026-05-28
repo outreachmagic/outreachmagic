@@ -103,9 +103,11 @@ from om_paths import (
     ensure_project_layout,
     get_agent_resources_dir,
     get_config_path,
+    get_data_root,
     get_db_path,
     get_export_dir,
     get_input_dir,
+    get_install_dir,
     get_project_root,
     get_skill_home,
     resolve_project_path,
@@ -7766,6 +7768,10 @@ def main():
 
     sub.add_parser("init", help="Initialize the database")
     sub.add_parser("version", help="Print installed outreachmagic version")
+    sub.add_parser(
+        "paths",
+        help="Print resolved install, config, and database paths (JSON)",
+    )
 
     update_p = sub.add_parser(
         "update",
@@ -8143,6 +8149,17 @@ def main():
 
     if args.command == "version":
         print(f"outreachmagic {__version__}")
+        return
+
+    if args.command == "paths":
+        print(json.dumps({
+            "install_dir": str(get_install_dir()),
+            "data_root": str(get_data_root()),
+            "skill_home": str(get_skill_home()),
+            "database": str(get_db_path()),
+            "config": str(get_config_path()),
+            "project_root": str(get_project_root()),
+        }, indent=2))
         return
 
     if args.command == "update":

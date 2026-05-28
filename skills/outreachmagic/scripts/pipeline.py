@@ -37,6 +37,7 @@ import argparse
 import hashlib
 import re
 import shutil
+import time
 import uuid
 import urllib.request
 import urllib.error
@@ -116,6 +117,10 @@ RELAY_URL = "https://api.outreachmagic.io"
 # Max chars stored in events.metadata_json["body"] (full copy for history / copy-insights).
 # body_preview stays 200 chars. Prevents runaway HTML/base64 from bloating SQLite.
 MAX_EVENT_BODY_STORAGE_CHARS = 65536
+RELAY_PUSH_BATCH_SIZE = 100
+RELAY_PUSH_TIMEOUT_SECONDS = 90
+RELAY_PUSH_MAX_ATTEMPTS = 3
+RELAY_PUSH_RETRY_BASE_SECONDS = 2
 
 SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
 UPDATE_SCRIPT_FILES = (
@@ -443,6 +448,49 @@ def load_config() -> dict:
     if get_config_path().exists():
         return _load_json_dict(get_config_path())
     return {}
+
+
+def _read_positive_int(raw: object, fallback: int) -> int:
+    try:
+        val = int(str(raw).strip())
+        return val if val > 0 else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+def get_relay_push_settings() -> dict:
+    """Runtime-tunable relay push settings (env overrides config)."""
+    cfg = load_config()
+    batch_size = _read_positive_int(
+        os.environ.get("OUTREACHMAGIC_SYNC_BATCH_SIZE", cfg.get("sync_batch_size", RELAY_PUSH_BATCH_SIZE)),
+        RELAY_PUSH_BATCH_SIZE,
+    )
+    timeout_seconds = _read_positive_int(
+        os.environ.get("OUTREACHMAGIC_SYNC_TIMEOUT_SECONDS", cfg.get("sync_timeout_seconds", RELAY_PUSH_TIMEOUT_SECONDS)),
+        RELAY_PUSH_TIMEOUT_SECONDS,
+    )
+    max_attempts = _read_positive_int(
+        os.environ.get("OUTREACHMAGIC_SYNC_MAX_ATTEMPTS", cfg.get("sync_max_attempts", RELAY_PUSH_MAX_ATTEMPTS)),
+        RELAY_PUSH_MAX_ATTEMPTS,
+    )
+    retry_base_seconds = _read_positive_int(
+        os.environ.get(
+            "OUTREACHMAGIC_SYNC_RETRY_BASE_SECONDS",
+            cfg.get("sync_retry_base_seconds", RELAY_PUSH_RETRY_BASE_SECONDS),
+        ),
+        RELAY_PUSH_RETRY_BASE_SECONDS,
+    )
+    # Keep runtime bounds sane on small VPS boxes.
+    batch_size = max(10, min(batch_size, 500))
+    timeout_seconds = max(10, min(timeout_seconds, 300))
+    max_attempts = max(1, min(max_attempts, 10))
+    retry_base_seconds = max(1, min(retry_base_seconds, 60))
+    return {
+        "batch_size": batch_size,
+        "timeout_seconds": timeout_seconds,
+        "max_attempts": max_attempts,
+        "retry_base_seconds": retry_base_seconds,
+    }
 
 def _chmod_best_effort(path: Path, mode: int):
     try:
@@ -4563,15 +4611,20 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
     parts = []
     if total:
         parts.append(f"Synced {total} item{'s' if total != 1 else ''} to cloud.")
+    results["relay_push_settings"] = get_relay_push_settings()
     agent_key = get_agent_key()
     if local_total and agent_key:
         agent_push = _push_agent_events_to_relay(agent_key)
         pushed = int(agent_push.get("pushed", 0) or 0)
         results["agent_events_pushed"] = pushed
+        if agent_push.get("timeouts"):
+            results["agent_events_timeouts"] = int(agent_push.get("timeouts", 0) or 0)
         if agent_push.get("error"):
             results["agent_events_error"] = agent_push["error"]
         if agent_push.get("throttled"):
             results["agent_events_throttled"] = True
+        if agent_push.get("recommendation"):
+            results["agent_events_recommendation"] = agent_push["recommendation"]
         if pushed > 0:
             parts.append(f"Pushed {pushed} agent event{'s' if pushed != 1 else ''} to relay.")
         elif local_total:
@@ -4586,10 +4639,14 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
         lead_push = _push_pending_lead_updates(agent_key)
         leads_pushed = int(lead_push.get("pushed", 0) or 0)
         results["lead_updates_pushed"] = leads_pushed
+        if lead_push.get("timeouts"):
+            results["lead_updates_timeouts"] = int(lead_push.get("timeouts", 0) or 0)
         if lead_push.get("error"):
             results["lead_updates_error"] = lead_push["error"]
         if lead_push.get("throttled"):
             results["lead_updates_throttled"] = True
+        if lead_push.get("recommendation"):
+            results["lead_updates_recommendation"] = lead_push["recommendation"]
         if leads_pushed > 0:
             parts.append(f"Pushed {leads_pushed} lead update{'s' if leads_pushed != 1 else ''} to relay.")
 
@@ -5182,49 +5239,100 @@ def _relay_push_batches(agent_key: str, entries: list[dict], client_id: str) -> 
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
 
+    settings = get_relay_push_settings()
+    batch_size = settings["batch_size"]
+    timeout_seconds = settings["timeout_seconds"]
+    max_attempts = settings["max_attempts"]
+    retry_base_seconds = settings["retry_base_seconds"]
+
     total_pushed = 0
     last_error: Optional[str] = None
     throttled = False
+    timeout_failures = 0
 
-    for i in range(0, len(entries), 500):
-        batch = entries[i : i + 500]
+    for i in range(0, len(entries), batch_size):
+        batch = entries[i : i + batch_size]
         body = json.dumps({"client_id": client_id, "entries": batch}).encode()
-        req = urllib.request.Request(
-            f"{RELAY_URL}/push",
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {agent_key}",
-                "User-Agent": f"OutreachMagic/{__version__}",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                result = json.loads(resp.read())
-                count = int(result.get("pushed", 0) or 0)
-                total_pushed += count
-        except urllib.error.HTTPError as exc:
-            body_text = ""
+        for attempt in range(1, max_attempts + 1):
+            req = urllib.request.Request(
+                f"{RELAY_URL}/push",
+                data=body,
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {agent_key}",
+                    "User-Agent": f"OutreachMagic/{__version__}",
+                },
+            )
             try:
-                body_text = (exc.read() or b"").decode("utf-8", errors="replace").strip()
-            except Exception:
+                with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                    result = json.loads(resp.read())
+                    count = int(result.get("pushed", 0) or 0)
+                    total_pushed += count
+                    last_error = None
+                    break
+            except urllib.error.HTTPError as exc:
                 body_text = ""
-            retry_after = ""
-            try:
-                retry_after = (exc.headers.get("Retry-After") or "").strip()
-            except Exception:
-                retry_after = ""
-            throttled = exc.code == 429
-            hint = f" (retry_after={retry_after}s)" if retry_after else ""
-            detail = f": {body_text}" if body_text else ""
-            last_error = f"relay push HTTP {exc.code}{hint}{detail}"
-            break
-        except Exception as exc:
-            last_error = f"relay push failed: {exc}"
+                try:
+                    body_text = (exc.read() or b"").decode("utf-8", errors="replace").strip()
+                except Exception:
+                    body_text = ""
+                retry_after_raw = ""
+                try:
+                    retry_after_raw = (exc.headers.get("Retry-After") or "").strip()
+                except Exception:
+                    retry_after_raw = ""
+                retry_after = 0
+                if retry_after_raw.isdigit():
+                    retry_after = int(retry_after_raw)
+                throttled = exc.code == 429
+                retryable = throttled or 500 <= exc.code <= 599
+                if retryable and attempt < max_attempts:
+                    wait_s = retry_after if retry_after > 0 else retry_base_seconds * attempt
+                    time.sleep(wait_s)
+                    continue
+                hint = f" (retry_after={retry_after_raw}s)" if retry_after_raw else ""
+                detail = f": {body_text}" if body_text else ""
+                last_error = f"relay push HTTP {exc.code}{hint}{detail}"
+                break
+            except urllib.error.URLError as exc:
+                reason_text = str(exc.reason or exc).strip()
+                timed_out = "timed out" in reason_text.lower()
+                if timed_out:
+                    timeout_failures += 1
+                if timed_out and attempt < max_attempts:
+                    time.sleep(retry_base_seconds * attempt)
+                    continue
+                last_error = f"relay push failed: {reason_text}"
+                break
+            except Exception as exc:
+                err_text = str(exc).strip()
+                timed_out = "timed out" in err_text.lower()
+                if timed_out:
+                    timeout_failures += 1
+                if timed_out and attempt < max_attempts:
+                    time.sleep(retry_base_seconds * attempt)
+                    continue
+                last_error = f"relay push failed: {exc}"
+                break
+        if last_error:
             break
 
-    return {"pushed": total_pushed, "error": last_error, "throttled": throttled}
+    recommendation: Optional[str] = None
+    if last_error and ("timed out" in last_error.lower() or throttled):
+        suggestion = max(10, min(batch_size // 2, 500))
+        recommendation = (
+            "Try smaller sync batches and/or longer timeout: "
+            f"OUTREACHMAGIC_SYNC_BATCH_SIZE={suggestion} "
+            f"OUTREACHMAGIC_SYNC_TIMEOUT_SECONDS={min(timeout_seconds + 30, 300)}"
+        )
+    return {
+        "pushed": total_pushed,
+        "error": last_error,
+        "throttled": throttled,
+        "timeouts": timeout_failures,
+        "recommendation": recommendation,
+    }
 
 
 def _push_agent_events_to_relay(agent_key: str) -> dict:

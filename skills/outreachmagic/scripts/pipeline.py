@@ -6508,7 +6508,14 @@ def ingest_relay_event(
     return lead_id
 
 
-def login(platform: Optional[str] = None):
+def login(
+    platform: Optional[str] = None,
+    *,
+    generate_url: bool = False,
+    claim_token: bool = False,
+    device_code: Optional[str] = None,
+    wait_seconds: int = 30,
+):
     """Connect this machine via browser device authorization (GitHub CLI-style)."""
     try:
         import device_login
@@ -6518,6 +6525,48 @@ def login(platform: Optional[str] = None):
         if script_dir not in sys.path:
             sys.path.insert(0, script_dir)
         import device_login
+
+    if generate_url and claim_token:
+        print("Choose one mode: either --generate-url or --claim-token.")
+        sys.exit(1)
+
+    if generate_url:
+        try:
+            flow = device_login.start_device_authorization(load_config, platform=platform)
+        except RuntimeError as exc:
+            print(f"\nLogin failed: {exc}")
+            sys.exit(1)
+        print(f"OUTREACHMAGIC_URL={flow['connect_url']}")
+        print(f"OUTREACHMAGIC_CODE={flow['user_code']}")
+        print(f"OUTREACHMAGIC_DEVICE_CODE={flow['device_code']}")
+        print(f"OUTREACHMAGIC_EXPIRES_IN={flow['expires_in']}")
+        return
+
+    if claim_token:
+        if not device_code:
+            print("Missing required flag: --device-code")
+            sys.exit(1)
+        try:
+            claim = device_login.claim_device_token(
+                routing_cloud.get_api_base(load_config),
+                device_code=device_code,
+                wait_seconds=max(0, int(wait_seconds)),
+                interval=5,
+            )
+        except RuntimeError as exc:
+            print(f"\nLogin failed: {exc}")
+            sys.exit(1)
+
+        status = str(claim.get("status") or "pending")
+        if status == "success":
+            _save_agent_key_and_validate(str(claim.get("access_token") or ""))
+            print("STATUS=success")
+            return
+        if status == "pending":
+            print("STATUS=pending")
+            return
+        print(f"STATUS={status}")
+        sys.exit(1)
 
     try:
         agent_key = device_login.run_device_login(load_config, platform=platform)
@@ -6531,6 +6580,20 @@ def setup():
     """Deprecated alias — use login."""
     print("Note: use 'pipeline.py login' for device authorization.\n")
     login()
+
+
+def logout():
+    cfg = load_config()
+    removed = False
+    if cfg.pop("agent_key", None):
+        removed = True
+    if cfg.pop("token", None):
+        removed = True
+    save_config(cfg)
+    if removed:
+        print("Logged out. Cleared local agent credentials.")
+    else:
+        print("No local agent credentials found.")
 
 
 def _save_agent_key_and_validate(agent_key: str):
@@ -7449,7 +7512,17 @@ def main():
         choices=["hermes", "cursor", "claude-code"],
         help="Host app (auto-detected from skill install path if omitted)",
     )
+    login_p.add_argument("--generate-url", action="store_true", help="Generate device URL/code and exit")
+    login_p.add_argument("--claim-token", action="store_true", help="Claim token for an existing device code")
+    login_p.add_argument("--device-code", help="Device code returned from --generate-url")
+    login_p.add_argument(
+        "--wait",
+        type=int,
+        default=30,
+        help="Seconds to wait while polling in --claim-token mode (0 = single attempt)",
+    )
     setup_p = sub.add_parser("setup", help="Alias for login (deprecated)")
+    sub.add_parser("logout", help="Clear local agent credentials")
 
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
@@ -7807,19 +7880,28 @@ def main():
         cmd_disconnect_platform(args.platform, skip_confirm=getattr(args, "yes", False))
         return
 
+    if args.command == "login":
+        login(
+            platform=getattr(args, "platform", None),
+            generate_url=getattr(args, "generate_url", False),
+            claim_token=getattr(args, "claim_token", False),
+            device_code=getattr(args, "device_code", None),
+            wait_seconds=getattr(args, "wait", 30),
+        )
+        return
+    if args.command == "setup":
+        setup()
+        return
+    if args.command == "logout":
+        logout()
+        return
+
     if not db_exists():
         print("Database not initialized. Run: pipeline.py init")
         sys.exit(1)
 
     migrate_db()
     sync_workspace_routing_mode_from_config()
-
-    if args.command == "login":
-        login(platform=getattr(args, "platform", None))
-        return
-    if args.command == "setup":
-        setup()
-        return
 
     if args.command == "pull":
         agent_key = _require_agent_key()

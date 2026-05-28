@@ -106,11 +106,11 @@ def _post_json(
         raise RuntimeError(f"Network error: {exc.reason}") from exc
 
 
-def run_device_login(
+def start_device_authorization(
     load_config_fn: Callable[[], dict],
     *,
     platform: Optional[str] = None,
-) -> str:
+) -> dict[str, Any]:
     api_base = get_api_base(load_config_fn)
     client_platform = detect_client_platform(override=platform)
     client_label = default_client_label(platform=client_platform)
@@ -133,7 +133,80 @@ def run_device_login(
     if not device_code or not user_code:
         raise RuntimeError("Device authorization failed to start (invalid server response).")
 
-    connect_url = f"{verification_uri}?user_code={user_code.replace('-', '')}"
+    connect_url = f"{verification_uri}?user_code={str(user_code).replace('-', '')}"
+    return {
+        "api_base": api_base,
+        "client_platform": client_platform,
+        "client_label": client_label,
+        "device_code": str(device_code),
+        "user_code": str(user_code),
+        "verification_uri": str(verification_uri),
+        "connect_url": connect_url,
+        "expires_in": expires_in,
+        "interval": interval,
+    }
+
+
+def claim_device_token(
+    api_base: str,
+    *,
+    device_code: str,
+    wait_seconds: int = 30,
+    interval: int = 5,
+) -> dict[str, Optional[str]]:
+    if wait_seconds < 0:
+        wait_seconds = 0
+    if interval <= 0:
+        interval = 5
+
+    deadline = time.time() + wait_seconds
+    first_try = True
+
+    while first_try or time.time() < deadline:
+        first_try = False
+        token_resp = _post_json(
+            f"{api_base}/api/device/token",
+            {
+                "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            },
+            allow_errors=frozenset(
+                {"authorization_pending", "expired_token", "access_denied", "invalid_grant"}
+            ),
+        )
+
+        error = token_resp.get("error")
+        if error == "authorization_pending":
+            if wait_seconds == 0 or time.time() >= deadline:
+                return {"status": "pending", "access_token": None, "error": error}
+            sleep_for = min(interval, max(0.0, deadline - time.time()))
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            continue
+        if error:
+            return {"status": str(error), "access_token": None, "error": str(error)}
+
+        access_token = token_resp.get("access_token")
+        if not access_token or not str(access_token).startswith("om_agent_"):
+            raise RuntimeError("Invalid token received from server.")
+        return {"status": "success", "access_token": str(access_token), "error": None}
+
+    return {"status": "pending", "access_token": None, "error": "authorization_pending"}
+
+
+def run_device_login(
+    load_config_fn: Callable[[], dict],
+    *,
+    platform: Optional[str] = None,
+) -> str:
+    flow = start_device_authorization(load_config_fn, platform=platform)
+    device_code = str(flow["device_code"])
+    connect_url = str(flow["connect_url"])
+    user_code = str(flow["user_code"])
+    expires_in = int(flow["expires_in"])
+    interval = int(flow["interval"])
+    api_base = str(flow["api_base"])
+
     print()
     print("  Connect Outreach Magic to this computer")
     print()
@@ -148,28 +221,15 @@ def run_device_login(
     except Exception:
         pass
 
-    deadline = time.time() + expires_in
-    while time.time() < deadline:
-        time.sleep(interval)
-        token_resp = _post_json(
-            f"{api_base}/api/device/token",
-            {
-                "device_code": device_code,
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            },
-            allow_errors=frozenset(
-                {"authorization_pending", "expired_token", "access_denied", "invalid_grant"}
-            ),
-        )
-
-        if token_resp.get("error") == "authorization_pending":
-            continue
-        if token_resp.get("error"):
-            raise RuntimeError(token_resp.get("error"))
-
-        access_token = token_resp.get("access_token")
-        if not access_token or not str(access_token).startswith("om_agent_"):
-            raise RuntimeError("Invalid token received from server.")
-        return str(access_token)
+    claim = claim_device_token(
+        api_base,
+        device_code=device_code,
+        wait_seconds=expires_in,
+        interval=interval,
+    )
+    if claim.get("status") == "success":
+        return str(claim["access_token"])
+    if claim.get("status") and claim.get("status") != "pending":
+        raise RuntimeError(str(claim.get("status")))
 
     raise RuntimeError("Authorization timed out. Run login again.")

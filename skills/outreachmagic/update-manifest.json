@@ -1,7 +1,7 @@
 {
-  "version": "1.20.5",
+  "version": "1.20.6",
   "files": {
-    "pipeline.py": "29e4855917e0d08d4be545a234f4bdf4fa9dc3121d1f909065d812d54096c670",
+    "pipeline.py": "501618c65435f5222f58202528bfee6b8e12db8a468abea6b303c921c9f2269f",
     "relay_extractors.py": "6252997a0fef17c059c3050282bb3711ce7cf6a07af7f9c7a1ae3f98998f2d74",
     "workspace_routing.py": "cc3c85e99801b733c9b021ba865019544b96cfd4db332d10596cdff3e18c326c",
     "workspace_archive.py": "d150960581f33c365defed0ba8cf038d6c972ea53a33980d1d3062dd4ebf8934",
@@ -10,7 +10,7 @@
     "connections_cloud.py": "6637b182ffd9dcd36781aae1b5bfb78d6f692e8498a5f7ac733ddf2194f86a3e",
     "db_health.py": "5de3432e0cc058a60055993a0b62a553b49aaf948e1b0fc0c750f17ce2a263a3",
     "device_login.py": "ec787ef604fe10ff88f6b91d87d50e8fc66aa4c8cbca10b58f74fe8306624f93",
-    "VERSION": "4f20a95cc45c29ec46e534ff0581c673f1b8a799ce210e5fd40489a7cd3e22e5",
+    "VERSION": "e1c67bd332be08fc1f906ed7e82dda7819c86239e4029eec157dd47f15f35cbf",
     "SKILL.md": "c951686d7866862a82b8e1e78c13f36d2bf21c03b2071bc955cdd1bf31b9a4ba"
   }
 }

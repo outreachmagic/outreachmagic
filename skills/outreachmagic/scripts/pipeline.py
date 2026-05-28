@@ -4565,8 +4565,13 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
         parts.append(f"Synced {total} item{'s' if total != 1 else ''} to cloud.")
     agent_key = get_agent_key()
     if local_total and agent_key:
-        pushed = _push_agent_events_to_relay(agent_key)
+        agent_push = _push_agent_events_to_relay(agent_key)
+        pushed = int(agent_push.get("pushed", 0) or 0)
         results["agent_events_pushed"] = pushed
+        if agent_push.get("error"):
+            results["agent_events_error"] = agent_push["error"]
+        if agent_push.get("throttled"):
+            results["agent_events_throttled"] = True
         if pushed > 0:
             parts.append(f"Pushed {pushed} agent event{'s' if pushed != 1 else ''} to relay.")
         elif local_total:
@@ -4578,8 +4583,13 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
         )
 
     if agent_key:
-        leads_pushed = _push_pending_lead_updates(agent_key)
+        lead_push = _push_pending_lead_updates(agent_key)
+        leads_pushed = int(lead_push.get("pushed", 0) or 0)
         results["lead_updates_pushed"] = leads_pushed
+        if lead_push.get("error"):
+            results["lead_updates_error"] = lead_push["error"]
+        if lead_push.get("throttled"):
+            results["lead_updates_throttled"] = True
         if leads_pushed > 0:
             parts.append(f"Pushed {leads_pushed} lead update{'s' if leads_pushed != 1 else ''} to relay.")
 
@@ -5167,15 +5177,14 @@ def apply_agent_lead_sync_payload(
         )
 
 
-def _push_agent_events_to_relay(agent_key: str) -> int:
-    """Push locally-created events to the Cloudflare relay /push endpoint."""
-    export = export_local_changes()
-    entries = export.get("entries") or []
+def _relay_push_batches(agent_key: str, entries: list[dict], client_id: str) -> dict:
+    """Push relay entries in batches and return diagnostics."""
     if not entries:
-        return 0
+        return {"pushed": 0, "error": None, "throttled": False}
 
-    client_id = export.get("client_id", "unknown")
     total_pushed = 0
+    last_error: Optional[str] = None
+    throttled = False
 
     for i in range(0, len(entries), 500):
         batch = entries[i : i + 500]
@@ -5193,14 +5202,42 @@ def _push_agent_events_to_relay(agent_key: str) -> int:
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 result = json.loads(resp.read())
-                total_pushed += result.get("pushed", 0)
-        except Exception:
+                count = int(result.get("pushed", 0) or 0)
+                total_pushed += count
+        except urllib.error.HTTPError as exc:
+            body_text = ""
+            try:
+                body_text = (exc.read() or b"").decode("utf-8", errors="replace").strip()
+            except Exception:
+                body_text = ""
+            retry_after = ""
+            try:
+                retry_after = (exc.headers.get("Retry-After") or "").strip()
+            except Exception:
+                retry_after = ""
+            throttled = exc.code == 429
+            hint = f" (retry_after={retry_after}s)" if retry_after else ""
+            detail = f": {body_text}" if body_text else ""
+            last_error = f"relay push HTTP {exc.code}{hint}{detail}"
+            break
+        except Exception as exc:
+            last_error = f"relay push failed: {exc}"
             break
 
-    return total_pushed
+    return {"pushed": total_pushed, "error": last_error, "throttled": throttled}
 
 
-def _push_pending_lead_updates(agent_key: str) -> int:
+def _push_agent_events_to_relay(agent_key: str) -> dict:
+    """Push locally-created events to the Cloudflare relay /push endpoint."""
+    export = export_local_changes()
+    entries = export.get("entries") or []
+    if not entries:
+        return {"pushed": 0, "error": None, "throttled": False}
+    client_id = export.get("client_id", "unknown")
+    return _relay_push_batches(agent_key, entries, client_id)
+
+
+def _push_pending_lead_updates(agent_key: str) -> dict:
     """Push pending lead updates to Cloudflare relay /push endpoint."""
     conn = get_conn()
     rows = conn.execute(
@@ -5211,7 +5248,7 @@ def _push_pending_lead_updates(agent_key: str) -> int:
     ).fetchall()
     if not rows:
         conn.close()
-        return 0
+        return {"pushed": 0, "error": None, "throttled": False}
 
     lead_ids = [row["id"] for row in rows]
     prefetch = _load_lead_sync_prefetch(conn, DEFAULT_ORG_ID, lead_ids)
@@ -5242,47 +5279,28 @@ def _push_pending_lead_updates(agent_key: str) -> int:
 
     conn.close()
     if not entries:
-        return 0
+        return {"pushed": 0, "error": None, "throttled": False}
 
-    total_pushed = 0
-    for i in range(0, len(entries), 500):
-        batch = entries[i : i + 500]
-        batch_ids = pushed_ids[i : i + 500]
-        body = json.dumps({"client_id": client_id, "entries": batch}).encode()
-        req = urllib.request.Request(
-            f"{RELAY_URL}/push",
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {agent_key}",
-                "User-Agent": f"OutreachMagic/{__version__}",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                result = json.loads(resp.read())
-                count = result.get("pushed", 0)
-                total_pushed += count
-                if count >= len(batch):
-                    mark_conn = get_conn()
-                    placeholders = ",".join("?" for _ in batch_ids)
-                    mark_conn.execute(
-                        f"UPDATE leads SET cloud_pending = 0 WHERE id IN ({placeholders})",
-                        batch_ids,
-                    )
-                    mark_conn.execute(
-                        f"UPDATE lead_personalization SET cloud_pending = 0 WHERE lead_id IN ({placeholders})",
-                        batch_ids,
-                    )
-                    mark_conn.commit()
-                    mark_conn.close()
-                elif count > 0:
-                    break
-        except Exception:
-            break
+    push_result = _relay_push_batches(agent_key, entries, client_id)
+    total_pushed = int(push_result.get("pushed", 0) or 0)
+    if total_pushed <= 0:
+        return push_result
 
-    return total_pushed
+    mark_count = min(total_pushed, len(pushed_ids))
+    mark_ids = pushed_ids[:mark_count]
+    mark_conn = get_conn()
+    placeholders = ",".join("?" for _ in mark_ids)
+    mark_conn.execute(
+        f"UPDATE leads SET cloud_pending = 0 WHERE id IN ({placeholders})",
+        mark_ids,
+    )
+    mark_conn.execute(
+        f"UPDATE lead_personalization SET cloud_pending = 0 WHERE lead_id IN ({placeholders})",
+        mark_ids,
+    )
+    mark_conn.commit()
+    mark_conn.close()
+    return push_result
 
 
 def list_campaign_maps(org_id: str = DEFAULT_ORG_ID) -> list[dict]:

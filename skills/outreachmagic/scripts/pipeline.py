@@ -519,6 +519,22 @@ def set_last_pull(ts: str):
 def get_last_max_id() -> Optional[int]:
     return load_config().get("last_max_id")
 
+def normalize_relay_timestamp(ts: Optional[str]) -> str:
+    """UTC ISO timestamp for relay push/pull (sortable, comparable in D1)."""
+    if not ts:
+        return datetime.now(timezone.utc).isoformat()
+    s = str(ts).strip()
+    if "T" in s:
+        if s.endswith("Z") or re.search(r"[+-]\d{2}:\d{2}$", s):
+            return s
+        return s + "+00:00"
+    m = re.match(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)?$", s)
+    if m:
+        frac = m.group(3) or ".000000"
+        return f"{m.group(1)}T{m.group(2)}{frac}+00:00"
+    return s
+
+
 def set_last_max_id(max_id: int):
     cfg = load_config()
     cfg["last_max_id"] = max_id
@@ -5377,7 +5393,7 @@ def _push_pending_lead_updates(agent_key: str) -> dict:
         entry: dict = {
             "action": "lead_update",
             "entity_key": entity_key,
-            "timestamp": row["updated_at"],
+            "timestamp": normalize_relay_timestamp(row["updated_at"]),
             "payload": payload,
         }
         if ws_slug:
@@ -5980,7 +5996,7 @@ def export_local_changes(
         entry = {
             "action": "lead_create",
             "entity_key": entity_key,
-            "timestamp": row["created_at"],
+            "timestamp": normalize_relay_timestamp(row["created_at"]),
         }
         if ws_slug:
             entry["workspace"] = ws_slug
@@ -5993,7 +6009,7 @@ def export_local_changes(
             stage_entry: dict = {
                 "action": "stage_change",
                 "entity_key": entry["entity_key"],
-                "timestamp": row["updated_at"],
+                "timestamp": normalize_relay_timestamp(row["updated_at"]),
                 "payload": {"stage": row["stage"]},
             }
             if ws_slug:
@@ -6021,7 +6037,7 @@ def export_local_changes(
         event_entry: dict = {
             "action": "event_log",
             "entity_key": entity_key,
-            "timestamp": row["created_at"],
+            "timestamp": normalize_relay_timestamp(row["created_at"]),
             "payload": {
                 "event_type": row["event_type"],
                 "direction": row["direction"],
@@ -6157,7 +6173,15 @@ def ingest_agent_entry(
     return lead_id
 
 
-def pull_events_org(agent_key: str, since: Optional[str] = None, after_id: Optional[int] = None, platform: Optional[str] = None) -> dict:
+def pull_events_org(
+    agent_key: str,
+    since: Optional[str] = None,
+    after_id: Optional[int] = None,
+    platform: Optional[str] = None,
+    *,
+    snapshot_after_id: Optional[int] = None,
+    snapshots_only: bool = False,
+) -> dict:
     """Pull all org events from relay using an agent key (org-wide access)."""
     params = []
     if since:
@@ -6166,6 +6190,10 @@ def pull_events_org(agent_key: str, since: Optional[str] = None, after_id: Optio
         params.append(f"after_id={after_id}")
     if platform:
         params.append(f"platform={urllib.parse.quote(platform)}")
+    if snapshot_after_id:
+        params.append(f"snapshot_after_id={snapshot_after_id}")
+    if snapshots_only:
+        params.append("snapshots_only=1")
     qs = f"?{'&'.join(params)}" if params else ""
     url = f"{RELAY_URL}/pull{qs}"
 
@@ -6294,6 +6322,53 @@ def sync_from_relay_org(
 
         page_after_id = next_after_id
         if len(events) < 1000:
+            break
+
+    snapshot_after = 0
+    snap_pull_since = None if full else (since or get_last_pull())
+    while True:
+        snap_result = pull_events_org(
+            agent_key,
+            since=snap_pull_since,
+            after_id=page_after_id or 0,
+            snapshot_after_id=snapshot_after or None,
+            snapshots_only=True,
+        )
+        if snap_result.get("error"):
+            raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
+        snap_events = snap_result.get("events") or []
+        if not snap_events:
+            break
+        pages += 1
+        for event in snap_events:
+            relay_id = event.get("relay_id")
+            if isinstance(relay_id, int) and relay_id > newest_relay_id_seen:
+                newest_relay_id_seen = relay_id
+            dedupe_key = relay_dedupe_key(event)
+            was_duplicate = relay_already_ingested(dedupe_key)
+            try:
+                ingested = ingest_relay_event(
+                    event,
+                    debug_sentiment=debug_sentiment,
+                    quiet=True,
+                )
+            except Exception as exc:
+                if not quiet:
+                    rid = event.get("relay_id") or event.get("id") or "?"
+                    print(f"Warning: skipped relay event {rid}: {exc}")
+                skipped += 1
+                skipped_errors += 1
+                continue
+            if ingested is None:
+                skipped += 1
+                if was_duplicate:
+                    skipped_duplicates += 1
+                else:
+                    skipped_filtered += 1
+            else:
+                imported += 1
+        snapshot_after = int(snap_result.get("max_snapshot_id") or 0)
+        if not snap_result.get("has_more_snapshots"):
             break
 
     if page_after_id:

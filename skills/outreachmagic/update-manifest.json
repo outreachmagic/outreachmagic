@@ -1,16 +1,16 @@
 {
-  "version": "1.20.7",
+  "version": "1.20.8",
   "files": {
-    "pipeline.py": "60cbdebcc5c5f329f1dae156481ba6ac4a99216d6ecd541a18ba8e726689b421",
+    "pipeline.py": "8aaa7df8dcec85926986b724fe41b5e6ef1520b2694b5a1f618d42d12fe1a22e",
     "relay_extractors.py": "6252997a0fef17c059c3050282bb3711ce7cf6a07af7f9c7a1ae3f98998f2d74",
-    "workspace_routing.py": "cc3c85e99801b733c9b021ba865019544b96cfd4db332d10596cdff3e18c326c",
+    "workspace_routing.py": "15857bc393f9c9bcfd3a04363dd25528b35d0616468a44a8a363ec82bbab3f3c",
     "workspace_archive.py": "d150960581f33c365defed0ba8cf038d6c972ea53a33980d1d3062dd4ebf8934",
     "routing_cloud.py": "dcf0d1a040bb1282576e16f6299c394e1c1c6eff24c090d544abe3d5a1901c1b",
     "om_paths.py": "21f9a7082166f16cc54864df329a3fc8e7109556bb3dcb8aab075af9f61a5df5",
     "connections_cloud.py": "6637b182ffd9dcd36781aae1b5bfb78d6f692e8498a5f7ac733ddf2194f86a3e",
     "db_health.py": "5de3432e0cc058a60055993a0b62a553b49aaf948e1b0fc0c750f17ce2a263a3",
     "device_login.py": "ec787ef604fe10ff88f6b91d87d50e8fc66aa4c8cbca10b58f74fe8306624f93",
-    "VERSION": "4bf5f60ad72034b7c05fa9a3b213cc475aa972dc35ee8a4d1b38cebcec8f7127",
+    "VERSION": "2fcbe328f5b844f9e1e7c735e144d7a90abeaa61332f82c9e6c622f40e2e8bbe",
     "SKILL.md": "c951686d7866862a82b8e1e78c13f36d2bf21c03b2071bc955cdd1bf31b9a4ba"
   }
 }

@@ -101,6 +101,8 @@ def normalize_linkedin(url: Optional[str]) -> Optional[str]:
     match = re.match(r"(linkedin\.com/in/[^/?#]+)", norm)
     if match:
         return match.group(1)
+    if re.match(r"^[a-z0-9][a-z0-9\-_%]*$", norm):
+        return f"linkedin.com/in/{norm}"
     return norm.rstrip("/") or None
 
 

@@ -44,6 +44,7 @@ from workspace_routing import (  # noqa: E402
 def test_normalization():
     assert normalize_email("  Jane@Example.COM ") == "jane@example.com"
     assert normalize_linkedin("https://www.linkedin.com/in/jane/") == "linkedin.com/in/jane"
+    assert normalize_linkedin("amy-hudock") == "linkedin.com/in/amy-hudock"
     assert normalize_campaign_name("  Foo   Bar  ") == "foo bar"
 
 

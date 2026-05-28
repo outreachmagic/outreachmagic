@@ -15,6 +15,9 @@ Usage:
     enrich.py serper-search --query "..."     # Run one Serper search (stdlib)
     enrich.py serper-format results.json      # Format Serper results for model
     enrich.py map-to-om research.json         # Map to outreachmagic import format
+    enrich.py update --check                  # Check latest lead-enrich release
+    enrich.py update                          # Install latest lead-enrich release
+    enrich.py update --tag v1.1.5             # Install a specific release tag
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import hashlib
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -33,6 +37,18 @@ from typing import Any, Optional
 
 SKILL_NAME = "lead-enrich"
 OUTREACHMAGIC_NAME = "outreachmagic"
+GITHUB_REPO = "outreachmagic/lead-enrich"
+GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RAW_BASE = "https://raw.githubusercontent.com"
+UPDATE_FILES = (
+    "SKILL.md",
+    "README.md",
+    "SECURITY.md",
+    "config.example.json",
+    "default.env",
+    ".gitignore",
+    "scripts/enrich.py",
+)
 
 # Common install paths across platforms
 SKILL_SEARCH_PATHS = [
@@ -110,6 +126,72 @@ def _subprocess_env() -> dict[str, str]:
 def _find_skill_dir() -> Path:
     """Find this skill's directory (where SKILL.md lives)."""
     return Path(__file__).resolve().parent.parent
+
+
+def _fetch_url(url: str) -> bytes:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "lead-enrich-updater",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read()
+
+
+def _normalize_tag(tag: str) -> str:
+    t = (tag or "").strip()
+    if not t:
+        raise ValueError("release tag cannot be empty")
+    return t if t.startswith("v") else f"v{t}"
+
+
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _current_skill_version() -> str:
+    skill_md = _find_skill_dir() / "SKILL.md"
+    if not skill_md.exists():
+        return "unknown"
+    text = skill_md.read_text(encoding="utf-8")
+    m = re.search(r"^version:\s*([^\s]+)\s*$", text, flags=re.M)
+    return m.group(1).strip() if m else "unknown"
+
+
+def _parse_version_tuple(version: str) -> Optional[tuple[int, ...]]:
+    raw = (version or "").strip()
+    if raw.startswith("v"):
+        raw = raw[1:]
+    if not re.fullmatch(r"\d+(\.\d+)*", raw):
+        return None
+    return tuple(int(part) for part in raw.split("."))
+
+
+def _repo_base_for_tag(tag: str) -> str:
+    return f"{RAW_BASE}/{GITHUB_REPO}/{_normalize_tag(tag)}"
+
+
+def _fetch_latest_tag() -> str:
+    payload = json.loads(_fetch_url(GITHUB_RELEASES_LATEST).decode("utf-8"))
+    tag = str(payload.get("tag_name", "")).strip()
+    if not tag:
+        raise RuntimeError("Latest release did not include tag_name.")
+    return _normalize_tag(tag)
+
+
+def _fetch_manifest(tag: str) -> dict[str, Any]:
+    url = f"{_repo_base_for_tag(tag)}/update-manifest.json"
+    try:
+        payload = json.loads(_fetch_url(url).decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise RuntimeError(
+            f"Failed to fetch update-manifest.json for {tag}. Refusing insecure update."
+        ) from e
+    if not isinstance(payload, dict) or not isinstance(payload.get("files"), dict):
+        raise RuntimeError("Invalid update-manifest.json format.")
+    return payload
 
 
 def load_config() -> dict[str, Any]:
@@ -980,6 +1062,57 @@ def cmd_map_to_om(input_file: str, workspace: str = "") -> None:
     print(json.dumps(results, indent=2))
 
 
+def cmd_update(check_only: bool = False, explicit_tag: str = "") -> None:
+    skill_dir = _find_skill_dir()
+    current = _current_skill_version()
+    target_tag = _normalize_tag(explicit_tag) if explicit_tag else _fetch_latest_tag()
+    target_version = target_tag[1:] if target_tag.startswith("v") else target_tag
+    current_v = _parse_version_tuple(current)
+    target_v = _parse_version_tuple(target_version)
+    update_available = current != target_version
+    if current_v is not None and target_v is not None:
+        update_available = current_v < target_v
+
+    if check_only:
+        print(json.dumps({
+            "status": "ok",
+            "current_version": current,
+            "latest_tag": target_tag,
+            "latest_version": target_version,
+            "update_available": update_available,
+        }, indent=2))
+        return
+
+    manifest = _fetch_manifest(target_tag)
+    manifest_files = manifest.get("files", {})
+    updated: list[str] = []
+
+    for rel_path in UPDATE_FILES:
+        expected = manifest_files.get(rel_path)
+        if not expected:
+            raise RuntimeError(
+                f"Manifest missing checksum for {rel_path}. Refusing update."
+            )
+        content = _fetch_url(f"{_repo_base_for_tag(target_tag)}/{rel_path}")
+        if _sha256_hex(content) != expected:
+            raise RuntimeError(
+                f"Checksum mismatch for {rel_path}. Refusing update."
+            )
+        dest = skill_dir / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(content)
+        updated.append(rel_path)
+
+    print(json.dumps({
+        "status": "updated",
+        "from_version": current,
+        "to_version": target_version,
+        "tag": target_tag,
+        "files": updated,
+        "path": str(skill_dir),
+    }, indent=2))
+
+
 def _parse_cli_flags(argv: list[str]) -> tuple[str, bool, list[str]]:
     """Extract --workspace and --force from argv."""
     workspace = ""
@@ -1065,6 +1198,31 @@ def main() -> None:
             print("Usage: enrich.py map-to-om [--workspace W] research_output.json")
             sys.exit(1)
         cmd_map_to_om(argv[1], workspace)
+    elif cmd == "update":
+        check_only = False
+        explicit_tag = ""
+        args = argv[1:]
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg == "--check":
+                check_only = True
+                i += 1
+                continue
+            if arg == "--tag" and i + 1 < len(args):
+                explicit_tag = args[i + 1]
+                i += 2
+                continue
+            if arg.startswith("--tag="):
+                explicit_tag = arg.split("=", 1)[1]
+                i += 1
+                continue
+            i += 1
+        try:
+            cmd_update(check_only=check_only, explicit_tag=explicit_tag)
+        except Exception as e:
+            print(json.dumps({"status": "error", "error": str(e)}))
+            sys.exit(1)
     else:
         print(f"Unknown command: {cmd}")
         print(__doc__)

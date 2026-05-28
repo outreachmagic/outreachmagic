@@ -70,6 +70,9 @@ python3 scripts/enrich.py batch-check input.json
 python3 scripts/enrich.py serper-search --query 'site:linkedin.com/in Jane Doe "Acme Corp"'
 python3 scripts/enrich.py serper-queries input.json
 python3 scripts/enrich.py map-to-om research.json
+python3 scripts/enrich.py update --check
+python3 scripts/enrich.py update
+python3 scripts/enrich.py update --tag v1.1.5
 ```
 
 ## Credits
@@ -78,8 +81,8 @@ python3 scripts/enrich.py map-to-om research.json
 |----------|---------|
 | Same company + LinkedIn in DB | **0** |
 | Same company, no LinkedIn | 1–2 |
-| `ambiguous` (name match, wrong company) | 2–4 (full pack) |
-| New lead | 2–4 |
+| `ambiguous` (name match, wrong company) | 2–5 (full pack) |
+| New lead | 2–5 |
 
 ## Config
 

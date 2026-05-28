@@ -67,6 +67,18 @@ Workflow: `.github/workflows/publish-lead-enrich.yml` (requires `PUBLISH_TOKEN` 
 public repo to exist). HermesHub domain request template:
 `docs/hermeshub-reviewed-domains-lead-enrich.md`.
 
+### How `enrich.py update` Works
+
+When a user runs `enrich.py update`, it:
+
+1. Calls `https://api.github.com/repos/outreachmagic/lead-enrich/releases/latest` (or `--tag`)
+2. Downloads `update-manifest.json` from that release tag
+3. Downloads each skill file from `raw.githubusercontent.com`
+4. Verifies SHA256 checksums for every file in the manifest
+5. Aborts on any mismatch; otherwise overwrites local skill files
+
+`config.json` is not part of the release bundle and is never overwritten.
+
 ## How to Release
 
 ### Prerequisites
@@ -89,6 +101,24 @@ git commit -m "Release v1.7.0"
 
 # 4. Tag and push
 git tag v1.7.0
+git push origin main --tags
+```
+
+### lead-enrich patch release steps
+
+```bash
+# 1. Bump lead-enrich version in frontmatter
+# skills/lead-enrich/SKILL.md -> version: 1.1.5
+
+# 2. Regenerate lead-enrich update manifest
+python3 scripts/generate-lead-enrich-manifest.py
+
+# 3. Commit
+git add skills/lead-enrich scripts/generate-lead-enrich-manifest.py .github/workflows/publish-lead-enrich.yml
+git commit -m "Release lead-enrich v1.1.5"
+
+# 4. Tag and push
+git tag lead-enrich-v1.1.5
 git push origin main --tags
 ```
 
@@ -131,6 +161,11 @@ python3 <path>/scripts/pipeline.py update --tag v1.6.1
 
 # Check only (don't install)
 python3 <path>/scripts/pipeline.py update --check
+
+# lead-enrich update (all platforms)
+python3 <path>/scripts/enrich.py update --check
+python3 <path>/scripts/enrich.py update
+python3 <path>/scripts/enrich.py update --tag v1.1.5
 ```
 
 ## Local Development (skip GitHub entirely)
@@ -153,6 +188,7 @@ Then `pipeline.py update` copies directly from the local clone.
 | "No GitHub release found" | Public repo has tags but no Release | Create a Release: `gh release create <tag> --repo outreachmagic/<platform>-skill` |
 | "No GitHub release found" | `GITHUB_REPO` not rewritten by CI | Check `publish-platforms.yml` sed patterns match the source value |
 | Releases exist but update pulls old version | `update-manifest.json` not regenerated | Run `python3 scripts/generate-update-manifest.py` before tagging |
+| `enrich.py update` fails with manifest error | lead-enrich manifest missing or stale | Run `python3 scripts/generate-lead-enrich-manifest.py` before `lead-enrich-v*` tag |
 | CI publish fails | `PUBLISH_TOKEN` missing or expired | Update the secret in repo settings |
 | Repo 404 from GitHub API | Repo is private | Public repos must stay public for unauthenticated update checks |
 

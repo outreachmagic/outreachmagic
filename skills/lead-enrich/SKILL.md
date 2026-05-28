@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill.
-version: 1.1.4
+version: 1.1.5
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -114,7 +114,14 @@ python3 scripts/enrich.py check --workspace your_workspace "Jane Doe" "Acme Corp
 
 # Batch from JSON file
 python3 scripts/enrich.py batch-check --workspace your_workspace input/people.json
+
+# Update skill safely from GitHub release (checksum-verified)
+python3 scripts/enrich.py update --check
+python3 scripts/enrich.py update
 ```
+
+`update` verifies SHA256 checksums from `update-manifest.json` before replacing
+files. If checksums are missing or mismatched, the update aborts.
 
 ## Core Workflow
 

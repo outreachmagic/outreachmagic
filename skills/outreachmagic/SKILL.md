@@ -598,7 +598,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 1. **Always pull before show when checking "latest activity."**
 2. Forgetting add-lead before log-event
 3. Not updating stage after reply
-4. Setup requires an Agent Key — get one at https://dev.outreachmagic.io/setup/agent
+4. Setup/auth errors (including 401 Unauthorized) should run `python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login` in terminal.
 5. **Version:** run `pipeline.py version` — do not guess from SKILL.md frontmatter alone.
 6. Relay archive stays on api.outreachmagic.io; `pull` dedupes locally. Use `refresh --yes` for a true rebuild (sync + backup + wipe + `pull --full`). `pull --full` alone only helps after deleting the DB manually.
 7. **Tags:** always pass plain names (`nace`, `vip`) — not JSON list strings like `['nace']`. Run `tag repair` if legacy rows used bracket form.

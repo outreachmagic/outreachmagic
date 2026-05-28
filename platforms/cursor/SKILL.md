@@ -555,7 +555,7 @@ python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py update
 1. **Always pull before show when checking "latest activity."**
 2. Forgetting add-lead before log-event
 3. Not updating stage after reply
-4. Setup requires an Agent Key — get one at https://dev.outreachmagic.io/setup/agent
+4. Setup/auth errors (including 401 Unauthorized) should run `python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py login` in terminal.
 5. **Version:** run `pipeline.py version` — do not guess from SKILL.md frontmatter alone.
 6. Relay archive stays on api.outreachmagic.io; `pull` dedupes locally. Use `pull --full` after deleting the local DB.
 7. **`add-lead` on an existing email does not enrich** — use `import-profiles` or rely on relay `pull` for fill-if-empty updates.

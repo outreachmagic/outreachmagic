@@ -9,7 +9,8 @@ Usage:
     enrich.py config                          # Show loaded config
     enrich.py check "Jane Doe" "Acme Corp"    # Dedup check (0 credits)
     enrich.py check --force "Jane Doe" "Acme" # Ignore existing DB match
-    enrich.py batch-check input.json          # Batch dedup from JSON
+    enrich.py batch-check input.json|input.csv  # Batch dedup (JSON or CSV)
+    enrich.py backfill --fields title,industry rows.csv  # Patch existing leads (0 Serper credits)
     enrich.py normalize input.json            # Normalize input data
     enrich.py serper-queries person.json      # Print Serper query pack
     enrich.py serper-search --query "..."     # Run one Serper search (stdlib)
@@ -22,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import re
@@ -56,6 +58,9 @@ SKILL_SEARCH_PATHS = [
     Path.home() / ".cursor" / "skills",
     Path.home() / ".claude" / "skills",
 ]
+
+BACKFILL_FIELDS = frozenset({"title", "industry"})
+_TEAM_RE = re.compile(r"\bteam\b|center team|group award", re.I)
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -229,23 +234,13 @@ def load_config() -> dict[str, Any]:
 # ── Path resolution ──────────────────────────────────────────────────────────
 
 def find_outreachmagic(config: dict[str, Any]) -> Optional[Path]:
-    """Find the outreachmagic skill directory.
-
-    Checks:
-      1. Config `outreachmagic_home` / OUTREACHMAGIC_HOME env
-      2. Sibling under same skills parent (e.g. ~/.hermes/skills/outreachmagic)
-      3. Standard install paths (~/.hermes|cursor|claude/skills/outreachmagic)
-    """
+    """Find outreachmagic install (prefers shared ~/.hermes/skills/outreachmagic over profile copy)."""
     candidates: list[Path] = []
-
     if config.get("outreachmagic_home"):
         candidates.append(Path(config["outreachmagic_home"]).expanduser())
-
-    # Sibling: .../skills/lead-enrich and .../skills/outreachmagic
-    candidates.append(_find_skill_dir().parent / OUTREACHMAGIC_NAME)
-
     for skills_dir in SKILL_SEARCH_PATHS:
         candidates.append(skills_dir / OUTREACHMAGIC_NAME)
+    candidates.append(_find_skill_dir().parent / OUTREACHMAGIC_NAME)
 
     seen: set[str] = set()
     for p in candidates:
@@ -255,7 +250,6 @@ def find_outreachmagic(config: dict[str, Any]) -> Optional[Path]:
         seen.add(key)
         if (p / "scripts" / "pipeline.py").exists():
             return p
-
     return None
 
 
@@ -456,6 +450,91 @@ def check_lead_exists(
     return result
 
 
+def is_team_entry(name: str, company: str = "") -> bool:
+    return bool(_TEAM_RE.search(f"{name} {company}".strip()))
+
+
+def load_people_file(path: str) -> dict[str, Any]:
+    p = Path(path)
+    if p.suffix.lower() == ".csv":
+        with p.open(newline="", encoding="utf-8-sig") as f:
+            return {"people": list(csv.DictReader(f))}
+    data = json.loads(p.read_text())
+    if isinstance(data, list):
+        return {"people": data}
+    return data
+
+
+def _row_val(row: dict, *keys: str) -> str:
+    for key in keys:
+        val = row.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return ""
+
+
+def build_backfill_profile(row: dict, fields: frozenset[str]) -> Optional[dict[str, str]]:
+    email = _row_val(row, "email", "lead_email")
+    linkedin = _row_val(row, "linkedin", "linkedin_url")
+    if not email and not linkedin:
+        return None
+    profile: dict[str, str] = {}
+    if email:
+        profile["email"] = email
+    if linkedin:
+        profile["linkedin"] = re.sub(r"^https?://(www\.)?", "", linkedin).rstrip("/")
+    for key in ("full_name", "name"):
+        if _row_val(row, key):
+            profile["name"] = _row_val(row, key)
+            break
+    for key in ("company_name", "company"):
+        if _row_val(row, key):
+            profile["company"] = _row_val(row, key)
+            break
+    for field in fields:
+        val = _row_val(row, field, "job_title" if field == "title" else field)
+        if val:
+            profile[field] = val
+    if not any(profile.get(f) for f in fields):
+        return None
+    return profile
+
+
+def run_import_profiles(
+    om_dir: Path,
+    profiles: list[dict],
+    *,
+    workspace: str = "",
+    overwrite: bool = False,
+    source_detail: str = "lead-enrich/backfill",
+    timeout: int = 120,
+) -> dict[str, Any]:
+    cmd = [
+        sys.executable,
+        str(get_pipeline_path(om_dir)),
+        "import-profiles",
+        "--json",
+        json.dumps(profiles),
+        "--source-detail",
+        source_detail,
+    ]
+    if workspace:
+        cmd.extend(["--workspace", workspace])
+    if overwrite:
+        cmd.append("--overwrite")
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=_subprocess_env(),
+    )
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        raise RuntimeError(err)
+    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+
+
 def batch_check(
     om_dir: Path,
     people: list[dict[str, str]],
@@ -469,6 +548,13 @@ def batch_check(
     for person in people:
         name = person.get("full_name") or person.get("name", "")
         company = person.get("company_name") or person.get("company", "")
+        if is_team_entry(name, company):
+            results.append({
+                "status": "team_award",
+                "note": "Team/group entry — skip Serper; tag team_award and add a contact note.",
+                "_input": person,
+            })
+            continue
         linkedin = person.get("linkedin_url") or person.get("linkedin", "")
         force = bool(person.get("force", False))
         result = check_lead_exists(
@@ -983,15 +1069,14 @@ def cmd_check(
 
 
 def cmd_batch_check(input_file: str, workspace: str = "") -> None:
-    """Batch dedup check from JSON file."""
+    """Batch dedup check from JSON or CSV."""
     cfg = load_config()
     om_dir = find_outreachmagic(cfg)
     if not om_dir:
         print(json.dumps({"error": "outreachmagic not found"}))
         sys.exit(1)
 
-    data = json.loads(Path(input_file).read_text())
-    # Allow CLI workspace to override batch-level workspace
+    data = load_people_file(input_file)
     if workspace:
         data["workspace"] = workspace
     people = normalize_input(data)
@@ -1005,16 +1090,83 @@ def cmd_batch_check(input_file: str, workspace: str = "") -> None:
     print(json.dumps(results, indent=2))
 
 
+def cmd_backfill(
+    input_file: str,
+    fields: str,
+    workspace: str = "",
+    *,
+    dry_run: bool = False,
+    overwrite: bool = False,
+) -> None:
+    allowed = frozenset(f.strip() for f in fields.split(",") if f.strip())
+    if not allowed or allowed - BACKFILL_FIELDS:
+        print(json.dumps({
+            "error": f"fields must be a non-empty subset of {sorted(BACKFILL_FIELDS)}",
+        }))
+        sys.exit(1)
+
+    cfg = load_config()
+    om_dir = find_outreachmagic(cfg)
+    if not om_dir:
+        print(json.dumps({"error": "outreachmagic not found"}))
+        sys.exit(1)
+
+    rows_data = load_people_file(input_file)
+    if "people" in rows_data:
+        rows = rows_data["people"]
+    elif _row_val(rows_data, "full_name", "name") or _row_val(rows_data, "email"):
+        rows = [rows_data]
+    else:
+        rows = []
+    profiles: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    for row in rows:
+        name = _row_val(row, "full_name", "name")
+        company = _row_val(row, "company_name", "company")
+        if is_team_entry(name, company):
+            skipped.append({"reason": "team_award", "name": name, "company": company})
+            continue
+        profile = build_backfill_profile(row, allowed)
+        if profile:
+            profiles.append(profile)
+        else:
+            skipped.append({"reason": "missing_identity_or_fields", "row": row})
+
+    summary: dict[str, Any] = {
+        "fields": sorted(allowed),
+        "matched_rows": len(profiles),
+        "skipped": skipped,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        summary["profiles"] = profiles
+        print(json.dumps(summary, indent=2))
+        return
+
+    if not profiles:
+        summary["import"] = {"processed": 0}
+        print(json.dumps(summary, indent=2))
+        return
+
+    summary["import"] = run_import_profiles(
+        om_dir,
+        profiles,
+        workspace=workspace,
+        overwrite=overwrite,
+    )
+    print(json.dumps(summary, indent=2))
+
+
 def cmd_normalize(input_file: str) -> None:
     """Normalize input data."""
-    data = json.loads(Path(input_file).read_text())
+    data = load_people_file(input_file)
     people = normalize_input(data)
     print(json.dumps(people, indent=2))
 
 
 def cmd_serper_queries(input_file: str) -> None:
     """Print Serper query pack for each person."""
-    data = json.loads(Path(input_file).read_text())
+    data = load_people_file(input_file)
     people = normalize_input(data)
     cfg = load_config()
 
@@ -1132,10 +1284,13 @@ def cmd_update(check_only: bool = False, explicit_tag: str = "") -> None:
     }, indent=2))
 
 
-def _parse_cli_flags(argv: list[str]) -> tuple[str, bool, list[str]]:
-    """Extract --workspace and --force from argv."""
+def _parse_cli_flags(argv: list[str]) -> tuple[str, bool, str, bool, bool, list[str]]:
+    """Extract --workspace, --force, --fields, --dry-run, --overwrite from argv."""
     workspace = ""
     force = False
+    fields = ""
+    dry_run = False
+    overwrite = False
     remaining: list[str] = []
     skip = False
     for i, arg in enumerate(argv):
@@ -1145,6 +1300,12 @@ def _parse_cli_flags(argv: list[str]) -> tuple[str, bool, list[str]]:
         if arg == "--force":
             force = True
             continue
+        if arg == "--dry-run":
+            dry_run = True
+            continue
+        if arg == "--overwrite":
+            overwrite = True
+            continue
         if arg == "--workspace" and i + 1 < len(argv):
             workspace = argv[i + 1]
             skip = True
@@ -1152,8 +1313,15 @@ def _parse_cli_flags(argv: list[str]) -> tuple[str, bool, list[str]]:
         if arg.startswith("--workspace="):
             workspace = arg.split("=", 1)[1]
             continue
+        if arg == "--fields" and i + 1 < len(argv):
+            fields = argv[i + 1]
+            skip = True
+            continue
+        if arg.startswith("--fields="):
+            fields = arg.split("=", 1)[1]
+            continue
         remaining.append(arg)
-    return workspace, force, remaining
+    return workspace, force, fields, dry_run, overwrite, remaining
 
 
 def main() -> None:
@@ -1161,7 +1329,7 @@ def main() -> None:
         print(__doc__)
         sys.exit(1)
 
-    workspace, force, argv = _parse_cli_flags(sys.argv[1:])
+    workspace, force, fields, dry_run, overwrite, argv = _parse_cli_flags(sys.argv[1:])
     cmd = argv[0] if argv else ""
 
     if cmd == "config":
@@ -1194,9 +1362,14 @@ def main() -> None:
         cmd_serper_search(query, label)
     elif cmd == "batch-check":
         if len(argv) < 2:
-            print("Usage: enrich.py batch-check [--workspace W] input.json")
+            print("Usage: enrich.py batch-check [--workspace W] input.json|input.csv")
             sys.exit(1)
         cmd_batch_check(argv[1], workspace)
+    elif cmd == "backfill":
+        if len(argv) < 2 or not fields:
+            print("Usage: enrich.py backfill --fields title,industry [--workspace W] [--dry-run] [--overwrite] rows.csv")
+            sys.exit(1)
+        cmd_backfill(argv[1], fields, workspace, dry_run=dry_run, overwrite=overwrite)
     elif cmd == "normalize":
         if len(argv) < 2:
             print("Usage: enrich.py normalize input.json")

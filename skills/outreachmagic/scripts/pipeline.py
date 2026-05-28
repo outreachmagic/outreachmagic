@@ -4538,16 +4538,16 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
     conn2.close()
 
     pending_total = len(pending_ws) + len(pending_maps)
-    local_changes = local_lead_count + local_event_count + pending_lead_count
+    cloud_pending = local_event_count + pending_lead_count
     return {
         "can_sync": True,
         "pending_workspaces": pending_ws,
         "pending_rules": pending_maps,
-        "pending_local_leads": local_lead_count,
-        "pending_local_events": local_event_count,
-        "pending_lead_updates": pending_lead_count,
-        "pending_total": pending_total + local_changes,
-        "synced": pending_total == 0 and local_changes == 0,
+        "relay_untracked_leads": local_lead_count,
+        "local_agent_events": local_event_count,
+        "cloud_pending_leads": pending_lead_count,
+        "pending_total": pending_total + cloud_pending,
+        "synced": pending_total == 0 and cloud_pending == 0,
     }
 
 
@@ -4560,19 +4560,28 @@ def format_sync_status(status: dict) -> str:
     parts = []
     ws = status.get("pending_workspaces") or []
     rules = status.get("pending_rules") or []
-    local_leads = status.get("pending_local_leads", 0)
-    local_events = status.get("pending_local_events", 0)
-    local_total = local_leads + local_events
+    local_events = status.get("local_agent_events", 0)
+    cloud_pending = status.get("cloud_pending_leads", 0)
+    relay_untracked = status.get("relay_untracked_leads", 0)
     if ws:
         names = ", ".join(w["name"] for w in ws[:3])
         suffix = f" (+{len(ws) - 3} more)" if len(ws) > 3 else ""
         parts.append(f"{len(ws)} workspace{'s' if len(ws) != 1 else ''} ({names}{suffix})")
     if rules:
         parts.append(f"{len(rules)} routing rule{'s' if len(rules) != 1 else ''}")
-    if local_total:
-        parts.append(f"{local_total} agent event{'s' if local_total != 1 else ''}")
-    items = ", ".join(parts)
-    return f"\n⚠ Not synced to cloud: {items}. Run pipeline.py sync to push them."
+    if local_events:
+        parts.append(f"{local_events} agent event{'s' if local_events != 1 else ''}")
+    if cloud_pending:
+        parts.append(f"{cloud_pending} lead update{'s' if cloud_pending != 1 else ''}")
+    out = ""
+    if parts:
+        out = f"\n⚠ Not synced to cloud: {', '.join(parts)}. Run pipeline.py sync."
+    if relay_untracked:
+        out += (
+            f"\nℹ relay_untracked_leads={relay_untracked}: imported/local leads with no relay "
+            "pull history (normal after CSV). Data is in the shared DB — run pipeline.py paths."
+        )
+    return out
 
 
 def _mark_workspace_synced(slug: str, org_id: str = DEFAULT_ORG_ID) -> None:
@@ -4605,16 +4614,16 @@ def get_local_pending_counts(org_id: str = DEFAULT_ORG_ID) -> dict:
              AND metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
     ).fetchone()["n"]
-    pending_lead_updates = conn.execute(
+    cloud_pending_leads = conn.execute(
         "SELECT COUNT(*) AS n FROM leads WHERE cloud_pending = 1"
     ).fetchone()["n"]
     conn.close()
     return {
         "workspaces": unsynced_ws,
         "rules": unsynced_rules,
-        "events": local_events,
-        "lead_updates": pending_lead_updates,
-        "total": unsynced_ws + unsynced_rules + local_events + pending_lead_updates,
+        "local_agent_events": local_events,
+        "cloud_pending_leads": cloud_pending_leads,
+        "total": unsynced_ws + unsynced_rules + local_events + cloud_pending_leads,
     }
 
 
@@ -4627,10 +4636,12 @@ def format_local_sync_hint(counts: dict) -> str:
         parts.append(f"{counts['workspaces']} workspace{'s' if counts['workspaces'] != 1 else ''}")
     if counts["rules"]:
         parts.append(f"{counts['rules']} routing rule{'s' if counts['rules'] != 1 else ''}")
-    if counts["events"]:
-        parts.append(f"{counts['events']} agent event{'s' if counts['events'] != 1 else ''}")
-    if counts.get("lead_updates"):
-        parts.append(f"{counts['lead_updates']} lead update{'s' if counts['lead_updates'] != 1 else ''}")
+    if counts.get("local_agent_events"):
+        n = counts["local_agent_events"]
+        parts.append(f"{n} agent event{'s' if n != 1 else ''}")
+    if counts.get("cloud_pending_leads"):
+        n = counts["cloud_pending_leads"]
+        parts.append(f"{n} lead update{'s' if n != 1 else ''}")
     return f"\n⚠ Not synced: {', '.join(parts)}. Run: pipeline.py sync"
 
 
@@ -4700,16 +4711,14 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
     total = len(results["workspaces_synced"]) + len(results["rules_synced"])
     results["status"] = "ok"
 
-    local_leads = status.get("pending_local_leads", 0)
-    local_events = status.get("pending_local_events", 0)
-    local_total = local_leads + local_events
+    local_events = status.get("local_agent_events", 0)
 
     parts = []
     if total:
         parts.append(f"Synced {total} item{'s' if total != 1 else ''} to cloud.")
     results["relay_push_settings"] = get_relay_push_settings()
     agent_key = get_agent_key()
-    if local_total and agent_key:
+    if local_events and agent_key:
         agent_push = _push_agent_events_to_relay(agent_key)
         pushed = int(agent_push.get("pushed", 0) or 0)
         results["agent_events_pushed"] = pushed
@@ -4723,11 +4732,11 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
             results["agent_events_recommendation"] = agent_push["recommendation"]
         if pushed > 0:
             parts.append(f"Pushed {pushed} agent event{'s' if pushed != 1 else ''} to relay.")
-        elif local_total:
-            parts.append(f"{local_total} agent event{'s' if local_total != 1 else ''} could not be pushed.")
-    elif local_total:
+        elif local_events:
+            parts.append(f"{local_events} agent event{'s' if local_events != 1 else ''} could not be pushed.")
+    elif local_events:
         parts.append(
-            f"{local_total} agent event{'s' if local_total != 1 else ''} pending — "
+            f"{local_events} agent event{'s' if local_events != 1 else ''} pending — "
             f"no agent key configured to push them."
         )
 

@@ -165,5 +165,36 @@ class TestHermesEnv(unittest.TestCase):
             self.assertEqual(os.environ["SERPER_API_KEY"], "shell-wins")
 
 
+class TestTeamAndBackfill(unittest.TestCase):
+    def test_team_entry(self):
+        self.assertTrue(enrich.is_team_entry("Walter Center Team", "IU"))
+        self.assertFalse(enrich.is_team_entry("Jane Doe", "Acme"))
+
+    def test_build_backfill_profile(self):
+        row = {
+            "linkedin": "https://linkedin.com/in/jane",
+            "title": "VP Sales",
+            "industry": "SaaS",
+        }
+        profile = enrich.build_backfill_profile(row, frozenset({"title", "industry"}))
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertEqual(profile["title"], "VP Sales")
+        self.assertEqual(profile["industry"], "SaaS")
+        self.assertIn("linkedin.com/in/jane", profile["linkedin"])
+
+    def test_load_people_file_csv(self):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("full_name,company_name\nJane,Acme\n")
+            path = f.name
+        try:
+            data = enrich.load_people_file(path)
+            self.assertEqual(len(data["people"]), 1)
+        finally:
+            Path(path).unlink()
+
+
 if __name__ == "__main__":
     unittest.main()

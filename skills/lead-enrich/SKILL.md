@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill.
-version: 1.1.6
+version: 1.2.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -68,9 +68,21 @@ same Hermes env file:
 OUTREACHMAGIC_AGENT_KEY=om_agent_your_key_here
 ```
 
-The script auto-detects outreachmagic in `~/.hermes/skills/outreachmagic/`,
-`~/.cursor/skills/outreachmagic/`, or `~/.claude/skills/outreachmagic/`.
-Set `outreachmagic_home` in `config.json` to override the path.
+The script auto-detects outreachmagic in `~/.hermes/skills/outreachmagic/` (shared home — even when this skill runs from a Hermes profile). Run `pipeline.py paths` on outreachmagic to confirm database location.
+
+## CSV / award-list workflow (preferred for 10+ people)
+
+```bash
+# 0 credits — dedup entire file first
+python3 scripts/enrich.py batch-check --workspace your_workspace input/awards.csv
+
+# Serper only for rows with status not_found or ambiguous (skip team_award, exists_linkedin)
+
+# After research — patch title/industry only (0 Serper credits)
+python3 scripts/enrich.py backfill --fields title,industry --workspace your_workspace input/patch.csv
+```
+
+`batch-check` accepts `.json` or `.csv`. `backfill` requires `email` or `linkedin` per row; uses `import-profiles` (fills empty fields; add `--overwrite` to replace).
 
 ## When to Use
 
@@ -97,8 +109,7 @@ Set `outreachmagic_home` in `config.json` to override the path.
    Never write raw SQL. Never run both save paths for the same person.
 6. **Transparency.** Show which Serper queries ran, confidence, and what was
    saved. The user should see exactly where their credits went.
-7. **Batch wisely.** Cap at 50 people per run. Process sequentially with 1s
-   delay between Serper calls. Skip people who already exist.
+7. **Batch wisely.** Cap at 50 people per run. For CSV/award lists run **`batch-check` once** on the whole file (JSON or CSV) before any Serper. Process Serper only for `not_found` / `ambiguous`. Skip `team_award` rows.
 8. **Email guess is separate.** If the user wants email addresses, point them
    to the `email-guess` skill — do not guess emails inline.
 
@@ -112,8 +123,12 @@ python3 scripts/enrich.py check "Jane Doe" "Acme Corp"
 # With workspace (associates lead with your pipeline workspace)
 python3 scripts/enrich.py check --workspace your_workspace "Jane Doe" "Acme Corp"
 
-# Batch from JSON file
+# Batch from JSON or CSV (run this before Serper on lists)
 python3 scripts/enrich.py batch-check --workspace your_workspace input/people.json
+python3 scripts/enrich.py batch-check input/awards.csv
+
+# Backfill title/industry on existing leads (linkedin or email required)
+python3 scripts/enrich.py backfill --fields title,industry input/patch.csv
 
 # Update skill safely from GitHub release (checksum-verified)
 python3 scripts/enrich.py update --check
@@ -145,6 +160,7 @@ Output per person:
 | `exists_no_linkedin` | Same company, no LinkedIn (may have email) | LinkedIn queries only |
 | `ambiguous` | Name match, company mismatch | Run full Serper pack — do not skip |
 | `not_found` | No match | Run full Serper search pack |
+| `team_award` | Team/group row (no individual) | Skip Serper — tag `team_award`, add contact note |
 | `dedup_disabled` | `dedup_before_search: false` in config | Run Serper as requested |
 
 The helper script calls `pipeline.py history --name` and `--linkedin`, then
@@ -418,9 +434,11 @@ outreachmagic relative to the skills directory.
 
 | Problem | Fix |
 |---------|-----|
+| Profile DB looks empty / stale | Pipeline writes to `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`, not under `profiles/<name>/`. Run `pipeline.py paths` on outreachmagic. |
 | "No outreachmagic found" | Set `outreachmagic_home` in config.json to the absolute path |
 | Serper 400 "not allowed" | Query too restrictive — fallback to simpler template |
 | `import-profiles` rejects row | Requires email or LinkedIn. Use `add-lead` for stub records |
 | Empty extraction | Serper results too thin — try broad queries, or mark confidence `low` |
 | `ambiguous` on check | Name matched wrong company — run Serper or `check --force` |
+| Team / group award row | `batch-check` returns `team_award` — skip research |
 | outreachmagic not found | Install [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) or set `outreachmagic_home` |

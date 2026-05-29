@@ -6492,6 +6492,8 @@ def print_pull_diagnostics(stats: dict):
     print("Pull diagnostics")
     print("---------------")
     print(f"Mode: {stats.get('mode', 'unknown')}")
+    if stats.get("pull_since_sent"):
+        print(f"Relay since filter: {stats['pull_since_sent']}")
     print(f"Newest relay_id seen: {stats.get('newest_relay_id_seen') or '-'}")
     print(
         f"Event cursor (last_max_id): {stats.get('pull_after_id_start') or '-'} -> "
@@ -6541,8 +6543,13 @@ def sync_from_relay_org(
     cursor_stalled = False
     page_after_id = None if full else (after_id or 0)
     initial_after_id = page_after_id
+    has_event_cursor = not full and (
+        after_id is not None or get_last_max_id() is not None
+    )
 
-    pull_since = None if full else (since or get_last_pull())
+    # Incremental relay_events use id cursor only; `since` + D1 created_at formats broke comparison.
+    config_last_pull = None if full else (since or get_last_pull())
+    pull_since = None if full or has_event_cursor else config_last_pull
 
     while True:
         pages += 1
@@ -6614,7 +6621,8 @@ def sync_from_relay_org(
     snapshot_after_start = snapshot_after
     snap_pages = 0
     snap_total = 0
-    snap_pull_since = None if full else (since or get_last_pull())
+    snap_cursor = snapshot_after if not full else 0
+    snap_pull_since = None if full or snap_cursor else (since or get_last_pull())
     while True:
         snap_result = pull_events_org(
             agent_key,
@@ -6687,7 +6695,8 @@ def sync_from_relay_org(
     if stats is not None:
         stats.update({
             "mode": "full" if full else "incremental",
-            "config_last_pull_before": pull_since,
+            "pull_since_sent": pull_since,
+            "config_last_pull_before": config_last_pull,
             "config_last_max_id_before": after_id,
             "pull_after_id_start": initial_after_id,
             "pull_after_id_end": page_after_id,

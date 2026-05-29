@@ -654,7 +654,7 @@ Diagnostic verdicts:
 - `relay has events but deduped` — relay returned events already recorded in local `relay_ingested`.
 - `cursor advanced` — event cursor moved forward (`last_max_id` increased).
 - `cursor stalled` — relay returned a full page but cursor did not advance; inspect relay pagination.
-- Pull diagnostics also prints snapshot cursor (`last_snapshot_after_id`) and a **Hint** when incremental pull is empty (e.g. clear `last_max_id` or run `pull --full` once).
+- Pull diagnostics also prints snapshot cursor (`last_snapshot_after_id`) and a **Hint** when incremental pull is empty. Incremental event pull uses `last_max_id` only (not `since`); snapshots use `since` or `last_snapshot_after_id`.
 
 If events were ingested but still seem missing, inspect a specific lead timeline:
 

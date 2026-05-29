@@ -104,6 +104,25 @@ def test_sync_pull_progress_when_not_quiet(capsys, monkeypatch):
     assert "Pulling snapshot profiles... page 1 (1 profiles, 1 total)..." in out
 
 
+def test_incremental_omits_since_when_event_cursor_set(monkeypatch):
+    calls = []
+
+    def fake_pull(*_args, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("snapshots_only"):
+            return {"events": []}
+        return {"events": [], "max_id": 100}
+
+    monkeypatch.setattr(om, "pull_events_org", fake_pull)
+    monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
+
+    om.sync_from_relay_org("om_agent_test", after_id=99, full=False, quiet=True)
+
+    event_pulls = [c for c in calls if not c.get("snapshots_only")]
+    assert event_pulls[0]["since"] is None
+    assert event_pulls[0]["after_id"] == 99
+
+
 def test_sync_advances_cursor_past_empty_relay_page(monkeypatch):
     pages = [
         {"events": [], "max_id": 100},

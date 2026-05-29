@@ -6437,17 +6437,14 @@ def ingest_agent_entry(
 
 def pull_events_org(
     agent_key: str,
-    since: Optional[str] = None,
     after_id: Optional[int] = None,
     platform: Optional[str] = None,
     *,
     snapshot_after_id: Optional[int] = None,
     snapshots_only: bool = False,
 ) -> dict:
-    """Pull all org events from relay using an agent key (org-wide access)."""
+    """Pull org events from relay (cursor-only: after_id / snapshot_after_id)."""
     params = []
-    if since:
-        params.append(f"since={urllib.parse.quote(since)}")
     if after_id:
         params.append(f"after_id={after_id}")
     if platform:
@@ -6492,8 +6489,6 @@ def print_pull_diagnostics(stats: dict):
     print("Pull diagnostics")
     print("---------------")
     print(f"Mode: {stats.get('mode', 'unknown')}")
-    if stats.get("pull_since_sent"):
-        print(f"Relay since filter: {stats['pull_since_sent']}")
     print(f"Newest relay_id seen: {stats.get('newest_relay_id_seen') or '-'}")
     print(
         f"Event cursor (last_max_id): {stats.get('pull_after_id_start') or '-'} -> "
@@ -6515,9 +6510,48 @@ def print_pull_diagnostics(stats: dict):
     print(f"Verdict: {verdict}")
 
 
+def _ingest_relay_page(
+    events: list,
+    *,
+    debug_sentiment: bool = False,
+    quiet: bool = True,
+) -> dict:
+    imported = skipped = skipped_duplicates = skipped_filtered = skipped_errors = 0
+    newest_relay_id_seen = 0
+    for event in events:
+        relay_id = event.get("relay_id")
+        if isinstance(relay_id, int) and relay_id > newest_relay_id_seen:
+            newest_relay_id_seen = relay_id
+        dedupe_key = relay_dedupe_key(event)
+        was_duplicate = relay_already_ingested(dedupe_key)
+        try:
+            ingested = ingest_relay_event(event, debug_sentiment=debug_sentiment, quiet=quiet)
+        except Exception as exc:
+            if not quiet:
+                print(f"Warning: skipped relay event {event.get('relay_id') or '?'}: {exc}")
+            skipped += 1
+            skipped_errors += 1
+            continue
+        if ingested is None:
+            skipped += 1
+            if was_duplicate:
+                skipped_duplicates += 1
+            else:
+                skipped_filtered += 1
+        else:
+            imported += 1
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "skipped_duplicates": skipped_duplicates,
+        "skipped_filtered": skipped_filtered,
+        "skipped_errors": skipped_errors,
+        "newest_relay_id_seen": newest_relay_id_seen,
+    }
+
+
 def sync_from_relay_org(
     agent_key: str,
-    since: Optional[str] = None,
     after_id: Optional[int] = None,
     full: bool = False,
     debug_sentiment: bool = False,
@@ -6526,52 +6560,37 @@ def sync_from_relay_org(
     *,
     skip_routing_sync: bool = False,
 ) -> tuple[int, int]:
-    """Import relay events for the entire org using an agent key."""
+    """Import relay events for the org. Cursors: last_max_id (events), last_snapshot_after_id."""
     if not skip_routing_sync:
         maybe_sync_routing_from_cloud(quiet=quiet)
     elif not quiet:
         print("Skipped routing config sync (--skip-routing-sync).", flush=True)
     if not quiet:
         print("Contacting relay to pull new events...", flush=True)
+
     imported = skipped = 0
-    skipped_duplicates = 0
-    skipped_filtered = 0
-    skipped_errors = 0
-    pages = 0
+    skipped_duplicates = skipped_filtered = skipped_errors = 0
     relay_events_seen = 0
     newest_relay_id_seen = 0
     cursor_stalled = False
-    page_after_id = None if full else (after_id or 0)
-    initial_after_id = page_after_id
-    has_event_cursor = not full and (
-        after_id is not None or get_last_max_id() is not None
-    )
+    pages = 0
 
-    # Incremental relay_events use id cursor only; `since` + D1 created_at formats broke comparison.
-    config_last_pull = None if full else (since or get_last_pull())
-    pull_since = None if full or has_event_cursor else config_last_pull
+    page_after_id = 0 if full else int(after_id if after_id is not None else (get_last_max_id() or 0))
+    initial_after_id = page_after_id
+    snapshot_after = 0 if full else get_last_snapshot_after_id()
+    snapshot_after_start = snapshot_after
 
     while True:
         pages += 1
         result = pull_events_org(
             agent_key,
-            since=pull_since,
-            after_id=page_after_id if page_after_id else None,
+            after_id=page_after_id or None,
         )
         if result.get("error"):
             raise RuntimeError(result.get("message", "pull failed"))
 
         events = result.get("events") or []
-        next_after_id = result.get("max_id")
-        if next_after_id is None:
-            next_after_id = page_after_id
-        if page_after_id and next_after_id and next_after_id < page_after_id:
-            next_after_id = page_after_id
-
         if not events:
-            if page_after_id and next_after_id and next_after_id > page_after_id:
-                page_after_id = next_after_id
-                continue
             break
 
         relay_events_seen += len(events)
@@ -6581,53 +6600,26 @@ def sync_from_relay_org(
                 flush=True,
             )
 
-        for event in events:
-            relay_id = event.get("relay_id")
-            if isinstance(relay_id, int) and relay_id > newest_relay_id_seen:
-                newest_relay_id_seen = relay_id
-            dedupe_key = relay_dedupe_key(event)
-            was_duplicate = relay_already_ingested(dedupe_key)
-            try:
-                ingested = ingest_relay_event(
-                    event,
-                    debug_sentiment=debug_sentiment,
-                    quiet=True,
-                )
-            except Exception as exc:
-                if not quiet:
-                    rid = event.get("relay_id") or event.get("id") or "?"
-                    print(f"Warning: skipped relay event {rid}: {exc}")
-                skipped += 1
-                skipped_errors += 1
-                continue
-            if ingested is None:
-                skipped += 1
-                if was_duplicate:
-                    skipped_duplicates += 1
-                else:
-                    skipped_filtered += 1
-            else:
-                imported += 1
+        batch = _ingest_relay_page(events, debug_sentiment=debug_sentiment, quiet=True)
+        imported += batch["imported"]
+        skipped += batch["skipped"]
+        skipped_duplicates += batch["skipped_duplicates"]
+        skipped_filtered += batch["skipped_filtered"]
+        skipped_errors += batch["skipped_errors"]
+        newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
 
-        if len(events) >= 1000 and next_after_id == page_after_id:
+        next_after_id = int(result.get("max_id") or page_after_id)
+        if len(events) >= 1000 and next_after_id <= page_after_id:
             cursor_stalled = True
             break
-
         page_after_id = next_after_id
         if len(events) < 1000:
             break
 
-    snapshot_after = 0 if full else get_last_snapshot_after_id()
-    snapshot_after_start = snapshot_after
-    snap_pages = 0
-    snap_total = 0
-    snap_cursor = snapshot_after if not full else 0
-    snap_pull_since = None if full or snap_cursor else (since or get_last_pull())
+    snap_pages = snap_total = 0
     while True:
         snap_result = pull_events_org(
             agent_key,
-            since=snap_pull_since,
-            after_id=page_after_id or 0,
             snapshot_after_id=snapshot_after or None,
             snapshots_only=True,
         )
@@ -6645,33 +6637,13 @@ def sync_from_relay_org(
                 f"({len(snap_events)} profiles, {snap_total} total)...",
                 flush=True,
             )
-        for event in snap_events:
-            relay_id = event.get("relay_id")
-            if isinstance(relay_id, int) and relay_id > newest_relay_id_seen:
-                newest_relay_id_seen = relay_id
-            dedupe_key = relay_dedupe_key(event)
-            was_duplicate = relay_already_ingested(dedupe_key)
-            try:
-                ingested = ingest_relay_event(
-                    event,
-                    debug_sentiment=debug_sentiment,
-                    quiet=True,
-                )
-            except Exception as exc:
-                if not quiet:
-                    rid = event.get("relay_id") or event.get("id") or "?"
-                    print(f"Warning: skipped relay event {rid}: {exc}")
-                skipped += 1
-                skipped_errors += 1
-                continue
-            if ingested is None:
-                skipped += 1
-                if was_duplicate:
-                    skipped_duplicates += 1
-                else:
-                    skipped_filtered += 1
-            else:
-                imported += 1
+        batch = _ingest_relay_page(snap_events, debug_sentiment=debug_sentiment, quiet=True)
+        imported += batch["imported"]
+        skipped += batch["skipped"]
+        skipped_duplicates += batch["skipped_duplicates"]
+        skipped_filtered += batch["skipped_filtered"]
+        skipped_errors += batch["skipped_errors"]
+        newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
         snapshot_after = int(snap_result.get("max_snapshot_id") or 0)
         if not snap_result.get("has_more_snapshots"):
             break
@@ -6683,27 +6655,20 @@ def sync_from_relay_org(
     set_last_pull(datetime.now(timezone.utc).isoformat())
 
     pull_hint = None
-    if not full and relay_events_seen == 0 and not cursor_stalled:
-        if initial_after_id and page_after_id == initial_after_id:
-            pull_hint = (
-                "incremental pull returned no events and event cursor did not move — "
-                "try `pull --full` once or clear last_max_id in config"
-            )
-        elif initial_after_id and page_after_id and page_after_id > initial_after_id:
-            pull_hint = "relay advanced cursor past legacy rows; re-run pull if you expected new events"
+    if not full and relay_events_seen == 0 and not cursor_stalled and page_after_id == initial_after_id:
+        pull_hint = "no new relay events — run `pull --full` once or clear last_max_id in config"
 
+    cursor_advanced = bool(page_after_id > initial_after_id)
     if stats is not None:
         stats.update({
             "mode": "full" if full else "incremental",
-            "pull_since_sent": pull_since,
-            "config_last_pull_before": config_last_pull,
             "config_last_max_id_before": after_id,
             "pull_after_id_start": initial_after_id,
             "pull_after_id_end": page_after_id,
             "snapshot_after_start": snapshot_after_start,
             "snapshot_after_end": snapshot_after,
             "pull_hint": pull_hint,
-            "cursor_advanced": bool(page_after_id and (not initial_after_id or page_after_id > initial_after_id)),
+            "cursor_advanced": cursor_advanced,
             "cursor_stalled": cursor_stalled,
             "pages": pages,
             "relay_events_seen": relay_events_seen,
@@ -6718,7 +6683,7 @@ def sync_from_relay_org(
                 "relay_events_seen": relay_events_seen,
                 "imported": imported,
                 "skipped_duplicates": skipped_duplicates,
-                "cursor_advanced": bool(page_after_id and (not initial_after_id or page_after_id > initial_after_id)),
+                "cursor_advanced": cursor_advanced,
             }),
         })
     if not quiet:

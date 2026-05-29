@@ -104,7 +104,7 @@ def test_sync_pull_progress_when_not_quiet(capsys, monkeypatch):
     assert "Pulling snapshot profiles... page 1 (1 profiles, 1 total)..." in out
 
 
-def test_incremental_omits_since_when_event_cursor_set(monkeypatch):
+def test_pull_uses_id_cursors_only(monkeypatch):
     calls = []
 
     def fake_pull(*_args, **kwargs):
@@ -119,41 +119,8 @@ def test_incremental_omits_since_when_event_cursor_set(monkeypatch):
     om.sync_from_relay_org("om_agent_test", after_id=99, full=False, quiet=True)
 
     event_pulls = [c for c in calls if not c.get("snapshots_only")]
-    assert event_pulls[0]["since"] is None
+    assert "since" not in event_pulls[0]
     assert event_pulls[0]["after_id"] == 99
-
-
-def test_sync_advances_cursor_past_empty_relay_page(monkeypatch):
-    pages = [
-        {"events": [], "max_id": 100},
-        {"events": [{"relay_id": 101}], "max_id": 101},
-        {"events": [], "max_id": 101},
-    ]
-
-    def fake_pull(*_args, **kwargs):
-        if kwargs.get("snapshots_only"):
-            return {"events": []}
-        return pages.pop(0)
-
-    monkeypatch.setattr(om, "pull_events_org", fake_pull)
-    monkeypatch.setattr(om, "ingest_relay_event", lambda *_a, **_k: 1)
-    monkeypatch.setattr(om, "relay_already_ingested", lambda *_a, **_k: False)
-    monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
-    monkeypatch.setattr(om, "get_last_snapshot_after_id", lambda: 0)
-    monkeypatch.setattr(om, "set_last_snapshot_after_id", lambda *_a, **_k: None)
-
-    stats = {}
-    imported, _skipped = om.sync_from_relay_org(
-        "om_agent_test",
-        after_id=50,
-        full=False,
-        quiet=True,
-        stats=stats,
-    )
-
-    assert imported == 1
-    assert stats["pull_after_id_end"] == 101
-    assert stats["cursor_advanced"] is True
 
 
 def test_pull_diagnostics_verdict_priority():

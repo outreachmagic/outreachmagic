@@ -1,6 +1,6 @@
 # Install Outreach Magic
 
-Get install commands for your platform at [dev.outreachmagic.io/dashboard/agent](https://dev.outreachmagic.io/dashboard/agent) or [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent).
+Get install commands for your platform at [dev.outreachmagic.io/dashboard/agent](https://dev.outreachmagic.io/setup/agent) or [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent).
 
 After install, connect with **device authorization** (browser — no pasting keys into terminal or chat):
 
@@ -10,14 +10,23 @@ python3 <skill-path>/scripts/pipeline.py login
 
 ## Hermes
 
+Skills install to `~/.hermes/skills/` (real files). Hermes profiles use symlinks — see [hermes-skills-layout.md](hermes-skills-layout.md).
+
 ```bash
-git clone https://github.com/outreachmagic/hermes-outreachmagic.git /tmp/om-hermes
-mkdir -p ~/.hermes/skills/outreachmagic
-cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
-rm -rf /tmp/om-hermes
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.12/install.sh | bash -s -- \
+  --with-lead-enrich --all-profiles --migrate --tag v1.20.12 --lead-enrich-tag v1.2.1
+```
+
+```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 hermes -s outreachmagic
+```
+
+New profile only (skills already installed):
+
+```bash
+ln -sf ../../../skills/outreachmagic ~/.hermes/profiles/<name>/skills/outreachmagic
+ln -sf ../../../skills/lead-enrich ~/.hermes/profiles/<name>/skills/lead-enrich
 ```
 
 ## Cursor

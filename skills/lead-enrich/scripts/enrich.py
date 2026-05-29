@@ -234,22 +234,16 @@ def load_config() -> dict[str, Any]:
 # ── Path resolution ──────────────────────────────────────────────────────────
 
 def find_outreachmagic(config: dict[str, Any]) -> Optional[Path]:
-    """Find outreachmagic install (prefers shared ~/.hermes/skills/outreachmagic over profile copy)."""
-    candidates: list[Path] = []
+    """Find outreachmagic at ~/.hermes|cursor|claude/skills/outreachmagic (or outreachmagic_home)."""
     if config.get("outreachmagic_home"):
-        candidates.append(Path(config["outreachmagic_home"]).expanduser())
+        home = Path(config["outreachmagic_home"]).expanduser()
+        if (home / "scripts" / "pipeline.py").exists():
+            return home
+        return None
     for skills_dir in SKILL_SEARCH_PATHS:
-        candidates.append(skills_dir / OUTREACHMAGIC_NAME)
-    candidates.append(_find_skill_dir().parent / OUTREACHMAGIC_NAME)
-
-    seen: set[str] = set()
-    for p in candidates:
-        key = str(p.resolve())
-        if key in seen:
-            continue
-        seen.add(key)
-        if (p / "scripts" / "pipeline.py").exists():
-            return p
+        candidate = skills_dir / OUTREACHMAGIC_NAME
+        if (candidate / "scripts" / "pipeline.py").exists():
+            return candidate
     return None
 
 

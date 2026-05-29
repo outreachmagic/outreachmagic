@@ -4,22 +4,19 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 
 ## Install
 
+Skills live in `~/.hermes/skills/` (real files). Each Hermes profile gets symlinks — not copies.
+
 ```bash
-git clone https://github.com/outreachmagic/hermes-outreachmagic.git /tmp/om-hermes
-mkdir -p ~/.hermes/skills/outreachmagic
-cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
-rm -rf /tmp/om-hermes
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
-hermes -s outreachmagic
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.12/install.sh | bash -s -- \
+  --with-lead-enrich --all-profiles --migrate --tag v1.20.12 --lead-enrich-tag v1.2.1
 ```
-
-The agent will walk you through setup (getting an Agent Key at [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent)).
-
-If you already have a key:
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
+hermes -s outreachmagic
 ```
+
+Layout details: [hermes-skills-layout.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/hermes-skills-layout.md)
 
 ## Quick Start
 
@@ -27,13 +24,20 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py stats
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --id 1
 ```
 
 ## Update
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
+python3 ~/.hermes/skills/lead-enrich/scripts/enrich.py update
+```
+
+## Verify install
+
+```bash
+readlink ~/.hermes/profiles/<name>/skills/outreachmagic   # → ../../../skills/outreachmagic
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py paths
 ```
 
 ## Pricing

@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.20.4
+version: 1.20.12
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -29,9 +29,9 @@ The simplest pipeline tracker. Hermes auto-logs every outreach action to a local
 SQLite database. Free forever. Connect Smartlead, Heyreach, Instantly via paid relay.
 
 Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
-Config (single source of truth): `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`
+Config: `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`
 
-**Hermes WebUI profiles:** Scripts may live under `~/.hermes/profiles/<name>/skills/outreachmagic/`, but the database and config always resolve to the shared paths above (not under `profiles/<name>/`). Run `pipeline.py paths` to print the resolved paths on your machine.
+**Hermes:** Install real files under `~/.hermes/skills/outreachmagic/`. Each profile uses a symlink only (`profiles/<name>/skills/outreachmagic` → `../../../skills/outreachmagic`). See [docs/hermes-skills-layout.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/hermes-skills-layout.md) or run `bash install.sh` from [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic). Verify with `pipeline.py paths`.
 
 Optional config keys: `data_root` (e.g. `~/.claude` for Claude Code), `api_base_url`, `dev_repo` for local development.
 

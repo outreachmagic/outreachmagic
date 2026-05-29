@@ -1,59 +1,57 @@
 #!/usr/bin/env bash
-# Outreach Magic — Dev sync: copy skills/outreachmagic from this repo into ~/.hermes
-# For local development only. End users should install via:
-#   See docs/install.md (git clone from github.com/outreachmagic/hermes-outreachmagic)
-
+# Dev sync: copy monorepo skills into ~/.hermes/skills/ (Hermes canonical path).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SKILL_SRC="$ROOT/skills/outreachmagic"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-SKILL_DIR="$HERMES_HOME/skills/outreachmagic"
+OM_DIR="$HERMES_HOME/skills/outreachmagic"
+LE_DIR="$HERMES_HOME/skills/lead-enrich"
 
-if [[ ! -f "$SKILL_SRC/SKILL.md" ]]; then
-  echo "error: expected skill at $SKILL_SRC" >&2
-  exit 1
+sync_skill() {
+  local name=$1
+  local src="$ROOT/skills/$name"
+  local dest="$HERMES_HOME/skills/$name"
+  if [[ ! -f "$src/SKILL.md" ]]; then
+    echo "error: missing $src/SKILL.md" >&2
+    exit 1
+  fi
+  mkdir -p "$dest/scripts" "$dest/references" "$dest/databases" "$dest/config"
+  cp "$src/SKILL.md" "$dest/SKILL.md"
+  cp "$src/scripts/"*.py "$dest/scripts/"
+  cp "$src/scripts/VERSION" "$dest/scripts/VERSION" 2>/dev/null || true
+  if [[ -f "$src/references/schema.md" ]]; then
+    mkdir -p "$dest/references"
+    cp "$src/references/schema.md" "$dest/references/schema.md"
+  fi
+  chmod +x "$dest/scripts/"*.py 2>/dev/null || true
+  if [[ -f "$dest/SKILL.md" ]] && [[ -f "$dest/scripts/VERSION" ]]; then
+    ver="$(cat "$dest/scripts/VERSION")"
+    perl -i -pe "s/^version: .*/version: $ver/" "$dest/SKILL.md" 2>/dev/null || true
+  fi
+  echo "  synced $name → $dest"
+}
+
+echo "Outreach Magic — dev sync to $HERMES_HOME/skills/"
+sync_skill outreachmagic
+if [[ -d "$ROOT/skills/lead-enrich" ]]; then
+  mkdir -p "$LE_DIR/scripts"
+  cp "$ROOT/skills/lead-enrich/SKILL.md" "$LE_DIR/SKILL.md"
+  cp "$ROOT/skills/lead-enrich/scripts/enrich.py" "$LE_DIR/scripts/enrich.py"
+  chmod +x "$LE_DIR/scripts/enrich.py" 2>/dev/null || true
+  echo "  synced lead-enrich → $LE_DIR"
 fi
 
-echo "  Outreach Magic — sync local skill to Hermes"
-echo "  Source: $SKILL_SRC"
-echo "  Target: $SKILL_DIR"
-echo
+python3 "$OM_DIR/scripts/pipeline.py" init
 
-mkdir -p "$SKILL_DIR/scripts" "$SKILL_DIR/references" "$SKILL_DIR/databases" "$SKILL_DIR/config"
+chmod 700 "$OM_DIR/databases" "$OM_DIR/config" 2>/dev/null || true
+chmod 600 "$OM_DIR/databases/outreachmagic.db" "$OM_DIR/config/outreachmagic_config.json" 2>/dev/null || true
 
-cp "$SKILL_SRC/SKILL.md" "$SKILL_DIR/SKILL.md"
-cp "$SKILL_SRC/scripts/"*.py "$SKILL_DIR/scripts/"
-cp "$SKILL_SRC/scripts/VERSION" "$SKILL_DIR/scripts/VERSION"
-if [[ -f "$SKILL_SRC/references/schema.md" ]]; then
-  cp "$SKILL_SRC/references/schema.md" "$SKILL_DIR/references/schema.md"
+if [[ "${1:-}" == "--all-profiles" ]]; then
+  bash "$ROOT/platforms/hermes/install.sh" --all-profiles --with-lead-enrich --migrate
 fi
 
-chmod +x "$SKILL_DIR/scripts/pipeline.py" 2>/dev/null || true
-
-VER="$(cat "$SKILL_DIR/scripts/VERSION" 2>/dev/null || echo "0.0.0")"
-if [[ -f "$SKILL_DIR/SKILL.md" ]]; then
-  perl -i -pe "s/^version: .*/version: $VER/" "$SKILL_DIR/SKILL.md"
-fi
-
-python3 "$SKILL_DIR/scripts/pipeline.py" init
-
-chmod 700 "$SKILL_DIR/databases" "$SKILL_DIR/config" 2>/dev/null || true
-chmod 600 "$SKILL_DIR/databases/outreachmagic.db" "$SKILL_DIR/config/outreachmagic_config.json" 2>/dev/null || true
-
-echo
-echo "  Synced to: $SKILL_DIR"
-echo "  Database:  $SKILL_DIR/databases/outreachmagic.db"
-echo "  Version:   $VER"
-echo
-echo "  Hermes:"
-echo "    git clone https://github.com/outreachmagic/hermes-outreachmagic.git /tmp/om-hermes"
-echo "    cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/"
-echo "    rm -rf /tmp/om-hermes"
-echo "    hermes -s outreachmagic"
-echo
-echo "  After git pull, re-run:"
-echo "    bash scripts/sync-local.sh"
-echo
-echo "  Connect relay:"
-echo "    python3 $SKILL_DIR/scripts/pipeline.py login"
+VER="$(cat "$OM_DIR/scripts/VERSION" 2>/dev/null || echo "?")"
+echo ""
+echo "  Version: $VER"
+echo "  Paths:   python3 $OM_DIR/scripts/pipeline.py paths"
+echo "  Login:   python3 $OM_DIR/scripts/pipeline.py login"

@@ -1,8 +1,9 @@
-"""Tests for om_paths shared data root (Hermes profiles, Cursor, Claude)."""
+"""Tests for om_paths (Hermes global install + profile symlinks, Cursor)."""
 
 from __future__ import annotations
 
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,7 +13,6 @@ OM_PATHS_SRC = ROOT / "skills" / "outreachmagic" / "scripts" / "om_paths.py"
 
 
 def _load_om_paths_from_scripts_dir(scripts_dir: Path):
-    """Import om_paths as if installed under scripts_dir (fresh module per layout)."""
     target = scripts_dir / "om_paths.py"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(OM_PATHS_SRC.read_text())
@@ -38,28 +38,27 @@ class TestOmPathsDataRoot(unittest.TestCase):
                 (data_root / "skills" / "outreachmagic" / "databases" / "outreachmagic.db").resolve(),
             )
 
-    def test_hermes_profile_install_uses_shared_db(self):
+    def test_hermes_profile_symlink_resolves_to_global(self):
         with tempfile.TemporaryDirectory() as tmp:
-            scripts = (
-                Path(tmp)
-                / ".hermes"
-                / "profiles"
-                / "client-a"
-                / "skills"
-                / "outreachmagic"
-                / "scripts"
-            )
-            om = _load_om_paths_from_scripts_dir(scripts)
-            shared = Path(tmp) / ".hermes"
-            self.assertEqual(om._data_root_from_scripts_dir(scripts).resolve(), shared.resolve())
-            self.assertEqual(om.get_install_dir().resolve(), scripts.parent.resolve())
-            self.assertEqual(om.get_skill_home().resolve(), (shared / "skills" / "outreachmagic").resolve())
+            root = Path(tmp)
+            global_skill = root / ".hermes" / "skills" / "outreachmagic"
+            global_scripts = global_skill / "scripts"
+            global_scripts.mkdir(parents=True)
+            (global_skill / "SKILL.md").write_text("x")
+
+            prof_skills = root / ".hermes" / "profiles" / "popcam" / "skills"
+            prof_skills.mkdir(parents=True)
+            os.symlink("../../../skills/outreachmagic", prof_skills / "outreachmagic")
+
+            profile_scripts = (prof_skills / "outreachmagic" / "scripts").resolve()
+            om = _load_om_paths_from_scripts_dir(profile_scripts)
+            data_root = root / ".hermes"
+            self.assertEqual(om._data_root_from_scripts_dir(profile_scripts).resolve(), data_root.resolve())
+            self.assertEqual(om.get_install_dir().resolve(), global_skill.resolve())
             self.assertEqual(
                 om.get_db_path().resolve(),
-                (shared / "skills" / "outreachmagic" / "databases" / "outreachmagic.db").resolve(),
+                (data_root / "skills" / "outreachmagic" / "databases" / "outreachmagic.db").resolve(),
             )
-            profile_db = scripts.parent / "databases" / "outreachmagic.db"
-            self.assertNotEqual(om.get_db_path().resolve(), profile_db.resolve())
 
     def test_cursor_install(self):
         with tempfile.TemporaryDirectory() as tmp:

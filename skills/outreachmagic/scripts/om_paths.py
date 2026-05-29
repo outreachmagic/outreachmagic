@@ -1,6 +1,6 @@
 """
-Skill install paths. Infers data root from script location; falls back to ~/.hermes.
-Optional data_root and project_root overrides in config.
+Skill install paths. Resolves ~/.hermes (or ~/.cursor / ~/.claude) from scripts location.
+Hermes: install real files under <home>/skills/outreachmagic/; profile dirs use symlinks only.
 """
 
 from __future__ import annotations
@@ -15,26 +15,20 @@ _PROJECT_ROOT_OVERRIDE: Optional[Path] = None
 
 
 def _data_root_from_scripts_dir(scripts_dir: Path) -> Path:
-    """Map a scripts/ directory to the shared data root (Hermes home, .cursor, etc.)."""
+    """Map scripts/ to platform home (e.g. ~/.hermes/skills/outreachmagic/scripts → ~/.hermes)."""
     skill_dir = scripts_dir.parent
     skills_dir = skill_dir.parent
     if skills_dir.name == "skills" and skill_dir.name == SKILL_NAME:
-        candidate = skills_dir.parent
-        # Hermes WebUI profiles: ~/.hermes/profiles/<name>/skills/outreachmagic/scripts
-        # → shared ~/.hermes (database + config live under skills/outreachmagic there).
-        if candidate.parent.name == "profiles":
-            return candidate.parent.parent
-        return candidate
+        return skills_dir.parent
     return Path.home() / ".hermes"
 
 
 def _infer_data_root() -> Path:
-    """Derive data root from where this script actually lives on disk."""
     return _data_root_from_scripts_dir(Path(__file__).resolve().parent)
 
 
 def get_install_dir() -> Path:
-    """Skill install directory (profile-scoped or global); scripts live in install_dir/scripts."""
+    """Resolved skill directory (follows profile symlinks to ~/.hermes/skills/outreachmagic)."""
     return Path(__file__).resolve().parent.parent
 
 

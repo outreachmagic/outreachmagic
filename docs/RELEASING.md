@@ -142,6 +142,16 @@ grep '^GITHUB_REPO' ~/.hermes/skills/outreachmagic/scripts/pipeline.py
 # Expected: GITHUB_REPO = "outreachmagic/hermes-outreachmagic"
 ```
 
+Hermes install layout (symlinks, not profile copies):
+
+```bash
+curl -fsSI "https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/${TAG}/install.sh" | head -1
+readlink ~/.hermes/profiles/*/skills/outreachmagic   # → ../../../skills/outreachmagic
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py paths
+```
+
+See [hermes-skills-layout.md](hermes-skills-layout.md).
+
 ### What CI does automatically
 
 - Validates (tests + SkillScan)

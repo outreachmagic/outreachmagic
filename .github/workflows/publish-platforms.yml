@@ -21,7 +21,7 @@ jobs:
             org: outreachmagic
             skill_md: platforms/hermes/SKILL.md
             readme: platforms/hermes/README.md
-            extras: ""
+            extras: "platforms/hermes/install.sh"
             github_repo_value: outreachmagic/hermes-outreachmagic
           - platform: cursor-outreachmagic
             org: outreachmagic

@@ -20,23 +20,24 @@ Given a name + company, the agent:
 
 ## Install
 
+**Hermes** (with outreachmagic, profile symlinks):
+
 ```bash
-git clone https://github.com/outreachmagic/lead-enrich.git ~/.hermes/skills/lead-enrich
-# Add keys to ~/.hermes/.env (see default.env in the skill for variable names)
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.12/install.sh | bash -s -- \
+  --with-lead-enrich --all-profiles --migrate --tag v1.20.12 --lead-enrich-tag v1.2.1
 ```
 
-Or use per-skill `config.json` (`cp config.example.json config.json`).
+Or clone lead-enrich only: `git clone https://github.com/outreachmagic/lead-enrich.git ~/.hermes/skills/lead-enrich`
+
+Add keys to `~/.hermes/.env` (see `default.env`).
 
 | Platform | Path |
 |----------|------|
-| Hermes | `~/.hermes/skills/lead-enrich/` |
+| Hermes | `~/.hermes/skills/lead-enrich/` (profiles: symlink only) |
 | Cursor | `~/.cursor/skills/lead-enrich/` |
 | Claude Code | `~/.claude/skills/lead-enrich/` |
 
-If [outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) is installed
-in the same skills directory (e.g. `~/.hermes/skills/outreachmagic` next to
-`lead-enrich`), `enrich.py` auto-detects it. Override with `outreachmagic_home` in
-`config.json` or `OUTREACHMAGIC_HOME` if needed.
+`enrich.py` finds outreachmagic at `~/.hermes/skills/outreachmagic/`. Override with `outreachmagic_home` in config.
 
 ## Prerequisites
 

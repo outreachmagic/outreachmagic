@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill.
-version: 1.2.0
+version: 1.2.1
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -68,7 +68,7 @@ same Hermes env file:
 OUTREACHMAGIC_AGENT_KEY=om_agent_your_key_here
 ```
 
-The script auto-detects outreachmagic in `~/.hermes/skills/outreachmagic/` (shared home — even when this skill runs from a Hermes profile). Run `pipeline.py paths` on outreachmagic to confirm database location.
+**Hermes:** Install both skills under `~/.hermes/skills/`; profile dirs use symlinks only (see outreachmagic `install.sh` or `docs/hermes-skills-layout.md`). `enrich.py` finds outreachmagic at `~/.hermes/skills/outreachmagic/`.
 
 ## CSV / award-list workflow (preferred for 10+ people)
 
@@ -434,7 +434,7 @@ outreachmagic relative to the skills directory.
 
 | Problem | Fix |
 |---------|-----|
-| Profile DB looks empty / stale | Pipeline writes to `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`, not under `profiles/<name>/`. Run `pipeline.py paths` on outreachmagic. |
+| Stale skill or empty DB | Hermes profiles must symlink to `~/.hermes/skills/`, not full copies. Run `install.sh --migrate`. DB path: `pipeline.py paths`. |
 | "No outreachmagic found" | Set `outreachmagic_home` in config.json to the absolute path |
 | Serper 400 "not allowed" | Query too restrictive — fallback to simpler template |
 | `import-profiles` rejects row | Requires email or LinkedIn. Use `add-lead` for stub records |

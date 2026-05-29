@@ -23,7 +23,9 @@ def test_sync_stats_incremental_duplicate_only_advances_cursor(monkeypatch):
         {"events": [], "max_id": 11},
     ]
 
-    def fake_pull(*_args, **_kwargs):
+    def fake_pull(*_args, **kwargs):
+        if kwargs.get("snapshots_only"):
+            return {"events": []}
         return pages.pop(0)
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
@@ -51,7 +53,9 @@ def test_sync_stats_incremental_duplicate_only_advances_cursor(monkeypatch):
 def test_sync_stats_cursor_stall_guard(monkeypatch):
     first_page = {"events": [{"relay_id": i} for i in range(1, 1001)], "max_id": 5}
 
-    def fake_pull(*_args, **_kwargs):
+    def fake_pull(*_args, **kwargs):
+        if kwargs.get("snapshots_only"):
+            return {"events": []}
         return first_page
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
@@ -73,6 +77,31 @@ def test_sync_stats_cursor_stall_guard(monkeypatch):
     assert stats["cursor_stalled"] is True
     assert stats["skipped_filtered"] == 1000
     assert stats["verdict"] == "cursor stalled"
+
+
+def test_sync_pull_progress_when_not_quiet(capsys, monkeypatch):
+    calls = {"n": 0}
+
+    def fake_pull(*_args, **kwargs):
+        if kwargs.get("snapshots_only"):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"events": [{"relay_id": 1}], "max_snapshot_id": 1}
+            return {"events": []}
+        return {"events": [{"relay_id": 2}], "max_id": 2}
+
+    monkeypatch.setattr(om, "pull_events_org", fake_pull)
+    monkeypatch.setattr(om, "ingest_relay_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(om, "relay_already_ingested", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_kwargs: None)
+    monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
+
+    om.sync_from_relay_org("om_agent_test", after_id=0, full=False, quiet=False)
+
+    out = capsys.readouterr().out
+    assert "Contacting relay to pull new events..." in out
+    assert "Pulled 1 relay events (page 1, 1 total seen)..." in out
+    assert "Pulling snapshot profiles... page 1 (1 profiles, 1 total)..." in out
 
 
 def test_pull_diagnostics_verdict_priority():

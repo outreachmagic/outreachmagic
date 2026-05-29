@@ -6346,6 +6346,8 @@ def sync_from_relay_org(
 ) -> tuple[int, int]:
     """Import relay events for the entire org using an agent key."""
     maybe_sync_routing_from_cloud(quiet=quiet)
+    if not quiet:
+        print("Contacting relay to pull new events...", flush=True)
     imported = skipped = 0
     skipped_duplicates = 0
     skipped_filtered = 0
@@ -6373,6 +6375,11 @@ def sync_from_relay_org(
         if not events:
             break
         relay_events_seen += len(events)
+        if not quiet:
+            print(
+                f"Pulled {len(events)} relay events (page {pages}, {relay_events_seen} total seen)...",
+                flush=True,
+            )
 
         for event in events:
             relay_id = event.get("relay_id")
@@ -6415,6 +6422,8 @@ def sync_from_relay_org(
             break
 
     snapshot_after = 0
+    snap_pages = 0
+    snap_total = 0
     snap_pull_since = None if full else (since or get_last_pull())
     while True:
         snap_result = pull_events_org(
@@ -6430,6 +6439,14 @@ def sync_from_relay_org(
         if not snap_events:
             break
         pages += 1
+        snap_pages += 1
+        snap_total += len(snap_events)
+        if not quiet:
+            print(
+                f"Pulling snapshot profiles... page {snap_pages} "
+                f"({len(snap_events)} profiles, {snap_total} total)...",
+                flush=True,
+            )
         for event in snap_events:
             relay_id = event.get("relay_id")
             if isinstance(relay_id, int) and relay_id > newest_relay_id_seen:

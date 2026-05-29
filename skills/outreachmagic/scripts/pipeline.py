@@ -120,8 +120,8 @@ RELAY_URL = "https://api.outreachmagic.io"
 # Max chars stored in events.metadata_json["body"] (full copy for history / copy-insights).
 # body_preview stays 200 chars. Prevents runaway HTML/base64 from bloating SQLite.
 MAX_EVENT_BODY_STORAGE_CHARS = 65536
-RELAY_PUSH_BATCH_SIZE = 100
-RELAY_PUSH_TIMEOUT_SECONDS = 90
+RELAY_PUSH_BATCH_SIZE = 50
+RELAY_PUSH_TIMEOUT_SECONDS = 120
 RELAY_PUSH_MAX_ATTEMPTS = 3
 RELAY_PUSH_RETRY_BASE_SECONDS = 2
 
@@ -1303,8 +1303,42 @@ def migrate_db(conn=None):
     except sqlite3.OperationalError:
         pass
     repair_malformed_tags(conn)
+    conn.execute(
+        """UPDATE leads SET cloud_pending = 0
+           WHERE cloud_pending = 1
+             AND (
+               original_source_platform = 'relay'
+               OR original_source IN ('agent_sync', 'relay_sync')
+             )"""
+    )
     conn.commit()
     if own_conn:
+        conn.close()
+
+
+def _lead_should_cloud_pending(
+    source: Optional[str],
+    source_platform: Optional[str],
+) -> bool:
+    """True when a local change should be pushed to relay on next sync."""
+    if source_platform == "relay":
+        return False
+    if source in ("agent_sync", "relay_sync"):
+        return False
+    return True
+
+
+def _mark_lead_cloud_pending(lead_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+    """Flag lead snapshot for relay push (e.g. personalization-only edits)."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    conn.execute(
+        "UPDATE leads SET cloud_pending = 1, updated_at = datetime('now') WHERE id = ?",
+        (lead_id,),
+    )
+    if own_conn:
+        conn.commit()
         conn.close()
 
 
@@ -2073,6 +2107,8 @@ def resolve_lead(
     domain_from_email = email_domain(email_norm)
     effective_domain = domain_explicit or domain_from_email
     now_ts = datetime.now(timezone.utc).isoformat()
+    mark_pending = _lead_should_cloud_pending(source, source_platform)
+    pending_val = 1 if mark_pending else 0
 
     if created:
         company_id = ensure_company(
@@ -2089,14 +2125,14 @@ def resolve_lead(
                VALUES (?, ?, ?, ?, ?, ?, ?,
                        ?, ?, ?,
                        ?, ?, ?,
-                       ?, ?, ?, 1,
+                       ?, ?, ?, ?,
                        ?, ?, ?, ?,
                        ?, ?, ?, ?)""",
             (
                 name, company_id, company, title, industry, headcount, parse_headcount_numeric(headcount),
                 email_norm, domain_from_email, li_public,
                 location_city, location_state, location_country,
-                channel, stage, notes,
+                channel, stage, notes, pending_val,
                 source, source_detail, source_platform, now_ts,
                 source, source_detail, source_platform, now_ts,
             ),
@@ -2137,7 +2173,8 @@ def resolve_lead(
             else:
                 sets.append("notes = CASE WHEN notes IS NULL OR notes = '' THEN ? ELSE notes END")
                 params.append(notes)
-        sets.append("cloud_pending = 1")
+        if mark_pending:
+            sets.append("cloud_pending = 1")
         sets.append("updated_at = datetime('now')")
         params.append(lead_id)
         conn.execute(f"UPDATE leads SET {', '.join(sets)} WHERE id = ?", params)
@@ -2154,6 +2191,7 @@ def resolve_lead(
     filled = enrich_lead(
         lead_id, name=name_for_enrich, title=title, industry=industry,
         company=company, headcount=headcount, overwrite=overwrite,
+        mark_cloud_pending=mark_pending,
     )
     if email_norm:
         ensure_lead_domain(lead_id, email_norm)
@@ -2332,6 +2370,7 @@ def enrich_lead(
     company=None,
     headcount=None,
     overwrite: bool = False,
+    mark_cloud_pending: bool = True,
 ) -> list[str]:
     """Fill empty lead profile fields (won't overwrite non-empty unless overwrite=True)."""
     conn = get_conn()
@@ -2364,7 +2403,8 @@ def enrich_lead(
             params.append(val)
             filled.append(col)
     if updates:
-        updates.append("cloud_pending = 1")
+        if mark_cloud_pending:
+            updates.append("cloud_pending = 1")
         updates.append("updated_at = datetime('now')")
         conn.execute(f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", (*params, lead_id))
         conn.commit()
@@ -4774,6 +4814,8 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
         results["message"] = "Workspaces and rules already synced."
         # Still fall through — lead snapshots may need push (cloud_pending).
 
+    print("Syncing to relay...", flush=True)
+
     for ws in status.get("pending_workspaces") or []:
         try:
             routing_cloud.push_workspace_create(api_base, tok, name=ws["name"], slug=ws["slug"])
@@ -5304,7 +5346,7 @@ def apply_agent_lead_sync_payload(
         if k in ("name", "title", "industry", "company", "headcount") and v is not None
     }
     if update_fields:
-        enrich_lead(lead_id, overwrite=True, **update_fields)
+        enrich_lead(lead_id, overwrite=True, mark_cloud_pending=False, **update_fields)
 
     loc_sets, loc_params = [], []
     for col in ("location_city", "location_state", "location_country"):
@@ -5463,9 +5505,15 @@ def _relay_push_batches(agent_key: str, entries: list[dict], client_id: str) -> 
     last_error: Optional[str] = None
     throttled = False
     timeout_failures = 0
+    total_batches = (len(entries) + batch_size - 1) // batch_size
 
     for i in range(0, len(entries), batch_size):
         batch = entries[i : i + batch_size]
+        batch_num = i // batch_size + 1
+        print(
+            f"Pushing batch {batch_num}/{total_batches} ({len(batch)} entries)...",
+            flush=True,
+        )
         body = json.dumps({"client_id": client_id, "entries": batch}).encode()
         for attempt in range(1, max_attempts + 1):
             req = urllib.request.Request(
@@ -5484,6 +5532,10 @@ def _relay_push_batches(agent_key: str, entries: list[dict], client_id: str) -> 
                     count = int(result.get("pushed", 0) or 0)
                     total_pushed += count
                     last_error = None
+                    print(
+                        f"Batch {batch_num}/{total_batches} pushed ({total_pushed} total so far).",
+                        flush=True,
+                    )
                     break
             except urllib.error.HTTPError as exc:
                 body_text = ""
@@ -5572,6 +5624,7 @@ def _push_pending_lead_updates(agent_key: str) -> dict:
         conn.close()
         return {"pushed": 0, "error": None, "throttled": False}
 
+    print(f"Loading {len(rows)} pending lead update(s)...", flush=True)
     lead_ids = [row["id"] for row in rows]
     prefetch = _load_lead_sync_prefetch(conn, DEFAULT_ORG_ID, lead_ids)
 
@@ -7778,6 +7831,7 @@ def personalize_set(lead_id: int, field_name: str, field_value: str) -> dict:
             processed_at = datetime('now'),
             cloud_pending = 1
     """, (lead_id, field_name, field_value, source_hash))
+    _mark_lead_cloud_pending(lead_id, conn=conn)
     conn.commit()
     conn.close()
     return {"status": "ok", "lead_id": lead_id, "field": field_name}
@@ -7804,6 +7858,7 @@ def personalize_set_batch(items: list[dict]) -> dict:
                 processed_at = datetime('now'),
                 cloud_pending = 1
         """, (lid, fname, fval, source_hash))
+        _mark_lead_cloud_pending(lid, conn=conn)
         written += 1
     conn.commit()
     conn.close()

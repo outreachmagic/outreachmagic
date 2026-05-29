@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill.
-version: 1.2.2
+version: 1.2.3
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -69,6 +69,10 @@ OUTREACHMAGIC_AGENT_KEY=om_agent_your_key_here
 ```
 
 **Hermes:** Install both skills under `~/.hermes/skills/`; profile dirs use symlinks only (see outreachmagic `install.sh` or `docs/hermes-skills-layout.md`). `enrich.py` finds outreachmagic at `~/.hermes/skills/outreachmagic/`.
+
+**Workspace rollups (no Serper credits):** after saving leads, use outreachmagic
+`workspace summary --workspace <slug> --json` for tag counts and LinkedIn
+connection accepted per sender. Local DB only — pull optional.
 
 ## CSV / award-list workflow (preferred for 10+ people)
 

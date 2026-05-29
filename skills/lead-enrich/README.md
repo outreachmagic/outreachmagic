@@ -23,8 +23,8 @@ Given a name + company, the agent:
 **Hermes** (with outreachmagic, profile symlinks):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.13/install.sh | bash -s -- \
-  --with-lead-enrich --migrate --tag v1.20.13 --lead-enrich-tag v1.2.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.15/install.sh | bash -s -- \
+  --with-lead-enrich --migrate --tag v1.20.15 --lead-enrich-tag v1.2.2
 ```
 
 Or clone lead-enrich only: `git clone https://github.com/outreachmagic/lead-enrich.git ~/.hermes/skills/lead-enrich`
@@ -51,6 +51,12 @@ Add keys to `~/.hermes/.env` (see `default.env`).
 [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) for dedup + `import-profiles`.
 Set `OUTREACHMAGIC_AGENT_KEY=om_agent_...` in `~/.hermes/.env` (same file as Serper).
 Override install path: `OUTREACHMAGIC_HOME` or `outreachmagic_home` in config.
+
+After enrichment, workspace rollups (tags, LinkedIn connections by sender) use outreachmagic — no Serper credits:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py workspace summary --workspace <slug> --json
+```
 
 **Standalone mode:** use `normalize`, `serper-queries`, `serper-search`, and
 `serper-format` without outreachmagic; export JSON manually.

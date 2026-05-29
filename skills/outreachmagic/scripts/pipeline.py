@@ -139,8 +139,8 @@ UPDATE_SCRIPT_FILES = (
 )
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
 # Monorepo source default; publish-platforms.yml rewrites these per public install repo.
-SKILL_REPO_PATH = "skills/outreachmagic"
-GITHUB_REPO = "outreachmagic/outreachmagic-skill"
+SKILL_REPO_PATH = "."
+GITHUB_REPO = "outreachmagic/hermes-outreachmagic"
 # Install-path fallbacks when an older copy still points at the private monorepo name.
 PLATFORM_RELEASE_TARGETS: dict[str, tuple[str, str]] = {
     "hermes": ("outreachmagic/hermes-outreachmagic", "."),
@@ -2833,6 +2833,114 @@ def tag_list(workspace_id: str, lead_id: Optional[int] = None) -> list[dict]:
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def _sender_slug_from_profile(sender_profile: str) -> str:
+    """Short handle from a stored LinkedIn sender profile URL."""
+    sp = (sender_profile or "").strip().rstrip("/")
+    if not sp:
+        return "(unknown)"
+    norm = normalize_linkedin(sp) or sp
+    if "/in/" in norm:
+        return norm.split("/in/")[-1].split("?")[0]
+    parts = [p for p in norm.split("/") if p]
+    return parts[-1] if parts else norm
+
+
+def linkedin_status_summary(workspace_id: str) -> dict:
+    """Aggregate LinkedIn connection state by sender for a workspace."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT sender_profile,
+                  SUM(CASE WHEN is_connected = 1 THEN 1 ELSE 0 END) AS connected,
+                  SUM(CASE WHEN is_request_pending = 1 THEN 1 ELSE 0 END) AS pending
+           FROM workspace_lead_linkedin_status
+           WHERE workspace_id = ?
+           GROUP BY sender_profile
+           ORDER BY connected DESC, pending DESC, sender_profile""",
+        (workspace_id,),
+    ).fetchall()
+    connected_leads = conn.execute(
+        """SELECT COUNT(DISTINCT lead_id) FROM workspace_lead_linkedin_status
+           WHERE workspace_id = ? AND is_connected = 1""",
+        (workspace_id,),
+    ).fetchone()[0]
+    conn.close()
+    senders = []
+    for row in rows:
+        profile = row["sender_profile"] or ""
+        senders.append({
+            "sender_profile": profile,
+            "sender_slug": _sender_slug_from_profile(profile),
+            "connected": int(row["connected"] or 0),
+            "pending": int(row["pending"] or 0),
+        })
+    return {
+        "linkedin_senders": senders,
+        "linkedin_connected_leads": int(connected_leads or 0),
+    }
+
+
+def get_workspace_summary(workspace: str) -> dict:
+    """Workspace inventory: lead count, tags, LinkedIn sender connection aggregates."""
+    conn = get_conn()
+    try:
+        ws_row = resolve_workspace_identity(conn, workspace)
+        if not ws_row:
+            return {"error": f"workspace not found: {workspace}"}
+        ws_id = ws_row["id"]
+        lead_count = conn.execute(
+            "SELECT COUNT(*) FROM workspace_leads WHERE workspace_id = ?",
+            (ws_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    li_summary = linkedin_status_summary(ws_id)
+    cfg = load_config()
+    return {
+        "workspace": ws_row["slug"],
+        "workspace_name": ws_row["name"],
+        "lead_count": int(lead_count or 0),
+        "last_pull": cfg.get("last_pull"),
+        "tags": tag_list(ws_id),
+        **li_summary,
+    }
+
+
+def format_workspace_summary(summary: dict) -> str:
+    if summary.get("error"):
+        return str(summary["error"])
+    lines = [
+        f"Workspace: {summary.get('workspace_name')} ({summary.get('workspace')})",
+        f"Leads: {summary.get('lead_count', 0)}",
+        f"Data as of last_pull: {summary.get('last_pull') or '(never)'}",
+        f"LinkedIn connected leads (any sender): {summary.get('linkedin_connected_leads', 0)}",
+        "",
+        "Tags:",
+    ]
+    tags = summary.get("tags") or []
+    if not tags:
+        lines.append("  (none)")
+    else:
+        tag_w = max(len("Tag"), max((len(t.get("tag") or "") for t in tags), default=3))
+        lines.append(f"  {'Tag':<{tag_w}}  {'Leads':>7}")
+        lines.append(f"  {'-' * tag_w}  {'-' * 7}")
+        for row in tags:
+            lines.append(f"  {row.get('tag', ''):<{tag_w}}  {int(row.get('lead_count') or 0):>7}")
+    lines.extend(["", "LinkedIn senders:"])
+    senders = summary.get("linkedin_senders") or []
+    if not senders:
+        lines.append("  (none)")
+    else:
+        slug_w = max(len("Sender"), max((len(s.get("sender_slug") or "") for s in senders), default=6))
+        lines.append(f"  {'Sender':<{slug_w}}  {'Connected':>10}  {'Pending':>8}")
+        lines.append(f"  {'-' * slug_w}  {'-' * 10}  {'-' * 8}")
+        for row in senders:
+            lines.append(
+                f"  {row.get('sender_slug', ''):<{slug_w}}  "
+                f"{int(row.get('connected') or 0):>10}  {int(row.get('pending') or 0):>8}"
+            )
+    return "\n".join(lines)
 
 
 def tag_bulk(workspace_id: str, lead_ids: list[int], tags: list[str], *, remove: bool = False) -> dict:
@@ -6343,9 +6451,14 @@ def sync_from_relay_org(
     debug_sentiment: bool = False,
     quiet: bool = False,
     stats: Optional[dict] = None,
+    *,
+    skip_routing_sync: bool = False,
 ) -> tuple[int, int]:
     """Import relay events for the entire org using an agent key."""
-    maybe_sync_routing_from_cloud(quiet=quiet)
+    if not skip_routing_sync:
+        maybe_sync_routing_from_cloud(quiet=quiet)
+    elif not quiet:
+        print("Skipped routing config sync (--skip-routing-sync).", flush=True)
     if not quiet:
         print("Contacting relay to pull new events...", flush=True)
     imported = skipped = 0
@@ -7988,6 +8101,11 @@ def main():
         action="store_true",
         help="Print raw vs normalized sentiment mapping during ingest",
     )
+    pull_p.add_argument(
+        "--skip-routing-sync",
+        action="store_true",
+        help="Skip cloud routing config sync (events pull only; use if routing API times out)",
+    )
 
     refresh_p = sub.add_parser(
         "refresh",
@@ -8113,6 +8231,12 @@ def main():
         "--workspace",
         help="Workspace slug (required for single mode)",
     )
+    ws_summary = ws_sub.add_parser(
+        "summary",
+        help="Workspace inventory: lead count, tags, LinkedIn connection counts by sender",
+    )
+    ws_summary.add_argument("--workspace", required=True, help="Workspace slug or name")
+    ws_summary.add_argument("--json", action="store_true", help="JSON output (recommended for agents)")
 
     cmap_p = sub.add_parser("campaign-map", help="Campaign to workspace routing")
     cmap_sub = cmap_p.add_subparsers(dest="campaign_map_cmd")
@@ -8388,6 +8512,7 @@ def main():
                 debug_sentiment=args.debug_sentiment,
                 quiet=args.cron,
                 stats=pull_stats,
+                skip_routing_sync=getattr(args, "skip_routing_sync", False),
             )
         except RuntimeError as e:
             if not args.cron:
@@ -8799,7 +8924,16 @@ def main():
             sys.exit(1)
         print(json.dumps(insights, indent=2) if args.json else format_segment_insights(insights))
     elif args.command == "workspace":
-        if args.workspace_cmd == "create":
+        if args.workspace_cmd == "summary":
+            summary = get_workspace_summary(args.workspace)
+            if summary.get("error"):
+                print(json.dumps(summary, indent=2) if getattr(args, "json", False) else summary["error"])
+                sys.exit(1)
+            if getattr(args, "json", False):
+                print(json.dumps(summary, indent=2))
+            else:
+                print(format_workspace_summary(summary))
+        elif args.workspace_cmd == "create":
             print(json.dumps(create_workspace(args.name, args.slug, sync=getattr(args, "sync", False)), indent=2))
         elif args.workspace_cmd == "sync":
             print(json.dumps(sync_workspaces_to_cloud(), indent=2))

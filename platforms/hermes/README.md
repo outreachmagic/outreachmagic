@@ -7,8 +7,8 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 Skills live in `~/.hermes/skills/` (real files). Each Hermes profile gets symlinks — not copies.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.13/install.sh | bash -s -- \
-  --with-lead-enrich --migrate --tag v1.20.13 --lead-enrich-tag v1.2.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.15/install.sh | bash -s -- \
+  --with-lead-enrich --migrate --tag v1.20.15 --lead-enrich-tag v1.2.2
 ```
 
 ```bash

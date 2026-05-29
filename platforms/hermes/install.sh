@@ -31,7 +31,7 @@ Options:
   --all-profiles         Symlink all profiles (default when profiles/ exists)
   --profile NAME         Symlink one profile (repeatable)
   --migrate              Replace profile copies with symlinks (removes duplicates)
-  --tag TAG              outreachmagic release tag (e.g. v1.20.13)
+  --tag TAG              outreachmagic release tag (e.g. v1.20.15)
   --lead-enrich-tag TAG  lead-enrich release tag (e.g. v1.2.2)
   -h, --help             Show this help
 EOF

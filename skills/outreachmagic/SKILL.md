@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.20.13
+version: 1.20.15
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -124,6 +124,7 @@ Install and update paths are in the **Install** and **Updates** sections above.
 - The user says "track this" followed by outreach details
 - The user wants to connect a sequencer (paid — requires token)
 - The user asks for campaign breakdowns or counts by campaign name
+- The user asks for **workspace inventory** (counts by tag, LinkedIn connection accepted by sender)
 - The user asks about connection status, webhook URLs, or platform health (`status`, `connections`)
 - The user wants to add or remove a platform connection (`connect-platform`, `disconnect-platform`)
 
@@ -136,6 +137,8 @@ Install and update paths are in the **Install** and **Updates** sections above.
 - When the user asks for message content, use the `history` command on the specific lead.
 - For copy-performance analysis (full subject/body on positive leads + winner), use `copy-insights`.
 - For campaign counts, use `pipeline.py campaigns` (or `stats`, which includes a campaign section). Do not write raw SQL.
+- For **tag counts** or **LinkedIn connection counts by sender** in a workspace, use **`workspace summary --workspace <slug> --json`**. Do not use `export` or custom Python to aggregate.
+- **Tags** (`workspace_lead_tags`) and **LinkedIn connection state** (`workspace_lead_linkedin_status`, `is_connected` per sender) are different. A tag like `*_connected` is not the same as `is_connected` on a sender profile.
 - When the user asks about connections, webhook URLs, or platform health, use `status` or `connections`.
 - When the user wants to connect a new platform, use `connect-platform --platform <id>`.
 - If the user reports slowness, disk use, or pipeline oddities: run **`db-health`** first (local, no network). Explain `rulesTriggered` hints; suggest `archive --workspace <slug> --dry-run` when size rules fire.
@@ -145,13 +148,31 @@ Install and update paths are in the **Install** and **Updates** sections above.
 
 ## MANDATORY: Always Pull First
 
-**Before showing any pipeline data (show, stats, campaigns, history, or any query), you MUST run `pull` first.**
+**Before showing pipeline activity (show, stats, campaigns, history), run `pull` first** — unless the user only wants **local inventory** (see below).
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
 ```
 
-This fetches the latest events from the relay, so the user always sees current data. The local DB may be stale. Never skip this step — even if the user just asks "how's my pipeline" or "any activity?" — pull first, then show. This applies across sessions: a new session's first pipeline query must pull.
+If routing sync times out but you only need relay events, use:
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --skip-routing-sync
+```
+
+This fetches the latest events from the relay, so the user always sees current data. The local DB may be stale. Never skip pull for activity/timeline queries. This applies across sessions: a new session's first pipeline query must pull.
+
+### Workspace inventory (local DB — pull optional)
+
+**`workspace summary`** reads local SQLite only (fast, works offline). Use when the user asks for counts by tag or LinkedIn sender connection state. Optional `pull` first if they need freshly synced tags/connection imports.
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py workspace summary --workspace <slug> --json
+```
+
+Example JSON keys: `lead_count`, `last_pull`, `tags` (`tag`, `lead_count`), `linkedin_senders` (`sender_slug`, `connected`, `pending`), `linkedin_connected_leads`.
+
+Tag-only (same tag data as summary): `pipeline.py tag list --workspace <slug>`.
 
 ## Free Tier
 
@@ -177,6 +198,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --id 1
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --email j@acme.com
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py stats
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py campaigns
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py workspace summary --workspace <slug> --json
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles --file leads.csv
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local
@@ -265,6 +287,16 @@ pipeline.py init && pipeline.py pull --full
 pipeline.py export-local --file changes.csv
 # Machine B: import
 pipeline.py import-profiles --file changes.csv --overwrite
+```
+
+### Workspace inventory
+
+Counts by tag and LinkedIn connection accepted/pending per sender. **Local DB only** — no relay call; `last_pull` in output shows data freshness.
+
+```bash
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py workspace summary --workspace <slug> --json
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py workspace summary --workspace <slug>
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py tag list --workspace <slug>
 ```
 
 ### Campaign breakdown

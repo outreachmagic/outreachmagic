@@ -600,6 +600,17 @@ def set_last_pull(ts: str):
 def get_last_max_id() -> Optional[int]:
     return load_config().get("last_max_id")
 
+
+def get_last_snapshot_after_id() -> int:
+    return int(load_config().get("last_snapshot_after_id") or 0)
+
+
+def set_last_snapshot_after_id(snapshot_id: int):
+    cfg = load_config()
+    cfg["last_snapshot_after_id"] = int(snapshot_id)
+    save_config(cfg)
+
+
 def normalize_relay_timestamp(ts: Optional[str]) -> str:
     """UTC ISO timestamp for relay push/pull (sortable, comparable in D1)."""
     if not ts:
@@ -6483,9 +6494,13 @@ def print_pull_diagnostics(stats: dict):
     print(f"Mode: {stats.get('mode', 'unknown')}")
     print(f"Newest relay_id seen: {stats.get('newest_relay_id_seen') or '-'}")
     print(
-        f"Cursor: {stats.get('pull_after_id_start') or '-'} -> "
+        f"Event cursor (last_max_id): {stats.get('pull_after_id_start') or '-'} -> "
         f"{stats.get('pull_after_id_end') or '-'} "
         f"({'advanced' if stats.get('cursor_advanced') else 'unchanged'})"
+    )
+    print(
+        f"Snapshot cursor: {stats.get('snapshot_after_start') or '-'} -> "
+        f"{stats.get('snapshot_after_end') or '-'}"
     )
     print(
         f"Skips: duplicates={stats.get('skipped_duplicates', 0)} "
@@ -6493,6 +6508,8 @@ def print_pull_diagnostics(stats: dict):
     )
     if stats.get("cursor_stalled"):
         print("Cursor stall guard: triggered")
+    if stats.get("pull_hint"):
+        print(f"Hint: {stats['pull_hint']}")
     print(f"Verdict: {verdict}")
 
 
@@ -6538,8 +6555,18 @@ def sync_from_relay_org(
             raise RuntimeError(result.get("message", "pull failed"))
 
         events = result.get("events") or []
+        next_after_id = result.get("max_id")
+        if next_after_id is None:
+            next_after_id = page_after_id
+        if page_after_id and next_after_id and next_after_id < page_after_id:
+            next_after_id = page_after_id
+
         if not events:
+            if page_after_id and next_after_id and next_after_id > page_after_id:
+                page_after_id = next_after_id
+                continue
             break
+
         relay_events_seen += len(events)
         if not quiet:
             print(
@@ -6575,10 +6602,6 @@ def sync_from_relay_org(
             else:
                 imported += 1
 
-        next_after_id = result.get("max_id") or page_after_id
-        if page_after_id and next_after_id and next_after_id < page_after_id:
-            next_after_id = page_after_id
-
         if len(events) >= 1000 and next_after_id == page_after_id:
             cursor_stalled = True
             break
@@ -6587,7 +6610,8 @@ def sync_from_relay_org(
         if len(events) < 1000:
             break
 
-    snapshot_after = 0
+    snapshot_after = 0 if full else get_last_snapshot_after_id()
+    snapshot_after_start = snapshot_after
     snap_pages = 0
     snap_total = 0
     snap_pull_since = None if full else (since or get_last_pull())
@@ -6646,7 +6670,20 @@ def sync_from_relay_org(
 
     if page_after_id:
         set_last_max_id(page_after_id)
+    if snapshot_after:
+        set_last_snapshot_after_id(snapshot_after)
     set_last_pull(datetime.now(timezone.utc).isoformat())
+
+    pull_hint = None
+    if not full and relay_events_seen == 0 and not cursor_stalled:
+        if initial_after_id and page_after_id == initial_after_id:
+            pull_hint = (
+                "incremental pull returned no events and event cursor did not move — "
+                "try `pull --full` once or clear last_max_id in config"
+            )
+        elif initial_after_id and page_after_id and page_after_id > initial_after_id:
+            pull_hint = "relay advanced cursor past legacy rows; re-run pull if you expected new events"
+
     if stats is not None:
         stats.update({
             "mode": "full" if full else "incremental",
@@ -6654,6 +6691,9 @@ def sync_from_relay_org(
             "config_last_max_id_before": after_id,
             "pull_after_id_start": initial_after_id,
             "pull_after_id_end": page_after_id,
+            "snapshot_after_start": snapshot_after_start,
+            "snapshot_after_end": snapshot_after,
+            "pull_hint": pull_hint,
             "cursor_advanced": bool(page_after_id and (not initial_after_id or page_after_id > initial_after_id)),
             "cursor_stalled": cursor_stalled,
             "pages": pages,
@@ -6696,6 +6736,7 @@ def _clear_pull_cursors() -> None:
     cfg = load_config()
     cfg.pop("last_pull", None)
     cfg.pop("last_max_id", None)
+    cfg.pop("last_snapshot_after_id", None)
     save_config(cfg)
 
 

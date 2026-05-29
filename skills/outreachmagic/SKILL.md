@@ -652,8 +652,9 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --full --diagnos
 Diagnostic verdicts:
 - `relay empty` — no events returned for the current cursor window.
 - `relay has events but deduped` — relay returned events already recorded in local `relay_ingested`.
-- `cursor advanced` — pull cursor moved forward (`last_max_id` increased).
+- `cursor advanced` — event cursor moved forward (`last_max_id` increased).
 - `cursor stalled` — relay returned a full page but cursor did not advance; inspect relay pagination.
+- Pull diagnostics also prints snapshot cursor (`last_snapshot_after_id`) and a **Hint** when incremental pull is empty (e.g. clear `last_max_id` or run `pull --full` once).
 
 If events were ingested but still seem missing, inspect a specific lead timeline:
 

@@ -110,6 +110,7 @@ from om_paths import (
     get_install_dir,
     get_project_root,
     get_skill_home,
+    hermes_profile_copy_warning,
     resolve_project_path,
 )
 
@@ -8161,14 +8162,20 @@ def main():
         return
 
     if args.command == "paths":
-        print(json.dumps({
+        payload: dict = {
             "install_dir": str(get_install_dir()),
             "data_root": str(get_data_root()),
             "skill_home": str(get_skill_home()),
             "database": str(get_db_path()),
             "config": str(get_config_path()),
             "project_root": str(get_project_root()),
-        }, indent=2))
+        }
+        warn = hermes_profile_copy_warning()
+        if warn:
+            payload["warning"] = warn
+        print(json.dumps(payload, indent=2))
+        if warn:
+            print(f"\n⚠ {warn}", file=sys.stderr)
         return
 
     if args.command == "update":

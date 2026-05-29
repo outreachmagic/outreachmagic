@@ -23,8 +23,8 @@ Given a name + company, the agent:
 **Hermes** (with outreachmagic, profile symlinks):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.12/install.sh | bash -s -- \
-  --with-lead-enrich --all-profiles --migrate --tag v1.20.12 --lead-enrich-tag v1.2.1
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.13/install.sh | bash -s -- \
+  --with-lead-enrich --migrate --tag v1.20.13 --lead-enrich-tag v1.2.2
 ```
 
 Or clone lead-enrich only: `git clone https://github.com/outreachmagic/lead-enrich.git ~/.hermes/skills/lead-enrich`

@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
-version: 1.20.12
+version: 1.20.13
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -31,7 +31,7 @@ SQLite database. Free forever. Connect Smartlead, Heyreach, Instantly via paid r
 Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
 Config: `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`
 
-**Hermes layout:** Real install under `~/.hermes/skills/outreachmagic/`. Profiles use symlinks only (`profiles/<name>/skills/outreachmagic` → `../../../skills/outreachmagic`). Install: `curl -fsSL …/install.sh | bash` (see README). Verify: `pipeline.py paths`.
+**Hermes layout:** Real install under `~/.hermes/skills/outreachmagic/`. Profiles symlink only. `curl …/install.sh | bash` auto-links existing profiles. Verify: `pipeline.py paths`.
 
 Optional config keys: `data_root` (e.g. `~/.claude` for Claude Code), `api_base_url`, `dev_repo` for local development.
 

@@ -1,8 +1,8 @@
 {
-  "version": "1.2.1",
+  "version": "1.2.2",
   "files": {
-    "SKILL.md": "223ad856af4cc01cb8b4c989f6800f78b22e1670327bad93016e2a355808e9a7",
-    "README.md": "bcda86ffb3f506397791694321ee6403dc4e88461f9a1e3209954bef507051ba",
+    "SKILL.md": "1cfbbe78797299c69e79a66ac8839c545ababf43116759972739f814569e6c49",
+    "README.md": "161fc2d8d06f9c6c32f955a00b9768c1873b4e43abc0d36379689bb249d30659",
     "SECURITY.md": "5068fbd2c69331c4672ad0fac24225bc5bbcbfe43c4133aa16b7e58adaff139b",
     "config.example.json": "73b79324f9db54abfdc4e24bc81f1d0865986dbc5c193919d5643ce1d5b76ca3",
     "default.env": "64b16b66c822efc8ff873e37b5772ccab50c93c1b9f5325ecb850f8f416f599f",

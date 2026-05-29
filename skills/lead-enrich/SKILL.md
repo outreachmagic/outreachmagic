@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill.
-version: 1.2.1
+version: 1.2.2
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -419,14 +419,13 @@ Max 50 people per run.
 
 ## Platform Support
 
-| Platform | Skill path | Auto-detected |
-|----------|-----------|--------------|
-| Hermes | `~/.hermes/skills/lead-enrich/` | ✅ |
-| Cursor | `~/.cursor/skills/lead-enrich/` | ✅ |
-| Claude Code | `~/.claude/skills/lead-enrich/` | ✅ |
+| Platform | Install | Skill path |
+|----------|---------|------------|
+| Hermes | [hermes-outreachmagic `install.sh`](https://github.com/outreachmagic/hermes-outreachmagic) with `--with-lead-enrich` (symlinks all profiles by default) | `~/.hermes/skills/lead-enrich/` |
+| Cursor | Copy or clone into `~/.cursor/skills/lead-enrich/` | `~/.cursor/skills/lead-enrich/` |
+| Claude Code | Copy or clone into `~/.claude/skills/lead-enrich/` | `~/.claude/skills/lead-enrich/` |
 
-Copy this directory to any of the above paths. The `enrich.py` script auto-finds
-outreachmagic relative to the skills directory.
+**Hermes:** Real files live under `~/.hermes/skills/`. Each profile uses symlinks only (`profiles/<name>/skills/lead-enrich` → `../../../skills/lead-enrich`). Do not copy the skill into a profile directory.
 
 ---
 
@@ -434,7 +433,7 @@ outreachmagic relative to the skills directory.
 
 | Problem | Fix |
 |---------|-----|
-| Stale skill or empty DB | Hermes profiles must symlink to `~/.hermes/skills/`, not full copies. Run `install.sh --migrate`. DB path: `pipeline.py paths`. |
+| Stale skill or empty DB | Hermes: run `install.sh --migrate` (links all profiles by default). Check `pipeline.py paths` for `warning`. |
 | "No outreachmagic found" | Set `outreachmagic_home` in config.json to the absolute path |
 | Serper 400 "not allowed" | Query too restrictive — fallback to simpler template |
 | `import-profiles` rejects row | Requires email or LinkedIn. Use `add-lead` for stub records |

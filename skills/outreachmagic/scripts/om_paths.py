@@ -32,6 +32,22 @@ def get_install_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def hermes_profile_copy_warning() -> Optional[str]:
+    """Hermes only: install_dir under profiles/.../skills/outreachmagic means a full copy, not a symlink."""
+    parts = get_install_dir().parts
+    try:
+        i = parts.index("profiles")
+    except ValueError:
+        return None
+    if i + 3 >= len(parts) or parts[i + 2] != "skills" or parts[i + 3] != SKILL_NAME:
+        return None
+    return (
+        "Profile has a full copy of outreachmagic (not a symlink to ~/.hermes/skills/outreachmagic). "
+        "Run: curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/main/install.sh "
+        "| bash -s -- --migrate --all-profiles"
+    )
+
+
 DEFAULT_DATA_ROOT = _infer_data_root()
 
 _DATA_ROOT_OVERRIDE: Optional[Path] = None

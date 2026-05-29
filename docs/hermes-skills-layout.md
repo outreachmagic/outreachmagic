@@ -21,8 +21,11 @@ Skills live in `~/.hermes/skills/<name>/` — Hermes’s built-in skills directo
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.12/install.sh | bash -s -- --with-lead-enrich --all-profiles --migrate
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.13/install.sh | bash -s -- \
+  --with-lead-enrich --migrate --tag v1.20.13 --lead-enrich-tag v1.2.2
 ```
+
+When `~/.hermes/profiles/` exists, `install.sh` symlinks every profile by default (`--no-profiles` to skip).
 
 Or from a clone:
 

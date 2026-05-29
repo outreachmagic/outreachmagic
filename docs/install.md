@@ -13,9 +13,11 @@ python3 <skill-path>/scripts/pipeline.py login
 Skills install to `~/.hermes/skills/` (real files). Hermes profiles use symlinks — see [hermes-skills-layout.md](hermes-skills-layout.md).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.12/install.sh | bash -s -- \
-  --with-lead-enrich --all-profiles --migrate --tag v1.20.12 --lead-enrich-tag v1.2.1
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.13/install.sh | bash -s -- \
+  --with-lead-enrich --migrate --tag v1.20.13 --lead-enrich-tag v1.2.2
 ```
+
+Profiles under `~/.hermes/profiles/` are symlinked automatically. Use `--no-profiles` for global install only.
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login

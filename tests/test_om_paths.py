@@ -66,6 +66,27 @@ class TestOmPathsDataRoot(unittest.TestCase):
             om = _load_om_paths_from_scripts_dir(scripts)
             self.assertEqual(om._data_root_from_scripts_dir(scripts).resolve(), (Path(tmp) / ".cursor").resolve())
 
+    def test_profile_copy_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / ".hermes" / "profiles" / "popcam" / "skills" / "outreachmagic" / "scripts"
+            om = _load_om_paths_from_scripts_dir(scripts)
+            warn = om.hermes_profile_copy_warning()
+            self.assertIsNotNone(warn)
+            self.assertIn("symlink", warn.lower())
+
+    def test_symlinked_profile_no_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            global_scripts = root / ".hermes" / "skills" / "outreachmagic" / "scripts"
+            global_scripts.mkdir(parents=True)
+            prof_skills = root / ".hermes" / "profiles" / "popcam" / "skills"
+            prof_skills.mkdir(parents=True)
+            os.symlink("../../../skills/outreachmagic", prof_skills / "outreachmagic")
+            profile_scripts = (prof_skills / "outreachmagic" / "scripts").resolve()
+            om = _load_om_paths_from_scripts_dir(profile_scripts)
+            self.assertIsNone(om.hermes_profile_copy_warning())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,7 @@ LE_REPO="https://github.com/outreachmagic/lead-enrich.git"
 WITH_LEAD_ENRICH=0
 MIGRATE=0
 ALL_PROFILES=0
+NO_PROFILES=0
 OM_TAG=""
 LE_TAG=""
 PROFILES=()
@@ -22,13 +23,16 @@ Usage: install.sh [options]
   Installs skills into ~/.hermes/skills/ (real files).
   Profiles use symlinks: profiles/<name>/skills/<skill> → ../../../skills/<skill>
 
+  By default, symlinks every existing profile under ~/.hermes/profiles/ when present.
+
 Options:
   --with-lead-enrich     Also install lead-enrich
-  --profile NAME         Symlink skills for one Hermes profile (repeatable)
-  --all-profiles         Symlink skills for every profile under ~/.hermes/profiles/
-  --migrate              Replace profile skill directories with symlinks (removes copies)
-  --tag TAG              outreachmagic release tag (e.g. v1.20.12)
-  --lead-enrich-tag TAG  lead-enrich release tag (e.g. v1.2.1)
+  --no-profiles          Skip profile symlinks (global ~/.hermes/skills/ only)
+  --all-profiles         Symlink all profiles (default when profiles/ exists)
+  --profile NAME         Symlink one profile (repeatable)
+  --migrate              Replace profile copies with symlinks (removes duplicates)
+  --tag TAG              outreachmagic release tag (e.g. v1.20.13)
+  --lead-enrich-tag TAG  lead-enrich release tag (e.g. v1.2.2)
   -h, --help             Show this help
 EOF
 }
@@ -38,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --with-lead-enrich) WITH_LEAD_ENRICH=1; shift ;;
     --migrate) MIGRATE=1; shift ;;
     --all-profiles) ALL_PROFILES=1; shift ;;
+    --no-profiles) NO_PROFILES=1; shift ;;
     --profile) PROFILES+=("$2"); shift 2 ;;
     --tag) OM_TAG="$2"; shift 2 ;;
     --lead-enrich-tag) LE_TAG="$2"; shift 2 ;;
@@ -144,6 +149,22 @@ discover_profiles() {
   done
 }
 
+has_hermes_profiles() {
+  [[ -d "$HERMES_HOME/profiles" ]] || return 1
+  local p
+  for p in "$HERMES_HOME/profiles"/*/; do
+    [[ -d "$p" ]] && return 0
+  done
+  return 1
+}
+
+if [[ $NO_PROFILES -eq 0 ]] && [[ $ALL_PROFILES -eq 0 ]] && [[ ${#PROFILES[@]} -eq 0 ]]; then
+  if has_hermes_profiles; then
+    ALL_PROFILES=1
+    echo "→ Found Hermes profiles; linking skills into each (use --no-profiles to skip)"
+  fi
+fi
+
 mkdir -p "$SKILLS_DIR"
 install_outreachmagic
 if [[ $WITH_LEAD_ENRICH -eq 1 ]]; then
@@ -175,6 +196,8 @@ echo "  Paths:   python3 $SKILLS_DIR/outreachmagic/scripts/pipeline.py paths"
 if [[ ${#PROFILES[@]} -eq 0 ]]; then
   echo ""
   echo "  New profile:"
+  echo "    mkdir -p $HERMES_HOME/profiles/<name>/skills"
   echo "    ln -sf ../../../skills/outreachmagic $HERMES_HOME/profiles/<name>/skills/outreachmagic"
   echo "    ln -sf ../../../skills/lead-enrich $HERMES_HOME/profiles/<name>/skills/lead-enrich"
+  echo "  Or: bash install.sh --profile <name>"
 fi

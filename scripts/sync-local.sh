@@ -5,7 +5,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 OM_DIR="$HERMES_HOME/skills/outreachmagic"
-LE_DIR="$HERMES_HOME/skills/lead-enrich"
 
 sync_skill() {
   local name=$1
@@ -19,10 +18,14 @@ sync_skill() {
   cp "$src/SKILL.md" "$dest/SKILL.md"
   cp "$src/scripts/"*.py "$dest/scripts/"
   cp "$src/scripts/VERSION" "$dest/scripts/VERSION" 2>/dev/null || true
-  if [[ -f "$src/references/schema.md" ]]; then
+  for ref in "$src/references/"*; do
+    [[ -f "$ref" ]] || continue
     mkdir -p "$dest/references"
-    cp "$src/references/schema.md" "$dest/references/schema.md"
-  fi
+    cp "$ref" "$dest/references/$(basename "$ref")"
+  done
+  for extra in README.md default.env config.example.json SECURITY.md; do
+    [[ -f "$src/$extra" ]] && cp "$src/$extra" "$dest/$extra"
+  done
   chmod +x "$dest/scripts/"*.py 2>/dev/null || true
   if [[ -f "$dest/SKILL.md" ]] && [[ -f "$dest/scripts/VERSION" ]]; then
     ver="$(cat "$dest/scripts/VERSION")"
@@ -33,13 +36,11 @@ sync_skill() {
 
 echo "Outreach Magic — dev sync to $HERMES_HOME/skills/"
 sync_skill outreachmagic
-if [[ -d "$ROOT/skills/lead-enrich" ]]; then
-  mkdir -p "$LE_DIR/scripts"
-  cp "$ROOT/skills/lead-enrich/SKILL.md" "$LE_DIR/SKILL.md"
-  cp "$ROOT/skills/lead-enrich/scripts/enrich.py" "$LE_DIR/scripts/enrich.py"
-  chmod +x "$LE_DIR/scripts/enrich.py" 2>/dev/null || true
-  echo "  synced lead-enrich → $LE_DIR"
-fi
+for companion in lead-enrich lead-email; do
+  if [[ -d "$ROOT/skills/$companion" ]]; then
+    sync_skill "$companion"
+  fi
+done
 
 python3 "$OM_DIR/scripts/pipeline.py" init
 
@@ -47,7 +48,7 @@ chmod 700 "$OM_DIR/databases" "$OM_DIR/config" 2>/dev/null || true
 chmod 600 "$OM_DIR/databases/outreachmagic.db" "$OM_DIR/config/outreachmagic_config.json" 2>/dev/null || true
 
 if [[ "${1:-}" == "--all-profiles" ]]; then
-  bash "$ROOT/platforms/hermes/install.sh" --all-profiles --with-lead-enrich --migrate
+  bash "$ROOT/platforms/hermes/install.sh" --all-profiles --with-lead-enrich --with-lead-email --migrate
 fi
 
 VER="$(cat "$OM_DIR/scripts/VERSION" 2>/dev/null || echo "?")"

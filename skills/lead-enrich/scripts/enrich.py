@@ -35,10 +35,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+import companion_common as cc
+
 # ── Constants ────────────────────────────────────────────────────────────────
 
 SKILL_NAME = "lead-enrich"
-OUTREACHMAGIC_NAME = "outreachmagic"
 GITHUB_REPO = "outreachmagic/lead-enrich"
 GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RAW_BASE = "https://raw.githubusercontent.com"
@@ -49,89 +50,28 @@ UPDATE_FILES = (
     "config.example.json",
     "default.env",
     ".gitignore",
-    "references/email-finding-research.md",
+    "references/lead-email.md",
+    "scripts/companion_common.py",
     "scripts/enrich.py",
 )
 
-# Common install paths across platforms
-SKILL_SEARCH_PATHS = [
-    Path.home() / ".hermes" / "skills",
-    Path.home() / ".cursor" / "skills",
-    Path.home() / ".claude" / "skills",
-]
-
-BACKFILL_FIELDS = frozenset({"title", "industry"})
+_parse_dotenv_line = cc.parse_dotenv_line
 _TEAM_RE = re.compile(r"\bteam\b|center team|group award", re.I)
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
-_HERMES_ENV_LOADED = False
 
-
-def _hermes_home() -> Path:
-    return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")).expanduser()
-
-
-def _parse_dotenv_line(line: str) -> Optional[tuple[str, str]]:
-    """Parse one KEY=VALUE line (stdlib; supports quotes and export prefix)."""
-    line = line.strip()
-    if not line or line.startswith("#"):
-        return None
-    if line.startswith("export "):
-        line = line[7:].lstrip()
-    if "=" not in line:
-        return None
-    key, _, value = line.partition("=")
-    key = key.strip()
-    if not key:
-        return None
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        value = value[1:-1]
-    return key, value
-
-
-def _load_dotenv_file(path: Path) -> None:
-    """Merge KEY=VALUE pairs into os.environ (do not override existing)."""
-    if not path.is_file():
-        return
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        try:
-            text = path.read_text(encoding="latin-1")
-        except OSError:
-            return
-    for line in text.splitlines():
-        parsed = _parse_dotenv_line(line)
-        if not parsed:
-            continue
-        key, value = parsed
-        if key not in os.environ:
-            os.environ[key] = value
+def _find_skill_dir() -> Path:
+    return cc.skill_dir_from_script(__file__)
 
 
 def ensure_hermes_env_loaded() -> None:
-    """Load Hermes secrets from ~/.hermes/.env (and default.env fallback)."""
-    global _HERMES_ENV_LOADED
-    if _HERMES_ENV_LOADED:
-        return
-    home = _hermes_home()
-    for name in (".env", "default.env"):
-        _load_dotenv_file(home / name)
-    _HERMES_ENV_LOADED = True
+    cc.ensure_agent_env_loaded(_find_skill_dir())
 
 
 def _subprocess_env() -> dict[str, str]:
-    """Environment for outreachmagic pipeline subprocesses."""
-    ensure_hermes_env_loaded()
-    return {**os.environ, "PYTHONUNBUFFERED": "1"}
-
-
-def _find_skill_dir() -> Path:
-    """Find this skill's directory (where SKILL.md lives)."""
-    return Path(__file__).resolve().parent.parent
+    return cc.subprocess_env(_find_skill_dir())
 
 
 def _fetch_url(url: str) -> bytes:
@@ -232,44 +172,9 @@ def load_config() -> dict[str, Any]:
     return cfg
 
 
-# ── Path resolution ──────────────────────────────────────────────────────────
-
-def find_outreachmagic(config: dict[str, Any]) -> Optional[Path]:
-    """Find outreachmagic at ~/.hermes|cursor|claude/skills/outreachmagic (or outreachmagic_home)."""
-    if config.get("outreachmagic_home"):
-        home = Path(config["outreachmagic_home"]).expanduser()
-        if (home / "scripts" / "pipeline.py").exists():
-            return home
-        return None
-    for skills_dir in SKILL_SEARCH_PATHS:
-        candidate = skills_dir / OUTREACHMAGIC_NAME
-        if (candidate / "scripts" / "pipeline.py").exists():
-            return candidate
-    return None
-
-
-def get_pipeline_path(om_dir: Path) -> Path:
-    """Return path to pipeline.py."""
-    return om_dir / "scripts" / "pipeline.py"
-
-
-def _outreachmagic_agent_key_status(om_dir: Optional[Path]) -> tuple[bool, str]:
-    """Detect whether an outreachmagic agent key is available and from where."""
-    env_key = os.environ.get("OUTREACHMAGIC_AGENT_KEY", "").strip()
-    if env_key:
-        return True, "env"
-
-    if not om_dir:
-        return False, "missing"
-
-    cfg_path = om_dir / "config" / "outreachmagic_config.json"
-    try:
-        payload = json.loads(cfg_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return False, "missing"
-    if isinstance(payload, dict) and str(payload.get("agent_key", "")).strip():
-        return True, "outreachmagic_config"
-    return False, "missing"
+find_outreachmagic = cc.find_outreachmagic
+get_pipeline_path = cc.get_pipeline_path
+_outreachmagic_agent_key_status = cc.outreachmagic_agent_key_status
 
 
 # ── Company matching (dedup) ─────────────────────────────────────────────────
@@ -312,30 +217,19 @@ def lead_company_display(lead: dict[str, Any]) -> str:
 # ── Dedup check ──────────────────────────────────────────────────────────────
 
 def _history_lookup(
-    pipeline: str,
-    base_args: list[str],
+    om_dir: Path,
     extra_args: list[str],
-    timeout: int,
+    *,
+    workspace: Optional[str] = None,
+    timeout: int = 10,
 ) -> Optional[dict[str, Any]]:
-    """Run pipeline history --json and return lead dict or None."""
-    try:
-        proc = subprocess.run(
-            ["python3", pipeline, *base_args, *extra_args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=_subprocess_env(),
-        )
-        if proc.returncode != 0 or not proc.stdout.strip():
-            return None
-        data = json.loads(proc.stdout)
-        if isinstance(data, dict) and data.get("error"):
-            return None
-        if isinstance(data, dict) and data.get("lead"):
-            return data["lead"]
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
-        return None
-    return None
+    return cc.history_lookup(
+        om_dir,
+        extra_args,
+        workspace=workspace,
+        timeout=timeout,
+        skill_dir=_find_skill_dir(),
+    )
 
 
 def _apply_lead_match(
@@ -423,20 +317,23 @@ def check_lead_exists(
         return result
 
     pipeline = str(get_pipeline_path(om_dir))
-    hist_cmd = ["history", "--json", "--limit", "0"]
-    if workspace:
-        hist_cmd.extend(["--workspace", workspace])
+    _ = pipeline  # history via cc.history_lookup
 
     # LinkedIn hint is a strong identity match
     if linkedin:
         slug = linkedin.strip("/").split("/")[-1] if "/" in linkedin else linkedin
-        lead = _history_lookup(pipeline, hist_cmd, ["--linkedin", slug], timeout)
+        lead = _history_lookup(om_dir, ["--linkedin", slug], workspace=workspace, timeout=timeout)
         if lead:
             _apply_lead_match(result, lead, input_company=company, force=False)
             return result
 
     if name:
-        lead = _history_lookup(pipeline, hist_cmd, ["--name", name], timeout)
+        lead = _history_lookup(
+            om_dir,
+            ["--name", name],
+            workspace=workspace,
+            timeout=timeout,
+        )
         if lead:
             _apply_lead_match(
                 result,
@@ -508,30 +405,15 @@ def run_import_profiles(
     source_detail: str = "lead-enrich/backfill",
     timeout: int = 120,
 ) -> dict[str, Any]:
-    cmd = [
-        sys.executable,
-        str(get_pipeline_path(om_dir)),
-        "import-profiles",
-        "--json",
-        json.dumps(profiles),
-        "--source-detail",
-        source_detail,
-    ]
-    if workspace:
-        cmd.extend(["--workspace", workspace])
-    if overwrite:
-        cmd.append("--overwrite")
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
+    return cc.run_import_profiles(
+        om_dir,
+        profiles,
+        workspace=workspace,
+        overwrite=overwrite,
+        source_detail=source_detail,
         timeout=timeout,
-        env=_subprocess_env(),
+        skill_dir=_find_skill_dir(),
     )
-    if proc.returncode != 0:
-        err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
-        raise RuntimeError(err)
-    return json.loads(proc.stdout) if proc.stdout.strip() else {}
 
 
 def batch_check(
@@ -967,7 +849,7 @@ def format_report(results: list[dict[str, Any]]) -> str:
 
         if status == "exists_linkedin_no_email":
             lines.append(
-                f"  ⏭️  LinkedIn on file, no email — skip Serper; run Phase 5 if needed"
+                f"  ⏭️  LinkedIn on file, no email — skip Serper; use lead-email if needed"
             )
             totals["skipped"] += 1
             lines.append("")
@@ -1044,7 +926,7 @@ def cmd_config() -> None:
 
     om_dir = find_outreachmagic(cfg)
     cfg["_outreachmagic_detected"] = str(om_dir) if om_dir else "NOT FOUND"
-    cfg["_hermes_env"] = str(_hermes_home() / ".env")
+    cfg["_hermes_env"] = str(cc.agent_home() / ".env")
     key_set, key_source = _outreachmagic_agent_key_status(om_dir)
     cfg["_outreachmagic_agent_key_set"] = key_set
     cfg["_outreachmagic_agent_key_source"] = key_source

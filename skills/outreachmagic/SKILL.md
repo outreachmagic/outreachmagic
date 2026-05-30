@@ -7,7 +7,7 @@ description: >
   views, client briefings, deliverability diagnostics, campaign breakdowns,
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
-  Free tier: Hermes tracking plus relay (100 events/mo). Pro: unlimited sequencer sync.
+  Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
 version: 1.20.15
 author: Outreach Magic
 license: MIT
@@ -15,7 +15,8 @@ platforms: [linux, macos]
 metadata:
   hermes:
     tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm]
-    related_skills: []
+    category: productivity
+    related_skills: [lead-enrich, lead-email]
     external_domains:
       - domain: api.outreachmagic.io
         purpose: Relay webhooks and authenticated event pull (payloads imported to local SQLite)
@@ -26,7 +27,10 @@ metadata:
 # Outreach Magic — Pipeline Visibility for Hermes
 
 The simplest pipeline tracker. Hermes auto-logs every outreach action to a local
-SQLite database. Free forever. Connect Smartlead, Heyreach, Instantly via paid relay.
+SQLite database. Free forever for local work. Connect Smartlead, Heyreach, Instantly via paid relay.
+
+**Outreach Magic suite:** Pair with **lead-enrich** (Serper research + free dedup) and
+**lead-email** (trykitt find). See [skill suite docs](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/skill-suite.md).
 
 Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
 Config: `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`
@@ -176,16 +180,18 @@ Tag-only (same tag data as summary): `pipeline.py tag list --workspace <slug>`.
 
 ## Free Tier
 
-- Unlimited Hermes-originated tracking
+- Unlimited Hermes-originated tracking and local pipeline queries
 - CLI pipeline view + web dashboard
 - Pipeline stages with auto-advancement
-- 100 relay events/month
+- **1,000 relay events/month** (webhook sync from sequencers)
 
-## Pro Tier ($19/mo)
+## Pro Tier ($9/mo)
 
-- Unlimited relay events
+- **50,000 relay events/month** (cap — covers most teams)
 - Smartlead, Heyreach, Instantly, PlusVibe, EmailBison sync
 - Multi-platform unified pipeline
+
+Local import, export, dedup checks (lead-enrich), and `verify-email` recording do **not** count toward relay limits.
 
 Sign up at https://outreachmagic.io
 

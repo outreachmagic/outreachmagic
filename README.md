@@ -12,11 +12,12 @@
 
 ### Companion skills
 
-| Skill | Repo | Purpose |
-|-------|------|---------|
-| lead-enrich | [outreachmagic/lead-enrich](https://github.com/outreachmagic/lead-enrich) | Serper person research; dedup against local SQLite before spending credits |
+| Skill | Repo | Purpose | Monorepo tag |
+|-------|------|---------|--------------|
+| lead-enrich | [outreachmagic/lead-enrich](https://github.com/outreachmagic/lead-enrich) | Serper person research; dedup before credits | `lead-enrich-vX.Y.Z` |
+| lead-email | [outreachmagic/lead-email](https://github.com/outreachmagic/lead-email) | trykitt email find + save via OM | `lead-email-vX.Y.Z` |
 
-Companion source lives in `skills/lead-enrich/`. Publish with tag `lead-enrich-vX.Y.Z`.
+Companion source lives in `skills/lead-enrich/` and `skills/lead-email/`. See [docs/skill-suite.md](docs/skill-suite.md) and [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Repository Layout
 
@@ -32,7 +33,7 @@ platforms/
   skill-scan.yml               # SkillScan + tests on PRs
 scripts/                       # Dev scripts (build, sync, scan, verify)
 tests/                         # Workspace routing tests
-docs/                          # Install guide, registry plan
+docs/                          # Install guide, skill suite, registry publish
 ```
 
 ## Release Flow

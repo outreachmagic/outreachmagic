@@ -1,12 +1,12 @@
-name: Publish lead-enrich
+name: Publish lead-email
 
 on:
   push:
     tags:
-      - "lead-enrich-v*"
+      - "lead-email-v*"
 
 concurrency:
-  group: publish-lead-enrich-${{ github.ref }}
+  group: publish-lead-email-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -22,14 +22,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run lead-enrich tests
-        run: python3 tests/test_lead_enrich.py
+      - name: Run lead-email tests
+        run: python3 tests/test_lead_email.py
 
       - name: HermesHub SkillScan (strict)
         run: bash scripts/skill-scan.sh --strict
 
   publish:
-    name: Publish outreachmagic/lead-enrich
+    name: Publish outreachmagic/lead-email
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -38,25 +38,25 @@ jobs:
 
       - name: Assemble skill repo
         run: |
-          python3 scripts/generate-lead-enrich-manifest.py
+          python3 scripts/generate-lead-email-manifest.py
           mkdir -p staging/scripts staging/references
-          cp skills/lead-enrich/SKILL.md staging/
-          cp skills/lead-enrich/README.md staging/
-          cp skills/lead-enrich/SECURITY.md staging/
-          cp skills/lead-enrich/config.example.json staging/
-          cp skills/lead-enrich/default.env staging/
-          cp skills/lead-enrich/.gitignore staging/
-          cp skills/lead-enrich/update-manifest.json staging/
-          cp skills/lead-enrich/references/lead-email.md staging/references/
-          cp skills/lead-enrich/scripts/enrich.py staging/scripts/
-          cp skills/lead-enrich/scripts/companion_common.py staging/scripts/
+          cp skills/lead-email/SKILL.md staging/
+          cp skills/lead-email/README.md staging/
+          cp skills/lead-email/SECURITY.md staging/
+          cp skills/lead-email/config.example.json staging/
+          cp skills/lead-email/default.env staging/
+          cp skills/lead-email/.gitignore staging/
+          cp skills/lead-email/update-manifest.json staging/
+          cp skills/lead-email/references/email-finding-research.md staging/references/
+          cp skills/lead-email/scripts/lead_email.py staging/scripts/
+          cp skills/lead-email/scripts/companion_common.py staging/scripts/
           cp LICENSE staging/
 
-      - name: Push to outreachmagic/lead-enrich
+      - name: Push to outreachmagic/lead-email
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME#lead-enrich-}"
+          TAG="${GITHUB_REF_NAME#lead-email-}"
           cd staging
           git init -b main
           git config user.name "OutreachMagic Bot"
@@ -64,7 +64,7 @@ jobs:
           git add -A
           git commit -m "Release ${TAG}"
           git tag "${TAG}"
-          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/lead-enrich.git"
+          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/lead-email.git"
           git push origin main --force
           git push origin "${TAG}" --force
 
@@ -72,9 +72,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME#lead-enrich-}"
+          TAG="${GITHUB_REF_NAME#lead-email-}"
           gh release create "${TAG}" \
-            --repo "outreachmagic/lead-enrich" \
+            --repo "outreachmagic/lead-email" \
             --title "${TAG}" \
-            --notes "Lead Enrich release ${TAG}" \
+            --notes "Lead Email release ${TAG}" \
             --latest 2>/dev/null || echo "Release already exists or repo not created yet"

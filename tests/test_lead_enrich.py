@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills" / "lead-enrich" / "scripts"))
 
 import enrich  # noqa: E402
+import companion_common as cc  # noqa: E402
 
 
 class TestCompanyMatch(unittest.TestCase):
@@ -157,7 +158,8 @@ class TestSerperSearch(unittest.TestCase):
 
 class TestHermesEnv(unittest.TestCase):
     def setUp(self):
-        enrich._HERMES_ENV_LOADED = False
+        cc._AGENT_ENV_LOADED = False
+        enrich._HERMES_ENV_LOADED = False  # noqa: legacy tests
         self._saved = {
             k: os.environ[k]
             for k in ("SERPER_API_KEY", "OUTREACHMAGIC_AGENT_KEY", "HERMES_HOME")
@@ -167,7 +169,7 @@ class TestHermesEnv(unittest.TestCase):
             del os.environ[k]
 
     def tearDown(self):
-        enrich._HERMES_ENV_LOADED = False
+        cc._AGENT_ENV_LOADED = False
         for k in ("SERPER_API_KEY", "OUTREACHMAGIC_AGENT_KEY", "HERMES_HOME"):
             os.environ.pop(k, None)
         os.environ.update(self._saved)
@@ -190,6 +192,7 @@ class TestHermesEnv(unittest.TestCase):
             )
             os.environ["HERMES_HOME"] = str(home)
             enrich._HERMES_ENV_LOADED = False
+            cc._AGENT_ENV_LOADED = False
             enrich.ensure_hermes_env_loaded()
             self.assertEqual(os.environ.get("SERPER_API_KEY"), "from-hermes-env")
             self.assertEqual(
@@ -207,6 +210,7 @@ class TestHermesEnv(unittest.TestCase):
             (home / ".env").write_text("SERPER_API_KEY=from-file\n")
             os.environ["HERMES_HOME"] = str(home)
             enrich._HERMES_ENV_LOADED = False
+            cc._AGENT_ENV_LOADED = False
             enrich.ensure_hermes_env_loaded()
             self.assertEqual(os.environ["SERPER_API_KEY"], "shell-wins")
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate skills/lead-enrich/update-manifest.json with SHA256 checksums."""
+"""Generate skills/lead-email/update-manifest.json with SHA256 checksums."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "skills" / "lead-enrich"
+SKILL = ROOT / "skills" / "lead-email"
 MANIFEST_FILES = (
     "SKILL.md",
     "README.md",
@@ -17,9 +17,9 @@ MANIFEST_FILES = (
     "config.example.json",
     "default.env",
     ".gitignore",
-    "references/lead-email.md",
+    "references/email-finding-research.md",
     "scripts/companion_common.py",
-    "scripts/enrich.py",
+    "scripts/lead_email.py",
 )
 
 
@@ -31,7 +31,7 @@ def skill_version() -> str:
     text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
     match = re.search(r"^version:\s*([^\s]+)\s*$", text, flags=re.M)
     if not match:
-        raise SystemExit("missing version: in skills/lead-enrich/SKILL.md")
+        raise SystemExit("missing version: in skills/lead-email/SKILL.md")
     return match.group(1).strip()
 
 

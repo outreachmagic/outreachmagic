@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Run HermesHub SkillScan against skills/outreachmagic/SKILL.md
+# Run HermesHub SkillScan against all skills/*/SKILL.md
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCANNER="${SKILL_SCAN_SCRIPT:-/tmp/scan-skill.py}"
-SKILL_DIR="$ROOT/skills/outreachmagic"
 
 if [[ ! -f "$SCANNER" ]]; then
   echo "Downloading HermesHub scan-skill.py..."
@@ -12,5 +11,13 @@ if [[ ! -f "$SCANNER" ]]; then
     -o "$SCANNER"
 fi
 
-echo "Scanning $SKILL_DIR/SKILL.md"
-python3 "$SCANNER" "$SKILL_DIR/SKILL.md" "$@"
+failed=0
+for skill_md in "$ROOT"/skills/*/SKILL.md; do
+  [[ -f "$skill_md" ]] || continue
+  echo "Scanning $skill_md"
+  if ! python3 "$SCANNER" "$skill_md" "$@"; then
+    failed=1
+  fi
+done
+
+exit "$failed"

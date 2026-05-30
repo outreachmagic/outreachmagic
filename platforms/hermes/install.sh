@@ -7,13 +7,16 @@ HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 SKILLS_DIR="$HERMES_HOME/skills"
 OM_REPO="https://github.com/outreachmagic/hermes-outreachmagic.git"
 LE_REPO="https://github.com/outreachmagic/lead-enrich.git"
+LEM_REPO="https://github.com/outreachmagic/lead-email.git"
 
 WITH_LEAD_ENRICH=0
+WITH_LEAD_EMAIL=0
 MIGRATE=0
 ALL_PROFILES=0
 NO_PROFILES=0
 OM_TAG=""
 LE_TAG=""
+LEM_TAG=""
 PROFILES=()
 
 usage() {
@@ -27,12 +30,14 @@ Usage: install.sh [options]
 
 Options:
   --with-lead-enrich     Also install lead-enrich
+  --with-lead-email      Also install lead-email (implies --with-lead-enrich)
   --no-profiles          Skip profile symlinks (global ~/.hermes/skills/ only)
   --all-profiles         Symlink all profiles (default when profiles/ exists)
   --profile NAME         Symlink one profile (repeatable)
   --migrate              Replace profile copies with symlinks (removes duplicates)
   --tag TAG              outreachmagic release tag (e.g. v1.20.15)
-  --lead-enrich-tag TAG  lead-enrich release tag (e.g. v1.2.2)
+  --lead-enrich-tag TAG  lead-enrich release tag (e.g. v2.0.0)
+  --lead-email-tag TAG   lead-email release tag (e.g. v1.0.0)
   -h, --help             Show this help
 EOF
 }
@@ -40,12 +45,14 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --with-lead-enrich) WITH_LEAD_ENRICH=1; shift ;;
+    --with-lead-email) WITH_LEAD_ENRICH=1; WITH_LEAD_EMAIL=1; shift ;;
     --migrate) MIGRATE=1; shift ;;
     --all-profiles) ALL_PROFILES=1; shift ;;
     --no-profiles) NO_PROFILES=1; shift ;;
     --profile) PROFILES+=("$2"); shift 2 ;;
     --tag) OM_TAG="$2"; shift 2 ;;
     --lead-enrich-tag) LE_TAG="$2"; shift 2 ;;
+    --lead-email-tag) LEM_TAG="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
@@ -96,6 +103,22 @@ install_lead_enrich() {
     fi
   done
   chmod +x "$SKILLS_DIR/lead-enrich/scripts/enrich.py" 2>/dev/null || true
+}
+
+install_lead_email() {
+  local tmp
+  tmp="$(mktemp -d -t om-lem-XXXXXX)"
+  trap 'rm -rf "$tmp"' RETURN
+  echo "→ Installing lead-email to $SKILLS_DIR/lead-email"
+  clone_repo "$LEM_REPO" "$LEM_TAG" "$tmp"
+  mkdir -p "$SKILLS_DIR/lead-email"
+  for item in SKILL.md README.md SECURITY.md config.example.json default.env .gitignore references scripts; do
+    if [[ -e "$tmp/$item" ]]; then
+      rm -rf "$SKILLS_DIR/lead-email/$item"
+      cp -a "$tmp/$item" "$SKILLS_DIR/lead-email/"
+    fi
+  done
+  chmod +x "$SKILLS_DIR/lead-email/scripts/lead_email.py" 2>/dev/null || true
   if [[ -n "${TRYKITT_API_KEY:-}" ]]; then
     local env_file="$HERMES_HOME/.env"
     touch "$env_file"
@@ -178,6 +201,9 @@ install_outreachmagic
 if [[ $WITH_LEAD_ENRICH -eq 1 ]]; then
   install_lead_enrich
 fi
+if [[ $WITH_LEAD_EMAIL -eq 1 ]]; then
+  install_lead_email
+fi
 
 if [[ $ALL_PROFILES -eq 1 ]]; then
   while IFS= read -r profile; do
@@ -191,6 +217,9 @@ if [[ ${#PROFILES[@]} -gt 0 ]]; then
   if [[ $WITH_LEAD_ENRICH -eq 1 ]]; then
     link_profiles lead-enrich "${PROFILES[@]}"
   fi
+  if [[ $WITH_LEAD_EMAIL -eq 1 ]]; then
+    link_profiles lead-email "${PROFILES[@]}"
+  fi
 fi
 
 echo ""
@@ -199,6 +228,9 @@ echo "  outreachmagic: $SKILLS_DIR/outreachmagic"
 if [[ $WITH_LEAD_ENRICH -eq 1 ]]; then
   echo "  lead-enrich:   $SKILLS_DIR/lead-enrich"
 fi
+if [[ $WITH_LEAD_EMAIL -eq 1 ]]; then
+  echo "  lead-email:    $SKILLS_DIR/lead-email"
+fi
 echo "  Connect: python3 $SKILLS_DIR/outreachmagic/scripts/pipeline.py login"
 echo "  Paths:   python3 $SKILLS_DIR/outreachmagic/scripts/pipeline.py paths"
 if [[ ${#PROFILES[@]} -eq 0 ]]; then
@@ -206,6 +238,7 @@ if [[ ${#PROFILES[@]} -eq 0 ]]; then
   echo "  New profile:"
   echo "    mkdir -p $HERMES_HOME/profiles/<name>/skills"
   echo "    ln -sf ../../../skills/outreachmagic $HERMES_HOME/profiles/<name>/skills/outreachmagic"
-  echo "    ln -sf ../../../skills/lead-enrich $HERMES_HOME/profiles/<name>/skills/lead-enrich"
+    echo "    ln -sf ../../../skills/lead-enrich $HERMES_HOME/profiles/<name>/skills/lead-enrich"
+    echo "    ln -sf ../../../skills/lead-email $HERMES_HOME/profiles/<name>/skills/lead-email"
   echo "  Or: bash install.sh --profile <name>"
 fi

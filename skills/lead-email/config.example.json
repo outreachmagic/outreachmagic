@@ -1,0 +1,8 @@
+{
+  "_comment_keys": "Prefer ~/.hermes/.env: TRYKITT_API_KEY and OUTREACHMAGIC_AGENT_KEY (see default.env)",
+  "trykitt_api_key": "",
+  "trykitt_endpoint": "https://api.trykitt.ai/job/find_email",
+  "batch_delay_seconds": 8,
+  "outreachmagic_home": "",
+  "max_people_per_run": 50
+}

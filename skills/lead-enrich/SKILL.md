@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill.
-version: 1.2.3
+version: 1.3.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -19,13 +19,20 @@ required_environment_variables:
     prompt: Outreach Magic agent key
     help: Create at https://dev.outreachmagic.io/setup/agent (starts with om_agent_)
     required_for: outreachmagic dedup checks and saving enriched leads
+  - name: TRYKITT_API_KEY
+    prompt: trykitt.ai API key (optional)
+    help: Get a free key at https://trykitt.ai — enables Phase 5 email finding
+    required_for: Optional combined email find + verify via trykitt.ai
+    optional: true
 metadata:
   hermes:
-    tags: [sales, outreach, crm, enrichment, leads, research, linkedin, serper]
+    tags: [sales, outreach, crm, enrichment, leads, research, linkedin, serper, email]
     related_skills: [outreachmagic]
     external_domains:
       - domain: google.serper.dev
         purpose: Google Search API for company discovery and LinkedIn profile lookup
+      - domain: api.trykitt.ai
+        purpose: Optional email find + SMTP verify (Phase 5) when TRYKITT_API_KEY is set
       - domain: api.outreachmagic.io
         purpose: Via outreachmagic skill — save enriched profiles to local SQLite
 ---
@@ -36,10 +43,11 @@ Research a person (name + company) and save structured enrichment back to
 Outreach Magic. Uses **Serper.dev** for search, the **agent's built-in model**
 for extraction, and the **outreachmagic** skill for persistence.
 
-> **🪙 Credit-saving:** always checks outreachmagic *first* — if the lead already
-> has a **LinkedIn URL** at the **same company**, no Serper credits are spent.
-> Email-only records still get LinkedIn searches (1–2 credits). Name matches
-> at a different company return `ambiguous` so Serper is not skipped by mistake.
+> **🪙 Credit-saving:** always checks outreachmagic *first*. If the lead already
+> has **LinkedIn + email** at the **same company**, no Serper or trykitt credits
+> are spent. LinkedIn without email skips Serper but may run Phase 5 email finding.
+> Email-only records still get LinkedIn searches (1–2 Serper credits). Name matches
+> at a different company return `ambiguous` so APIs are not skipped by mistake.
 
 ## Prerequisites
 
@@ -70,6 +78,22 @@ OUTREACHMAGIC_AGENT_KEY=om_agent_your_key_here
 
 **Hermes:** Install both skills under `~/.hermes/skills/`; profile dirs use symlinks only (see outreachmagic `install.sh` or `docs/hermes-skills-layout.md`). `enrich.py` finds outreachmagic at `~/.hermes/skills/outreachmagic/`.
 
+### 3. trykitt.ai API key (optional — email finding)
+
+Ask the user: **"Would you like to enable email finding via trykitt.ai?"**
+
+- **Yes + key** → add to `~/.hermes/.env` as `TRYKITT_API_KEY=...` (see `default.env`)
+- **Yes, no key yet** → https://trykitt.ai (free tier, no credit card)
+- **No** → skip Phase 5; Serper + LinkedIn enrichment still works
+
+> **Free tier note:** trykitt throttles at ~10 concurrent requests. For batches
+> of 50+ leads you may see HTTP 500 (`free tier API is busy`). Use **8+ second**
+> delays between calls, or contact trykitt for higher concurrency. The `/credit`
+> endpoint may show `0` while requests still succeed.
+
+If `TRYKITT_API_KEY` is provided during Hermes install, `install.sh` can append it
+to `~/.hermes/.env` automatically.
+
 **Workspace rollups (no Serper credits):** after saving leads, use outreachmagic
 `workspace summary --workspace <slug> --json` for tag counts and LinkedIn
 connection accepted per sender. Local DB only — pull optional.
@@ -80,7 +104,7 @@ connection accepted per sender. Local DB only — pull optional.
 # 0 credits — dedup entire file first
 python3 scripts/enrich.py batch-check --workspace your_workspace input/awards.csv
 
-# Serper only for rows with status not_found or ambiguous (skip team_award, exists_linkedin)
+# Serper only for rows that need LinkedIn/domain (skip team_award, exists_linkedin_*)
 
 # After research — patch title/industry only (0 Serper credits)
 python3 scripts/enrich.py backfill --fields title,industry --workspace your_workspace input/patch.csv
@@ -98,9 +122,11 @@ python3 scripts/enrich.py backfill --fields title,industry --workspace your_work
 
 ## Agent Behavior Rules (Important)
 
-1. **Dedup first, always.** Before any Serper call, check outreachmagic with
-   `enrich.py check`. If the lead exists and has LinkedIn, skip Serper entirely.
-   The user's Serper credits are precious — never waste them.
+1. **Dedup first, always.** Before any Serper or email-finding API call, run
+   `enrich.py check`. If the lead has **LinkedIn + email** at the same company,
+   skip Serper and trykitt entirely. If LinkedIn exists but **no email**, skip
+   Serper and proceed to Phase 5 only when the user wants emails. Never spend
+   trykitt credits on leads that already have a deliverable email in outreachmagic.
 2. **Serper only.** Prefer `enrich.py serper-search --query "..."` (stdlib HTTP,
    key from config/env). Or use `curl` with `$SERPER_API_KEY` — never embed the
    key in chat logs. Never scrape Google or LinkedIn directly.
@@ -113,9 +139,15 @@ python3 scripts/enrich.py backfill --fields title,industry --workspace your_work
    Never write raw SQL. Never run both save paths for the same person.
 6. **Transparency.** Show which Serper queries ran, confidence, and what was
    saved. The user should see exactly where their credits went.
-7. **Batch wisely.** Cap at 50 people per run. For CSV/award lists run **`batch-check` once** on the whole file (JSON or CSV) before any Serper. Process Serper only for `not_found` / `ambiguous`. Skip `team_award` rows.
-8. **Email guess is separate.** If the user wants email addresses, point them
-   to the `email-guess` skill — do not guess emails inline.
+7. **Batch wisely.** Cap at 50 people per run. For CSV/award lists run **`batch-check` once** on the whole file (JSON or CSV) before any Serper. Process Serper only for statuses that need LinkedIn/domain. Skip `team_award` and `exists_linkedin_email` rows.
+8. **Email finding (Phase 5).** Check outreachmagic for an existing email before
+   any finder API. Prefer **trykitt.ai** when `TRYKITT_API_KEY` is set and
+   `company_domain` is known (see `references/email-finding-research.md`). After
+   trykitt (hit or miss), tag `trykitt_attempted` so batch re-runs do not repeat.
+   On free tier, sleep **8+ seconds** between trykitt calls in large batches.
+   Fall through to Icypeas → LeadMagic → Findymail only when trykitt misses or
+   has no key. For bounced emails, clear the bad address, remove `trykitt_attempted`,
+   and re-run Phase 5. Never fabricate or pattern-guess emails.
 
 ## Quick Start
 
@@ -160,8 +192,10 @@ Output per person:
 
 | Status | Meaning | Action |
 |--------|---------|--------|
-| `exists_linkedin` | Same company, has LinkedIn | Skip — return existing data |
-| `exists_no_linkedin` | Same company, no LinkedIn (may have email) | LinkedIn queries only |
+| `exists_linkedin_email` | Same company, LinkedIn + email | Skip Serper and email APIs |
+| `exists_linkedin_no_email` | Same company, LinkedIn, no email | Skip Serper → Phase 5 if user wants email |
+| `exists_no_linkedin_email` | Same company, email, no LinkedIn | LinkedIn Serper queries only |
+| `exists_no_linkedin` | Same company, neither | LinkedIn Serper queries only |
 | `ambiguous` | Name match, company mismatch | Run full Serper pack — do not skip |
 | `not_found` | No match | Run full Serper search pack |
 | `team_award` | Team/group row (no individual) | Skip Serper — tag `team_award`, add contact note |
@@ -177,7 +211,7 @@ result quality:
 
 ### Serper Credit Budget Estimator
 
-- **Per person minimum:** `0` credits (dedup status `exists_linkedin`).
+- **Per person minimum:** `0` Serper credits (`exists_linkedin_email`).
 - **Common path:** `2` credits (`2a` strict company + `2c` primary LinkedIn).
 - **Per person hard max:** `5` credits when all fallbacks are needed (`2a` + `2b` + `2c` + `2d` + `2e`).
 - **Batch formula:** `min=0`, `max=5*N` where `N` is people in the run.
@@ -346,7 +380,34 @@ Cannot use `import-profiles` (requires email or LinkedIn). Either:
 - `add-lead --name ... --company ... --notes "domain: acme.com, no LinkedIn found"`
 - Or report: "found domain X, no LinkedIn — not saved to pipeline DB"
 
-### Phase 5 — Report
+### Phase 5 — Email Finding (optional)
+
+Run only when the user wants emails **and** `company_domain` is known (from Serper
+or an existing outreachmagic record). Skip when `enrich.py check` returned
+`exists_linkedin_email` or the lead already has a non-bounced email.
+
+**Prerequisites:** `TRYKITT_API_KEY` in `~/.hermes/.env` (or shell). See
+`references/email-finding-research.md` for the full waterfall.
+
+**trykitt.ai (preferred):**
+
+```bash
+curl -s -X POST https://api.trykitt.ai/job/find_email \
+  -H "x-api-key: $TRYKITT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"fullName":"Jane Doe","domain":"acme.com","linkedinStandardProfileURL":"https://linkedin.com/in/janedoe","realtime":true}'
+```
+
+On success, save via `import-profiles` with the email and tag `trykitt_attempted`.
+Include `validity` / `validSMTP` in `notes` when useful.
+
+If trykitt returns no email, HTTP 500 (rate limit), or the key is unset, fall through
+to Icypeas → LeadMagic → Findymail per `references/email-finding-research.md`.
+
+**Batch rate limit:** sleep 8+ seconds between trykitt calls when processing 50+ leads
+on the free tier.
+
+### Phase 6 — Report
 
 Summarize per person:
 
@@ -354,10 +415,26 @@ Summarize per person:
 Jane Doe @ Acme Corp
   ✅ Company: acme.com | https://acme.com
   ✅ LinkedIn: linkedin.com/in/janedoe
+  ✅ Email: jane@acme.com (trykitt, valid)
   🟢 Confidence: high
   💾 Saved to outreachmagic (lead #42)
-  🔍 Serper: 2 queries
+  🔍 Serper: 2 queries | trykitt: 1 call
 ```
+
+---
+
+## Email-only mode
+
+When contacts are **already enriched** (have `company_domain` + `linkedin` in CSV or
+outreachmagic) but lack email:
+
+1. Run `batch-check` — process only `exists_linkedin_no_email` (and optionally
+   `not_found` rows that already have domain in the file).
+2. **Skip Serper entirely** (0 Serper credits).
+3. Run Phase 5 trykitt for each person with domain + LinkedIn.
+4. Respect `trykitt_attempted` — skip rows already tagged.
+
+Useful after a prior enrichment pass or when importing a pre-researched list.
 
 ---
 
@@ -415,7 +492,7 @@ Max 50 people per run.
 - ❌ Call Outreach Magic person-research API (`/v1/person-research`)
 - ❌ Use external LLM APIs (Gemini, OpenAI, etc.) for extraction
 - ❌ Scrape HTML pages or LinkedIn directly
-- ❌ Guess or verify email addresses (use a dedicated email-finder workflow when available)
+- ❌ Guess email addresses by pattern (use Phase 5 + `references/email-finding-research.md`)
 - ❌ Write raw SQL to the outreachmagic database
 - ❌ Upload to remote servers (local-only by default)
 
@@ -445,3 +522,7 @@ Max 50 people per run.
 | `ambiguous` on check | Name matched wrong company — run Serper or `check --force` |
 | Team / group award row | `batch-check` returns `team_award` — skip research |
 | outreachmagic not found | Install [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) or set `outreachmagic_home` |
+| trykitt HTTP 500 "busy" | Free-tier concurrency — wait 8+ s and retry, or reduce parallelism |
+| trykitt no email | Normal miss (~35%) — try waterfall in `references/email-finding-research.md` |
+| trykitt key missing | Phase 5 skipped — add `TRYKITT_API_KEY` to `~/.hermes/.env` |
+| Duplicate trykitt spend | Tag `trykitt_attempted` after first attempt per lead |

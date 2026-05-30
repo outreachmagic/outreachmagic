@@ -20,7 +20,7 @@ jobs:
       - name: Assemble skill repo
         run: |
           python3 scripts/generate-lead-enrich-manifest.py
-          mkdir -p staging/scripts
+          mkdir -p staging/scripts staging/references
           cp skills/lead-enrich/SKILL.md staging/
           cp skills/lead-enrich/README.md staging/
           cp skills/lead-enrich/SECURITY.md staging/
@@ -28,6 +28,7 @@ jobs:
           cp skills/lead-enrich/default.env staging/
           cp skills/lead-enrich/.gitignore staging/
           cp skills/lead-enrich/update-manifest.json staging/
+          cp skills/lead-enrich/references/email-finding-research.md staging/references/
           cp skills/lead-enrich/scripts/enrich.py staging/scripts/
           cp LICENSE staging/
 

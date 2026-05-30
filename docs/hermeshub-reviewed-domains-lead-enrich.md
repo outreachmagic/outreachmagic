@@ -4,7 +4,7 @@ Open on [amanning3390/hermeshub](https://github.com/amanning3390/hermeshub/issue
 
 ---
 
-**Title:** Reviewed Domains request — google.serper.dev for lead-enrich skill
+**Title:** Reviewed Domains request — google.serper.dev + api.trykitt.ai for lead-enrich skill
 
 **Body:**
 
@@ -16,6 +16,10 @@ External domain:
 - google.serper.dev — Serper.dev Google Search API. Used only when the user
   (or agent) explicitly runs person/company research. Queries are built from
   name + company (+ optional job title). No HTML scraping.
+
+- api.trykitt.ai — Optional email find + SMTP verify (Phase 5). Only when
+  TRYKITT_API_KEY is set and the user requests email finding. POST JSON with
+  name + domain + LinkedIn URL; no HTML scraping.
 
 The skill optionally integrates with the outreachmagic skill for local SQLite
 dedup (zero API calls when a matching lead already has LinkedIn). Saving uses

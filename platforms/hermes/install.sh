@@ -89,13 +89,21 @@ install_lead_enrich() {
   echo "→ Installing lead-enrich to $SKILLS_DIR/lead-enrich"
   clone_repo "$LE_REPO" "$LE_TAG" "$tmp"
   mkdir -p "$SKILLS_DIR/lead-enrich"
-  for item in SKILL.md README.md SECURITY.md config.example.json default.env .gitignore scripts; do
+  for item in SKILL.md README.md SECURITY.md config.example.json default.env .gitignore references scripts; do
     if [[ -e "$tmp/$item" ]]; then
       rm -rf "$SKILLS_DIR/lead-enrich/$item"
       cp -a "$tmp/$item" "$SKILLS_DIR/lead-enrich/"
     fi
   done
   chmod +x "$SKILLS_DIR/lead-enrich/scripts/enrich.py" 2>/dev/null || true
+  if [[ -n "${TRYKITT_API_KEY:-}" ]]; then
+    local env_file="$HERMES_HOME/.env"
+    touch "$env_file"
+    if ! grep -q '^TRYKITT_API_KEY=' "$env_file" 2>/dev/null; then
+      echo "TRYKITT_API_KEY=${TRYKITT_API_KEY}" >> "$env_file"
+      echo "  → Added TRYKITT_API_KEY to $env_file"
+    fi
+  fi
 }
 
 profile_skill_link() {

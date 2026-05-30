@@ -17,6 +17,7 @@ MANIFEST_FILES = (
     "config.example.json",
     "default.env",
     ".gitignore",
+    "references/email-finding-research.md",
     "scripts/enrich.py",
 )
 

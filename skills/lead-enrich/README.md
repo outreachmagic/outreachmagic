@@ -6,17 +6,19 @@ Works with **Hermes**, **Cursor**, and **Claude Code**. Pairs with
 dedup and save.
 
 > **Credit-saving:** checks your local outreachmagic database first. Skips Serper
-> when the same person **and company** already have a LinkedIn URL.
+> when the same person **and company** already have LinkedIn (and email when present).
+> Optional **trykitt.ai** email finding after enrichment (~65% find rate in testing).
 
 ## What it does
 
 Given a name + company, the agent:
 
-1. Checks outreachmagic (`enrich.py check`) — company-aware dedup, 0 credits
+1. Checks outreachmagic (`enrich.py check`) — email-aware dedup, 0 credits when complete
 2. Runs targeted Serper searches (company website, LinkedIn profile)
 3. Extracts structured fields using the agent's built-in model (no external LLM)
 4. Saves via outreachmagic `import-profiles` (`company_domain` + LinkedIn)
-5. Returns a summary: what was found, confidence, credits used
+5. Optionally finds email via trykitt.ai (or waterfall) when `TRYKITT_API_KEY` is set
+6. Returns a summary: what was found, confidence, Serper + email credits used
 
 ## Install
 
@@ -24,7 +26,7 @@ Given a name + company, the agent:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.15/install.sh | bash -s -- \
-  --with-lead-enrich --migrate --tag v1.20.15 --lead-enrich-tag v1.2.2
+  --with-lead-enrich --migrate --tag v1.20.15 --lead-enrich-tag v1.3.0
 ```
 
 Or clone lead-enrich only: `git clone https://github.com/outreachmagic/lead-enrich.git ~/.hermes/skills/lead-enrich`
@@ -51,6 +53,14 @@ Add keys to `~/.hermes/.env` (see `default.env`).
 [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) for dedup + `import-profiles`.
 Set `OUTREACHMAGIC_AGENT_KEY=om_agent_...` in `~/.hermes/.env` (same file as Serper).
 Override install path: `OUTREACHMAGIC_HOME` or `outreachmagic_home` in config.
+
+### trykitt.ai (optional — email finding)
+
+[trykitt.ai](https://trykitt.ai) → add `TRYKITT_API_KEY=...` to `~/.hermes/.env`.
+Enables Phase 5 combined find + verify. Free tier limits ~10 concurrent calls;
+use 8+ second delays for large batches. See `references/email-finding-research.md`.
+
+**Existing users:** no migration required — add the key when you want email finding.
 
 After enrichment, workspace rollups (tags, LinkedIn connections by sender) use outreachmagic — no Serper credits:
 
@@ -84,12 +94,13 @@ python3 scripts/enrich.py update --tag v1.1.5
 
 ## Credits
 
-| Scenario | Credits |
-|----------|---------|
-| Same company + LinkedIn in DB | **0** |
-| Same company, no LinkedIn | 1–2 |
-| `ambiguous` (name match, wrong company) | 2–5 (full pack) |
-| New lead | 2–5 |
+| Scenario | Serper | trykitt |
+|----------|--------|---------|
+| LinkedIn + email in DB | **0** | **0** |
+| LinkedIn, no email | **0** | 0–1 (Phase 5) |
+| Email, no LinkedIn | 1–2 | 0–1 |
+| `ambiguous` (wrong company) | 2–5 | 0–1 |
+| New lead | 2–5 | 0–1 |
 
 ## Config
 

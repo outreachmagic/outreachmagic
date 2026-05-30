@@ -102,6 +102,52 @@ class TestCheckLeadStatus(unittest.TestCase):
         self.assertIsNone(result["lead_id"])
         self.assertEqual(result["ambiguous_lead_id"], 1)
 
+    def test_apply_lead_match_email_aware_statuses(self):
+        result: dict = {}
+        enrich._apply_lead_match(
+            result,
+            {
+                "id": 1,
+                "name": "Jane",
+                "company_display": "Acme",
+                "email": "j@acme.com",
+                "linkedin_url": "linkedin.com/in/jane",
+            },
+            input_company="Acme",
+            force=False,
+        )
+        self.assertEqual(result["status"], "exists_linkedin_email")
+
+        result = {}
+        enrich._apply_lead_match(
+            result,
+            {
+                "id": 2,
+                "name": "Bob",
+                "company_display": "Acme",
+                "email": None,
+                "linkedin_url": "linkedin.com/in/bob",
+            },
+            input_company="Acme",
+            force=False,
+        )
+        self.assertEqual(result["status"], "exists_linkedin_no_email")
+
+        result = {}
+        enrich._apply_lead_match(
+            result,
+            {
+                "id": 3,
+                "name": "Pat",
+                "company_display": "Acme",
+                "email": "p@acme.com",
+                "linkedin_url": None,
+            },
+            input_company="Acme",
+            force=False,
+        )
+        self.assertEqual(result["status"], "exists_no_linkedin_email")
+
 
 class TestSerperSearch(unittest.TestCase):
     def test_missing_key_raises(self):

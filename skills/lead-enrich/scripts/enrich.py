@@ -49,6 +49,7 @@ UPDATE_FILES = (
     "config.example.json",
     "default.env",
     ".gitignore",
+    "references/email-finding-research.md",
     "scripts/enrich.py",
 )
 
@@ -372,9 +373,12 @@ def _apply_lead_match(
         return
 
     if result["linkedin_url"]:
-        result["status"] = "exists_linkedin"
+        if result["email"]:
+            result["status"] = "exists_linkedin_email"
+        else:
+            result["status"] = "exists_linkedin_no_email"
     elif result["email"]:
-        result["status"] = "exists_no_linkedin"
+        result["status"] = "exists_no_linkedin_email"
         result["has_email"] = True
     else:
         result["status"] = "exists_no_linkedin"
@@ -394,7 +398,8 @@ def check_lead_exists(
     """Check if a lead exists in outreachmagic.
 
     Returns status:
-        not_found, exists_linkedin, exists_no_linkedin, ambiguous, dedup_disabled
+        not_found, exists_linkedin_email, exists_linkedin_no_email,
+        exists_no_linkedin_email, exists_no_linkedin, ambiguous, dedup_disabled
     """
     result: dict[str, Any] = {
         "status": "not_found",
@@ -952,8 +957,18 @@ def format_report(results: list[dict[str, Any]]) -> str:
 
         lines.append(f"## {i}. {name} @ {company}")
 
-        if status == "exists_linkedin":
-            lines.append(f"  ⏭️  Already in outreachmagic — skipped (0 Serper credits)")
+        if status in ("exists_linkedin_email", "exists_linkedin"):
+            lines.append(
+                f"  ⏭️  Already in outreachmagic (LinkedIn + email) — skipped (0 credits)"
+            )
+            totals["skipped"] += 1
+            lines.append("")
+            continue
+
+        if status == "exists_linkedin_no_email":
+            lines.append(
+                f"  ⏭️  LinkedIn on file, no email — skip Serper; run Phase 5 if needed"
+            )
             totals["skipped"] += 1
             lines.append("")
             continue
@@ -966,7 +981,7 @@ def format_report(results: list[dict[str, Any]]) -> str:
             lines.append("")
             continue
 
-        if status == "exists_no_linkedin":
+        if status in ("exists_no_linkedin", "exists_no_linkedin_email"):
             lines.append(f"  ⚠️  Exists but no LinkedIn — researching LinkedIn only")
         else:
             lines.append(f"  🔍 Researched via Serper")

@@ -172,7 +172,10 @@ def load_config() -> dict[str, Any]:
     return cfg
 
 
-find_outreachmagic = cc.find_outreachmagic
+def find_outreachmagic(config: dict[str, Any]) -> Optional[Path]:
+    return cc.find_outreachmagic(config, skill_dir=_find_skill_dir())
+
+
 get_pipeline_path = cc.get_pipeline_path
 _outreachmagic_agent_key_status = cc.outreachmagic_agent_key_status
 

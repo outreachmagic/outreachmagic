@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run HermesHub SkillScan against all skills/*/SKILL.md
+# Run HermesHub SkillScan against skills/*/SKILL.md (or one skill by name).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,11 +11,31 @@ if [[ ! -f "$SCANNER" ]]; then
     -o "$SCANNER"
 fi
 
+scan_args=()
+skill_paths=()
+for arg in "$@"; do
+  if [[ "$arg" == --* ]]; then
+    scan_args+=("$arg")
+  elif [[ -f "$arg" ]]; then
+    skill_paths+=("$arg")
+  elif [[ -f "$ROOT/skills/$arg/SKILL.md" ]]; then
+    skill_paths+=("$ROOT/skills/$arg/SKILL.md")
+  else
+    echo "error: unknown skill or path: $arg" >&2
+    exit 1
+  fi
+done
+
+if [[ ${#skill_paths[@]} -eq 0 ]]; then
+  for skill_md in "$ROOT"/skills/*/SKILL.md; do
+    [[ -f "$skill_md" ]] && skill_paths+=("$skill_md")
+  done
+fi
+
 failed=0
-for skill_md in "$ROOT"/skills/*/SKILL.md; do
-  [[ -f "$skill_md" ]] || continue
+for skill_md in "${skill_paths[@]}"; do
   echo "Scanning $skill_md"
-  if ! python3 "$SCANNER" "$skill_md" "$@"; then
+  if ! python3 "$SCANNER" "$skill_md" "${scan_args[@]}"; then
     failed=1
   fi
 done

@@ -88,7 +88,8 @@ def load_config() -> dict[str, Any]:
     return cfg
 
 
-find_outreachmagic = cc.find_outreachmagic
+def find_outreachmagic(config: dict[str, Any]) -> Optional[Path]:
+    return cc.find_outreachmagic(config, skill_dir=_find_skill_dir())
 
 
 def _mask_key(key: str) -> str:

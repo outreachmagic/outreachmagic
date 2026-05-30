@@ -215,22 +215,10 @@ Preferred (no key in shell history):
 python3 scripts/enrich.py serper-search --query '"Acme Corp" official website' --label company_discovery_strict
 ```
 
-Or curl:
+Or retry with a simpler query:
 
 ```bash
-curl -s -X POST https://google.serper.dev/search \
-  -H "X-API-KEY: $SERPER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"q":"\"Acme Corp\" official website","num":10,"gl":"us","hl":"en"}'
-```
-
-If HTTP 400 "query not allowed", retry with:
-
-```bash
-curl -s -X POST https://google.serper.dev/search \
-  -H "X-API-KEY: $SERPER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"q":"Acme Corp website","num":10,"gl":"us","hl":"en"}'
+python3 scripts/enrich.py serper-search --query 'Acme Corp website' --label company_discovery_broad
 ```
 
 #### 2b. Company discovery — broad (conditional)
@@ -238,10 +226,7 @@ curl -s -X POST https://google.serper.dev/search \
 Run only if 2a returns **no** organic results with an `http://` or `https://` link:
 
 ```bash
-curl -s -X POST https://google.serper.dev/search \
-  -H "X-API-KEY: $SERPER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"q":"Acme Corp official website","num":10,"gl":"us","hl":"en"}'
+python3 scripts/enrich.py serper-search --query 'Acme Corp official website' --label company_discovery_broad
 ```
 (Same template, unquoted company name.)
 
@@ -254,10 +239,9 @@ site:linkedin.com/in {First Last} {up to 5 words of role} "{Company Name}"
 
 Example:
 ```bash
-curl -s -X POST https://google.serper.dev/search \
-  -H "X-API-KEY: $SERPER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"q":"site:linkedin.com/in Jane Doe VP Marketing \"Acme Corp\"","num":10,"gl":"us","hl":"en"}'
+python3 scripts/enrich.py serper-search \
+  --query 'site:linkedin.com/in Jane Doe VP Marketing "Acme Corp"' \
+  --label linkedin_primary
 ```
 
 Fallback if rejected:

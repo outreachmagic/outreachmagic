@@ -83,12 +83,19 @@ def skill_dir_from_script(script_file: str) -> Path:
     return Path(script_file).resolve().parent.parent
 
 
-def find_outreachmagic(config: dict[str, Any]) -> Optional[Path]:
+def find_outreachmagic(
+    config: dict[str, Any],
+    skill_dir: Optional[Path] = None,
+) -> Optional[Path]:
     if config.get("outreachmagic_home"):
         home = Path(config["outreachmagic_home"]).expanduser()
         if (home / "scripts" / "pipeline.py").exists():
             return home
         return None
+    if skill_dir:
+        sibling = skill_dir.parent / OUTREACHMAGIC_NAME
+        if (sibling / "scripts" / "pipeline.py").exists():
+            return sibling
     for skills_dir in SKILL_SEARCH_PATHS:
         candidate = skills_dir / OUTREACHMAGIC_NAME
         if (candidate / "scripts" / "pipeline.py").exists():

@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill. For email finding, use the email-finder companion skill.
-version: 2.0.1
+version: 2.0.2
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -74,11 +74,7 @@ OUTREACHMAGIC_AGENT_KEY=om_agent_your_key_here
 
 ### 3. Email finding (email-finder skill)
 
-Email find is **not** in lead-enrich v2+. Install **email-finder** and set `TRYKITT_API_KEY`:
-
-```bash
-bash platforms/hermes/install.sh --with-email-finder
-```
+Email find is **not** in lead-enrich v2+. Install **email-finder** with outreachmagic using the platform install guide: [install-companions.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/install-companions.md) (Hermes, Cursor, Claude).
 
 After Serper enrichment saves `company_domain`, run:
 

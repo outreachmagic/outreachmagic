@@ -1,6 +1,6 @@
 # Install Outreach Magic
 
-Get install commands for your platform at [dev.outreachmagic.io/dashboard/agent](https://dev.outreachmagic.io/setup/agent) or [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent).
+Get install commands for your platform at [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent).
 
 After install, connect with **device authorization** (browser — no pasting keys into terminal or chat):
 
@@ -8,43 +8,41 @@ After install, connect with **device authorization** (browser — no pasting key
 python3 <skill-path>/scripts/pipeline.py login
 ```
 
+**Full suite install (all platforms):** see [install-companions.md](./install-companions.md).
+
 ## Hermes
 
-Skills install to `~/.hermes/skills/` (real files). Hermes profiles use symlinks — see [hermes-skills-layout.md](hermes-skills-layout.md).
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.15/install.sh | bash -s -- \
-  --with-lead-enrich --migrate --tag v1.20.15 --lead-enrich-tag v1.2.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.20/install.sh | bash -s -- \
+  --with-lead-enrich --with-email-finder --migrate \
+  --tag v1.20.20 \
+  --lead-enrich-tag v2.0.2 \
+  --email-finder-tag v1.0.2
 ```
-
-Profiles under `~/.hermes/profiles/` are symlinked automatically. Use `--no-profiles` for global install only.
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 hermes -s outreachmagic
 ```
 
-New profile only (skills already installed):
-
-```bash
-ln -sf ../../../skills/outreachmagic ~/.hermes/profiles/<name>/skills/outreachmagic
-ln -sf ../../../skills/lead-enrich ~/.hermes/profiles/<name>/skills/lead-enrich
-```
-
 ## Cursor
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/main/install.sh | bash
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py login
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/v1.20.20/install.sh | bash -s -- \
+  --with-lead-enrich --with-email-finder \
+  --tag v1.20.20 \
+  --lead-enrich-tag v2.0.2 \
+  --email-finder-tag v1.0.2
 ```
-
-Or manual copy from [cursor-outreachmagic](https://github.com/outreachmagic/cursor-outreachmagic).
 
 ## Claude Code
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/claude-code-outreachmagic/main/install.sh | bash
-python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py login
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/claude-code-outreachmagic/v1.20.20/install.sh | bash -s -- \
+  --with-lead-enrich --with-email-finder \
+  --tag v1.20.20 \
+  --lead-enrich-tag v2.0.2 \
+  --email-finder-tag v1.0.2
 ```
 
 ## CI / automation

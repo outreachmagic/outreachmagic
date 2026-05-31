@@ -15,7 +15,7 @@ SKILL_SEARCH_PATHS = [
     Path.home() / ".hermes" / "skills",
     Path.home() / ".cursor" / "skills",
     Path.home() / ".claude" / "skills",
-    Path.home() / ".openclaw" / "skills",
+    Path.home() / ".openclaw" / "skills",  # OpenClaw managed/local skills dir
 ]
 
 _AGENT_ENV_LOADED = False

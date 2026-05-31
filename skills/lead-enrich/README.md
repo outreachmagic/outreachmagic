@@ -23,9 +23,11 @@ Given a name + company, the agent:
 **Hermes** (with outreachmagic, profile symlinks):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.15/install.sh | bash -s -- \
-  --with-lead-enrich --with-email-finder --migrate --tag v1.20.15 --lead-enrich-tag v2.0.1 --email-finder-tag v1.0.1
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.20/install.sh | bash -s -- \
+  --with-lead-enrich --with-email-finder --migrate --tag v1.20.20 --lead-enrich-tag v2.0.2 --email-finder-tag v1.0.2
 ```
+
+See [install-companions.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/install-companions.md) for Cursor and Claude.
 
 See [skill suite](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/skill-suite.md).
 

@@ -294,6 +294,47 @@ def save_find_result(
     return {"saved": True, "import": imported, "verify": verify_out, "lead_id": lead_id}
 
 
+def tag_trykitt_attempted(
+    om_dir: Path,
+    *,
+    full_name: str,
+    company: str,
+    domain: str,
+    linkedin: str = "",
+    workspace: str = "",
+) -> dict[str, Any]:
+    """Record a trykitt attempt on miss so batch re-runs do not repeat."""
+    profile: dict[str, Any] = {
+        "name": full_name,
+        "company": company or domain,
+        "company_domain": domain,
+        "tags": ["trykitt_attempted"],
+    }
+    li = _normalize_linkedin(linkedin)
+    if li:
+        profile["linkedin"] = li
+    imported = cc.run_import_profiles(
+        om_dir,
+        [profile],
+        workspace=workspace,
+        source_detail="email-finder/trykitt-miss",
+        skill_dir=_find_skill_dir(),
+    )
+    out: dict[str, Any] = {"tagged": True, "import": imported}
+    if not workspace:
+        out["warning"] = (
+            "tags require --workspace on import-profiles; "
+            "pass --workspace so trykitt_attempted persists"
+        )
+    return out
+
+
+def _should_tag_trykitt_attempt(result: dict[str, Any]) -> bool:
+    if result.get("error") in ("TRYKITT_API_KEY not set", "valid --domain required"):
+        return False
+    return result.get("status") not in ("skipped", "no_key", "bad_input")
+
+
 def cmd_find(
     name: str,
     domain: str,
@@ -314,16 +355,26 @@ def cmd_find(
             }, indent=2))
             return
     result = trykitt_find(cfg, full_name=name, domain=domain, linkedin=linkedin)
-    if om_dir and save and result.get("email"):
-        result["save"] = save_find_result(
-            om_dir,
-            full_name=name,
-            company=company or domain,
-            domain=domain,
-            linkedin=linkedin,
-            find_result=result,
-            workspace=workspace,
-        )
+    if om_dir and save:
+        if result.get("email"):
+            result["save"] = save_find_result(
+                om_dir,
+                full_name=name,
+                company=company or domain,
+                domain=domain,
+                linkedin=linkedin,
+                find_result=result,
+                workspace=workspace,
+            )
+        elif _should_tag_trykitt_attempt(result):
+            result["tag_attempt"] = tag_trykitt_attempted(
+                om_dir,
+                full_name=name,
+                company=company or domain,
+                domain=domain,
+                linkedin=linkedin,
+                workspace=workspace,
+            )
     print(json.dumps(result, indent=2))
 
 
@@ -358,16 +409,26 @@ def cmd_batch_find(path: str, workspace: str = "", delay: float = 8.0) -> None:
                 results.append({"status": "skipped", "reason": "has_email", "existing": existing})
                 continue
         find_result = trykitt_find(cfg, full_name=name, domain=domain, linkedin=linkedin)
-        if om_dir and find_result.get("email"):
-            find_result["save"] = save_find_result(
-                om_dir,
-                full_name=name,
-                company=company or domain,
-                domain=domain,
-                linkedin=linkedin,
-                find_result=find_result,
-                workspace=workspace,
-            )
+        if om_dir:
+            if find_result.get("email"):
+                find_result["save"] = save_find_result(
+                    om_dir,
+                    full_name=name,
+                    company=company or domain,
+                    domain=domain,
+                    linkedin=linkedin,
+                    find_result=find_result,
+                    workspace=workspace,
+                )
+            elif _should_tag_trykitt_attempt(find_result):
+                find_result["tag_attempt"] = tag_trykitt_attempted(
+                    om_dir,
+                    full_name=name,
+                    company=company or domain,
+                    domain=domain,
+                    linkedin=linkedin,
+                    workspace=workspace,
+                )
         results.append(find_result)
         if i + 1 < len(people) and delay > 0:
             time.sleep(delay)

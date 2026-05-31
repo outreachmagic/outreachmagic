@@ -7,16 +7,19 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 Skills live in `~/.hermes/skills/` (real files). Each Hermes profile gets symlinks — not copies.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.15/install.sh | bash -s -- \
-  --with-lead-enrich --migrate --tag v1.20.15 --lead-enrich-tag v1.2.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.20/install.sh | bash -s -- \
+  --with-lead-enrich --with-email-finder --migrate \
+  --tag v1.20.20 \
+  --lead-enrich-tag v2.0.2 \
+  --email-finder-tag v1.0.2
 ```
+
+Full suite install docs: [install-companions.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/install-companions.md)
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 hermes -s outreachmagic
 ```
-
-Layout details: [hermes-skills-layout.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/hermes-skills-layout.md)
 
 ## Quick Start
 
@@ -31,6 +34,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py stats
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 python3 ~/.hermes/skills/lead-enrich/scripts/enrich.py update
+python3 ~/.hermes/skills/email-finder/scripts/email_finder.py update
 ```
 
 ## Verify install
@@ -42,8 +46,8 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py paths
 
 ## Pricing
 
-- **Free:** Unlimited agent-originated tracking, CLI pipeline view, 100 relay events/month
-- **Pro ($19/mo):** Unlimited relay events, multi-platform sequencer sync
+- **Free:** Local tracking + CLI pipeline view + **1,000 relay events/month**
+- **Pro ($9/mo):** Sequencer sync (50k relay events/month cap)
 
 Sign up at [outreachmagic.io](https://outreachmagic.io)
 

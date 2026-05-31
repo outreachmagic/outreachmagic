@@ -6,12 +6,12 @@
 ~/.hermes/skills/
 ├── outreachmagic/     # data layer — SQLite, pipeline.py
 ├── lead-enrich/       # Serper research + dedup
-└── email-finder/        # trykitt find + save
+└── email-finder/      # trykitt find + save
 ```
 
 Profiles symlink: `~/.hermes/profiles/<name>/skills/<skill>` → `../../../skills/<skill>/`
 
-Install: `platforms/hermes/install.sh` (optional `--with-lead-enrich`, `--with-email-finder`).
+Install: see [install-companions.md](../install-companions.md) (Hermes, Cursor, Claude).
 
 Dev sync: `bash scripts/sync-local.sh`
 

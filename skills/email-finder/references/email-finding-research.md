@@ -103,10 +103,20 @@ If the user reports a bounce on a saved email:
 
 ## Saving found emails
 
+Prefer the email-finder CLI (tags `trykitt_attempted` on hit and miss when `--save` / batch):
+
+```bash
+python3 ~/.hermes/skills/email-finder/scripts/email_finder.py find \
+  --name "Jane Doe" --domain acme.com \
+  --linkedin "https://linkedin.com/in/janedoe" --save --workspace your_workspace
+```
+
+Or via outreachmagic directly:
+
 ```bash
 python3 {outreachmagic_home}/scripts/pipeline.py import-profiles \
   --workspace your_workspace \
-  --source-detail "lead-enrich/email" \
+  --source-detail "email-finder/trykitt" \
   --json '[{"name":"Jane Doe","company":"Acme Corp","email":"jane@acme.com","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["trykitt_attempted"]}]'
 ```
 

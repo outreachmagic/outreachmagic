@@ -48,6 +48,7 @@ chmod 700 "$OM_DIR/databases" "$OM_DIR/config" 2>/dev/null || true
 chmod 600 "$OM_DIR/databases/outreachmagic.db" "$OM_DIR/config/outreachmagic_config.json" 2>/dev/null || true
 
 if [[ "${1:-}" == "--all-profiles" ]]; then
+  # Monorepo dev only — published installs use curl install.sh from hermes-outreachmagic
   bash "$ROOT/platforms/hermes/install.sh" --all-profiles --with-lead-enrich --with-email-finder --migrate
 fi
 

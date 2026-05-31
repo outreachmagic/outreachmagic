@@ -2,7 +2,7 @@
 
 Phase 5 (trykitt + waterfall) lives in the **email-finder** skill:
 
-- Install: `bash platforms/hermes/install.sh --with-email-finder`
+- Install: see [install-companions.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/install-companions.md)
 - Docs: `~/.hermes/skills/email-finder/references/email-finding-research.md`
 - CLI: `python3 ~/.hermes/skills/email-finder/scripts/email_finder.py find --save ...`
 

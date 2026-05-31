@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install outreachmagic (and optionally lead-enrich) under ~/.hermes/skills/.
+# Install outreachmagic (and optional companions) under ~/.hermes/skills/.
 # Hermes profiles get symlinks to ../../../skills/<name> — never full copies.
 set -euo pipefail
 
@@ -19,6 +19,19 @@ LE_TAG=""
 EF_TAG=""
 PROFILES=()
 
+_here="$(cd "$(dirname "$0")" && pwd)"
+if [[ -f "$_here/install-companions.sh" ]]; then
+  # shellcheck source=install-companions.sh
+  source "$_here/install-companions.sh"
+elif [[ -f "$_here/../common/install-companions.sh" ]]; then
+  # shellcheck source=../common/install-companions.sh
+  source "$_here/../common/install-companions.sh"
+else
+  echo "error: install-companions.sh not found" >&2
+  exit 1
+fi
+TRYKITT_ENV_FILE="$HERMES_HOME/.env"
+
 usage() {
   cat <<'EOF'
 Usage: install.sh [options]
@@ -29,16 +42,16 @@ Usage: install.sh [options]
   By default, symlinks every existing profile under ~/.hermes/profiles/ when present.
 
 Options:
-  --with-lead-enrich     Also install lead-enrich
+  --with-lead-enrich       Also install lead-enrich
   --with-email-finder      Also install email-finder (implies --with-lead-enrich)
-  --no-profiles          Skip profile symlinks (global ~/.hermes/skills/ only)
-  --all-profiles         Symlink all profiles (default when profiles/ exists)
-  --profile NAME         Symlink one profile (repeatable)
-  --migrate              Replace profile copies with symlinks (removes duplicates)
-  --tag TAG              outreachmagic release tag (e.g. v1.20.15)
-  --lead-enrich-tag TAG  lead-enrich release tag (e.g. v2.0.0)
-  --email-finder-tag TAG   email-finder release tag (e.g. v1.0.0)
-  -h, --help             Show this help
+  --no-profiles            Skip profile symlinks (global ~/.hermes/skills/ only)
+  --all-profiles           Symlink all profiles (default when profiles/ exists)
+  --profile NAME           Symlink one profile (repeatable)
+  --migrate                Replace profile copies with symlinks (removes duplicates)
+  --tag TAG                outreachmagic release tag (e.g. v1.20.20)
+  --lead-enrich-tag TAG    lead-enrich release tag (e.g. v2.0.2)
+  --email-finder-tag TAG   email-finder release tag (e.g. v1.0.2)
+  -h, --help               Show this help
 EOF
 }
 
@@ -87,46 +100,6 @@ install_outreachmagic() {
   chmod +x "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" 2>/dev/null || true
   echo "→ Initializing database..."
   python3 "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" init
-}
-
-install_lead_enrich() {
-  local tmp
-  tmp="$(mktemp -d -t om-le-XXXXXX)"
-  trap 'rm -rf "$tmp"' RETURN
-  echo "→ Installing lead-enrich to $SKILLS_DIR/lead-enrich"
-  clone_repo "$LE_REPO" "$LE_TAG" "$tmp"
-  mkdir -p "$SKILLS_DIR/lead-enrich"
-  for item in SKILL.md README.md SECURITY.md config.example.json default.env .gitignore references scripts; do
-    if [[ -e "$tmp/$item" ]]; then
-      rm -rf "$SKILLS_DIR/lead-enrich/$item"
-      cp -a "$tmp/$item" "$SKILLS_DIR/lead-enrich/"
-    fi
-  done
-  chmod +x "$SKILLS_DIR/lead-enrich/scripts/enrich.py" 2>/dev/null || true
-}
-
-install_email_finder() {
-  local tmp
-  tmp="$(mktemp -d -t om-lem-XXXXXX)"
-  trap 'rm -rf "$tmp"' RETURN
-  echo "→ Installing email-finder to $SKILLS_DIR/email-finder"
-  clone_repo "$EF_REPO" "$EF_TAG" "$tmp"
-  mkdir -p "$SKILLS_DIR/email-finder"
-  for item in SKILL.md README.md SECURITY.md config.example.json default.env .gitignore references scripts; do
-    if [[ -e "$tmp/$item" ]]; then
-      rm -rf "$SKILLS_DIR/email-finder/$item"
-      cp -a "$tmp/$item" "$SKILLS_DIR/email-finder/"
-    fi
-  done
-  chmod +x "$SKILLS_DIR/email-finder/scripts/email_finder.py" 2>/dev/null || true
-  if [[ -n "${TRYKITT_API_KEY:-}" ]]; then
-    local env_file="$HERMES_HOME/.env"
-    touch "$env_file"
-    if ! grep -q '^TRYKITT_API_KEY=' "$env_file" 2>/dev/null; then
-      echo "TRYKITT_API_KEY=${TRYKITT_API_KEY}" >> "$env_file"
-      echo "  → Added TRYKITT_API_KEY to $env_file"
-    fi
-  fi
 }
 
 profile_skill_link() {
@@ -229,7 +202,7 @@ if [[ $WITH_LEAD_ENRICH -eq 1 ]]; then
   echo "  lead-enrich:   $SKILLS_DIR/lead-enrich"
 fi
 if [[ $WITH_EMAIL_FINDER -eq 1 ]]; then
-  echo "  email-finder:    $SKILLS_DIR/email-finder"
+  echo "  email-finder:  $SKILLS_DIR/email-finder"
 fi
 echo "  Connect: python3 $SKILLS_DIR/outreachmagic/scripts/pipeline.py login"
 echo "  Paths:   python3 $SKILLS_DIR/outreachmagic/scripts/pipeline.py paths"
@@ -238,7 +211,7 @@ if [[ ${#PROFILES[@]} -eq 0 ]]; then
   echo "  New profile:"
   echo "    mkdir -p $HERMES_HOME/profiles/<name>/skills"
   echo "    ln -sf ../../../skills/outreachmagic $HERMES_HOME/profiles/<name>/skills/outreachmagic"
-    echo "    ln -sf ../../../skills/lead-enrich $HERMES_HOME/profiles/<name>/skills/lead-enrich"
-    echo "    ln -sf ../../../skills/email-finder $HERMES_HOME/profiles/<name>/skills/email-finder"
+  echo "    ln -sf ../../../skills/lead-enrich $HERMES_HOME/profiles/<name>/skills/lead-enrich"
+  echo "    ln -sf ../../../skills/email-finder $HERMES_HOME/profiles/<name>/skills/email-finder"
   echo "  Or: bash install.sh --profile <name>"
 fi

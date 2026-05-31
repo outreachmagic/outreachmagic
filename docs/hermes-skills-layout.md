@@ -6,8 +6,10 @@ Skills live in `~/.hermes/skills/<name>/` — Hermes’s built-in skills directo
 ~/.hermes/
 ├── skills/
 │   ├── lead-enrich/          ← real files (install & update here)
+│   ├── email-finder/         ← real files
 │   └── outreachmagic/        ← real files, DB, config
 └── profiles/<name>/skills/
+    ├── email-finder   → ../../../skills/email-finder
     ├── lead-enrich    → ../../../skills/lead-enrich
     └── outreachmagic  → ../../../skills/outreachmagic
 ```
@@ -21,16 +23,19 @@ Skills live in `~/.hermes/skills/<name>/` — Hermes’s built-in skills directo
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.15/install.sh | bash -s -- \
-  --with-lead-enrich --migrate --tag v1.20.15 --lead-enrich-tag v1.2.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.20/install.sh | bash -s -- \
+  --with-lead-enrich --with-email-finder --migrate \
+  --tag v1.20.20 \
+  --lead-enrich-tag v2.0.2 \
+  --email-finder-tag v1.0.2
 ```
 
 When `~/.hermes/profiles/` exists, `install.sh` symlinks every profile by default (`--no-profiles` to skip).
 
-Or from a clone:
+Or from a monorepo clone (dev only):
 
 ```bash
-bash platforms/hermes/install.sh --with-lead-enrich --profile popcam --migrate
+bash platforms/hermes/install.sh --with-lead-enrich --with-email-finder --profile popcam --migrate
 ```
 
 ## New profile

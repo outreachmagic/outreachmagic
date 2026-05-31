@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai (waterfall providers planned). Checks Outreach
   Magic first to avoid duplicate API spend. Saves email and verification status
   via the outreachmagic skill.
-version: 1.0.1
+version: 1.0.2
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]

@@ -1,14 +1,14 @@
 {
-  "version": "2.0.1",
+  "version": "2.0.2",
   "files": {
-    "SKILL.md": "daefcd849c6425b17828db85d0f810910e71f0d476e67a948f3772d541bae908",
-    "README.md": "0897ca81eb96f7cac72acea04ac37eb05572d2ac692b54e4565b28c9b388d63a",
+    "SKILL.md": "3a20924c7b60576c5db8e458d3c9fe044bd5d6a3e003deebf4a29f3ae01032cd",
+    "README.md": "2fc739ca11fc4cbe94836dcef89f06ce8b1bad10ac9e06338aafea4d3360f981",
     "SECURITY.md": "5068fbd2c69331c4672ad0fac24225bc5bbcbfe43c4133aa16b7e58adaff139b",
     "config.example.json": "73b79324f9db54abfdc4e24bc81f1d0865986dbc5c193919d5643ce1d5b76ca3",
     "default.env": "ee560781a9ab44025bd3c238c98e24d4f37c6ad5c3d8e0e9ef5803e2ccec8d6b",
     ".gitignore": "745e5bfc6d53645da242479825e56d53fb2cffc0a88f26e47bb0fd06740b157b",
-    "references/email-finder.md": "ef0fe210b26b16a736ea43515e18e392f07591318198b23c7f5eb41f3973dacf",
-    "scripts/companion_common.py": "2d140b3e46ab464cd9ffdcffb82ba4f81ad3f5bb3ec27298ce2289171698ec4e",
-    "scripts/enrich.py": "8f1c52af9e84398eba99a2b94d58ff5d74e3104f85bbb866a20d4d6c5dc60aeb"
+    "references/email-finder.md": "0d715131671229f9511fef4dd5a8ea4053962429cc46a3ce7d8442dae7a649cb",
+    "scripts/companion_common.py": "46eb2dfc2ceb29e6a4a1e18cf6aece02fed687f7b753da68cb4f60c5ac9ba39e",
+    "scripts/enrich.py": "1275e60b9ccff66cb56d8ec828e4ca0be8d9fa6e4c9379a5b2a56be201a4adc0"
   }
 }

@@ -842,7 +842,7 @@ def format_report(results: list[dict[str, Any]]) -> str:
 
         lines.append(f"## {i}. {name} @ {company}")
 
-        if status in ("exists_linkedin_email", "exists_linkedin"):
+        if status == "exists_linkedin_email":
             lines.append(
                 f"  ⏭️  Already in outreachmagic (LinkedIn + email) — skipped (0 credits)"
             )

@@ -10,10 +10,10 @@ Three intentional skills — not a 50-skill dump. **Outreach Magic is category 4
 flowchart LR
   LE[lead-enrich]
   OM[outreachmagic]
-  LEM[email-finder]
+  EF[email-finder]
   LE -->|"dedup free; save needs OM"| OM
-  OM -->|"domain + linkedin on file"| LEM
-  LEM -->|"import-profiles + verify-email"| OM
+  OM -->|"domain + linkedin on file"| EF
+  EF -->|"import-profiles + verify-email"| OM
 ```
 
 | Skill | Role | Public repo | Release tag |
@@ -28,11 +28,7 @@ flowchart LR
 2. **lead-enrich** — add `SERPER_API_KEY` to `~/.hermes/.env`  
 3. **email-finder** (optional) — add `TRYKITT_API_KEY`; needs domain from enrich or CRM  
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/main/platforms/hermes/install.sh | bash
-# or locally:
-bash platforms/hermes/install.sh --with-lead-enrich --with-email-finder
-```
+**Canonical install commands (Hermes, Cursor, Claude):** [install-companions.md](./install-companions.md)
 
 ## Soft dependency
 

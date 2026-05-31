@@ -8,11 +8,9 @@ Part of the [Outreach Magic skill suite](https://github.com/magic-creators/outre
 
 Published repo: [outreachmagic/email-finder](https://github.com/outreachmagic/email-finder)
 
-```bash
-bash platforms/hermes/install.sh --with-email-finder
-```
+Install with outreachmagic on any platform — see [install-companions.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/install-companions.md).
 
-Or clone a release tag into `~/.hermes/skills/email-finder/`.
+Or clone a release tag into your platform skills dir (e.g. `~/.hermes/skills/email-finder/`).
 
 ## Requirements
 
@@ -25,7 +23,7 @@ Or clone a release tag into `~/.hermes/skills/email-finder/`.
 
 ```bash
 python3 scripts/email_finder.py config
-python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com --save
+python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com --save --workspace your_workspace
 ```
 
 ## License

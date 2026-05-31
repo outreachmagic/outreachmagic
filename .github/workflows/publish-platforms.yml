@@ -1,4 +1,4 @@
-name: Publish Platform Repos
+name: Publish outreachmagic
 
 on:
   push:
@@ -6,96 +6,44 @@ on:
       - "v*"
 
 concurrency:
-  group: publish-platforms-${{ github.ref }}
+  group: publish-outreachmagic-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   publish:
-    name: Publish to ${{ matrix.platform }}
+    name: Publish to outreachmagic/outreachmagic
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: hermes-outreachmagic
-            org: outreachmagic
-            skill_md: platforms/hermes/SKILL.md
-            readme: platforms/hermes/README.md
-            extras: "platforms/hermes/install.sh platforms/common/install-companions.sh"
-            github_repo_value: outreachmagic/hermes-outreachmagic
-          - platform: cursor-outreachmagic
-            org: outreachmagic
-            skill_md: platforms/cursor/SKILL.md
-            readme: platforms/cursor/README.md
-            extras: "platforms/cursor/outreachmagic.mdc platforms/cursor/install.sh platforms/common/install-companions.sh"
-            github_repo_value: outreachmagic/cursor-outreachmagic
-          - platform: claude-code-outreachmagic
-            org: outreachmagic
-            skill_md: platforms/claude-code/SKILL.md
-            readme: platforms/claude-code/README.md
-            extras: "platforms/claude-code/CLAUDE_SNIPPET.md platforms/claude-code/install.sh platforms/common/install-companions.sh"
-            github_repo_value: outreachmagic/claude-code-outreachmagic
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Assemble platform repo
+      - name: Assemble public release tree
         run: |
-          mkdir -p staging/scripts staging/references
+          set -euo pipefail
+          STAGING=staging
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING/skills/outreachmagic" "$STAGING/platforms/common" "$STAGING/platforms/overlays/cursor" "$STAGING/platforms/overlays/claude"
 
-          # Copy shared scripts and references
-          cp skills/outreachmagic/scripts/*.py staging/scripts/
-          cp skills/outreachmagic/scripts/VERSION staging/scripts/
-          cp -r skills/outreachmagic/references/* staging/references/
-          cp skills/outreachmagic/update-manifest.json staging/ 2>/dev/null || true
+          cp -r skills/outreachmagic/scripts "$STAGING/skills/outreachmagic/"
+          cp -r skills/outreachmagic/references "$STAGING/skills/outreachmagic/"
+          cp skills/outreachmagic/SKILL.md "$STAGING/skills/outreachmagic/"
+          cp skills/outreachmagic/update-manifest.json "$STAGING/skills/outreachmagic/"
 
-          # Copy platform-specific SKILL.md (if applicable)
-          if [ -n "${{ matrix.skill_md }}" ]; then
-            cp "${{ matrix.skill_md }}" staging/SKILL.md
-          fi
+          cp install.sh "$STAGING/"
+          chmod +x "$STAGING/install.sh"
+          cp platforms/common/install-companions.sh "$STAGING/platforms/common/"
+          chmod +x "$STAGING/platforms/common/install-companions.sh"
+          cp platforms/overlays/cursor/outreachmagic.mdc "$STAGING/platforms/overlays/cursor/"
+          cp platforms/overlays/claude/CLAUDE_SNIPPET.md "$STAGING/platforms/overlays/claude/"
 
-          # Copy README
-          cp "${{ matrix.readme }}" staging/README.md
+          cp LICENSE "$STAGING/"
+          cp SECURITY.md "$STAGING/"
+          cp platforms/outreachmagic-README.md "$STAGING/README.md"
 
-          # Copy extras (mdc file, CLAUDE_SNIPPET, install.sh, etc.)
-          if [ -n "${{ matrix.extras }}" ]; then
-            for f in ${{ matrix.extras }}; do
-              cp "$f" staging/
-            done
-          fi
-          if [ -f staging/install.sh ]; then
-            chmod +x staging/install.sh
-          fi
-          if [ -f staging/install-companions.sh ]; then
-            chmod +x staging/install-companions.sh
-          fi
+          python3 scripts/generate-update-manifest.py
+          cp skills/outreachmagic/update-manifest.json "$STAGING/skills/outreachmagic/"
 
-          # Copy root-level files
-          cp LICENSE staging/
-          cp SECURITY.md staging/
-
-          # Rewrite GITHUB_REPO and SKILL_REPO_PATH for platform-specific updates
-          sed -i 's|GITHUB_REPO = "outreachmagic/outreachmagic-skill"|GITHUB_REPO = "${{ matrix.github_repo_value }}"|' staging/scripts/pipeline.py
-          sed -i 's|GITHUB_REPO = "outreachmagic/hermes-agent"|GITHUB_REPO = "${{ matrix.github_repo_value }}"|' staging/scripts/pipeline.py
-          sed -i 's|SKILL_REPO_PATH = "skills/outreachmagic"|SKILL_REPO_PATH = "."|' staging/scripts/pipeline.py
-
-          # Regenerate update-manifest.json with correct checksums (post-rewrite)
-          python3 -c "
-          import hashlib, json, pathlib
-          files = {}
-          for name in ('pipeline.py', 'constants.py', 'db_conn.py', 'formatters.py', 'bounces.py', 'activity_sync.py', 'event_classification.py', 'lead_sync.py', 'relay_extractors.py', 'workspace_routing.py', 'workspace_archive.py', 'routing_cloud.py', 'connections_cloud.py', 'db_health.py', 'om_paths.py', 'device_login.py', 'VERSION'):
-              p = pathlib.Path('staging/scripts') / name
-              if p.exists():
-                  files[name] = hashlib.sha256(p.read_bytes()).hexdigest()
-          skill_md = pathlib.Path('staging/SKILL.md')
-          if skill_md.exists():
-              files['SKILL.md'] = hashlib.sha256(skill_md.read_bytes()).hexdigest()
-          version = (pathlib.Path('staging/scripts/VERSION').read_text().strip() if pathlib.Path('staging/scripts/VERSION').exists() else '0.0.0')
-          manifest = {'version': version, 'files': files}
-          pathlib.Path('staging/update-manifest.json').write_text(json.dumps(manifest, indent=2))
-          "
-
-      - name: Push to platform repo
+      - name: Push to public repo
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: |
@@ -106,16 +54,16 @@ jobs:
           git add -A
           git commit -m "Release ${{ github.ref_name }}"
           git tag "${{ github.ref_name }}"
-          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/${{ matrix.org }}/${{ matrix.platform }}.git"
+          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/outreachmagic.git"
           git push origin main --force
           git push origin "${{ github.ref_name }}" --force
 
-      - name: Create GitHub Release on platform repo
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: |
           gh release create "${{ github.ref_name }}" \
-            --repo "${{ matrix.org }}/${{ matrix.platform }}" \
+            --repo "outreachmagic/outreachmagic" \
             --title "${{ github.ref_name }}" \
             --notes "Outreach Magic release ${{ github.ref_name }}" \
             --latest 2>/dev/null || \

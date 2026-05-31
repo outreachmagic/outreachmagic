@@ -23,9 +23,10 @@ Skills live in `~/.hermes/skills/<name>/` — Hermes’s built-in skills directo
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.20/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.20.24/install.sh | bash -s -- \
+  --platform hermes \
   --with-lead-enrich --with-email-finder --migrate \
-  --tag v1.20.20 \
+  --tag v1.20.24 \
   --lead-enrich-tag v2.0.2 \
   --email-finder-tag v1.0.2
 ```

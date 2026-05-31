@@ -1,89 +1,68 @@
 # Releasing OutreachMagic Skill
 
-## Two repos, two layouts (read this first)
+## Two repos, one layout (read this first)
 
-OutreachMagic has **two different GitHub homes**. Mixing them up breaks `pipeline.py update`.
+OutreachMagic has a **private dev monorepo** and a **single public install repo**. Both use the same `skills/outreachmagic/` layout.
 
-| | Private monorepo | Public platform repos |
-|---|------------------|------------------------|
-| **Repo** | `magic-creators/outreachmagic-skill` | `outreachmagic/hermes-outreachmagic`, `outreachmagic/cursor-outreachmagic`, `outreachmagic/claude-code-outreachmagic` |
-| **Who uses it** | Developers only | End users (Hermes / Cursor / Claude Code installs) |
-| **File layout** | `skills/outreachmagic/scripts/…` | Flat: `scripts/…`, `update-manifest.json` at repo root |
+| | Private monorepo | Public install repo |
+|---|------------------|---------------------|
+| **Repo** | `magic-creators/outreachmagic-skill` | `outreachmagic/outreachmagic` |
+| **Who uses it** | Developers only | End users (Hermes / Cursor / Claude Code) |
+| **File layout** | `skills/outreachmagic/scripts/…` | Same: `skills/outreachmagic/…` |
 | **Releases** | Optional tarball on private repo | **Required** — this is what `update` downloads |
-| **`GITHUB_REPO` in `pipeline.py`** | `outreachmagic/outreachmagic-skill` (source default) | Rewritten by CI to the platform repo name |
+| **`GITHUB_REPO` in `pipeline.py`** | `outreachmagic/outreachmagic` | `outreachmagic/outreachmagic` |
 
-**Rule:** Users never run `update` against the private monorepo. They run it against the **platform repo** for how they installed the skill.
+**Rule:** End users install via `install.sh --platform <name>` from `outreachmagic/outreachmagic`. `pipeline.py update` downloads from the same repo.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │  PRIVATE — magic-creators/outreachmagic-skill (development)         │
 │                                                                     │
-│  You develop here. Tag v* on main triggers CI:                      │
+│  Tag v* on main triggers CI:                                        │
 │    1. release.yml           → validate, tarball, Release (private)  │
-│    2. publish-platforms.yml → push bundles to PUBLIC platform repos │
+│    2. publish-platforms.yml → push to outreachmagic/outreachmagic   │
 └───────────────────────────────┬─────────────────────────────────────┘
-                                │  same tag (e.g. v1.20.8)
-                ┌───────────────┼───────────────┐
-                ▼               ▼               ▼
-┌─────────────────────────┐ ┌─────────────────────────┐ ┌──────────────────────────┐
-│ outreachmagic/          │ │ outreachmagic/          │ │ outreachmagic/           │
-│ hermes-outreachmagic    │ │ cursor-outreachmagic    │ │ claude-code-outreachmagic│
-│                         │ │                         │ │                          │
-│ scripts/                │ │ scripts/                │ │ scripts/                 │
-│ references/             │ │ references/             │ │ references/              │
-│ SKILL.md                │ │ SKILL.md                │ │ SKILL.md                 │
-│ update-manifest.json    │ │ update-manifest.json    │ │ update-manifest.json     │
-│ README.md               │ │ README.md (+ .mdc)      │ │ README.md (+ snippet)    │
-└─────────────────────────┘ └─────────────────────────┘ └──────────────────────────┘
-         ▲                           ▲                            ▲
-         │                           │                            │
-   ~/.hermes/skills/…          ~/.cursor/skills/…           ~/.claude/skills/…
+                                │  same tag (e.g. v1.21.0)
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  PUBLIC — outreachmagic/outreachmagic                               │
+│                                                                     │
+│  skills/outreachmagic/{SKILL.md,scripts,references,update-manifest} │
+│  install.sh  (--platform hermes|cursor|claude)                      │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        ▼                       ▼                       ▼
+ ~/.hermes/skills/…      ~/.cursor/skills/…       ~/.claude/skills/…
+ (profiles symlink)       (+ .mdc overlay)         (+ CLAUDE_SNIPPET)
 ```
+
+### Legacy platform repos (deprecated)
+
+`hermes-outreachmagic`, `cursor-outreachmagic`, and `claude-code-outreachmagic` are no longer published. `pipeline.py update` still tries them as fallbacks for older installs until users reinstall from `outreachmagic/outreachmagic`.
 
 ## How `pipeline.py update` works
 
-On each install, `pipeline.py` contains a `GITHUB_REPO` constant. **Published** copies point at the platform repo; **old** copies may still say `outreachmagic/outreachmagic-skill` (wrong for Hermes).
-
 When a user runs `pipeline.py update`:
 
-1. Resolve download source (see below).
-2. `GET https://api.github.com/repos/<GITHUB_REPO>/releases/latest` (or `--tag vX.Y.Z`).
-3. Download each file listed in `update-manifest.json` from `raw.githubusercontent.com`.
-4. Verify SHA256 checksums.
-5. Overwrite local `scripts/` (and `SKILL.md`). Config and SQLite DB are **not** overwritten.
+1. Resolve download source from `outreachmagic/outreachmagic` (`skills/outreachmagic/` prefix).
+2. Fall back to legacy per-platform repos if needed (pre-v1.21 installs).
+3. `GET https://api.github.com/repos/<GITHUB_REPO>/releases/latest` (or `--tag vX.Y.Z`).
+4. Download each file listed in `update-manifest.json` from `raw.githubusercontent.com`.
+5. Verify SHA256 checksums.
+6. Overwrite local `scripts/` (and `SKILL.md`). Config and SQLite DB are **not** overwritten.
 
-### Download URLs (platform repos)
+### Download URLs (unified repo)
 
-For Hermes (`outreachmagic/hermes-outreachmagic`), tag `v1.20.8`:
+For tag `v1.21.0`:
 
 | File | URL |
 |------|-----|
-| Manifest | `https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.8/update-manifest.json` |
-| Scripts | `https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.8/scripts/<file>` |
+| Manifest | `https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/skills/outreachmagic/update-manifest.json` |
+| Scripts | `https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/skills/outreachmagic/scripts/<file>` |
+| SKILL.md | `https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/skills/outreachmagic/SKILL.md` |
 
-**Wrong URL (404)** — monorepo layout on private repo name:
-
-`https://raw.githubusercontent.com/outreachmagic/outreachmagic-skill/v1.20.8/skills/outreachmagic/scripts/pipeline.py`
-
-### What CI rewrites on publish
-
-`publish-platforms.yml` copies scripts into a flat `staging/` tree and runs:
-
-```bash
-sed -i 's|GITHUB_REPO = "outreachmagic/outreachmagic-skill"|GITHUB_REPO = "outreachmagic/hermes-outreachmagic"|' staging/scripts/pipeline.py
-sed -i 's|SKILL_REPO_PATH = "skills/outreachmagic"|SKILL_REPO_PATH = "."|' staging/scripts/pipeline.py
-```
-
-| Platform install path | Public repo (`GITHUB_REPO`) | `SKILL_REPO_PATH` |
-|-----------------------|-----------------------------|-------------------|
-| `~/.hermes/skills/outreachmagic/…` | `outreachmagic/hermes-outreachmagic` | `.` |
-| `~/.cursor/skills/outreachmagic/…` | `outreachmagic/cursor-outreachmagic` | `.` |
-| `~/.claude/skills/outreachmagic/…` | `outreachmagic/claude-code-outreachmagic` | `.` |
-| Monorepo clone (developers) | `outreachmagic/outreachmagic-skill` | `skills/outreachmagic` |
-
-**v1.20.8+** also infers the platform repo from the install path when `GITHUB_REPO` is still the monorepo default, so one successful update fixes older installs.
-
-**Key requirement:** Each **platform** repo must have a GitHub **Release** (not only a git tag) or `update` / `update --check` cannot find the version.
+**Key requirement:** The public repo must have a GitHub **Release** (not only a git tag) or `update` / `update --check` cannot find the version.
 
 ---
 

@@ -43,8 +43,8 @@ def hermes_profile_copy_warning() -> Optional[str]:
         return None
     return (
         "Profile has a full copy of outreachmagic (not a symlink to ~/.hermes/skills/outreachmagic). "
-        "Run: curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/main/install.sh "
-        "| bash -s -- --migrate --all-profiles"
+        "Run: curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh "
+        "| bash -s -- --platform hermes --migrate --all-profiles"
     )
 
 

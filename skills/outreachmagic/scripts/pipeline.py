@@ -199,11 +199,11 @@ UPDATE_SCRIPT_FILES = (
     "device_login.py",
 )
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
-# Monorepo source default; publish-platforms.yml rewrites these per public install repo.
-SKILL_REPO_PATH = "."
-GITHUB_REPO = "outreachmagic/hermes-outreachmagic"
-# Install-path fallbacks when an older copy still points at the private monorepo name.
-PLATFORM_RELEASE_TARGETS: dict[str, tuple[str, str]] = {
+# Unified public release repo (skills/outreachmagic layout).
+SKILL_REPO_PATH = "skills/outreachmagic"
+GITHUB_REPO = "outreachmagic/outreachmagic"
+# Legacy platform repos (pre-v1.21 migration); tried after unified repo on update.
+LEGACY_PLATFORM_REPOS: dict[str, tuple[str, str]] = {
     "hermes": ("outreachmagic/hermes-outreachmagic", "."),
     "cursor": ("outreachmagic/cursor-outreachmagic", "."),
     "claude": ("outreachmagic/claude-code-outreachmagic", "."),
@@ -244,26 +244,50 @@ def release_tag_version(tag: str) -> str:
     return normalize_release_tag(tag).lstrip("vV")
 
 
-def infer_platform_release_target() -> Optional[tuple[str, str]]:
-    """Map install directory to the public repo CI publishes for that platform."""
+def infer_platform_key() -> Optional[str]:
+    """Map install directory to a platform id (hermes, cursor, claude)."""
     path = str(skill_scripts_dir()).lower()
     if "/.hermes/" in path or path.startswith(str(Path.home() / ".hermes").lower()):
-        return PLATFORM_RELEASE_TARGETS["hermes"]
+        return "hermes"
     if "/.cursor/" in path:
-        return PLATFORM_RELEASE_TARGETS["cursor"]
+        return "cursor"
     if "/.claude/" in path:
-        return PLATFORM_RELEASE_TARGETS["claude"]
+        return "claude"
+    return None
+
+
+def infer_legacy_release_target() -> Optional[tuple[str, str]]:
+    """Pre-unified-repo installs that still point at per-platform public repos."""
+    key = infer_platform_key()
+    if key:
+        return LEGACY_PLATFORM_REPOS.get(key)
     return None
 
 
 def effective_update_target() -> tuple[str, str]:
     """Repo + path prefix used for update downloads on this machine."""
-    if GITHUB_REPO != "outreachmagic/outreachmagic-skill":
-        return GITHUB_REPO, SKILL_REPO_PATH
-    platform = infer_platform_release_target()
-    if platform:
-        return platform
     return GITHUB_REPO, SKILL_REPO_PATH
+
+
+def update_release_candidates() -> list[tuple[str, str]]:
+    """Ordered repos to try when resolving latest release / downloads."""
+    seen: set[tuple[str, str]] = set()
+    candidates: list[tuple[str, str]] = []
+
+    def add(repo: str, path: str) -> None:
+        key = (repo, path)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(key)
+
+    add(GITHUB_REPO, SKILL_REPO_PATH)
+    legacy = infer_legacy_release_target()
+    if legacy:
+        add(*legacy)
+    # Older dev/monorepo installs
+    add("outreachmagic/outreachmagic-skill", "skills/outreachmagic")
+    add("magic-creators/outreachmagic-skill", "skills/outreachmagic")
+    return candidates
 
 
 def raw_repo_base_for_tag(
@@ -309,12 +333,7 @@ def _fetch_url(url: str, timeout: int = 30) -> bytes:
 
 def fetch_latest_release() -> Optional[dict]:
     """Return latest GitHub release metadata or None if unavailable."""
-    repo, path = effective_update_target()
-    candidates: list[tuple[str, str]] = [ (repo, path) ]
-    if (repo, path) != (GITHUB_REPO, SKILL_REPO_PATH):
-        candidates.append((GITHUB_REPO, SKILL_REPO_PATH))
-
-    for github_repo, skill_path in candidates:
+    for github_repo, skill_path in update_release_candidates():
         releases_url = f"https://api.github.com/repos/{github_repo}/releases/latest"
         try:
             req = urllib.request.Request(

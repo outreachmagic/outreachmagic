@@ -8,11 +8,19 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.20.15
+version: 1.21.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
 metadata:
+  cursor:
+    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm]
+    related_skills: [lead-enrich, email-finder]
+    external_domains:
+      - domain: api.outreachmagic.io
+        purpose: Relay webhooks and authenticated event pull (payloads imported to local SQLite)
+      - domain: dev.outreachmagic.io
+        purpose: Portal API for tokens, billing, and workspace routing config sync
   hermes:
     tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm]
     category: productivity
@@ -24,20 +32,57 @@ metadata:
         purpose: Portal API for tokens, billing, and workspace routing config sync
 ---
 
-# Outreach Magic — Pipeline Visibility for Hermes
+# Outreach Magic — Pipeline Visibility
 
-The simplest pipeline tracker. Hermes auto-logs every outreach action to a local
-SQLite database. Free forever for local work. Connect Smartlead, Heyreach, Instantly via paid relay.
+The outreach data layer for AI agents. Auto-logs outreach to a local SQLite database.
+Free forever for local work. Connect Smartlead, Heyreach, Instantly via paid relay.
 
 **Outreach Magic suite:** Pair with **lead-enrich** (Serper research + free dedup) and
-**email-finder** (trykitt find). See [skill suite docs](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/skill-suite.md).
+**email-finder** (trykitt find). See [skill suite docs](https://github.com/outreachmagic/outreachmagic/blob/main/docs/skill-suite.md).
 
-Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
-Config: `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`
+## CLI convention
 
-**Hermes:** Install real files under `~/.hermes/skills/outreachmagic/`. Profiles symlink only. Run `install.sh` from [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) (review the script, then `bash install.sh`) to auto-link existing profiles. Verify with `pipeline.py paths` (warns on profile copies).
+All commands below use the pipeline CLI in this skill's `scripts/` directory (run from the skill root, or use absolute paths from `pipeline.py paths`):
 
-Optional config keys: `data_root` (e.g. `~/.claude` for Claude Code), `api_base_url`, `dev_repo` for local development.
+```bash
+python3 scripts/pipeline.py <command>
+```
+
+Resolve install paths anytime:
+
+```bash
+python3 scripts/pipeline.py paths
+```
+
+Optional config keys: `data_root` (share one DB across platforms), `api_base_url`, `dev_repo` for local development.
+
+## Platform install
+
+Install from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \
+  --platform hermes --with-lead-enrich --with-email-finder --migrate \
+  --tag v1.21.0 --lead-enrich-tag v2.0.2 --email-finder-tag v1.0.2
+```
+
+Use `--platform cursor` or `--platform claude` for other agents. Setup: https://dev.outreachmagic.io/setup/agent
+
+### Hermes profiles
+
+- **Real install:** `~/.hermes/skills/outreachmagic/` — never copy the full tree into `profiles/`
+- **Profiles:** symlink only → `../../../skills/outreachmagic`
+- **Verify:** `pipeline.py paths` (warns if a profile has a copy instead of a symlink)
+- **Fix copies:** `install.sh --platform hermes --migrate --all-profiles`
+- **Update:** `pipeline.py update` writes the global install; all profiles pick it up via symlink
+
+### Cursor
+
+Install to `~/.cursor/skills/outreachmagic/`. Invoke with `/outreachmagic` or ask about your pipeline in plain English.
+
+### Claude Code
+
+Install to `~/.claude/skills/outreachmagic/`. Optional legacy `CLAUDE_SNIPPET.md` is copied at install; SKILL.md is the source of truth.
 
 Environment variable: `OUTREACHMAGIC_AGENT_KEY` — overrides the config file `agent_key`. Set via `.env`, shell profile, or CI/CD.
 
@@ -46,13 +91,13 @@ Environment variable: `OUTREACHMAGIC_AGENT_KEY` — overrides the config file `a
 On startup, **always check if the agent is already connected** by running:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
+python3 scripts/pipeline.py version
 ```
 
 Then check whether an agent key exists in the config:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
+python3 scripts/pipeline.py pull
 ```
 
 If `pull` returns an error like "No agent key or token configured", the user needs to set up.
@@ -61,13 +106,13 @@ If `pull` returns an error like "No agent key or token configured", the user nee
 
 > Run this in your terminal (not in chat):
 >
-> `python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login`
+> `python3 scripts/pipeline.py login`
 >
 > A browser window will open — sign in or sign up, then authorize this device. Never paste secrets into chat.
 
 If the skill is not installed yet, point them to **https://dev.outreachmagic.io/setup/agent** or **https://dev.outreachmagic.io/dashboard/agent** for install commands, then `login`.
 
-`init` creates the database and project folders (`input/`, `export/`, `agent_resources/` under `~/.hermes/skills/outreachmagic/project` by default). Override with `"project_root"` in config.
+`init` creates the database and project folders (`input/`, `export/`, `agent_resources/` under `<skill_home>/project` by default). Override with `"project_root"` in config.
 
 If `pull` returns auth errors after a revoked key, tell them to run `login` again.
 
@@ -76,8 +121,8 @@ That's it. Don't list other commands, don't offer alternatives. Just: run `login
 **When setup is already done** (pull succeeds or returns events), skip setup and go straight to showing data:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show
+python3 scripts/pipeline.py pull
+python3 scripts/pipeline.py show
 ```
 
 ## Network & privacy (Hermes / hub review)
@@ -92,7 +137,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show
 **One version for the whole skill.** To see what is installed, always run:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
+python3 scripts/pipeline.py version
 ```
 
 The `version:` line in this file is synced from `scripts/VERSION` on install/update. If unsure, use the command above.
@@ -100,25 +145,14 @@ The `version:` line in this file is synced from `scripts/VERSION` on install/upd
 **Updates are user-triggered.** The CLI may print an update notice (at most once per hour) when a newer GitHub **release** exists. It never downloads or replaces scripts automatically. Install updates with:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
+python3 scripts/pipeline.py update
 # or
 hermes skills update
 ```
 
 Check without installing: `pipeline.py update --check`. Install a specific release: `pipeline.py update --tag v1.4.5`.
 
-## Install
-
-```bash
-git clone https://github.com/outreachmagic/hermes-outreachmagic.git /tmp/om-hermes
-mkdir -p ~/.hermes/skills/outreachmagic
-cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
-rm -r /tmp/om-hermes
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
-hermes -s outreachmagic
-```
-
-Install and update paths are in the **Install** and **Updates** sections above.
+Install commands for each platform are in **Platform install** above. After install, run `python3 scripts/pipeline.py login`.
 
 ## When to Use
 
@@ -155,13 +189,13 @@ Install and update paths are in the **Install** and **Updates** sections above.
 **Before showing pipeline activity (show, stats, campaigns, history), run `pull` first** — unless the user only wants **local inventory** (see below).
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull
+python3 scripts/pipeline.py pull
 ```
 
 If routing sync times out but you only need relay events, use:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --skip-routing-sync
+python3 scripts/pipeline.py pull --skip-routing-sync
 ```
 
 This fetches the latest events from the relay, so the user always sees current data. The local DB may be stale. Never skip pull for activity/timeline queries. This applies across sessions: a new session's first pipeline query must pull.
@@ -171,7 +205,7 @@ This fetches the latest events from the relay, so the user always sees current d
 **`workspace summary`** reads local SQLite only (fast, works offline). Use when the user asks for counts by tag or LinkedIn sender connection state. Optional `pull` first if they need freshly synced tags/connection imports.
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py workspace summary --workspace <slug> --json
+python3 scripts/pipeline.py workspace summary --workspace <slug> --json
 ```
 
 Example JSON keys: `lead_count`, `last_pull`, `tags` (`tag`, `lead_count`), `linkedin_senders` (`sender_slug`, `connected`, `pending`), `linkedin_connected_leads`.
@@ -180,7 +214,7 @@ Tag-only (same tag data as summary): `pipeline.py tag list --workspace <slug>`.
 
 ## Free Tier
 
-- Unlimited Hermes-originated tracking and local pipeline queries
+- Unlimited agent-originated tracking and local pipeline queries
 - CLI pipeline view + web dashboard
 - Pipeline stages with auto-advancement
 - **1,000 relay events/month** (webhook sync from sequencers)
@@ -198,17 +232,17 @@ Sign up at https://outreachmagic.io
 ## Quick Start
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --id 1
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --email j@acme.com
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py stats
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py campaigns
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py workspace summary --workspace <slug> --json
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles --file leads.csv
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --file changes.csv
+python3 scripts/pipeline.py version
+python3 scripts/pipeline.py show
+python3 scripts/pipeline.py history --id 1
+python3 scripts/pipeline.py history --email j@acme.com
+python3 scripts/pipeline.py stats
+python3 scripts/pipeline.py campaigns
+python3 scripts/pipeline.py workspace summary --workspace <slug> --json
+python3 scripts/pipeline.py copy-insights --lead-status interested --json
+python3 scripts/pipeline.py import-profiles --file leads.csv
+python3 scripts/pipeline.py agent-changes
+python3 scripts/pipeline.py agent-changes --file changes.csv
 ```
 
 ### Status and connection management
@@ -217,42 +251,42 @@ Dashboard-style status, connection management, and webhook URL generation — al
 
 ```bash
 # Dashboard overview: plan, usage, per-platform health, routing
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py status
+python3 scripts/pipeline.py status
 
 # List all connections with webhook URLs and 30-day event counts
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connections
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connections --json
+python3 scripts/pipeline.py connections
+python3 scripts/pipeline.py connections --json
 
 # Generate a webhook URL for a new platform
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect-platform --platform smartlead
+python3 scripts/pipeline.py connect-platform --platform smartlead
 
 # Remove a platform connection (webhook URL stops working)
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py disconnect-platform --platform smartlead
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py disconnect-platform --platform smartlead --yes
+python3 scripts/pipeline.py disconnect-platform --platform smartlead
+python3 scripts/pipeline.py disconnect-platform --platform smartlead --yes
 ```
 
-### Export local changes for cross-platform sync
+### Agent-created changes (cross-platform sync)
 
-Export locally-created leads and events (not from relay) as JSON or CSV. Useful for transferring data between platforms (Cursor, Hermes, Claude Code).
+Show locally-created leads and events (not from relay) as JSON or CSV. Useful for transferring data between platforms (Cursor, Hermes, Claude Code).
 
 ```bash
 # JSON to stdout (pipe to relay push or save to file)
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local
+python3 scripts/pipeline.py agent-changes
 
 # CSV file (import-profiles compatible)
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --file local_changes.csv
+python3 scripts/pipeline.py agent-changes --file local_changes.csv
 
 # Filter to a specific workspace
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --workspace leadgenph
+python3 scripts/pipeline.py agent-changes --workspace leadgenph
 
 # Include all leads (not just locally-created)
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export-local --all
+python3 scripts/pipeline.py agent-changes --all
 ```
 
 **Push to relay for cross-platform sync:**
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py sync
+python3 scripts/pipeline.py sync
 ```
 
 `sync` pushes pending lead snapshots (profile, `external_id`, `company_domain`, HQ/location, tags, mailmerge, workspace status, LinkedIn connection flags) plus local events. At the end of the same command it may POST aggregate local DB health to the portal (file size, row counts, top tables — throttled ~6h). Skip with `sync --no-health-report`. Other machines run `pull --full` after a DB reset to restore everything that was synced.
@@ -262,9 +296,9 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py sync
 ### Local database health
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py db-health
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py db-health --json
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py db-health --full
+python3 scripts/pipeline.py db-health
+python3 scripts/pipeline.py db-health --json
+python3 scripts/pipeline.py db-health --full
 ```
 
 Read `healthStatus`, `rulesTriggered` (each has a `hint`), `rowCounts`, and `tableBreakdown`. Cloud copy: `GET /api/agent/status` → `localDb` after user has run `sync`.
@@ -272,9 +306,9 @@ Read `healthStatus`, `rulesTriggered` (each has a `hint`), `rowCounts`, and `tab
 ### Archive a workspace (local only)
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py archive --workspace acme_corp --dry-run
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py archive --workspace acme_corp --output ~/archives/acme_corp.db
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py archive --workspace acme_corp --output ~/archives/acme_corp.db --purge
+python3 scripts/pipeline.py archive --workspace acme_corp --dry-run
+python3 scripts/pipeline.py archive --workspace acme_corp --output ~/archives/acme_corp.db
+python3 scripts/pipeline.py archive --workspace acme_corp --output ~/archives/acme_corp.db --purge
 ```
 
 **Fresh DB + full CSV round-trip:**
@@ -290,7 +324,7 @@ pipeline.py init && pipeline.py pull --full
 
 ```bash
 # Machine A: export
-pipeline.py export-local --file changes.csv
+pipeline.py agent-changes --file changes.csv
 # Machine B: import
 pipeline.py import-profiles --file changes.csv --overwrite
 ```
@@ -300,9 +334,9 @@ pipeline.py import-profiles --file changes.csv --overwrite
 Counts by tag and LinkedIn connection accepted/pending per sender. **Local DB only** — no relay call; `last_pull` in output shows data freshness.
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py workspace summary --workspace <slug> --json
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py workspace summary --workspace <slug>
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py tag list --workspace <slug>
+python3 scripts/pipeline.py workspace summary --workspace <slug> --json
+python3 scripts/pipeline.py workspace summary --workspace <slug>
+python3 scripts/pipeline.py tag list --workspace <slug>
 ```
 
 ### Campaign breakdown
@@ -310,8 +344,8 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py tag list --workspace 
 Relay imports auto-populate campaign names from webhook payloads (Smartlead, PlusVibe, etc.).
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py campaigns
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py campaigns --json
+python3 scripts/pipeline.py campaigns
+python3 scripts/pipeline.py campaigns --json
 ```
 
 `stats` also includes a campaign section. Use `campaigns` when the user only wants counts by campaign name.
@@ -323,36 +357,36 @@ Point PlusVibe webhooks at your relay URL (`…/plusvibe/{token}`). Subscribe se
 - **Reply events:** `ALL_EMAIL_REPLIES` (and optional `FIRST_EMAIL_REPLIES`, `ALL_POSITIVE_REPLIES`)
 - **Label/status events:** `LEAD_MARKED_AS_INTERESTED`, `LEAD_MARKED_AS_NOT_INTERESTED`, `LEAD_MARKED_AS_OUT_OF_OFFICE`, plus any custom `LEAD_MARKED_AS_*` labels
 
-Hermes stores each webhook as an event. **Interested / not interested / sentiment come from label webhooks**, not from reply webhooks alone. OOO is classified as **auto-reply** (metadata flag, query with `--auto-reply true`). Bounces set event sentiment `invalid` but **do not** auto-move the lead to stage `lost` (use `--sentiment invalid` to find them).
+Each webhook is stored as an event. **Interested / not interested / sentiment come from label webhooks**, not from reply webhooks alone. OOO is classified as **auto-reply** (metadata flag, query with `--auto-reply true`). Bounces set event sentiment `invalid` but **do not** auto-move the lead to stage `lost` (use `--sentiment invalid` to find them).
 
 After `pull`, filter the pipeline by **current** status (latest status-bearing event per lead):
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --sentiment positive
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --sentiment invalid
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --auto-reply true
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --lead-status interested --json
+python3 scripts/pipeline.py show --sentiment positive
+python3 scripts/pipeline.py show --sentiment invalid
+python3 scripts/pipeline.py show --auto-reply true
+python3 scripts/pipeline.py show --lead-status interested --json
 ```
 
 Filter by date (created or updated on/after a date):
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --since today
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py show --since 2026-05-26 --json
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py lead-table --workspace acme_corp --since today --json
+python3 scripts/pipeline.py show --since today
+python3 scripts/pipeline.py show --since 2026-05-26 --json
+python3 scripts/pipeline.py lead-table --workspace acme_corp --since today --json
 ```
 
 Then open full timeline for any lead (all events, not just the status event):
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --id 1
+python3 scripts/pipeline.py history --id 1
 ```
 
 Native copy-performance analysis (full message bodies + best template):
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-status interested --json
+python3 scripts/pipeline.py copy-insights --lead-status interested
+python3 scripts/pipeline.py copy-insights --lead-status interested --json
 ```
 
 `show --json` and `lead-table --json` include `personalization`, `tags`, and `latest_sender` when available.
@@ -360,8 +394,8 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py copy-insights --lead-
 ### Export full profiles (CSV / JSON)
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export --workspace acme_corp --tag nace --format csv
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py export --workspace acme_corp --since today --format json
+python3 scripts/pipeline.py export --workspace acme_corp --tag nace --format csv
+python3 scripts/pipeline.py export --workspace acme_corp --since today --format json
 ```
 
 Writes to `export/` by default. CSV uses `personalized_first_name`, `personalized_company_name`, plus lead fields, tags, HQ, and `latest_sender`.
@@ -371,22 +405,22 @@ Writes to `export/` by default. CSV uses `personalized_first_name`, `personalize
 Prefer the guarded refresh command (syncs first, backs up, then rebuilds):
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py refresh --yes
+python3 scripts/pipeline.py refresh --yes
 ```
 
 Preview tag fixes without writing:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py tag repair --dry-run
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py tag repair
+python3 scripts/pipeline.py tag repair --dry-run
+python3 scripts/pipeline.py tag repair
 ```
 
 Manual equivalent (no pre-sync backup):
 
 ```bash
-rm ~/.hermes/skills/outreachmagic/databases/outreachmagic.db
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --full
+rm <skill_home>/databases/outreachmagic.db  # see pipeline.py paths
+python3 scripts/pipeline.py init
+python3 scripts/pipeline.py pull --full
 ```
 
 **Tell your agent (rare):** “Run `pipeline.py refresh --yes` to back up, sync local changes to the relay, wipe the local DB, and re-import from the cloud. Do not use `pull --full` alone — it skips already-imported rows.”
@@ -400,10 +434,10 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --full
 ### View a lead's full timeline
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --id 1
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --email jane@acme.com
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --name "Jane Doe"
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --id 1 --json
+python3 scripts/pipeline.py history --id 1
+python3 scripts/pipeline.py history --email jane@acme.com
+python3 scripts/pipeline.py history --name "Jane Doe"
+python3 scripts/pipeline.py history --id 1 --json
 ```
 
 Outputs lead info + numbered event timeline with direction arrows (← inbound, → outbound),
@@ -412,7 +446,7 @@ human-readable timestamps, and event details.
 ### Add leads when researching prospects
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py add-lead \
+python3 scripts/pipeline.py add-lead \
   --name "Jane Doe" --company "Acme Corp" --title "VP Marketing" \
   --industry "Martech" --headcount "50-200" \
   --email "jane@acme.com" \
@@ -422,7 +456,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py add-lead \
 To also associate the lead with a workspace at creation time:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py add-lead \
+python3 scripts/pipeline.py add-lead \
   --name "Jane Doe" --email "jane@acme.com" --company "Acme Corp" \
   --workspace thesystemsmethod --stage contacted
 ```
@@ -436,25 +470,25 @@ If lead exists by email, LinkedIn, or (when both are missing) case-insensitive `
 **Use `import-profiles` for spreadsheets, enriched exports, or batched research** — not repeated `add-lead` calls. Matching uses **tiered identities** (strongest first): `external_id` → email → LinkedIn → phone → name+domain → name+company → `import_key` (name-only rows). CSV columns `unified_lead_id` / `source_id` are accepted as aliases and stored as `external_id`. Fills empty fields only (same as relay/PlusVibe); use `--overwrite` to replace existing values.
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
+python3 scripts/pipeline.py import-profiles \
   --file input/contacts_enriched.csv
 
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
+python3 scripts/pipeline.py import-profiles \
   --file leads.json
 
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
+python3 scripts/pipeline.py import-profiles \
   --json '[{"email":"j@acme.com","name":"Jane","job_title":"VP Marketing","industry":"Martech","headcount":"11-50","company":"Acme"}]'
 
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
+python3 scripts/pipeline.py import-profiles \
   --file contacts.csv --dry-run
 
 # With workspace association, tags, and LinkedIn status tracking
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
+python3 scripts/pipeline.py import-profiles \
   --file contacts.csv --workspace default --sender-profile "https://linkedin.com/in/myprofile" \
   --source-detail "Q2 Apollo list" --import-batch-id "nace-2026-05"
 
 # Rows with only name + company_domain + unified_lead_id (no email/LinkedIn)
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
+python3 scripts/pipeline.py import-profiles \
   --file nace.csv --workspace acme_corp --import-batch-id nace-2026-05
 ```
 
@@ -534,19 +568,19 @@ Record verification results from tools like ZeroBounce, NeverBounce, etc. Result
 
 ```bash
 # Record a verification result
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-email \
+python3 scripts/pipeline.py verify-email \
   --lead-id 5 --status valid --source zerobounce
 
 # Batch verify from JSON
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-email --batch \
+python3 scripts/pipeline.py verify-email --batch \
   --json '[{"lead_id":5,"status":"valid","source":"zerobounce"}]'
 
 # Check verification status for a lead
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-status --lead-id 5
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-status --email j@acme.com
+python3 scripts/pipeline.py verify-status --lead-id 5
+python3 scripts/pipeline.py verify-status --email j@acme.com
 
 # List leads needing verification
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-pending --limit 50 --json
+python3 scripts/pipeline.py verify-pending --limit 50 --json
 ```
 
 **Verification status values:** `valid`, `invalid`, `catch-all`, `unknown`, `spamtrap`, `abuse`, `do_not_mail`, `risky`, `bounced`, `soft_bounce`
@@ -562,13 +596,13 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py verify-pending --limi
   - **Manual:**
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py merge-leads --keep 12 --merge 34
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py merge-leads \
+python3 scripts/pipeline.py merge-leads --keep 12 --merge 34
+python3 scripts/pipeline.py merge-leads \
   --email j@acme.com --linkedin linkedin.com/in/janedoe
 ```
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --linkedin linkedin.com/in/janedoe
+python3 scripts/pipeline.py history --linkedin linkedin.com/in/janedoe
 ```
 
 After `pull`, use **`campaigns`** for per-campaign event and lead counts (unchanged).
@@ -576,7 +610,7 @@ After `pull`, use **`campaigns`** for per-campaign event and lead counts (unchan
 ### Log every outreach send
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py log-event \
+python3 scripts/pipeline.py log-event \
   --lead-id 1 --type email_sent --direction outbound \
   --subject "Quick intro" --workspace thesystemsmethod
 ```
@@ -586,7 +620,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py log-event \
 ### Update stage and log replies
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update-stage \
+python3 scripts/pipeline.py update-stage \
   --id 1 --stage replied --next-action "Send case study" --workspace thesystemsmethod
 ```
 
@@ -599,21 +633,21 @@ Stages: `prospecting` -> `contacted` -> `replied` -> `interested` -> `proposal` 
 If the user already has a key, skip the browser flow:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
+python3 scripts/pipeline.py login
 ```
 
 Generate webhook URLs for platforms directly from the CLI (requires agent key):
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect-platform --platform smartlead
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connect-platform --platform instantly
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py connections
+python3 scripts/pipeline.py connect-platform --platform smartlead
+python3 scripts/pipeline.py connect-platform --platform instantly
+python3 scripts/pipeline.py connections
 ```
 
 ### Update skill scripts
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
+python3 scripts/pipeline.py update
 ```
 
 ## Lead Fields Reference
@@ -635,18 +669,18 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 
 ## Privacy & Security
 
-- **Local-first data.** Pipeline leads, events, and campaign stats live in `~/.hermes/skills/outreachmagic/databases/outreachmagic.db` on your machine.
+- **Local-first data.** Pipeline leads, events, and campaign stats live in local SQLite (`pipeline.py paths` → `database`).
 - **Relay pass-through.** Webhooks hit `api.outreachmagic.io`; the CLI imports them locally via `pull`. We store tokens and usage on our side, not a searchable cloud copy of your outreach archive.
 - **Portal API.** `dev.outreachmagic.io` (production: app.outreachmagic.io) handles tokens, billing, and optional workspace routing sync when connected.
 - **Credentials.** Store relay tokens in `config/outreachmagic_config.json` only. Never hardcode tokens in SKILL.md or commit them to git.
-- **Read before connect.** See repo root [SECURITY.md](https://github.com/outreachmagic/hermes-outreachmagic/blob/main/SECURITY.md) for full data boundaries and vulnerability reporting.
+- **Read before connect.** See [SECURITY.md](https://github.com/outreachmagic/outreachmagic/blob/main/SECURITY.md) for full data boundaries and vulnerability reporting.
 
 ## Common Pitfalls
 
 1. **Always pull before show when checking "latest activity."**
 2. Forgetting add-lead before log-event
 3. Not updating stage after reply
-4. Setup/auth errors (including 401 Unauthorized) should run `python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login` in terminal.
+4. Setup/auth errors (including 401 Unauthorized) should run `python3 scripts/pipeline.py login` in terminal.
 5. **Version:** run `pipeline.py version` — do not guess from SKILL.md frontmatter alone.
 6. Relay archive stays on api.outreachmagic.io; `pull` dedupes locally. Use `refresh --yes` for a true rebuild (sync + backup + wipe + `pull --full`). `pull --full` alone only helps after deleting the DB manually.
 7. **Tags:** always pass plain names (`nace`, `vip`) — not JSON list strings like `['nace']`. Run `tag repair` if legacy rows used bracket form.
@@ -657,8 +691,8 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 When relay flow appears stale, diagnose before using destructive reset commands:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --diagnose
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py pull --full --diagnose
+python3 scripts/pipeline.py pull --diagnose
+python3 scripts/pipeline.py pull --full --diagnose
 ```
 
 Diagnostic verdicts:
@@ -671,5 +705,5 @@ Diagnostic verdicts:
 If events were ingested but still seem missing, inspect a specific lead timeline:
 
 ```bash
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py history --email "<lead_email>" --json
+python3 scripts/pipeline.py history --email "<lead_email>" --json
 ```

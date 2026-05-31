@@ -1,14 +1,14 @@
 # Outreach Magic — Development Monorepo
 
-> **Private repo.** This is the development source for OutreachMagic skill scripts. Published platform repos are under the [outreachmagic](https://github.com/outreachmagic) org.
+> **Private repo.** Development source for OutreachMagic. The public install repo is [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic).
 
-## Published Repos
+## Public Install Repo
 
-| Platform | Repo | Install |
-|----------|------|---------|
-| Hermes | [outreachmagic/hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) | See `docs/install.md` (git clone) |
-| Cursor | [outreachmagic/cursor-outreachmagic](https://github.com/outreachmagic/cursor-outreachmagic) | Copy to `~/.cursor/skills/outreachmagic/` |
-| Claude Code | [outreachmagic/claude-code-outreachmagic](https://github.com/outreachmagic/claude-code-outreachmagic) | Copy scripts + append `CLAUDE_SNIPPET.md` to `CLAUDE.md` |
+| Platform | Install |
+|----------|---------|
+| All (Hermes, Cursor, Claude Code) | [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — `install.sh --platform <name>` |
+
+See [docs/install.md](docs/install.md) for curl one-liners.
 
 ### Companion skills
 
@@ -23,17 +23,18 @@ Companion source lives in `skills/lead-enrich/` and `skills/email-finder/`. See 
 
 ```
 skills/outreachmagic/          # Canonical skill source (scripts, SKILL.md, references)
+install.sh                     # Unified cross-platform installer
 platforms/
-  hermes/                      # Hermes-specific SKILL.md + README
-  cursor/                      # Cursor SKILL.md + .mdc rule + README
-  claude-code/                 # CLAUDE_SNIPPET.md + README
+  common/install-companions.sh
+  overlays/                    # Cursor .mdc, Claude snippet
+  hermes|cursor|claude-code/   # Thin install wrappers + legacy READMEs
 .github/workflows/
-  release.yml                  # Build tarball + GitHub Release on v* tag
-  publish-platforms.yml         # Push to outreachmagic/* public repos on v* tag
+  release.yml                  # Build tarball + GitHub Release on v* tag (private repo)
+  publish-platforms.yml        # Push to outreachmagic/outreachmagic on v* tag
   skill-scan.yml               # SkillScan + tests on PRs
 scripts/                       # Dev scripts (build, sync, scan, verify)
-tests/                         # Workspace routing tests
-docs/                          # Install guide, skill suite, registry publish
+tests/
+docs/
 ```
 
 ## Release Flow
@@ -41,17 +42,17 @@ docs/                          # Install guide, skill suite, registry publish
 1. Bump `skills/outreachmagic/scripts/VERSION`
 2. `python3 scripts/generate-update-manifest.py`
 3. Commit and tag: `git tag vX.Y.Z && git push origin main --tags`
-4. CI runs tests + SkillScan, builds tarball, publishes GitHub Release here
-5. `publish-platforms.yml` assembles platform bundles, pushes to public repos, and creates GitHub Releases
+4. CI runs tests + SkillScan, builds tarball on private repo
+5. `publish-platforms.yml` pushes to [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) and creates a GitHub Release
 
-> **Full details:** See [docs/RELEASING.md](docs/RELEASING.md) for the complete architecture, troubleshooting, and manual release instructions.
+> **Full details:** See [docs/RELEASING.md](docs/RELEASING.md)
 
 ## Local Development
 
 ```bash
-bash scripts/sync-local.sh     # Copy skill to ~/.hermes/skills/outreachmagic/
-bash scripts/run-tests.sh      # Run workspace routing tests
-bash scripts/skill-scan.sh     # Run HermesHub SkillScan
+bash install.sh --platform hermes --local --migrate   # Install from monorepo checkout
+bash scripts/run-tests.sh
+bash scripts/skill-scan.sh
 ```
 
 ## Related Repos (magic-creators)

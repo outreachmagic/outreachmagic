@@ -4,7 +4,7 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 
 ## Install
 
-Get your Agent Key at [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent), then run:
+Get your Agent Key at [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent), then run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/main/install.sh | bash

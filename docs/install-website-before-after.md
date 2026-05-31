@@ -1,10 +1,31 @@
 # Install & update — website copy (before / after)
 
-Use this page to update [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent) and any docs that still reference the three platform-specific repos.
+Use this page to update [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent) and any docs that still reference the three platform-specific repos.
 
 **What changed:** One public repo ([outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic)) replaces `hermes-outreachmagic`, `cursor-outreachmagic`, and `claude-code-outreachmagic`. Install uses `install.sh --platform <name>`. Update command is unchanged for users (`pipeline.py update`); downloads now come from the unified repo.
 
-Replace `v1.21.0` with your latest release tag when publishing.
+**Install URL:** Use `main` (no release tag) so users always get the latest `install.sh` and skill files from the default branch:
+
+```text
+https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh
+```
+
+Omit `--tag`, `--lead-enrich-tag`, and `--email-finder-tag` on the install command for the same reason — each repo’s latest `main` is cloned.
+
+**Updates after install:** `pipeline.py update` (no flags) pulls the latest **GitHub Release** on `outreachmagic/outreachmagic`. That is separate from install: install tracks `main`; update tracks releases.
+
+---
+
+## Optional companion skills
+
+**outreachmagic alone is enough** for pipeline tracking, relay sync, and lead management. These two companions are optional add-ons:
+
+| Skill | What it does | Requires |
+|-------|----------------|----------|
+| **lead-enrich** | Researches a person via Serper (Google Search): company domain, website, LinkedIn URL, job title, etc. Checks your local Outreach Magic DB first so you do not burn Serper credits on leads you already have. Saves enriched fields back into the pipeline. | `SERPER_API_KEY` ([serper.dev](https://serper.dev)) |
+| **email-finder** | Finds work emails via trykitt.ai. Checks Outreach Magic first to skip duplicates. Saves the email and verification status into the pipeline. | `TRYKITT_API_KEY` ([trykitt.ai](https://trykitt.ai)) |
+
+Add `--with-lead-enrich` and/or `--with-email-finder` to the install command when you want them. `--with-email-finder` implies `--with-lead-enrich`.
 
 ---
 
@@ -27,15 +48,20 @@ curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 ```
 
-### After
+### After — outreachmagic only
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \
-  --platform hermes \
-  --with-lead-enrich --with-email-finder --migrate \
-  --tag v1.21.0 \
-  --lead-enrich-tag v2.0.2 \
-  --email-finder-tag v1.0.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform hermes --migrate
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
+hermes -s outreachmagic
+```
+
+### After — with optional companions
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform hermes --migrate --with-lead-enrich --with-email-finder
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 hermes -s outreachmagic
 ```
@@ -56,15 +82,19 @@ curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py login
 ```
 
-### After
+### After — outreachmagic only
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \
-  --platform cursor \
-  --with-lead-enrich --with-email-finder \
-  --tag v1.21.0 \
-  --lead-enrich-tag v2.0.2 \
-  --email-finder-tag v1.0.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform cursor
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py login
+```
+
+### After — with optional companions
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform cursor --with-lead-enrich --with-email-finder
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py login
 ```
 
@@ -84,15 +114,19 @@ curl -fsSL https://raw.githubusercontent.com/outreachmagic/claude-code-outreachm
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py login
 ```
 
-### After
+### After — outreachmagic only
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \
-  --platform claude \
-  --with-lead-enrich --with-email-finder \
-  --tag v1.21.0 \
-  --lead-enrich-tag v2.0.2 \
-  --email-finder-tag v1.0.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform claude
+python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py login
+```
+
+### After — with optional companions
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform claude --with-lead-enrich --with-email-finder
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py login
 ```
 
@@ -119,7 +153,7 @@ Downloads came from the platform-specific repo (`hermes-outreachmagic`, `cursor-
 python3 <skill-path>/scripts/pipeline.py update
 ```
 
-Same command and install path per platform. Downloads now come from **outreachmagic/outreachmagic** (`skills/outreachmagic/` layout).
+Same command and install path per platform. Downloads the latest **release** from **outreachmagic/outreachmagic**.
 
 | Platform | Install path | Update command |
 |----------|--------------|----------------|
@@ -133,27 +167,24 @@ Check for updates without installing:
 python3 <skill-path>/scripts/pipeline.py update --check
 ```
 
-Install a specific version:
+Pin a specific release (optional):
 
 ```bash
 python3 <skill-path>/scripts/pipeline.py update --tag v1.21.0
 ```
 
-**Existing installs:** Users on the old platform repos can still run `update` (fallback to legacy repos) until they reinstall from `outreachmagic/outreachmagic`.
-
 ---
 
-## Minimal install (no companion skills)
+## Pinning a version (optional)
 
-Drop `--with-lead-enrich`, `--with-email-finder`, and companion tag flags if the page only covers outreachmagic:
+If you ever need a fixed release instead of latest `main` at install time:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \
-  --platform hermes \
-  --tag v1.21.0
+  --platform hermes --migrate --tag v1.21.0
 ```
 
-Use `--platform cursor` or `--platform claude` as needed.
+Most website copy should use **`main` with no tags** so install always tracks the latest.
 
 ---
 
@@ -164,7 +195,7 @@ Use `--platform cursor` or `--platform claude` as needed.
 | `github.com/outreachmagic/hermes-outreachmagic` | `github.com/outreachmagic/outreachmagic` |
 | `github.com/outreachmagic/cursor-outreachmagic` | *(same)* |
 | `github.com/outreachmagic/claude-code-outreachmagic` | *(same)* |
-| `raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/...` | `raw.githubusercontent.com/outreachmagic/outreachmagic/...` |
+| `raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/...` | `raw.githubusercontent.com/outreachmagic/outreachmagic/main/...` |
 | `raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/...` | *(same)* |
 | `raw.githubusercontent.com/outreachmagic/claude-code-outreachmagic/...` | *(same)* |
 
@@ -172,4 +203,4 @@ Use `--platform cursor` or `--platform claude` as needed.
 
 ## One-line summary for marketing copy
 
-> **One repo, every platform.** Install with `install.sh --platform hermes|cursor|claude` from [github.com/outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic). Same local paths, same `pipeline.py update`.
+> **One repo, every platform.** Install with `install.sh --platform hermes|cursor|claude` from [github.com/outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic). Same local paths, same `pipeline.py update`. Add `--with-lead-enrich` / `--with-email-finder` only if you want research and email-finding companions.

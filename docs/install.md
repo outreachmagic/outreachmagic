@@ -1,6 +1,6 @@
 # Install Outreach Magic
 
-Get install commands for your platform at [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent).
+Get install commands for your platform at [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent).
 
 All platforms install from one repo: [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic).
 
@@ -15,12 +15,17 @@ python3 <skill-path>/scripts/pipeline.py login
 ## Hermes
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
   --platform hermes \
-  --with-lead-enrich --with-email-finder --migrate \
-  --tag v1.21.0 \
-  --lead-enrich-tag v2.0.2 \
-  --email-finder-tag v1.0.2
+  --migrate
+```
+
+With optional companions (lead-enrich + email-finder):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform hermes \
+  --with-lead-enrich --with-email-finder --migrate
 ```
 
 ```bash
@@ -31,24 +36,20 @@ hermes -s outreachmagic
 ## Cursor
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \
-  --platform cursor \
-  --with-lead-enrich --with-email-finder \
-  --tag v1.21.0 \
-  --lead-enrich-tag v2.0.2 \
-  --email-finder-tag v1.0.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform cursor
 ```
+
+With companions: add `--with-lead-enrich --with-email-finder`.
 
 ## Claude Code
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \
-  --platform claude \
-  --with-lead-enrich --with-email-finder \
-  --tag v1.21.0 \
-  --lead-enrich-tag v2.0.2 \
-  --email-finder-tag v1.0.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform claude
 ```
+
+With companions: add `--with-lead-enrich --with-email-finder`.
 
 ## Local development (monorepo)
 

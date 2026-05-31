@@ -4,7 +4,7 @@ Cross-platform AI agent skill for outbound pipeline tracking. Works with **Herme
 
 ## Install
 
-Get platform-specific commands at [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent).
+Get platform-specific commands at [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \

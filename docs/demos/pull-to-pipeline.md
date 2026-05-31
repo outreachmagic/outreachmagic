@@ -42,4 +42,4 @@ python3 ~/.hermes/skills/lead-enrich/scripts/enrich.py check "Jane Doe" "Acme Co
 
 - Free: 1,000 relay events/mo + unlimited local  
 - Pro: $9/mo — [outreachmagic.io](https://outreachmagic.io)  
-- Install: [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent)
+- Install: [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent)

@@ -14,7 +14,7 @@ Separate listings per skill. Skills are free (MIT); Pro is OM account only at [o
 ## Per-listing requirements
 
 - One SEO link: https://outreachmagic.io  
-- Setup: https://dev.outreachmagic.io/setup/agent  
+- Setup: https://app.outreachmagic.io/setup/agent  
 - Differentiation one-liner from [positioning/hub-copy.md](./positioning/hub-copy.md)  
 - Pricing from [positioning/pricing.md](./positioning/pricing.md)  
 - SkillScan strict pass before tag (see `scripts/skill-scan.sh`)
@@ -23,7 +23,7 @@ Separate listings per skill. Skills are free (MIT); Pro is OM account only at [o
 
 | Skill | Domains |
 |-------|---------|
-| outreachmagic | `api.outreachmagic.io`, `dev.outreachmagic.io` |
+| outreachmagic | `api.outreachmagic.io`, `app.outreachmagic.io` |
 | lead-enrich | `google.serper.dev` |
 | email-finder | `api.trykitt.ai` |
 

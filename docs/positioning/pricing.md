@@ -36,4 +36,4 @@ Skills are MIT / free to install. Pro is for OM relay infrastructure at [outreac
 
 Agent connect (not chat): `python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login`
 
-Portal: [dev.outreachmagic.io/setup/agent](https://dev.outreachmagic.io/setup/agent)
+Portal: [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent)

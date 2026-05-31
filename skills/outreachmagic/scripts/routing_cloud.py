@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
-DEFAULT_API_BASE = "https://dev.outreachmagic.io"
+DEFAULT_API_BASE = "https://app.outreachmagic.io"
 CONFIG_API_BASE_KEY = "api_base_url"
 CONFIG_ROUTING_VERSION_KEY = "routing_config_version"
 

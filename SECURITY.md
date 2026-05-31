@@ -46,9 +46,9 @@ We do **not** use our servers as the long-term store for webhook payload content
 |--------|---------|------|-----------|
 | `api.outreachmagic.io` | Relay **pull** (import webhooks + agent snapshots) | Bearer token in URL path / headers | Token, pull cursor; returns event payloads for local import |
 | `api.outreachmagic.io` | Relay **push** (`pipeline.py sync` only) | `Authorization: Bearer <om_agent_…>` | Lead snapshots and local agent events the user chose to sync — **never** sent on `import-profiles`, `init`, or `pull` |
-| `dev.outreachmagic.io` | Portal API (tokens, billing, routing config sync) | Bearer token | Routing config, account metadata — **not** full local DB export |
-| `dev.outreachmagic.io` | Device authorization (`POST /api/device/code`, `/token`) during `pipeline.py login` only | None / device code | Client label, platform, hostname — **no** lead data |
-| `dev.outreachmagic.io` | Portal **`POST /api/agent/db-health`** (end of explicit `sync` only) | Bearer agent key | Aggregate local DB stats only (~1 KB): file size, row counts, top table names, health status — **no** emails, bodies, or lead names |
+| `app.outreachmagic.io` | Portal API (tokens, billing, routing config sync) | Bearer token | Routing config, account metadata — **not** full local DB export |
+| `app.outreachmagic.io` | Device authorization (`POST /api/device/code`, `/token`) during `pipeline.py login` only | None / device code | Client label, platform, hostname — **no** lead data |
+| `app.outreachmagic.io` | Portal **`POST /api/agent/db-health`** (end of explicit `sync` only) | Bearer agent key | Aggregate local DB stats only (~1 KB): file size, row counts, top table names, health status — **no** emails, bodies, or lead names |
 | `api.github.com` | Latest release lookup for update checks | None | Public releases API only (read-only; at most once per hour) |
 | `raw.githubusercontent.com` | Tagged release downloads (`pipeline.py update`) | None | Only on explicit user-triggered update |
 
@@ -62,7 +62,7 @@ We do **not** use our servers as the long-term store for webhook payload content
 - **`setup`** — validates the agent key and may **import** existing relay events (pull); it does not push local data.
 - Hermes cron examples in docs use `pull --cron` (inbound only), not `sync`.
 
-Override portal API: `"api_base_url"` in config (default `https://dev.outreachmagic.io`).
+Override portal API: `"api_base_url"` in config (default `https://app.outreachmagic.io`).
 
 Relay URL is fixed in code (`api.outreachmagic.io`). Updates install from GitHub release tags; local dev uses `dev_repo` / `dev_update_url` in config.
 
@@ -89,7 +89,7 @@ Development overrides (in `outreachmagic_config.json`, not environment variables
 - `data_root` — e.g. `~/.claude` for Claude Code (default `~/.hermes`)
 - `dev_repo` — path to a local clone for `pipeline.py update`
 - `dev_update_url` — custom raw URL base for dev/testing only
-- `api_base_url` — portal API host (default `https://dev.outreachmagic.io`)
+- `api_base_url` — portal API host (default `https://app.outreachmagic.io`)
 
 Install through Hermes when possible — Hermes runs its own security scan on hub installs:
 

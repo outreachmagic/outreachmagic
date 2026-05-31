@@ -19,7 +19,7 @@ metadata:
     external_domains:
       - domain: api.outreachmagic.io
         purpose: Relay webhooks and authenticated event pull (payloads imported to local SQLite)
-      - domain: dev.outreachmagic.io
+      - domain: app.outreachmagic.io
         purpose: Portal API for tokens, billing, and workspace routing config sync
   hermes:
     tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm]
@@ -28,7 +28,7 @@ metadata:
     external_domains:
       - domain: api.outreachmagic.io
         purpose: Relay webhooks and authenticated event pull (payloads imported to local SQLite)
-      - domain: dev.outreachmagic.io
+      - domain: app.outreachmagic.io
         purpose: Portal API for tokens, billing, and workspace routing config sync
 ---
 
@@ -66,7 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0
   --tag v1.21.0 --lead-enrich-tag v2.0.2 --email-finder-tag v1.0.2
 ```
 
-Use `--platform cursor` or `--platform claude` for other agents. Setup: https://dev.outreachmagic.io/setup/agent
+Use `--platform cursor` or `--platform claude` for other agents. Setup: https://app.outreachmagic.io/setup/agent
 
 ### Hermes profiles
 
@@ -110,7 +110,7 @@ If `pull` returns an error like "No agent key or token configured", the user nee
 >
 > A browser window will open — sign in or sign up, then authorize this device. Never paste secrets into chat.
 
-If the skill is not installed yet, point them to **https://dev.outreachmagic.io/setup/agent** or **https://dev.outreachmagic.io/dashboard/agent** for install commands, then `login`.
+If the skill is not installed yet, point them to **https://app.outreachmagic.io/setup/agent** or **https://app.outreachmagic.io/dashboard/agent** for install commands, then `login`.
 
 `init` creates the database and project folders (`input/`, `export/`, `agent_resources/` under `<skill_home>/project` by default). Override with `"project_root"` in config.
 
@@ -671,7 +671,7 @@ python3 scripts/pipeline.py update
 
 - **Local-first data.** Pipeline leads, events, and campaign stats live in local SQLite (`pipeline.py paths` → `database`).
 - **Relay pass-through.** Webhooks hit `api.outreachmagic.io`; the CLI imports them locally via `pull`. We store tokens and usage on our side, not a searchable cloud copy of your outreach archive.
-- **Portal API.** `dev.outreachmagic.io` (production: app.outreachmagic.io) handles tokens, billing, and optional workspace routing sync when connected.
+- **Portal API.** `app.outreachmagic.io` handles tokens, billing, and optional workspace routing sync when connected.
 - **Credentials.** Store relay tokens in `config/outreachmagic_config.json` only. Never hardcode tokens in SKILL.md or commit them to git.
 - **Read before connect.** See [SECURITY.md](https://github.com/outreachmagic/outreachmagic/blob/main/SECURITY.md) for full data boundaries and vulnerability reporting.
 

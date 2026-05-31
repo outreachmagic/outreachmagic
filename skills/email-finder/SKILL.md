@@ -15,7 +15,7 @@ required_environment_variables:
     required_for: Email find via trykitt.ai job/find_email
   - name: OUTREACHMAGIC_AGENT_KEY
     prompt: Outreach Magic agent key
-    help: Create at https://dev.outreachmagic.io/setup/agent (starts with om_agent_)
+    help: Create at https://app.outreachmagic.io/setup/agent (starts with om_agent_)
     required_for: Saving found emails and dedup checks against local SQLite
 metadata:
   hermes:

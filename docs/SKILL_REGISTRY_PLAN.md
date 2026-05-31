@@ -11,7 +11,7 @@ Plan for securing the Outreach Magic Hermes skill and getting it approved on Her
 | Domain | Role | Status |
 |--------|------|--------|
 | `api.outreachmagic.io` | Cloudflare Worker relay (webhooks, pull, ack) | Production — keep |
-| `dev.outreachmagic.io` | User portal (tokens, billing, routing config API) | Dev — replace with `app.outreachmagic.io` at production launch |
+| `app.outreachmagic.io` | User portal (tokens, billing, routing config API) | Production — keep |
 | `raw.githubusercontent.com` | Tagged release downloads (`pipeline.py update`) | Used only for explicit user-triggered updates pinned to GitHub release tags |
 
 ---
@@ -25,7 +25,7 @@ Plan for securing the Outreach Magic Hermes skill and getting it approved on Her
 | Add `LICENSE` (MIT) | **Done** |
 | Add `SECURITY.md` (data boundaries, external calls, vuln reporting) | **Done** |
 | Add `docs/install.md` | **Done** |
-| Open Reviewed Domains issue on `amanning3390/hermeshub` for `api.outreachmagic.io` and `dev.outreachmagic.io` | **Ready** — copy from [hermeshub-reviewed-domains-issue.md](./hermeshub-reviewed-domains-issue.md) |
+| Open Reviewed Domains issue on `amanning3390/hermeshub` for `api.outreachmagic.io` and `app.outreachmagic.io` | **Ready** — copy from [hermeshub-reviewed-domains-issue.md](./hermeshub-reviewed-domains-issue.md) |
 | Run HermesHub `scan-skill.py` locally; fix CRITICAL findings | **Done** — SKILL.md verified (0 findings); use `bash scripts/skill-scan.sh` |
 | Set GitHub repo topics (hermes-skill, agent-skill, agentskills, etc.) | **Ready** — run `bash scripts/set-repo-topics.sh` or see list below |
 | Align SKILL.md frontmatter description with registry listing copy | **Done** |
@@ -53,7 +53,7 @@ hermes-skill agent-skill agentskills cold-email outreach smartlead instantly lem
 | Replace `scripts/install.sh` with dev-only `scripts/sync-local.sh` (no curl pipe) | **Done** |
 | Add `skills/outreachmagic/references/schema.md` | **Done** |
 | Update README with `hermes skills install outreachmagic/hermes-outreachmagic` | **Done** |
-| Set portal default to `https://dev.outreachmagic.io` (was sandbox Cloud Run URL) | **Done** |
+| Set portal default to `https://app.outreachmagic.io` (was sandbox Cloud Run URL) | **Done** |
 | Remove deprecated `pipeline/` and `skill/` directories | **Done** |
 
 ### Install commands (current)
@@ -118,7 +118,7 @@ bash scripts/build-release.sh v1.4.5
 | Add Privacy & Security section to SKILL.md | **Done** |
 | File permission hardening (700/600) in `pipeline.py init` (not only sync script) | **Remaining** |
 | Document token storage (`config/outreachmagic_config.json`, mode 600) | **Remaining** |
-| Switch portal default to `app.outreachmagic.io` at production launch | **Remaining** (dev URL intentional for now) |
+| Switch portal default to `app.outreachmagic.io` at production launch | **Done** |
 | Optional: PEP 723 headers for `uv run` on scripts | **Remaining** |
 
 ---
@@ -184,7 +184,7 @@ Submit from `outreachmagic/hermes-outreachmagic` (SKILL.md at repo root). Instal
 Request review for:
 
 - **api.outreachmagic.io** — relay webhooks and authenticated pull; payloads pass through, not stored
-- **dev.outreachmagic.io** — portal for token generation, billing, routing config API (will become app.outreachmagic.io)
+- **app.outreachmagic.io** — portal for token generation, billing, routing config API
 
 ---
 

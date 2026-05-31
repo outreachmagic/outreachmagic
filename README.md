@@ -58,7 +58,7 @@ bash scripts/skill-scan.sh
 ## Related Repos (magic-creators)
 
 - `magic-creators/wbhk` — Cloudflare Worker relay (`api.outreachmagic.io`)
-- `magic-creators/wbhkapp` — Next.js dashboard (`dev.outreachmagic.io`)
+- `magic-creators/wbhkapp` — Next.js dashboard (`app.outreachmagic.io`)
 - `magic-creators/wbhk-billing` — Shared billing library
 
 ## Security

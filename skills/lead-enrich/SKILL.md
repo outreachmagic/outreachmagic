@@ -17,7 +17,7 @@ required_environment_variables:
     required_for: Google Search during person/company research
   - name: OUTREACHMAGIC_AGENT_KEY
     prompt: Outreach Magic agent key
-    help: Create at https://dev.outreachmagic.io/setup/agent (starts with om_agent_)
+    help: Create at https://app.outreachmagic.io/setup/agent (starts with om_agent_)
     required_for: outreachmagic dedup checks and saving enriched leads
 metadata:
   hermes:

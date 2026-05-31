@@ -24,8 +24,7 @@ The skill makes external calls to these domains:
   - /pull/{token} — authenticated pull endpoint for the CLI to import events.
   - /pull/{token}/ack — acknowledges imported event IDs.
 
-- dev.outreachmagic.io — user portal and API (production will move to
-  app.outreachmagic.io). Used for:
+- app.outreachmagic.io — user portal and API. Used for:
   - Token generation and account management
   - Billing / subscription status
   - Workspace routing config sync (campaign → workspace maps) when connected

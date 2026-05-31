@@ -64,7 +64,7 @@ In multi-workspace mode, workspace-scoped commands require `--workspace SLUG`.
 
 ### Setup
 
-If not yet connected, get an Agent Key at https://dev.outreachmagic.io/setup/agent then run:
+If not yet connected, get an Agent Key at https://app.outreachmagic.io/setup/agent then run:
 
 ```bash
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py login

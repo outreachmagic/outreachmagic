@@ -12,6 +12,10 @@ SKILL = ROOT / "skills" / "outreachmagic"
 SCRIPTS = SKILL / "scripts"
 MANIFEST_FILES = (
     "pipeline.py",
+    "constants.py",
+    "db_conn.py",
+    "formatters.py",
+    "bounces.py",
     "relay_extractors.py",
     "workspace_routing.py",
     "workspace_archive.py",

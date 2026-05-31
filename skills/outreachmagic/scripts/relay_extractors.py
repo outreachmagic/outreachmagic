@@ -224,3 +224,48 @@ def name_from_email(email: str) -> str:
     if not email or "@" not in email:
         return email or "Unknown"
     return email.split("@")[0].replace(".", " ").replace("_", " ").title()
+
+
+# Bounce diagnostic fields per platform (first non-empty dot-path wins).
+PLATFORM_BOUNCE_SPECS: dict[str, dict[str, tuple[str, ...]]] = {
+    "plusvibe": {
+        "message": ("msg", "body", "bounce_reason", "reason", "error"),
+        "bounce_type": ("bounce_type", "type"),
+        "recipient_mx": ("lead_mx",),
+        "sender_mx": ("sender_mx",),
+    },
+    "smartlead": {
+        "message": ("bounce_reason", "reason", "error", "msg", "message"),
+        "bounce_type": ("bounce_type", "type"),
+    },
+    "instantly": {
+        "message": ("bounce_reason", "reason", "error_message", "message", "body", "msg"),
+        "bounce_type": ("bounce_type", "type"),
+    },
+    "emailbison": {
+        "message": (
+            "data.bounce.reason",
+            "data.bounce.message",
+            "data.bounce.error",
+            "bounce_reason",
+            "reason",
+            "message",
+            "body",
+        ),
+        "bounce_type": ("data.bounce.type", "bounce_type", "type"),
+        "recipient_mx": ("data.lead.mx_provider",),
+    },
+}
+
+_DEFAULT_BOUNCE_SPEC = {
+    "message": ("bounce_reason", "reason", "error", "msg", "message", "body"),
+    "bounce_type": ("bounce_type", "type"),
+}
+
+
+def extract_bounce_fields(platform: str, raw: dict | None) -> dict[str, str]:
+    """Extract bounce diagnostics from a relay webhook raw payload."""
+    if not raw or not isinstance(raw, dict):
+        return {}
+    spec = PLATFORM_BOUNCE_SPECS.get(platform, _DEFAULT_BOUNCE_SPEC)
+    return _extract_block(raw, spec)

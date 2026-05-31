@@ -48,6 +48,7 @@ from typing import Optional
 
 from relay_extractors import (
     build_display_name,
+    extract_bounce_fields,
     extract_relay_fields,
     extract_relay_identity,
     name_from_email,
@@ -94,6 +95,50 @@ import connections_cloud
 import db_health
 import workspace_archive
 
+import bounces
+from bounces import (
+    backfill_bounce_events_from_events,
+    bounce_stats,
+    build_bounce_event_metadata,
+    extract_bounce_details as _extract_bounce_details,
+    extract_bounce_payload as _extract_bounce_payload,
+    is_bounce_event_type,
+    list_bounce_events,
+    normalize_bounce_event_type,
+    record_bounce_event as _record_bounce_event,
+    record_platform_bounce as _record_platform_bounce,
+    verify_email,
+    verify_email_batch,
+    verify_pending,
+    verify_status,
+)
+from constants import (
+    ATTRIBUTE_INSIGHT_FIELDS,
+    AUTO_REPLY_LABELS,
+    MAX_EVENT_BODY_STORAGE_CHARS,
+    PIPELINE_STAGES,
+    PLUSVIBE_BOUNCE_EVENTS,
+    PLUSVIBE_PLATFORMS,
+    PLUSVIBE_REPLY_EVENTS,
+    PLUSVIBE_SENT_EVENTS,
+    RELAY_PUSH_BATCH_SIZE,
+    RELAY_PUSH_MAX_ATTEMPTS,
+    RELAY_PUSH_RETRY_BASE_SECONDS,
+    RELAY_PUSH_TIMEOUT_SECONDS,
+    SHARED_EMAIL_DOMAINS,
+    STAGE_EMOJI,
+)
+from db_conn import get_conn
+from formatters import (
+    format_campaign_stats,
+    format_copy_insights,
+    format_event_timeline,
+    format_lead_table,
+    format_pipeline_table,
+    format_segment_insights,
+    format_stats,
+)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Configuration
@@ -117,17 +162,13 @@ from om_paths import (
 SKILL_NAME = "outreachmagic"
 RELAY_URL = "https://api.outreachmagic.io"
 
-# Max chars stored in events.metadata_json["body"] (full copy for history / copy-insights).
-# body_preview stays 200 chars. Prevents runaway HTML/base64 from bloating SQLite.
-MAX_EVENT_BODY_STORAGE_CHARS = 65536
-RELAY_PUSH_BATCH_SIZE = 50
-RELAY_PUSH_TIMEOUT_SECONDS = 120
-RELAY_PUSH_MAX_ATTEMPTS = 3
-RELAY_PUSH_RETRY_BASE_SECONDS = 2
-
 SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
 UPDATE_SCRIPT_FILES = (
     "pipeline.py",
+    "constants.py",
+    "db_conn.py",
+    "formatters.py",
+    "bounces.py",
     "relay_extractors.py",
     "workspace_routing.py",
     "workspace_archive.py",
@@ -483,34 +524,6 @@ def update_skill(explicit_tag: Optional[str] = None) -> dict:
         "source": source_label,
     }
 
-PIPELINE_STAGES = [
-    "prospecting", "contacted", "replied", "interested",
-    "proposal", "won", "lost",
-]
-
-STAGE_EMOJI = {
-    "prospecting": "○", "contacted": "●", "replied": "↔",
-    "interested": "★", "proposal": "■", "won": "✔", "lost": "✖",
-}
-
-ATTRIBUTE_INSIGHT_FIELDS = ("title", "industry", "headcount")
-
-# Personal inboxes — skip domain-wide company sync (would touch unrelated leads)
-SHARED_EMAIL_DOMAINS = frozenset({
-    "126.com", "163.com", "aim.com", "alice.it", "aol.com", "ameritech.net", "att.net",
-    "bellsouth.net", "bigpond.com", "btinternet.com", "charter.net", "comcast.net", "cox.net", "cs.com",
-    "daum.net", "earthlink.net", "email.com", "excite.com", "facebook.com", "flash.net", "free.fr",
-    "frontier.com", "gmail.com", "gmx.com", "gmx.net", "googlemail.com", "hanmail.net", "hey.com",
-    "hotmail.com", "hushmail.com", "icloud.com", "inbox.com", "instagram.com", "interia.pl", "juno.com",
-    "laposte.net", "libero.it", "linkedin.com", "live.com", "lycos.com", "mac.com", "mail.com",
-    "mail.ru", "mailfence.com", "me.com", "mindspring.com", "msn.com", "naver.com", "netscape.net",
-    "netzero.net", "ntlworld.com", "o2.pl", "onet.pl", "optonline.net", "orange.fr", "outlook.com",
-    "pacbell.net", "pm.me", "prodigy.net", "proton.me", "protonmail.com", "qq.com", "rediffmail.com",
-    "roadrunner.com", "rocketmail.com", "rogers.com", "runbox.com", "sbcglobal.net", "sfr.fr", "shaw.ca",
-    "sina.com", "sky.com", "swbell.net", "sympatico.ca", "talktalk.net", "t-online.de", "tuta.io",
-    "tutanota.com", "twc.com", "verizon.net", "virgilio.it", "virginmedia.com", "wanadoo.fr", "web.de",
-    "windstream.net", "wp.pl", "yahoo.com", "yandex.com", "yandex.ru", "ymail.com",
-})
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1005,20 +1018,43 @@ CREATE TABLE IF NOT EXISTS lead_email_verification (
 CREATE INDEX IF NOT EXISTS idx_verification_email ON lead_email_verification(email);
 CREATE INDEX IF NOT EXISTS idx_verification_status ON lead_email_verification(org_id, status);
 CREATE INDEX IF NOT EXISTS idx_verification_lead ON lead_email_verification(lead_id);
+
+CREATE TABLE IF NOT EXISTS bounce_events (
+    id                  TEXT PRIMARY KEY,
+    org_id              TEXT NOT NULL,
+    lead_id             INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    first_event_id      INTEGER REFERENCES events(id) ON DELETE SET NULL,
+    latest_event_id     INTEGER REFERENCES events(id) ON DELETE SET NULL,
+    platform            TEXT NOT NULL,
+    sender_email        TEXT NOT NULL,
+    lead_email          TEXT NOT NULL,
+    bounce_type         TEXT NOT NULL DEFAULT 'unknown',
+    bounce_message      TEXT,
+    smtp_code           TEXT,
+    recipient_mx        TEXT,
+    sender_mx           TEXT,
+    campaign_id         INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
+    campaign_name       TEXT,
+    workspace_id        TEXT,
+    relay_id            TEXT,
+    occurrence_count    INTEGER NOT NULL DEFAULT 1,
+    first_seen_at       TEXT NOT NULL,
+    last_seen_at        TEXT NOT NULL,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (lead_id, sender_email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bounce_events_lead ON bounce_events(lead_id);
+CREATE INDEX IF NOT EXISTS idx_bounce_events_platform ON bounce_events(platform, bounce_type);
+CREATE INDEX IF NOT EXISTS idx_bounce_events_sender ON bounce_events(sender_email);
+CREATE INDEX IF NOT EXISTS idx_bounce_events_seen ON bounce_events(last_seen_at DESC);
 """
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Database Operations
 # ──────────────────────────────────────────────────────────────────────
-
-def get_conn():
-    conn = sqlite3.connect(str(get_db_path()))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.row_factory = sqlite3.Row
-    return conn
-
 def init_db():
     db = get_db_path()
     db.parent.mkdir(parents=True, exist_ok=True)
@@ -1207,6 +1243,35 @@ def migrate_db(conn=None):
         CREATE INDEX IF NOT EXISTS idx_verification_email ON lead_email_verification(email);
         CREATE INDEX IF NOT EXISTS idx_verification_status ON lead_email_verification(org_id, status);
         CREATE INDEX IF NOT EXISTS idx_verification_lead ON lead_email_verification(lead_id);
+        CREATE TABLE IF NOT EXISTS bounce_events (
+            id                  TEXT PRIMARY KEY,
+            org_id              TEXT NOT NULL,
+            lead_id             INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+            first_event_id      INTEGER REFERENCES events(id) ON DELETE SET NULL,
+            latest_event_id     INTEGER REFERENCES events(id) ON DELETE SET NULL,
+            platform            TEXT NOT NULL,
+            sender_email        TEXT NOT NULL,
+            lead_email          TEXT NOT NULL,
+            bounce_type         TEXT NOT NULL DEFAULT 'unknown',
+            bounce_message      TEXT,
+            smtp_code           TEXT,
+            recipient_mx        TEXT,
+            sender_mx           TEXT,
+            campaign_id         INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
+            campaign_name       TEXT,
+            workspace_id        TEXT,
+            relay_id            TEXT,
+            occurrence_count    INTEGER NOT NULL DEFAULT 1,
+            first_seen_at       TEXT NOT NULL,
+            last_seen_at        TEXT NOT NULL,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (lead_id, sender_email)
+        );
+        CREATE INDEX IF NOT EXISTS idx_bounce_events_lead ON bounce_events(lead_id);
+        CREATE INDEX IF NOT EXISTS idx_bounce_events_platform ON bounce_events(platform, bounce_type);
+        CREATE INDEX IF NOT EXISTS idx_bounce_events_sender ON bounce_events(sender_email);
+        CREATE INDEX IF NOT EXISTS idx_bounce_events_seen ON bounce_events(last_seen_at DESC);
     """)
     for col, col_type in [
         ("industry", "TEXT"), ("headcount", "TEXT"), ("email_domain", "TEXT"),
@@ -1349,6 +1414,7 @@ def migrate_db(conn=None):
     except sqlite3.OperationalError:
         pass
     repair_malformed_tags(conn)
+    backfill_bounce_events_from_events(conn)
     conn.execute(
         """UPDATE leads SET cloud_pending = 0
            WHERE cloud_pending = 1
@@ -3074,258 +3140,6 @@ def tag_bulk(workspace_id: str, lead_ids: list[int], tags: list[str], *, remove:
     return {"status": action, "changed": changed, "leads": len(lead_ids), "tags": tags}
 
 
-def _extract_bounce_details(raw: dict, platform: str) -> tuple:
-    """Extract (bounce_type, bounce_reason) with platform-aware field mapping."""
-    bounce_type = (
-        raw.get("bounce_type")
-        or raw.get("type")
-        or "unknown"
-    )
-    if isinstance(bounce_type, str):
-        bounce_type = bounce_type.strip().lower()
-    else:
-        bounce_type = "unknown"
-    bounce_reason = (
-        raw.get("bounce_reason")
-        or raw.get("reason")
-        or raw.get("error")
-        or ""
-    )
-    if isinstance(bounce_reason, str):
-        bounce_reason = bounce_reason.strip()
-    else:
-        bounce_reason = ""
-    if "hard" in bounce_type:
-        bounce_type = "hard"
-    elif "soft" in bounce_type or "temporary" in bounce_type:
-        bounce_type = "soft"
-    return bounce_type, bounce_reason
-
-
-def _compute_verification_status(conn: sqlite3.Connection, lead_id: int):
-    """Compute consolidated verification status from all sources and materialize on leads."""
-    rows = conn.execute(
-        """SELECT status, sub_status, source, verified_at FROM lead_email_verification
-           WHERE lead_id = ? ORDER BY verified_at DESC""",
-        (lead_id,),
-    ).fetchall()
-    if not rows:
-        return
-    tool_rows = [r for r in rows if r["source"] != "platform_bounce"]
-    bounce_rows = [r for r in rows if r["source"] == "platform_bounce"]
-    status, verified_at = None, None
-    if tool_rows:
-        latest_tool = tool_rows[0]
-        status, verified_at = latest_tool["status"], latest_tool["verified_at"]
-        if latest_tool["status"] == "valid" and bounce_rows:
-            hard_after = [
-                b for b in bounce_rows
-                if "hard" in (b["sub_status"] or "")
-                and b["verified_at"] > latest_tool["verified_at"]
-            ]
-            if hard_after:
-                status, verified_at = "bounced", hard_after[0]["verified_at"]
-    elif bounce_rows:
-        latest = bounce_rows[0]
-        if "hard" in (latest["sub_status"] or ""):
-            status, verified_at = "bounced", latest["verified_at"]
-        else:
-            status, verified_at = "soft_bounce", latest["verified_at"]
-    if status:
-        conn.execute(
-            """UPDATE leads SET email_verification_status = ?, email_verified_at = ?,
-               updated_at = datetime('now') WHERE id = ?""",
-            (status, verified_at, lead_id),
-        )
-
-
-def _record_platform_bounce(
-    conn: sqlite3.Connection,
-    lead_id: int,
-    email: str,
-    platform: str,
-    bounce_type: str,
-    bounce_reason: str,
-    event_at: Optional[str] = None,
-):
-    """Record a platform bounce in lead_email_verification and recompute materialized status."""
-    org_id = DEFAULT_ORG_ID
-    sub = "hard_bounce" if bounce_type == "hard" else "soft_bounce"
-    ver_id = f"ver_{lead_id}_platform_bounce"
-    now_ts = event_at or datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT INTO lead_email_verification
-           (id, org_id, lead_id, email, status, sub_status, source, source_detail,
-            bounce_message, verified_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (org_id, lead_id, source) DO UPDATE SET
-               status = excluded.status,
-               sub_status = excluded.sub_status,
-               source_detail = excluded.source_detail,
-               bounce_message = excluded.bounce_message,
-               verified_at = excluded.verified_at""",
-        (ver_id, org_id, lead_id, email or "",
-         "bounced" if bounce_type == "hard" else "soft_bounce",
-         sub, "platform_bounce", f"{platform}:{bounce_type}",
-         bounce_reason, now_ts),
-    )
-    _compute_verification_status(conn, lead_id)
-
-
-def verify_email(
-    lead_id: int,
-    status: str,
-    source: str,
-    *,
-    sub_status: Optional[str] = None,
-    source_detail: Optional[str] = None,
-    free_email: Optional[bool] = None,
-    mx_found: Optional[bool] = None,
-    smtp_provider: Optional[str] = None,
-) -> dict:
-    """Record an email verification result (from ZeroBounce, NeverBounce, etc.)."""
-    conn = get_conn()
-    row = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
-    if not row:
-        conn.close()
-        return {"status": "error", "error": f"Lead {lead_id} not found"}
-    email = row["email"] or ""
-    org_id = DEFAULT_ORG_ID
-    ver_id = f"ver_{lead_id}_{source}"
-    now_ts = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT INTO lead_email_verification
-           (id, org_id, lead_id, email, status, sub_status, source, source_detail,
-            free_email, mx_found, smtp_provider, verified_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (org_id, lead_id, source) DO UPDATE SET
-               email = excluded.email,
-               status = excluded.status,
-               sub_status = excluded.sub_status,
-               source_detail = excluded.source_detail,
-               free_email = excluded.free_email,
-               mx_found = excluded.mx_found,
-               smtp_provider = excluded.smtp_provider,
-               verified_at = excluded.verified_at""",
-        (ver_id, org_id, lead_id, email, status, sub_status, source, source_detail,
-         1 if free_email else (0 if free_email is not None else None),
-         1 if mx_found else (0 if mx_found is not None else None),
-         smtp_provider, now_ts),
-    )
-    _compute_verification_status(conn, lead_id)
-    conn.commit()
-    conn.close()
-    return {"status": "recorded", "lead_id": lead_id, "verification_status": status, "source": source}
-
-
-def verify_email_batch(results: list[dict]) -> dict:
-    """Record multiple verification results at once."""
-    conn = get_conn()
-    org_id = DEFAULT_ORG_ID
-    recorded = 0
-    errors = []
-    for item in results:
-        lid = item.get("lead_id")
-        if not lid:
-            errors.append({"error": "missing lead_id", "item": item})
-            continue
-        row = conn.execute("SELECT email FROM leads WHERE id = ?", (lid,)).fetchone()
-        if not row:
-            errors.append({"error": f"Lead {lid} not found", "lead_id": lid})
-            continue
-        email = item.get("email") or row["email"] or ""
-        status = item.get("status", "unknown")
-        source = item.get("source", "unknown")
-        ver_id = f"ver_{lid}_{source}"
-        now_ts = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            """INSERT INTO lead_email_verification
-               (id, org_id, lead_id, email, status, sub_status, source, source_detail,
-                free_email, mx_found, smtp_provider, verified_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT (org_id, lead_id, source) DO UPDATE SET
-                   email = excluded.email,
-                   status = excluded.status,
-                   sub_status = excluded.sub_status,
-                   source_detail = excluded.source_detail,
-                   free_email = excluded.free_email,
-                   mx_found = excluded.mx_found,
-                   smtp_provider = excluded.smtp_provider,
-                   verified_at = excluded.verified_at""",
-            (ver_id, org_id, lid, email, status, item.get("sub_status"),
-             source, item.get("source_detail"),
-             item.get("free_email"), item.get("mx_found"),
-             item.get("smtp_provider"), now_ts),
-        )
-        _compute_verification_status(conn, lid)
-        recorded += 1
-    conn.commit()
-    conn.close()
-    return {"status": "batch_recorded", "recorded": recorded, "errors": errors}
-
-
-def verify_status(lead_id: Optional[int] = None, email: Optional[str] = None) -> dict:
-    """Check verification status for a lead."""
-    conn = get_conn()
-    if lead_id:
-        row = conn.execute(
-            "SELECT email_verification_status, email_verified_at FROM leads WHERE id = ?",
-            (lead_id,),
-        ).fetchone()
-        if not row:
-            conn.close()
-            return {"status": "error", "error": f"Lead {lead_id} not found"}
-        records = conn.execute(
-            """SELECT status, sub_status, source, source_detail, bounce_message,
-                      verified_at FROM lead_email_verification
-               WHERE lead_id = ? ORDER BY verified_at DESC""",
-            (lead_id,),
-        ).fetchall()
-    elif email:
-        email = normalize_email(email)
-        row = conn.execute(
-            "SELECT id, email_verification_status, email_verified_at FROM leads WHERE email = ?",
-            (email,),
-        ).fetchone()
-        if not row:
-            conn.close()
-            return {"status": "error", "error": f"No lead with email {email}"}
-        lead_id = row["id"]
-        records = conn.execute(
-            """SELECT status, sub_status, source, source_detail, bounce_message,
-                      verified_at FROM lead_email_verification
-               WHERE lead_id = ? ORDER BY verified_at DESC""",
-            (lead_id,),
-        ).fetchall()
-    else:
-        conn.close()
-        return {"status": "error", "error": "Provide --lead-id or --email"}
-    conn.close()
-    return {
-        "lead_id": lead_id,
-        "consolidated_status": row["email_verification_status"],
-        "verified_at": row["email_verified_at"],
-        "records": [dict(r) for r in records],
-    }
-
-
-def verify_pending(limit: int = 50) -> list[dict]:
-    """List leads that have no verification record."""
-    conn = get_conn()
-    rows = conn.execute(
-        """SELECT l.id, l.email, l.name, l.company
-           FROM leads l
-           WHERE l.email IS NOT NULL
-             AND l.email_verification_status IS NULL
-             AND NOT EXISTS (
-                 SELECT 1 FROM lead_email_verification v WHERE v.lead_id = l.id
-             )
-           ORDER BY l.updated_at DESC LIMIT ?""",
-        (limit,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
 
 def load_profile_rows_from_file(path: Path) -> list[dict]:
     """Load rows from a .csv file or a .json / .jsonl file."""
@@ -3498,8 +3312,10 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
             "UPDATE leads SET updated_at = datetime('now'), last_contact_at = datetime('now') WHERE id = ?",
             (lead_id,),
         )
+    event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
     conn.close()
+    return event_id
 
 
 def _update_lead_sender(
@@ -6085,26 +5901,6 @@ def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int =
 # ──────────────────────────────────────────────────────────────────────
 # Relay Integration (api.outreachmagic.io)
 # ──────────────────────────────────────────────────────────────────────
-
-PLUSVIBE_PLATFORMS = frozenset({"plusvibe"})
-
-PLUSVIBE_REPLY_EVENTS = frozenset({
-    "all_email_replies",
-    "first_email_replies",
-    "all_positive_replies",
-})
-
-PLUSVIBE_SENT_EVENTS = frozenset({"email_sent"})
-PLUSVIBE_BOUNCE_EVENTS = frozenset({"bounced_email"})
-
-AUTO_REPLY_LABELS = frozenset({
-    "out_of_office",
-    "ooo",
-    "automatic_reply",
-    "auto_reply",
-})
-
-
 def normalize_lead_status_display(label: str) -> str:
     """Underscores to spaces, matching backend normalize_lead_status_status."""
     if not label:
@@ -7080,6 +6876,8 @@ def ingest_relay_event(
         event_type_map = {
             "email_sent": "email_sent", "email_open": "email_open",
             "email_reply": "email_reply", "email_bounce": "email_bounce",
+            "email_bounced": "email_bounce",
+            "email.bounced": "email_bounce",
             "email_click": "email_click", "email_unsubscribe": "email_unsubscribe",
             "linkedin_connect": "linkedin_connect",
             "linkedin_connection_accepted": "linkedin_connection_accepted",
@@ -7087,7 +6885,9 @@ def ingest_relay_event(
             "linkedin_reply": "linkedin_message",
         }
         local_type = map_relay_local_event_type(envelope_event_type)
-        if envelope_event_type in event_type_map:
+        if is_bounce_event_type(envelope_event_type):
+            local_type = "email_bounce"
+        elif envelope_event_type in event_type_map:
             local_type = event_type_map[envelope_event_type]
         direction = (
             "inbound"
@@ -7099,8 +6899,14 @@ def ingest_relay_event(
             else "outbound"
         )
 
+    bounce_payload = None
+    if local_type == "email_bounce":
+        bounce_payload = _extract_bounce_payload(raw, platform)
+
     subject = event_fields.get("subject") or f"{platform}: {envelope_event_type}"
     body = event_fields.get("body") or ""
+    if local_type == "email_bounce" and bounce_payload and bounce_payload.get("bounce_message"):
+        body = bounce_payload["bounce_message"]
     if body:
         body, _ = cap_event_body(body)
         body_preview = body[:200]
@@ -7128,6 +6934,8 @@ def ingest_relay_event(
         metadata.update(
             build_plusvibe_status_metadata(raw, signals, envelope_event_type)
         )
+    if local_type == "email_bounce" and bounce_payload:
+        metadata.update(build_bounce_event_metadata(bounce_payload, envelope_event_type))
 
     if debug_sentiment and platform in PLUSVIBE_PLATFORMS:
         raw_label = (raw.get("label") or "").strip().lower()
@@ -7146,7 +6954,7 @@ def ingest_relay_event(
                 f"normalized_sentiment={normalized_sentiment or '-'}"
             )
 
-    log_event(
+    event_id = log_event(
         lead_id=lead_id,
         event_type=local_type,
         direction=direction,
@@ -7229,12 +7037,32 @@ def ingest_relay_event(
             )
 
     if local_type == "email_bounce":
-        bounce_type, bounce_reason = _extract_bounce_details(raw, platform)
+        payload = bounce_payload or _extract_bounce_payload(raw, platform)
+        bounce_type = payload["bounce_type"]
+        bounce_reason = payload["bounce_message"]
         _record_platform_bounce(
             conn, lead_id, email_hint, platform,
             bounce_type=bounce_type,
             bounce_reason=bounce_reason,
             event_at=received_at,
+        )
+        campaign_name = event_fields.get("campaign") or campaign_ctx.campaign_name_raw
+        campaign_id = None
+        if campaign_name and str(campaign_name).strip():
+            campaign_id = ensure_campaign(conn, str(campaign_name).strip(), lead_id)
+        _record_bounce_event(
+            conn,
+            lead_id=lead_id,
+            event_id=event_id,
+            platform=platform,
+            sender_email=sender_norm or raw.get("sender_email") or "unknown",
+            lead_email=email_hint or envelope_lead or "",
+            payload=payload,
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            workspace_id=workspace_id,
+            event_at=received_at,
+            relay_id=str(event.get("relay_id") or "") or None,
         )
 
     conn.commit()
@@ -7660,264 +7488,6 @@ def cmd_disconnect_platform(platform: str, skip_confirm: bool = False):
         print(f"Failed to disconnect: {exc}")
         sys.exit(1)
     print()
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Formatting
-# ──────────────────────────────────────────────────────────────────────
-
-def format_pipeline_table(leads):
-    if not leads:
-        return "No leads in pipeline. Time to do some outreach!"
-    lines = [f"{'Lead':<28} {'Company':<20} {'Stage':<14} {'Last':<12} {'Next Action'}", "-" * 95]
-    for lead in leads:
-        name = (lead["name"] or "")[:26]
-        company = (lead.get("company_display") or lead.get("company") or "")[:18]
-        stage = lead["stage"] or "?"
-        emoji = STAGE_EMOJI.get(stage, "  ")
-        last = lead.get("last_contact_at") or lead.get("last_event_at") or ""
-        if last:
-            try:
-                dt = datetime.fromisoformat(last)
-                now = datetime.now(timezone.utc)
-                delta = now - dt.replace(tzinfo=timezone.utc)
-                if delta.days:
-                    last = f"{delta.days}d ago"
-                elif delta.seconds >= 3600:
-                    last = f"{delta.seconds // 3600}h ago"
-                else:
-                    last = f"{delta.seconds // 60}m ago"
-            except (ValueError, TypeError):
-                last = last[:10]
-        next_action = (lead.get("next_action") or "")[:30]
-        status_bits = []
-        if lead.get("current_sentiment"):
-            status_bits.append(lead["current_sentiment"])
-        if lead.get("current_is_auto_reply"):
-            status_bits.append("auto")
-        status_suffix = f" [{','.join(status_bits)}]" if status_bits else ""
-        lines.append(
-            f"{name:<28} {company:<20} {emoji} {stage:<12} {last:<12} {next_action}{status_suffix}"
-        )
-    return "\n".join(lines)
-
-
-def format_lead_table(leads, markdown: bool = False):
-    """Render stable lead rows from canonical show/get_pipeline fields."""
-    if not leads:
-        return "No leads found."
-
-    headers = ["Lead", "Company", "Stage", "Last Event", "Last Event At", "Events", "Notes"]
-    rows = []
-    for lead in leads:
-        rows.append(
-            [
-                (lead.get("name") or "—").strip() or "—",
-                (lead.get("company_display") or lead.get("company") or "—").strip() or "—",
-                (lead.get("stage") or "—").strip() or "—",
-                (lead.get("last_event") or "—").strip() or "—",
-                (lead.get("last_event_at") or "—").strip() or "—",
-                str(int(lead.get("event_count") or 0)),
-                (lead.get("notes") or "—").strip() or "—",
-            ]
-        )
-
-    if markdown:
-        lines = [
-            "| " + " | ".join(headers) + " |",
-            "| " + " | ".join(["---"] * len(headers)) + " |",
-        ]
-        for row in rows:
-            safe_cells = [str(cell).replace("\n", " ").replace("|", "\\|") for cell in row]
-            lines.append("| " + " | ".join(safe_cells) + " |")
-        return "\n".join(lines)
-
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for idx, cell in enumerate(row):
-            widths[idx] = max(widths[idx], len(str(cell)))
-    lines = [
-        "  ".join(f"{h:<{widths[i]}}" for i, h in enumerate(headers)),
-        "  ".join("-" * widths[i] for i in range(len(headers))),
-    ]
-    for row in rows:
-        lines.append("  ".join(f"{str(cell):<{widths[i]}}" for i, cell in enumerate(row)))
-    return "\n".join(lines)
-
-
-def format_stats(stats):
-    lines = [
-        f"Pipeline: {stats['active_pipeline']} active | {stats['won']} won | "
-        f"{stats['lost']} lost | {stats['total_leads']} total leads",
-        f"Events: {stats['total_events']} total | {stats['events_7d']} in last 7 days",
-        f"Replies: {stats.get('reply_events', 0)} events across {stats.get('replied_leads', 0)} leads "
-        f"(stage 'replied' currently {stats.get('stages', {}).get('replied', 0)})",
-        "Breakdown: " + ", ".join(f"{s}={c}" for s, c in stats.get("stages", {}).items()),
-    ]
-    campaign_lines = format_campaign_stats(stats, include_header=True)
-    if campaign_lines:
-        lines.append("")
-        lines.extend(campaign_lines)
-    return "\n".join(lines)
-
-
-def format_campaign_stats(stats, include_header=False):
-    campaigns = stats.get("campaigns") or []
-    no_campaign = stats.get("no_campaign_events", 0)
-    if not campaigns and not no_campaign:
-        return []
-    lines = []
-    if include_header:
-        lines.append("Campaigns:")
-    workspace_w = max((len(c.get("workspace") or "-") for c in campaigns), default=9)
-    workspace_w = max(workspace_w, len("Workspace"), 9)
-    name_w = max((len(c.get("campaign_name") or c.get("campaign") or "") for c in campaigns), default=12)
-    name_w = max(name_w, len("(no campaign)"), len("Campaign"), 12)
-    lines.append(
-        f"{'Workspace':<{workspace_w}}  {'Campaign':<{name_w}}  {'Events':>7}  {'Leads':>6}  {'Interested':>10}"
-    )
-    lines.append("-" * (workspace_w + name_w + 31))
-    for row in campaigns:
-        workspace = row.get("workspace") or "-"
-        campaign_name = row.get("campaign_name") or row.get("campaign") or ""
-        interested = int(row.get("interested_count") or 0)
-        lines.append(
-            f"{workspace:<{workspace_w}}  {campaign_name:<{name_w}}  "
-            f"{row['event_count']:>7}  {row['lead_count']:>6}  {interested:>10}"
-        )
-    if no_campaign:
-        lines.append(f"{'-':<{workspace_w}}  {'(no campaign)':<{name_w}}  {no_campaign:>7}  {'-':>6}  {'-':>10}")
-    return lines
-
-def format_event_timeline(lead, events):
-    """Format a lead's event history as a timeline."""
-    emoji = STAGE_EMOJI.get(lead.get("stage", ""), "")
-    lines = [
-        f"Lead:    {lead['name']} ({emoji} {lead.get('stage', '?')})",
-        f"Title:   {lead.get('title') or '—'}",
-        f"Email:   {lead.get('email') or '—'}",
-        f"Company: {lead.get('company_display') or lead.get('company') or '—'}",
-        f"Industry:{lead.get('industry') or '—'}  |  Headcount: {lead.get('headcount') or '—'}",
-        f"Notes:   {lead.get('notes') or '—'}",
-        "",
-    ]
-    if not events:
-        lines.append("No events recorded yet.")
-        return "\n".join(lines)
-
-    lines.append(f"{'#':<4} {'When':<20} {'Event':<32} {'Details'}")
-    lines.append("-" * 95)
-    for i, e in enumerate(events, 1):
-        created = e.get("created_at", "")
-        try:
-            dt = datetime.fromisoformat(created)
-            now = datetime.now(timezone.utc)
-            delta = now - dt.replace(tzinfo=timezone.utc)
-            if delta.days:
-                when = f"{delta.days}d ago"
-            elif delta.seconds >= 3600:
-                when = f"{delta.seconds // 3600}h ago"
-            elif delta.seconds >= 60:
-                when = f"{delta.seconds // 60}m ago"
-            else:
-                when = "just now"
-        except (ValueError, TypeError):
-            when = created[:16]
-
-        direction = "←" if e.get("direction") == "inbound" else "→"
-        evt = f"{direction} {e.get('event_type', '?')}"
-        details = e.get("body_preview") or e.get("subject") or ""
-        try:
-            meta = json.loads(e.get("metadata_json") or "{}")
-        except (json.JSONDecodeError, TypeError):
-            meta = {}
-        status_note = meta.get("lead_status_sentiment") or meta.get("lead_status_raw")
-        if meta.get("is_auto_reply"):
-            status_note = (status_note or "") + " auto_reply"
-        if status_note:
-            details = f"{status_note}: {details}" if details else str(status_note)
-        if len(details) > 45:
-            details = details[:42] + "..."
-        lines.append(f"{i:<4} {when:<20} {evt:<32} {details}")
-
-    return "\n".join(lines)
-
-
-def format_copy_insights(insights: dict) -> str:
-    counts = insights.get("counts") or {}
-    best = insights.get("best_template")
-    lines = [
-        f"Positive leads: {counts.get('positive_leads', 0)}",
-        f"Positive leads with copy captured: {counts.get('positive_with_copy', 0)}",
-        f"Templates seen: {counts.get('templates_seen', 0)}",
-        "",
-        "Positive lead copy (full subject + body):",
-        "-" * 95,
-    ]
-    for row in insights.get("positive_leads_copy") or []:
-        lines.append(f"Lead #{row['lead_id']} — {row.get('lead_name') or 'Unknown'}")
-        lines.append(f"Subject: {row.get('subject') or '—'}")
-        lines.append("Body:")
-        lines.append(row.get("body") or "—")
-        lines.append("")
-
-    lines.append("Template performance (first outbound email per lead):")
-    lines.append("-" * 95)
-    for t in (insights.get("templates_ranked") or [])[:10]:
-        rate = round(100 * float(t.get("positive_rate") or 0), 1)
-        lines.append(
-            f"[{t['template_id']}] positives={t['positive_leads']}/{t['total_leads']} ({rate}%)"
-        )
-        lines.append(f"Subject template: {t.get('subject_template') or '—'}")
-        lines.append("")
-
-    if best:
-        rate = round(100 * float(best.get("positive_rate") or 0), 1)
-        lines.append("Best working template:")
-        lines.append(f"- ID: {best['template_id']}")
-        lines.append(
-            f"- Performance: {best['positive_leads']}/{best['total_leads']} positive leads ({rate}%)"
-        )
-        lines.append(f"- Subject: {best.get('subject_template') or '—'}")
-        lines.append("Body:")
-        lines.append(best.get("body_template") or "—")
-
-    return "\n".join(lines)
-
-
-def format_segment_insights(insights: dict) -> str:
-    counts = insights.get("counts") or {}
-    lines = [
-        f"Sent leads (at least one outbound email): {counts.get('sent_leads', 0)}",
-        f"Positive leads matching filter: {counts.get('positive_leads_matching_filter', 0)}",
-        f"Positive leads with sent email: {counts.get('positive_leads_with_sent_email', 0)}",
-        "",
-    ]
-
-    insights_by_field = insights.get("insights_by_field") or {}
-    for field in insights.get("filter", {}).get("fields") or []:
-        rows = insights_by_field.get(field) or []
-        lines.append(f"Best converting {field} values:")
-        lines.append("-" * 95)
-        if not rows:
-            lines.append("No rows met your min-sent threshold.")
-            lines.append("")
-            continue
-        for row in rows:
-            rate = round(100 * float(row.get("conversion_rate") or 0), 1)
-            lines.append(
-                f"{row.get('value') or '—'}: {row.get('positive_leads', 0)}/{row.get('sent_leads', 0)} positive ({rate}%)"
-            )
-        lines.append("")
-
-    titles = insights.get("recommended_job_titles") or []
-    if titles:
-        lines.append("Recommended job titles to source next:")
-        lines.append("-" * 95)
-        for title in titles[:10]:
-            lines.append(f"- {title}")
-
-    return "\n".join(lines).rstrip()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -8510,6 +8080,18 @@ def main():
     verp_p = sub.add_parser("verify-pending", help="List leads needing email verification")
     verp_p.add_argument("--limit", type=int, default=50)
     verp_p.add_argument("--json", action="store_true")
+
+    bounce_p = sub.add_parser("bounce-list", help="List deduplicated platform bounce records")
+    bounce_p.add_argument("--platform", help="Filter by platform (plusvibe, smartlead, etc.)")
+    bounce_p.add_argument("--bounce-type", dest="bounce_type", choices=("hard", "soft", "unknown"))
+    bounce_p.add_argument("--sender", help="Filter by sending mailbox")
+    bounce_p.add_argument("--since", help="Last seen on/after date (YYYY-MM-DD or today)")
+    bounce_p.add_argument("--limit", type=int, default=100)
+    bounce_p.add_argument("--json", action="store_true")
+
+    bounce_stats_p = sub.add_parser("bounce-stats", help="Deliverability bounce analytics summary")
+    bounce_stats_p.add_argument("--since", help="Last seen on/after date (YYYY-MM-DD or today)")
+    bounce_stats_p.add_argument("--json", action="store_true")
 
     export_p = sub.add_parser("export", help="Export leads with personalization, tags, and sender")
     export_p.add_argument("--workspace", required=True, help="Workspace slug")
@@ -9267,6 +8849,49 @@ def main():
             print(f"{len(result)} leads pending verification:")
             for r in result:
                 print(f"  [{r['id']}] {r.get('name') or '?'} — {r.get('email') or ''}")
+    elif args.command == "bounce-list":
+        rows = list_bounce_events(
+            platform=getattr(args, "platform", None),
+            bounce_type=getattr(args, "bounce_type", None),
+            sender=getattr(args, "sender", None),
+            since=getattr(args, "since", None),
+            limit=args.limit,
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(rows, indent=2))
+        else:
+            if not rows:
+                print("No bounce records found.")
+            else:
+                print(f"{'Lead':<28} {'Sender':<28} {'Type':<8} {'MX':<18} {'Seen':<12} {'Msg'}")
+                print("-" * 120)
+                for row in rows:
+                    msg = (row.get("bounce_message") or "")[:60]
+                    print(
+                        f"{(row.get('lead_email') or '—'):<28} "
+                        f"{(row.get('sender_email') or '—'):<28} "
+                        f"{(row.get('bounce_type') or '—'):<8} "
+                        f"{(row.get('recipient_mx') or '—'):<18} "
+                        f"{(row.get('last_seen_at') or '')[:10]:<12} "
+                        f"{msg}"
+                    )
+    elif args.command == "bounce-stats":
+        stats = bounce_stats(since=getattr(args, "since", None))
+        if getattr(args, "json", False):
+            print(json.dumps(stats, indent=2))
+        else:
+            print(
+                f"Unique bounces: {stats['total_unique_bounces']} | "
+                f"Suppressed duplicate webhooks: {stats['suppressed_duplicate_webhooks']}"
+            )
+            if stats["by_platform"]:
+                print("By platform: " + ", ".join(
+                    f"{r['platform']}={r['c']}" for r in stats["by_platform"]
+                ))
+            if stats["by_bounce_type"]:
+                print("By type: " + ", ".join(
+                    f"{r['bounce_type']}={r['c']}" for r in stats["by_bounce_type"]
+                ))
     elif args.command == "agent-changes":
         result = export_local_changes(
             all_leads=getattr(args, "all", False),

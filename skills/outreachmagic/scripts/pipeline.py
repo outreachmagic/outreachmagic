@@ -4990,25 +4990,43 @@ def _push_pending_lead_updates(agent_key: str) -> dict:
     entries = []
     pushed_ids = []
     for row in rows:
-        entity_key = entity_key_from_prefetch(prefetch, row["id"])
+        lead_id = row["id"]
+        entity_key = entity_key_from_prefetch(prefetch, lead_id)
         if not entity_key:
-            entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, row["id"])
+            entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, lead_id)
         if not entity_key:
             continue
-        ws_slug = prefetch["workspace_slugs"].get(row["id"]) or _lead_workspace_slug(conn, row["id"])
-        payload = build_lead_sync_payload(
-            conn, DEFAULT_ORG_ID, row["id"], workspace_slug=ws_slug, prefetch=prefetch,
-        )
-        entry: dict = {
-            "action": "lead_update",
-            "entity_key": entity_key,
-            "timestamp": normalize_relay_timestamp(row["updated_at"]),
-            "payload": payload,
-        }
-        if ws_slug:
-            entry["workspace"] = ws_slug
-        entries.append(entry)
-        pushed_ids.append(row["id"])
+        memberships = prefetch.get("memberships", {}).get(lead_id) or []
+        if not memberships:
+            ws_slug = _lead_workspace_slug(conn, lead_id)
+            payload = build_lead_sync_payload(
+                conn, DEFAULT_ORG_ID, lead_id, workspace_slug=ws_slug, prefetch=prefetch,
+            )
+            entry: dict = {
+                "action": "lead_update",
+                "entity_key": entity_key,
+                "timestamp": normalize_relay_timestamp(row["updated_at"]),
+                "payload": payload,
+            }
+            if ws_slug:
+                entry["workspace"] = ws_slug
+            entries.append(entry)
+            pushed_ids.append(lead_id)
+            continue
+        for mem in memberships:
+            ws_slug = mem["slug"]
+            payload = build_lead_sync_payload(
+                conn, DEFAULT_ORG_ID, lead_id, workspace_slug=ws_slug, prefetch=prefetch,
+            )
+            entry = {
+                "action": "lead_update",
+                "entity_key": entity_key,
+                "timestamp": normalize_relay_timestamp(row["updated_at"]),
+                "payload": payload,
+                "workspace": ws_slug,
+            }
+            entries.append(entry)
+        pushed_ids.append(lead_id)
 
     conn.close()
     if not entries:

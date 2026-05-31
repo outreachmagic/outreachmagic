@@ -97,16 +97,17 @@ The `version:` line in this file is synced from `scripts/VERSION` on install/upd
 
 ```bash
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py update
-# or re-run install.sh without a key
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/main/install.sh | bash
+# or re-run install.sh without a key (download from cursor-outreachmagic, review, then bash install.sh)
 ```
 
 Check without installing: `pipeline.py update --check`. Install a specific release: `pipeline.py update --tag v1.4.5`.
 
 ## Install
 
+Download `install.sh` from [cursor-outreachmagic](https://github.com/outreachmagic/cursor-outreachmagic), review it, then run:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/cursor-outreachmagic/main/install.sh | bash
+bash install.sh
 ```
 
 Get your Agent Key at https://dev.outreachmagic.io/setup/agent

@@ -170,5 +170,61 @@ class ActivitySyncTests(unittest.TestCase):
         self.assertEqual(activity.get("last_contacted_at"), "2026-03-02T10:00:00")
 
 
+    def test_multi_workspace_prefetch_sync_payloads(self):
+        om.create_workspace("Team B", slug="team-b")
+        ws_default = self._workspace_id("default")
+        ws_b = self._workspace_id("team-b")
+        result = om.resolve_lead(
+            email="multi-ws@example.com",
+            name="Multi WS Lead",
+            company="Acme",
+            source="csv",
+            source_platform="csv",
+        )
+        lead_id = result["id"]
+        conn = om.get_conn()
+        om.upsert_workspace_lead(
+            conn, DEFAULT_ORG_ID, ws_default, lead_id,
+            status="contacted",
+            current_status_label="warm",
+        )
+        om.upsert_workspace_lead(
+            conn, DEFAULT_ORG_ID, ws_b, lead_id,
+            status="prospecting",
+            current_status_label="cold",
+        )
+        conn.commit()
+        conn.close()
+
+        om.set_lead_activity_summary(
+            lead_id, ws_default,
+            email_sent_count=5,
+            merge=False,
+            mark_cloud_pending=False,
+        )
+        om.set_lead_activity_summary(
+            lead_id, ws_b,
+            email_sent_count=2,
+            merge=False,
+            mark_cloud_pending=False,
+        )
+
+        conn = om.get_conn()
+        prefetch = om._load_lead_sync_prefetch(conn, DEFAULT_ORG_ID, [lead_id])
+        payload_default = om.build_lead_sync_payload(
+            conn, DEFAULT_ORG_ID, lead_id, workspace_slug="default", prefetch=prefetch,
+        )
+        payload_b = om.build_lead_sync_payload(
+            conn, DEFAULT_ORG_ID, lead_id, workspace_slug="team-b", prefetch=prefetch,
+        )
+        conn.close()
+
+        self.assertEqual(len(prefetch["memberships"][lead_id]), 2)
+        self.assertEqual(payload_default["lead_status"], "warm")
+        self.assertEqual(payload_b["lead_status"], "cold")
+        self.assertEqual(payload_default["activity"]["email_sent_count"], 5)
+        self.assertEqual(payload_b["activity"]["email_sent_count"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

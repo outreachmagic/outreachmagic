@@ -35,7 +35,7 @@ SQLite database. Free forever for local work. Connect Smartlead, Heyreach, Insta
 Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
 Config: `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`
 
-**Hermes:** Install real files under `~/.hermes/skills/outreachmagic/`. Profiles symlink only. `curl …/install.sh | bash` auto-links existing profiles. Verify with `pipeline.py paths` (warns on profile copies).
+**Hermes:** Install real files under `~/.hermes/skills/outreachmagic/`. Profiles symlink only. Run `install.sh` from [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) (review the script, then `bash install.sh`) to auto-link existing profiles. Verify with `pipeline.py paths` (warns on profile copies).
 
 Optional config keys: `data_root` (e.g. `~/.claude` for Claude Code), `api_base_url`, `dev_repo` for local development.
 

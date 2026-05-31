@@ -51,6 +51,21 @@ def _resolve_workspace_identity(conn, workspace_slug: str):
     return resolve_workspace_identity(conn, workspace_slug)
 
 
+def _prefetch_membership(
+    prefetch: dict,
+    lead_id: int,
+    *,
+    workspace_id: Optional[str] = None,
+    workspace_slug: Optional[str] = None,
+) -> Optional[dict]:
+    for mem in prefetch.get("memberships", {}).get(lead_id, []):
+        if workspace_id and mem["workspace_id"] == workspace_id:
+            return mem
+        if workspace_slug and mem["slug"] == workspace_slug:
+            return mem
+    return None
+
+
 def _resolve_sync_workspace(
     conn: sqlite3.Connection,
     lead_id: int,
@@ -58,15 +73,23 @@ def _resolve_sync_workspace(
     prefetch: Optional[dict],
 ) -> tuple[Optional[str], Optional[sqlite3.Row]]:
     ws_id = None
-    wl_row = None
     if workspace_slug:
         ws_row = _resolve_workspace_identity(conn, workspace_slug)
         ws_id = ws_row["id"] if ws_row else None
-    if ws_id is None and prefetch:
-        wl = prefetch.get("workspace_leads", {}).get(lead_id)
-        if wl:
-            ws_id = wl["workspace_id"]
-    elif ws_id is None:
+    if prefetch:
+        mem = _prefetch_membership(
+            prefetch,
+            lead_id,
+            workspace_id=ws_id,
+            workspace_slug=workspace_slug if not ws_id else None,
+        )
+        if mem:
+            return mem["workspace_id"], mem["wl_row"]
+        if ws_id is None:
+            mems = prefetch.get("memberships", {}).get(lead_id, [])
+            if len(mems) == 1:
+                return mems[0]["workspace_id"], mems[0]["wl_row"]
+    if ws_id is None:
         wl = conn.execute(
             "SELECT workspace_id FROM workspace_leads WHERE lead_id = ? LIMIT 1",
             (lead_id,),
@@ -74,14 +97,17 @@ def _resolve_sync_workspace(
         if wl:
             ws_id = wl["workspace_id"]
     if ws_id and prefetch:
-        wl_row = prefetch.get("workspace_leads", {}).get(lead_id)
-    elif ws_id:
+        mem = _prefetch_membership(prefetch, lead_id, workspace_id=ws_id)
+        if mem:
+            return ws_id, mem["wl_row"]
+    if ws_id:
         wl_row = conn.execute(
             f"""SELECT {WORKSPACE_ACTIVITY_SELECT}
                 FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?""",
             (ws_id, lead_id),
         ).fetchone()
-    return ws_id, wl_row
+        return ws_id, wl_row
+    return None, None
 
 
 def _assemble_lead_sync_payload(
@@ -183,10 +209,7 @@ def _load_lead_sync_prefetch(
             "leads": {},
             "identities": {},
             "external_ids": {},
-            "workspace_slugs": {},
-            "workspace_leads": {},
-            "tags": {},
-            "linkedin_status": {},
+            "memberships": {},
             "personalization": {},
         }
 
@@ -227,48 +250,54 @@ def _load_lead_sync_prefetch(
         external_ids[r["lead_id"]] = r["identity_value_normalized"]
 
     workspace_slugs: dict[int, str] = {}
+    memberships: dict[int, list[dict]] = {lid: [] for lid in lead_ids}
+    membership_index: dict[tuple[int, str], dict] = {}
     for r in conn.execute(
-        f"""SELECT wl.lead_id, w.slug
-            FROM workspace_leads wl
-            JOIN workspaces w ON wl.workspace_id = w.id
-            WHERE wl.lead_id IN ({placeholders})""",
-        lead_ids,
-    ).fetchall():
-        workspace_slugs.setdefault(r["lead_id"], r["slug"])
-
-    workspace_leads: dict[int, sqlite3.Row] = {}
-    for r in conn.execute(
-        f"""SELECT wl.lead_id, wl.workspace_id, wl.status, wl.current_status_label,
+        f"""SELECT wl.lead_id, wl.workspace_id, w.slug, wl.status, wl.current_status_label,
                    wl.current_status_sentiment, wl.contact_priority,
                    COALESCE(wl.last_contacted_at, wl.last_activity_at) AS last_contacted_at,
                    wl.last_activity_at, wl.email_sent_count, wl.linkedin_sent_count,
                    wl.total_replies_count
             FROM workspace_leads wl
-            WHERE wl.lead_id IN ({placeholders})""",
+            JOIN workspaces w ON wl.workspace_id = w.id
+            WHERE wl.lead_id IN ({placeholders})
+            ORDER BY w.slug, wl.workspace_id""",
         lead_ids,
     ).fetchall():
-        workspace_leads.setdefault(r["lead_id"], r)
+        workspace_slugs.setdefault(r["lead_id"], r["slug"])
+        mem = {
+            "workspace_id": r["workspace_id"],
+            "slug": r["slug"],
+            "wl_row": r,
+            "tags": [],
+            "linkedin_status": [],
+        }
+        memberships[r["lead_id"]].append(mem)
+        membership_index[(r["lead_id"], r["workspace_id"])] = mem
 
-    tags: dict[int, list] = {lid: [] for lid in lead_ids}
     for r in conn.execute(
-        f"""SELECT wl.lead_id, wlt.tag
+        f"""SELECT wl.lead_id, wl.workspace_id, wlt.tag
             FROM workspace_lead_tags wlt
             JOIN workspace_leads wl ON wl.workspace_id = wlt.workspace_id AND wl.lead_id = wlt.lead_id
             WHERE wl.lead_id IN ({placeholders})
             ORDER BY wlt.created_at""",
         lead_ids,
     ).fetchall():
-        tags[r["lead_id"]].append(r["tag"])
+        mem = membership_index.get((r["lead_id"], r["workspace_id"]))
+        if mem:
+            mem["tags"].append(r["tag"])
 
-    linkedin_status: dict[int, list] = {lid: [] for lid in lead_ids}
     for r in conn.execute(
-        f"""SELECT wl.lead_id, lis.sender_profile, lis.is_connected, lis.is_request_pending
+        f"""SELECT wl.lead_id, wl.workspace_id, lis.sender_profile, lis.is_connected,
+                   lis.is_request_pending
             FROM workspace_lead_linkedin_status lis
             JOIN workspace_leads wl ON wl.workspace_id = lis.workspace_id AND wl.lead_id = lis.lead_id
             WHERE wl.lead_id IN ({placeholders})""",
         lead_ids,
     ).fetchall():
-        linkedin_status[r["lead_id"]].append(r)
+        mem = membership_index.get((r["lead_id"], r["workspace_id"]))
+        if mem:
+            mem["linkedin_status"].append(r)
 
     personalization: dict[int, list] = {lid: [] for lid in lead_ids}
     for r in conn.execute(
@@ -284,9 +313,7 @@ def _load_lead_sync_prefetch(
         "identities": identities,
         "external_ids": external_ids,
         "workspace_slugs": workspace_slugs,
-        "workspace_leads": workspace_leads,
-        "tags": tags,
-        "linkedin_status": linkedin_status,
+        "memberships": memberships,
         "personalization": personalization,
     }
 
@@ -320,14 +347,15 @@ def build_lead_sync_payload(
         if not row:
             return {}
         ws_id, wl_row = _resolve_sync_workspace(conn, lead_id, workspace_slug, prefetch)
+        mem = _prefetch_membership(prefetch, lead_id, workspace_id=ws_id) if ws_id else None
         return _assemble_lead_sync_payload(
             conn, org_id, lead_id, row,
             ws_id=ws_id,
             wl_row=wl_row,
             identity_rows=prefetch["identities"].get(lead_id) or [],
             external_id=prefetch["external_ids"].get(lead_id),
-            tags=prefetch["tags"].get(lead_id) or [],
-            linkedin_status=prefetch["linkedin_status"].get(lead_id) or [],
+            tags=mem["tags"] if mem else [],
+            linkedin_status=mem["linkedin_status"] if mem else [],
             personalization_rows=prefetch["personalization"].get(lead_id) or [],
         )
 

@@ -46,11 +46,11 @@ In multi-workspace mode, workspace-scoped commands require `--workspace SLUG`.
 - `show --since today` — Filter by date (YYYY-MM-DD or 'today')
 - `lead-table --workspace acme_corp --since today --json` — Today's leads for a workspace
 - `workspace list` — List available workspaces
-- `personalize-pending --json` — List leads needing personalization (default: first_name, company_name)
-- `personalize-set --lead-id N --field F --value V` — Write a personalization value
-- `personalize-set --batch --json '[...]'` — Bulk write personalization values
-- `personalize-get --lead-id N --json` — Read personalization for a lead
-- `personalize-status` — Personalization summary counts
+- `personalize-pending --json` — Leads missing lead fields (default: first_name)
+- `personalize-set --lead-id N --field F --value V [--date ISO]` — Lead personalization
+- `company-personalize-pending --json` — Companies missing company fields (default: company_name)
+- `company-personalize-set --domain D --field F --value V [--date ISO]` — Company personalization
+- `personalize-get --lead-id N --json` — Merged mail-merge values
 - `cleanup-rules` — Remove invalid campaign mapping rules
 
 ### Rules

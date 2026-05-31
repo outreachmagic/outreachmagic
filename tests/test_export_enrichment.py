@@ -105,6 +105,7 @@ class ExportEnrichmentTests(unittest.TestCase):
         rows = [{
             "email": "import@test.com",
             "name": "Import Test",
+            "company": "ImpCo Inc",
             "mailmerge_first_name": "Imp",
             "mailmerge_company_name": "ImpCo",
             "mailmerge_custom_line": "Hello",
@@ -113,19 +114,22 @@ class ExportEnrichmentTests(unittest.TestCase):
         self.assertEqual(summary["personalized"], 1)
         lead_id = summary["results"][0]["id"]
         conn = om.get_conn()
-        pers = conn.execute(
-            "SELECT field_name FROM lead_personalization WHERE lead_id = ?",
-            (lead_id,),
-        ).fetchall()
+        lead_pers = {r["field_name"] for r in conn.execute(
+            "SELECT field_name FROM lead_personalization WHERE lead_id = ?", (lead_id,),
+        ).fetchall()}
+        cid = conn.execute("SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()["company_id"]
+        co_pers = {r["field_name"] for r in conn.execute(
+            "SELECT field_name FROM company_personalization WHERE company_id = ?", (cid,),
+        ).fetchall()}
         conn.close()
-        fields = {r["field_name"] for r in pers}
-        self.assertIn("first_name", fields)
-        self.assertIn("company_name", fields)
-        self.assertIn("custom_line", fields)
+        self.assertIn("first_name", lead_pers)
+        self.assertIn("custom_line", lead_pers)
+        self.assertIn("company_name", co_pers)
         enriched = om.enrich_lead_rows(
             [{"id": lead_id, "name": "Import Test", "email": "import@test.com", "stage": "prospecting"}],
         )
         self.assertEqual(enriched[0]["personalization"]["first_name"], "Imp")
+        self.assertEqual(enriched[0]["personalization"]["company_name"], "ImpCo")
 
     def test_export_csv_personalized_columns(self):
         om.create_workspace("Export WS", slug="exportws")

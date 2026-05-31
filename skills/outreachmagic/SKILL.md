@@ -502,25 +502,31 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py import-profiles \
 
 **Attribution** is automatic: every import sets `original_source` (immutable first touch) and `latest_source` (updates each time) on the lead, following the Salesforce/HubSpot model. The `--source-detail` flag or `import_name`/`list_source` columns provide the detail.
 
-### Personalization (mail-merge fields)
+### Personalization (mail-merge)
 
-Store agent-computed normalized values for email templates. Default fields: `first_name`, `company_name`. Add custom fields as needed (e.g., `icebreaker`, `ps_line`).
+**Lead fields** (`first_name`, contact-specific lines): per lead. **Company fields** (`company_name`, `company_*`): org-wide, one write per account.
+
+| Raw field | Mail-merge field | Scope |
+|-----------|------------------|-------|
+| `name` | `first_name` | lead |
+| `company` / `companies.name` | `company_name` | company |
 
 ```bash
-# List leads needing personalization (defaults to first_name,company_name)
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py personalize-pending --json
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py personalize-pending --fields first_name,company_name,icebreaker --json
+# Lead
+python3 .../pipeline.py personalize-pending --fields first_name --json
+python3 .../pipeline.py personalize-set --lead-id 5 --field first_name --value "Jane"
+python3 .../pipeline.py personalize-set --lead-id 5 --field upcoming_event --value "SaaStr talk" --date 2026-09-10
 
-# Write values (single or batch)
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py personalize-set --lead-id 5 --field first_name --value "Spencer"
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py personalize-set --batch --json '[{"lead_id":5,"field":"first_name","value":"Spencer"}]'
+# Company (org-wide)
+python3 .../pipeline.py company-personalize-pending --fields company_name,company_icebreaker --json
+python3 .../pipeline.py company-personalize-set --domain acme.com --field company_name --value "Acme"
+python3 .../pipeline.py company-personalize-set --domain acme.com --field company_icebreaker --value "..."
 
-# Read values / check status
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py personalize-get --lead-id 5 --json
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py personalize-status
+# Read merged (export uses same shape: personalized_* columns)
+python3 .../pipeline.py personalize-get --lead-id 5 --json
 ```
 
-Personalization syncs across platforms via push/pull. The agent decides normalization logic — pipeline.py only stores values.
+Import: `mailmerge_first_name` → lead; `mailmerge_company_name`, `mailmerge_company_*` → company. Sync pushes lead and company snapshots separately; merge is local.
 
 ### Email verification tracking (org-wide)
 

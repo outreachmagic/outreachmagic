@@ -109,9 +109,28 @@ class CloudPendingLogicTests(unittest.TestCase):
             source_platform="heyreach",
         )
         lead_id = result["id"]
-        om.personalize_set(lead_id, "company_name", "Acme Corp")
+        om.personalize_set(lead_id, "first_name", "Pers")
         conn = om.get_conn()
         row = conn.execute("SELECT cloud_pending FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        conn.close()
+        self.assertEqual(row["cloud_pending"], 1)
+
+    def test_company_personalize_marks_company_pending(self):
+        result = om.resolve_lead(
+            email="co@acme.com",
+            name="Co User",
+            company="Acme Corp",
+            source="csv",
+            source_platform="csv",
+        )
+        conn = om.get_conn()
+        cid = conn.execute("SELECT company_id FROM leads WHERE id = ?", (result["id"],)).fetchone()["company_id"]
+        conn.execute("UPDATE companies SET cloud_pending = 0 WHERE id = ?", (cid,))
+        conn.commit()
+        conn.close()
+        om.company_personalize_set("company_name", "Acme", company_id=cid)
+        conn = om.get_conn()
+        row = conn.execute("SELECT cloud_pending FROM companies WHERE id = ?", (cid,)).fetchone()
         conn.close()
         self.assertEqual(row["cloud_pending"], 1)
 

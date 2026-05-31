@@ -58,12 +58,12 @@ Optional config keys: `data_root` (share one DB across platforms), `api_base_url
 
 ## Platform install
 
-Install from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic):
+Install from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic). Download `install.sh`, then run it (do not pipe remote scripts into a shell):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \
-  --platform hermes --with-lead-enrich --with-email-finder --migrate \
-  --tag v1.21.0 --lead-enrich-tag v2.0.2 --email-finder-tag v1.0.2
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.1/install.sh -o /tmp/outreachmagic-install.sh
+bash /tmp/outreachmagic-install.sh --platform hermes --with-lead-enrich --with-email-finder --migrate \
+  --tag v1.21.1 --lead-enrich-tag v2.0.2 --email-finder-tag v1.0.2
 ```
 
 Use `--platform cursor` or `--platform claude` for other agents. Setup: https://app.outreachmagic.io/setup/agent

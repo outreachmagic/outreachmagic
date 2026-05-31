@@ -174,7 +174,7 @@ Re-run the `publish-platforms.yml` assemble/sed steps locally if you need to reb
 
 ---
 
-## Companion skills (lead-enrich, lead-email)
+## Companion skills (lead-enrich, email-finder)
 
 Three-skill suite: see [skill-suite.md](./skill-suite.md).
 
@@ -191,22 +191,22 @@ git push origin lead-enrich-v2.0.0
 Workflow: `.github/workflows/publish-lead-enrich.yml` (tests + SkillScan + publish).
 Domains: `docs/hermeshub-reviewed-domains-lead-enrich.md` (Serper only in v2+).
 
-### lead-email
+### email-finder
 
-Published to **outreachmagic/lead-email** (create public repo first):
+Published to **outreachmagic/email-finder** (create public repo first):
 
 ```bash
-python3 scripts/generate-lead-email-manifest.py
-git tag lead-email-v1.0.0
-git push origin lead-email-v1.0.0
+python3 scripts/generate-email-finder-manifest.py
+git tag email-finder-v1.0.0
+git push origin email-finder-v1.0.0
 ```
 
-Workflow: `.github/workflows/publish-lead-email.yml`.
-Domains: `docs/hermeshub-reviewed-domains-lead-email.md`.
+Workflow: `.github/workflows/publish-email-finder.yml`.
+Domains: `docs/hermeshub-reviewed-domains-email-finder.md`.
 
 Both companions vend `scripts/companion_common.py` in manifests. Regenerate manifests before every companion tag.
 
-### How `enrich.py` / `lead_email.py update` works
+### How `enrich.py` / `email_finder.py update` works
 
 1. `https://api.github.com/repos/outreachmagic/lead-enrich/releases/latest` (or `--tag`)
 2. Download `update-manifest.json` from that release tag

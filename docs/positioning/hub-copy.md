@@ -14,7 +14,7 @@ Pricing aligned with [pricing.md](./pricing.md): **1,000 free relay events/mo**,
 
 **Tags:** `sales` `outreach` `crm` `pipeline` `leads` `email` `linkedin` `webhooks` `smartlead` `instantly` `sqlite` `gtm`
 
-**Related skills:** `lead-enrich`, `lead-email`
+**Related skills:** `lead-enrich`, `email-finder`
 
 **Category (Hub metadata only):** `productivity` — filesystem stays `~/.hermes/skills/outreachmagic/`
 
@@ -26,13 +26,13 @@ Pricing aligned with [pricing.md](./pricing.md): **1,000 free relay events/mo**,
 
 **Tags:** `sales` `enrichment` `research` `linkedin` `serper` `leads` `pipeline`
 
-**Related skills:** `outreachmagic`, `lead-email`
+**Related skills:** `outreachmagic`, `email-finder`
 
 **External domains:** `google.serper.dev` (required), `api.outreachmagic.io` (via outreachmagic save)
 
 ---
 
-## lead-email — short blurb
+## email-finder — short blurb
 
 > Find work emails with trykitt.ai after you have name + company domain (from lead-enrich or your CRM). Checks Outreach Magic first so you never pay twice. Saves email + verification status via outreachmagic. Requires outreachmagic + `TRYKITT_API_KEY`.
 

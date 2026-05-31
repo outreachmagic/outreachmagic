@@ -5,8 +5,8 @@ description: >
   Checks Outreach Magic first to avoid wasting API credits on existing leads.
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
-  outreachmagic skill. For email finding, use the lead-email companion skill.
-version: 2.0.0
+  outreachmagic skill. For email finding, use the email-finder companion skill.
+version: 2.0.1
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -22,7 +22,7 @@ required_environment_variables:
 metadata:
   hermes:
     tags: [sales, outreach, crm, enrichment, leads, research, linkedin, serper]
-    related_skills: [outreachmagic, lead-email]
+    related_skills: [outreachmagic, email-finder]
     external_domains:
       - domain: google.serper.dev
         purpose: Google Search API for company discovery and LinkedIn profile lookup
@@ -38,7 +38,7 @@ for extraction, and the **outreachmagic** skill for persistence.
 
 > **🪙 Credit-saving:** always checks outreachmagic *first*. If the lead already
 > has **LinkedIn + email** at the **same company**, no Serper credits are spent.
-> LinkedIn without email skips Serper — use **lead-email** for trykitt find when
+> LinkedIn without email skips Serper — use **email-finder** for trykitt find when
 > the user wants an address. Email-only records still get LinkedIn searches
 > (1–2 Serper credits). Name matches at a different company return `ambiguous`
 > so APIs are not skipped by mistake.
@@ -72,22 +72,22 @@ OUTREACHMAGIC_AGENT_KEY=om_agent_your_key_here
 
 **Hermes:** Install skills under `~/.hermes/skills/`; profile dirs use symlinks only (see outreachmagic `install.sh` or `docs/hermes-skills-layout.md`). `enrich.py` finds outreachmagic at `~/.hermes/skills/outreachmagic/`.
 
-### 3. Email finding (lead-email skill)
+### 3. Email finding (email-finder skill)
 
-Email find is **not** in lead-enrich v2+. Install **lead-email** and set `TRYKITT_API_KEY`:
+Email find is **not** in lead-enrich v2+. Install **email-finder** and set `TRYKITT_API_KEY`:
 
 ```bash
-bash platforms/hermes/install.sh --with-lead-email
+bash platforms/hermes/install.sh --with-email-finder
 ```
 
 After Serper enrichment saves `company_domain`, run:
 
 ```bash
-python3 ~/.hermes/skills/lead-email/scripts/lead_email.py find --name "Jane Doe" \
+python3 ~/.hermes/skills/email-finder/scripts/email_finder.py find --name "Jane Doe" \
   --domain acme.com --linkedin "https://linkedin.com/in/janedoe" --save
 ```
 
-See `references/lead-email.md` and the lead-email skill docs.
+See `references/email-finder.md` and the email-finder skill docs.
 
 **Workspace rollups (no Serper credits):** after saving leads, use outreachmagic
 `workspace summary --workspace <slug> --json` for tag counts and LinkedIn
@@ -119,7 +119,7 @@ python3 scripts/enrich.py backfill --fields title,industry --workspace your_work
 
 1. **Dedup first, always.** Before any Serper API call, run `enrich.py check`. If
    the lead has **LinkedIn + email** at the same company, skip Serper entirely.
-   If LinkedIn exists but **no email**, skip Serper and offer **lead-email** when
+   If LinkedIn exists but **no email**, skip Serper and offer **email-finder** when
    the user wants an address. Never spend Serper credits on leads already complete
    in outreachmagic.
 2. **Serper only.** Prefer `enrich.py serper-search --query "..."` (stdlib HTTP,
@@ -135,8 +135,8 @@ python3 scripts/enrich.py backfill --fields title,industry --workspace your_work
 6. **Transparency.** Show which Serper queries ran, confidence, and what was
    saved. The user should see exactly where their credits went.
 7. **Batch wisely.** Cap at 50 people per run. For CSV/award lists run **`batch-check` once** on the whole file (JSON or CSV) before any Serper. Process Serper only for statuses that need LinkedIn/domain. Skip `team_award` and `exists_linkedin_email` rows.
-8. **Email finding — use lead-email.** After enrichment saves `company_domain`,
-   hand off to **lead-email** (`lead_email.py find --save`). See `references/lead-email.md`.
+8. **Email finding — use email-finder.** After enrichment saves `company_domain`,
+   hand off to **email-finder** (`email_finder.py find --save`). See `references/email-finder.md`.
    Never fabricate or pattern-guess emails in this skill.
 
 ## Quick Start
@@ -183,7 +183,7 @@ Output per person:
 | Status | Meaning | Action |
 |--------|---------|--------|
 | `exists_linkedin_email` | Same company, LinkedIn + email | Skip Serper and email APIs |
-| `exists_linkedin_no_email` | Same company, LinkedIn, no email | Skip Serper → **lead-email** if user wants email |
+| `exists_linkedin_no_email` | Same company, LinkedIn, no email | Skip Serper → **email-finder** if user wants email |
 | `exists_no_linkedin_email` | Same company, email, no LinkedIn | LinkedIn Serper queries only |
 | `exists_no_linkedin` | Same company, neither | LinkedIn Serper queries only |
 | `ambiguous` | Name match, company mismatch | Run full Serper pack — do not skip |
@@ -354,18 +354,18 @@ Cannot use `import-profiles` (requires email or LinkedIn). Either:
 - `add-lead --name ... --company ... --notes "domain: acme.com, no LinkedIn found"`
 - Or report: "found domain X, no LinkedIn — not saved to pipeline DB"
 
-### Email finding (lead-email skill)
+### Email finding (email-finder skill)
 
 After Phase 4 save, if the user wants an email and `company_domain` is known,
-use the **lead-email** companion — not this skill:
+use the **email-finder** companion — not this skill:
 
 ```bash
-python3 ~/.hermes/skills/lead-email/scripts/lead_email.py find \
+python3 ~/.hermes/skills/email-finder/scripts/email_finder.py find \
   --name "Jane Doe" --domain acme.com \
   --linkedin "https://linkedin.com/in/janedoe" --save
 ```
 
-See `references/lead-email.md` and lead-email's `email-finding-research.md`.
+See `references/email-finder.md` and email-finder's `email-finding-research.md`.
 
 ### Phase 5 — Report
 
@@ -378,7 +378,7 @@ Jane Doe @ Acme Corp
   🟢 Confidence: high
   💾 Saved to outreachmagic (lead #42)
   🔍 Serper: 2 queries
-  📧 Email: use lead-email if needed
+  📧 Email: use email-finder if needed
 ```
 
 ---
@@ -391,8 +391,8 @@ outreachmagic) but lack email:
 1. Run `batch-check` — process only `exists_linkedin_no_email` (and optionally
    `not_found` rows that already have domain in the file).
 2. **Skip Serper entirely** (0 Serper credits).
-3. Run **lead-email** `batch-find` for each person with domain + LinkedIn.
-4. Respect `trykitt_attempted` tag — lead-email skips rows already tagged.
+3. Run **email-finder** `batch-find` for each person with domain + LinkedIn.
+4. Respect `trykitt_attempted` tag — email-finder skips rows already tagged.
 
 Useful after a prior enrichment pass or when importing a pre-researched list.
 
@@ -452,7 +452,7 @@ Max 50 people per run.
 - ❌ Call Outreach Magic person-research API (`/v1/person-research`)
 - ❌ Use external LLM APIs (Gemini, OpenAI, etc.) for extraction
 - ❌ Scrape HTML pages or LinkedIn directly
-- ❌ Guess email addresses (use **lead-email** skill)
+- ❌ Guess email addresses (use **email-finder** skill)
 - ❌ Write raw SQL to the outreachmagic database
 - ❌ Upload to remote servers (local-only by default)
 
@@ -482,4 +482,4 @@ Max 50 people per run.
 | `ambiguous` on check | Name matched wrong company — run Serper or `check --force` |
 | Team / group award row | `batch-check` returns `team_award` — skip research |
 | outreachmagic not found | Install [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) or set `outreachmagic_home` |
-| Need email find | Install **lead-email** — see `references/lead-email.md` |
+| Need email find | Install **email-finder** — see `references/email-finder.md` |

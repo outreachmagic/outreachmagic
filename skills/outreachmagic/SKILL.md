@@ -16,7 +16,7 @@ metadata:
   hermes:
     tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm]
     category: productivity
-    related_skills: [lead-enrich, lead-email]
+    related_skills: [lead-enrich, email-finder]
     external_domains:
       - domain: api.outreachmagic.io
         purpose: Relay webhooks and authenticated event pull (payloads imported to local SQLite)
@@ -30,7 +30,7 @@ The simplest pipeline tracker. Hermes auto-logs every outreach action to a local
 SQLite database. Free forever for local work. Connect Smartlead, Heyreach, Instantly via paid relay.
 
 **Outreach Magic suite:** Pair with **lead-enrich** (Serper research + free dedup) and
-**lead-email** (trykitt find). See [skill suite docs](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/skill-suite.md).
+**email-finder** (trykitt find). See [skill suite docs](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/skill-suite.md).
 
 Database: `~/.hermes/skills/outreachmagic/databases/outreachmagic.db`
 Config: `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json`

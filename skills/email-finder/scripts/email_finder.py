@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Lead Email — trykitt.ai email finding for Hermes / Cursor / Claude Code.
+Email Finder — trykitt.ai email finding for Hermes / Cursor / Claude Code.
 
 Checks outreachmagic before spending trykitt credits. Saves via import-profiles
 and verify-email (record-only).
 
 Usage:
-    lead_email.py config
-    lead_email.py check "Jane Doe" "Acme Corp"
-    lead_email.py find --name "Jane Doe" --domain acme.com [--linkedin URL] [--save] [--workspace W]
-    lead_email.py batch-find input.json [--delay 8] [--workspace W]
-    lead_email.py update [--check] [--tag v1.0.0]
+    email_finder.py config
+    email_finder.py check "Jane Doe" "Acme Corp"
+    email_finder.py find --name "Jane Doe" --domain acme.com [--linkedin URL] [--save] [--workspace W]
+    email_finder.py batch-find input.json [--delay 8] [--workspace W]
+    email_finder.py update [--check] [--tag v1.0.0]
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ from typing import Any, Optional
 
 import companion_common as cc
 
-SKILL_NAME = "lead-email"
-GITHUB_REPO = "outreachmagic/lead-email"
+SKILL_NAME = "email-finder"
+GITHUB_REPO = "outreachmagic/email-finder"
 GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RAW_BASE = "https://raw.githubusercontent.com"
 TRYKITT_FIND_URL = "https://api.trykitt.ai/job/find_email"
@@ -42,7 +42,7 @@ UPDATE_FILES = (
     ".gitignore",
     "references/email-finding-research.md",
     "scripts/companion_common.py",
-    "scripts/lead_email.py",
+    "scripts/email_finder.py",
 )
 
 
@@ -58,7 +58,7 @@ def _fetch_url(url: str) -> bytes:
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "lead-email-updater",
+            "User-Agent": "email-finder-updater",
             "Accept": "application/vnd.github+json",
         },
     )
@@ -207,7 +207,7 @@ def trykitt_find(
         headers={
             "Content-Type": "application/json",
             "x-api-key": api_key,
-            "User-Agent": "lead-email/1.0",
+            "User-Agent": "email-finder/1.0",
         },
         method="POST",
     )
@@ -274,7 +274,7 @@ def save_find_result(
         om_dir,
         [profile],
         workspace=workspace,
-        source_detail="lead-email/trykitt",
+        source_detail="email-finder/trykitt",
         skill_dir=_find_skill_dir(),
     )
     lead_id = find_result.get("lead_id") or imported.get("lead_id")
@@ -505,7 +505,7 @@ def main() -> None:
         cmd_config()
     elif cmd == "check":
         if len(sys.argv) < 4:
-            print('Usage: lead_email.py check [--workspace W] "Name" "Company"')
+            print('Usage: email_finder.py check [--workspace W] "Name" "Company"')
             sys.exit(1)
         ws = ""
         args = sys.argv[2:]
@@ -516,12 +516,12 @@ def main() -> None:
     elif cmd == "find":
         name, domain, linkedin, workspace, company, save, _ = _parse_find_args(sys.argv[2:])
         if not name or not domain:
-            print("Usage: lead_email.py find --name X --domain Y [--linkedin URL] [--company C] [--save] [--workspace W]")
+            print("Usage: email_finder.py find --name X --domain Y [--linkedin URL] [--company C] [--save] [--workspace W]")
             sys.exit(1)
         cmd_find(name, domain, linkedin, workspace, save, company)
     elif cmd == "batch-find":
         if len(sys.argv) < 3:
-            print("Usage: lead_email.py batch-find [--delay 8] [--workspace W] input.json")
+            print("Usage: email_finder.py batch-find [--delay 8] [--workspace W] input.json")
             sys.exit(1)
         delay = 8.0
         workspace = ""
@@ -545,7 +545,7 @@ def main() -> None:
                 path = args[i]
                 i += 1
         if not path:
-            print("Usage: lead_email.py batch-find input.json")
+            print("Usage: email_finder.py batch-find input.json")
             sys.exit(1)
         cmd_batch_find(path, workspace, delay)
     elif cmd == "update":

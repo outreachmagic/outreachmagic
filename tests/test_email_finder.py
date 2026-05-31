@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for skills/lead-email/scripts/email.py"""
+"""Tests for skills/email-finder/scripts/email_finder.py"""
 
 import importlib.util
 import json
@@ -9,10 +9,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-EMAIL_PY = ROOT / "skills" / "lead-email" / "scripts" / "lead_email.py"
+EMAIL_PY = ROOT / "skills" / "email-finder" / "scripts" / "email_finder.py"
 sys.path.insert(0, str(EMAIL_PY.parent))
 
-spec = importlib.util.spec_from_file_location("lead_email_script", EMAIL_PY)
+spec = importlib.util.spec_from_file_location("email_finder_script", EMAIL_PY)
 lemail = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(lemail)

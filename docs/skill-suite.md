@@ -10,7 +10,7 @@ Three intentional skills — not a 50-skill dump. **Outreach Magic is category 4
 flowchart LR
   LE[lead-enrich]
   OM[outreachmagic]
-  LEM[lead-email]
+  LEM[email-finder]
   LE -->|"dedup free; save needs OM"| OM
   OM -->|"domain + linkedin on file"| LEM
   LEM -->|"import-profiles + verify-email"| OM
@@ -20,23 +20,23 @@ flowchart LR
 |-------|------|-------------|-------------|
 | **outreachmagic** | Data layer — pipeline, relay, SQLite | `outreachmagic/hermes-outreachmagic` (+ cursor/claude) | `v*` |
 | **lead-enrich** | Discovery — Serper, LinkedIn, domain | `outreachmagic/lead-enrich` | `lead-enrich-v*` |
-| **lead-email** | Email find (trykitt v1) | `outreachmagic/lead-email` | `lead-email-v*` |
+| **email-finder** | Email find (trykitt v1) | `outreachmagic/email-finder` | `email-finder-v*` |
 
 ## Install order
 
 1. **outreachmagic** — `pipeline.py init` then `pipeline.py login` in terminal  
 2. **lead-enrich** — add `SERPER_API_KEY` to `~/.hermes/.env`  
-3. **lead-email** (optional) — add `TRYKITT_API_KEY`; needs domain from enrich or CRM  
+3. **email-finder** (optional) — add `TRYKITT_API_KEY`; needs domain from enrich or CRM  
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/main/platforms/hermes/install.sh | bash
 # or locally:
-bash platforms/hermes/install.sh --with-lead-enrich --with-lead-email
+bash platforms/hermes/install.sh --with-lead-enrich --with-email-finder
 ```
 
 ## Soft dependency
 
-- **lead-enrich** and **lead-email** work without outreachmagic for JSON/API helpers, but **dedup + save require OM**.
+- **lead-enrich** and **email-finder** work without outreachmagic for JSON/API helpers, but **dedup + save require OM**.
 - `check` / `batch-check` exit with a clear error if outreachmagic is missing — Serper paths still work when OM is installed elsewhere.
 
 ## Freemium
@@ -46,21 +46,21 @@ bash platforms/hermes/install.sh --with-lead-enrich --with-lead-email
 | Local pipeline queries | Webhook events synced from sequencers |
 | `import-profiles`, export | |
 | lead-enrich dedup (`check`) | |
-| lead-email OM pre-check | |
+| email-finder OM pre-check | |
 | `verify-email` recording | |
 
 Launch limits: **1,000 relay events/mo free**, **Pro $9/mo** (50k cap). See [positioning/pricing.md](./positioning/pricing.md).
 
-## Naming: lead-email vs verify-email
+## Naming: email-finder vs verify-email
 
-- **`lead-email`** skill — finds emails (trykitt API).
+- **`email-finder`** skill — finds emails (trykitt API).
 - **`pipeline.py verify-email`** — records verification result in SQLite (no external API).
 
 ## related_skills (Hermes frontmatter)
 
-- outreachmagic → `[lead-enrich, lead-email]`
-- lead-enrich → `[outreachmagic, lead-email]`
-- lead-email → `[outreachmagic, lead-enrich]`
+- outreachmagic → `[lead-enrich, email-finder]`
+- lead-enrich → `[outreachmagic, email-finder]`
+- email-finder → `[outreachmagic, lead-enrich]`
 
 ## Release docs
 

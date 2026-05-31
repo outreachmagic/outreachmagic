@@ -34,8 +34,8 @@ jobs:
       - name: Run lead-enrich tests
         run: python3 tests/test_lead_enrich.py
 
-      - name: Run lead-email tests
-        run: python3 tests/test_lead_email.py
+      - name: Run email-finder tests
+        run: python3 tests/test_email_finder.py
 
   manifest:
     name: Update manifest
@@ -59,10 +59,10 @@ jobs:
           python3 scripts/generate-lead-enrich-manifest.py
           git diff --exit-code skills/lead-enrich/update-manifest.json
 
-      - name: Verify lead-email manifest
+      - name: Verify email-finder manifest
         run: |
-          python3 scripts/generate-lead-email-manifest.py
-          git diff --exit-code skills/lead-email/update-manifest.json
+          python3 scripts/generate-email-finder-manifest.py
+          git diff --exit-code skills/email-finder/update-manifest.json
 
   skill-scan:
     name: SkillScan

@@ -17,8 +17,8 @@ External domain:
   (or agent) explicitly runs person/company research. Queries are built from
   name + company (+ optional job title). No HTML scraping.
 
-Email finding (trykitt) is a separate skill: lead-email (api.trykitt.ai domain
-request in docs/hermeshub-reviewed-domains-lead-email.md).
+Email finding (trykitt) is a separate skill: email-finder (api.trykitt.ai domain
+request in docs/hermeshub-reviewed-domains-email-finder.md).
 
 The skill optionally integrates with the outreachmagic skill for local SQLite
 dedup (zero API calls when a matching lead already has LinkedIn). Saving uses

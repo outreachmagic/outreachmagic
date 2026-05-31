@@ -1,4 +1,4 @@
-# Security — lead-email
+# Security — email-finder
 
 ## Data boundaries
 

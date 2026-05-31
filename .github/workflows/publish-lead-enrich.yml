@@ -47,7 +47,7 @@ jobs:
           cp skills/lead-enrich/default.env staging/
           cp skills/lead-enrich/.gitignore staging/
           cp skills/lead-enrich/update-manifest.json staging/
-          cp skills/lead-enrich/references/lead-email.md staging/references/
+          cp skills/lead-enrich/references/email-finder.md staging/references/
           cp skills/lead-enrich/scripts/enrich.py staging/scripts/
           cp skills/lead-enrich/scripts/companion_common.py staging/scripts/
           cp LICENSE staging/

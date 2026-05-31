@@ -36,7 +36,7 @@ sync_skill() {
 
 echo "Outreach Magic — dev sync to $HERMES_HOME/skills/"
 sync_skill outreachmagic
-for companion in lead-enrich lead-email; do
+for companion in lead-enrich email-finder; do
   if [[ -d "$ROOT/skills/$companion" ]]; then
     sync_skill "$companion"
   fi
@@ -48,7 +48,7 @@ chmod 700 "$OM_DIR/databases" "$OM_DIR/config" 2>/dev/null || true
 chmod 600 "$OM_DIR/databases/outreachmagic.db" "$OM_DIR/config/outreachmagic_config.json" 2>/dev/null || true
 
 if [[ "${1:-}" == "--all-profiles" ]]; then
-  bash "$ROOT/platforms/hermes/install.sh" --all-profiles --with-lead-enrich --with-lead-email --migrate
+  bash "$ROOT/platforms/hermes/install.sh" --all-profiles --with-lead-enrich --with-email-finder --migrate
 fi
 
 VER="$(cat "$OM_DIR/scripts/VERSION" 2>/dev/null || echo "?")"

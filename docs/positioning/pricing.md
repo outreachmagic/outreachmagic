@@ -19,7 +19,7 @@ Pro is capped at 50k relay events (not “unlimited”) — high enough that nor
 - Personalization store
 - Email verification **recording** (`verify-email`)
 - **lead-enrich dedup checks** (`enrich.py check` / `batch-check`) — local SQLite only
-- **lead-email pre-checks** before trykitt — local SQLite only
+- **email-finder pre-checks** before trykitt — local SQLite only
 
 Only **relay-synced webhook events** from connected sequencers count toward the monthly limit.
 
@@ -28,7 +28,7 @@ Only **relay-synced webhook events** from connected sequencers count toward the 
 | Service | Skill | User pays |
 |---------|-------|-----------|
 | Serper.dev | lead-enrich | User's Serper key |
-| trykitt.ai | lead-email | User's trykitt key |
+| trykitt.ai | email-finder | User's trykitt key |
 
 Skills are MIT / free to install. Pro is for OM relay infrastructure at [outreachmagic.io](https://outreachmagic.io).
 

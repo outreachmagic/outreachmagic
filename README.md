@@ -15,9 +15,9 @@
 | Skill | Repo | Purpose | Monorepo tag |
 |-------|------|---------|--------------|
 | lead-enrich | [outreachmagic/lead-enrich](https://github.com/outreachmagic/lead-enrich) | Serper person research; dedup before credits | `lead-enrich-vX.Y.Z` |
-| lead-email | [outreachmagic/lead-email](https://github.com/outreachmagic/lead-email) | trykitt email find + save via OM | `lead-email-vX.Y.Z` |
+| email-finder | [outreachmagic/email-finder](https://github.com/outreachmagic/email-finder) | trykitt email find + save via OM | `email-finder-vX.Y.Z` |
 
-Companion source lives in `skills/lead-enrich/` and `skills/lead-email/`. See [docs/skill-suite.md](docs/skill-suite.md) and [docs/RELEASING.md](docs/RELEASING.md).
+Companion source lives in `skills/lead-enrich/` and `skills/email-finder/`. See [docs/skill-suite.md](docs/skill-suite.md) and [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Repository Layout
 

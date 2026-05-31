@@ -1,4 +1,4 @@
-# lead-email
+# Email Finder
 
 Find work emails with **trykitt.ai**. Checks **outreachmagic** before spending credits; saves via `import-profiles` + `verify-email`.
 
@@ -6,13 +6,13 @@ Part of the [Outreach Magic skill suite](https://github.com/magic-creators/outre
 
 ## Install
 
-Published repo: [outreachmagic/lead-email](https://github.com/outreachmagic/lead-email)
+Published repo: [outreachmagic/email-finder](https://github.com/outreachmagic/email-finder)
 
 ```bash
-bash platforms/hermes/install.sh --with-lead-email
+bash platforms/hermes/install.sh --with-email-finder
 ```
 
-Or clone a release tag into `~/.hermes/skills/lead-email/`.
+Or clone a release tag into `~/.hermes/skills/email-finder/`.
 
 ## Requirements
 
@@ -24,8 +24,8 @@ Or clone a release tag into `~/.hermes/skills/lead-email/`.
 ## Quick start
 
 ```bash
-python3 scripts/lead_email.py config
-python3 scripts/lead_email.py find --name "Jane Doe" --domain acme.com --save
+python3 scripts/email_finder.py config
+python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com --save
 ```
 
 ## License

@@ -50,7 +50,7 @@ UPDATE_FILES = (
     "config.example.json",
     "default.env",
     ".gitignore",
-    "references/lead-email.md",
+    "references/email-finder.md",
     "scripts/companion_common.py",
     "scripts/enrich.py",
 )
@@ -852,7 +852,7 @@ def format_report(results: list[dict[str, Any]]) -> str:
 
         if status == "exists_linkedin_no_email":
             lines.append(
-                f"  ⏭️  LinkedIn on file, no email — skip Serper; use lead-email if needed"
+                f"  ⏭️  LinkedIn on file, no email — skip Serper; use email-finder if needed"
             )
             totals["skipped"] += 1
             lines.append("")

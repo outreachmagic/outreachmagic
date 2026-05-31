@@ -1,0 +1,80 @@
+name: Publish email-finder
+
+on:
+  push:
+    tags:
+      - "email-finder-v*"
+
+concurrency:
+  group: publish-email-finder-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Tests and SkillScan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run email-finder tests
+        run: python3 tests/test_email_finder.py
+
+      - name: HermesHub SkillScan (strict)
+        run: bash scripts/skill-scan.sh --strict email-finder
+
+  publish:
+    name: Publish outreachmagic/email-finder
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assemble skill repo
+        run: |
+          python3 scripts/generate-email-finder-manifest.py
+          mkdir -p staging/scripts staging/references
+          cp skills/email-finder/SKILL.md staging/
+          cp skills/email-finder/README.md staging/
+          cp skills/email-finder/SECURITY.md staging/
+          cp skills/email-finder/config.example.json staging/
+          cp skills/email-finder/default.env staging/
+          cp skills/email-finder/.gitignore staging/
+          cp skills/email-finder/update-manifest.json staging/
+          cp skills/email-finder/references/email-finding-research.md staging/references/
+          cp skills/email-finder/scripts/email_finder.py staging/scripts/
+          cp skills/email-finder/scripts/companion_common.py staging/scripts/
+          cp LICENSE staging/
+
+      - name: Push to outreachmagic/email-finder
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME#email-finder-}"
+          cd staging
+          git init -b main
+          git config user.name "OutreachMagic Bot"
+          git config user.email "bot@outreachmagic.io"
+          git add -A
+          git commit -m "Release ${TAG}"
+          git tag "${TAG}"
+          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/email-finder.git"
+          git push origin main --force
+          git push origin "${TAG}" --force
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME#email-finder-}"
+          gh release create "${TAG}" \
+            --repo "outreachmagic/email-finder" \
+            --title "${TAG}" \
+            --notes "Email Finder release ${TAG}" \
+            --latest 2>/dev/null || echo "Release already exists or repo not created yet"

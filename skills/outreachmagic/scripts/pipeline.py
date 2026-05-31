@@ -138,6 +138,23 @@ from formatters import (
     format_segment_insights,
     format_stats,
 )
+from event_classification import normalize_campaign_event_type
+from activity_sync import (
+    ActivitySummary,
+    compute_lead_activity_from_events,
+    merge_activity_summary,
+    refresh_lead_activity_for_lead,
+    refresh_lead_activity_from_events,
+    set_lead_activity_summary,
+)
+from lead_sync import (
+    apply_agent_lead_sync_payload,
+    build_lead_sync_payload,
+    entity_key_from_prefetch,
+    inspect_sync_lead,
+    resolve_lead_from_agent_sync,
+    _load_lead_sync_prefetch,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -169,6 +186,9 @@ UPDATE_SCRIPT_FILES = (
     "db_conn.py",
     "formatters.py",
     "bounces.py",
+    "activity_sync.py",
+    "event_classification.py",
+    "lead_sync.py",
     "relay_extractors.py",
     "workspace_routing.py",
     "workspace_archive.py",
@@ -1413,6 +1433,21 @@ def migrate_db(conn=None):
         conn.execute("ALTER TABLE workspace_leads ADD COLUMN latest_sender TEXT")
     except sqlite3.OperationalError:
         pass
+    for col, col_type in [
+        ("email_sent_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("linkedin_sent_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("total_replies_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_contacted_at", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE workspace_leads ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute(
+        """UPDATE workspace_leads
+           SET last_contacted_at = last_activity_at
+           WHERE last_contacted_at IS NULL AND last_activity_at IS NOT NULL"""
+    )
     repair_malformed_tags(conn)
     backfill_bounce_events_from_events(conn)
     conn.execute(
@@ -3315,6 +3350,7 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
     event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
     conn.close()
+    refresh_lead_activity_for_lead(lead_id, mark_pending_fn=_mark_lead_cloud_pending)
     return event_id
 
 
@@ -3876,9 +3912,17 @@ def enrich_lead_rows(
                 "latest_sender", "latest_sender_platform", "linkedin",
                 "lead_status", "lead_sentiment", "contact_order", "workspace_stage",
                 "external_id", "company_domain", "hq_city", "hq_state", "hq_country",
+                "activity",
             ):
                 if key in snap and snap[key] is not None:
                     row[key] = snap[key]
+            activity = snap.get("activity") or {}
+            if activity:
+                row["last_contacted_at"] = activity.get("last_contacted_at") or row.get("last_contact_at")
+                row["email_sent_count"] = activity.get("email_sent_count", 0)
+                row["linkedin_sent_count"] = activity.get("linkedin_sent_count", 0)
+                row["total_replies_count"] = activity.get("total_replies_count", 0)
+                row["total_contacted_count"] = activity.get("total_contacted_count", 0)
             row["personalization"] = resolve_personalization(int(lead["id"]))
             if not row.get("latest_sender") and lead.get("latest_sender"):
                 row["latest_sender"] = lead["latest_sender"]
@@ -3897,6 +3941,8 @@ _EXPORT_CSV_BASE_COLUMNS = [
     "workspace_stage", "lead_status", "lead_sentiment", "contact_order",
     "latest_sender", "latest_sender_platform", "tags",
     "external_id", "event_count", "last_event", "last_event_at",
+    "last_contacted_at", "email_sent_count", "linkedin_sent_count",
+    "total_replies_count", "total_contacted_count",
 ]
 
 
@@ -3935,6 +3981,11 @@ def _flatten_lead_for_csv(lead: dict) -> dict:
     row["event_count"] = lead.get("event_count") or 0
     row["last_event"] = lead.get("last_event") or ""
     row["last_event_at"] = lead.get("last_event_at") or ""
+    row["last_contacted_at"] = lead.get("last_contacted_at") or ""
+    row["email_sent_count"] = lead.get("email_sent_count") or 0
+    row["linkedin_sent_count"] = lead.get("linkedin_sent_count") or 0
+    row["total_replies_count"] = lead.get("total_replies_count") or 0
+    row["total_contacted_count"] = lead.get("total_contacted_count") or 0
     pers = lead.get("personalization") or {}
     if isinstance(pers, dict):
         for field, val in sorted(pers.items()):
@@ -4057,25 +4108,6 @@ def get_stage_counts():
     rows = conn.execute("SELECT stage, COUNT(*) as count FROM leads GROUP BY stage ORDER BY count DESC").fetchall()
     conn.close()
     return {r["stage"]: r["count"] for r in rows}
-
-
-def normalize_campaign_event_type(event_type: str, direction: str, channel: str) -> str:
-    """Map raw event labels to reporting-friendly campaign event buckets."""
-    et = (event_type or "unknown").strip().lower()
-    flow = (direction or "").strip().lower()
-    medium = (channel or "").strip().lower()
-    if medium == "linkedin":
-        if et in ("send_connection", "linkedin_connect", "linkedin_connection_sent"):
-            return "linkedin_connection_sent"
-        if et == "linkedin_connection_accepted":
-            return "linkedin_connection_accepted"
-        if et == "linkedin_reply":
-            return "linkedin_message_reply"
-        if et == "linkedin_message_sent":
-            return "linkedin_message_sent"
-        if et == "linkedin_message":
-            return "linkedin_message_reply" if flow == "inbound" else "linkedin_message_sent"
-    return et or "unknown"
 
 
 def get_campaign_stats():
@@ -4816,563 +4848,6 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
     return results
 
 
-def _load_lead_sync_prefetch(
-    conn: sqlite3.Connection,
-    org_id: str,
-    lead_ids: list[int],
-) -> dict:
-    """Bulk-load rows used by build_lead_sync_payload for many leads at once."""
-    if not lead_ids:
-        return {
-            "leads": {},
-            "identities": {},
-            "external_ids": {},
-            "workspace_slugs": {},
-            "workspace_leads": {},
-            "tags": {},
-            "linkedin_status": {},
-            "personalization": {},
-        }
-
-    placeholders = ",".join("?" for _ in lead_ids)
-    leads = {
-        r["id"]: r
-        for r in conn.execute(
-            f"""SELECT l.*,
-                       co.domain AS company_domain,
-                       co.hq_city AS hq_city,
-                       co.hq_state AS hq_state,
-                       co.hq_country AS hq_country,
-                       COALESCE(co.name, l.company) AS company_display
-                FROM leads l
-                LEFT JOIN companies co ON l.company_id = co.id
-                WHERE l.id IN ({placeholders})""",
-            lead_ids,
-        ).fetchall()
-    }
-
-    identities: dict[int, list] = {lid: [] for lid in lead_ids}
-    for r in conn.execute(
-        f"""SELECT lead_id, identity_type, identity_value_normalized
-            FROM lead_identities
-            WHERE org_id = ? AND lead_id IN ({placeholders})
-              AND identity_type IN ('linkedin_sales_nav_id', 'linkedin_member_id')""",
-        [org_id, *lead_ids],
-    ).fetchall():
-        identities[r["lead_id"]].append(r)
-
-    external_ids: dict[int, str] = {}
-    for r in conn.execute(
-        f"""SELECT lead_id, identity_value_normalized
-            FROM lead_identities
-            WHERE org_id = ? AND lead_id IN ({placeholders}) AND identity_type = 'external_id'""",
-        [org_id, *lead_ids],
-    ).fetchall():
-        external_ids[r["lead_id"]] = r["identity_value_normalized"]
-
-    workspace_slugs: dict[int, str] = {}
-    for r in conn.execute(
-        f"""SELECT wl.lead_id, w.slug
-            FROM workspace_leads wl
-            JOIN workspaces w ON wl.workspace_id = w.id
-            WHERE wl.lead_id IN ({placeholders})""",
-        lead_ids,
-    ).fetchall():
-        workspace_slugs.setdefault(r["lead_id"], r["slug"])
-
-    workspace_leads: dict[int, sqlite3.Row] = {}
-    for r in conn.execute(
-        f"""SELECT wl.lead_id, wl.workspace_id, wl.status, wl.current_status_label,
-                   wl.current_status_sentiment, wl.contact_priority
-            FROM workspace_leads wl
-            WHERE wl.lead_id IN ({placeholders})""",
-        lead_ids,
-    ).fetchall():
-        workspace_leads.setdefault(r["lead_id"], r)
-
-    tags: dict[int, list] = {lid: [] for lid in lead_ids}
-    for r in conn.execute(
-        f"""SELECT wl.lead_id, wlt.tag
-            FROM workspace_lead_tags wlt
-            JOIN workspace_leads wl ON wl.workspace_id = wlt.workspace_id AND wl.lead_id = wlt.lead_id
-            WHERE wl.lead_id IN ({placeholders})
-            ORDER BY wlt.created_at""",
-        lead_ids,
-    ).fetchall():
-        tags[r["lead_id"]].append(r["tag"])
-
-    linkedin_status: dict[int, list] = {lid: [] for lid in lead_ids}
-    for r in conn.execute(
-        f"""SELECT wl.lead_id, lis.sender_profile, lis.is_connected, lis.is_request_pending
-            FROM workspace_lead_linkedin_status lis
-            JOIN workspace_leads wl ON wl.workspace_id = lis.workspace_id AND wl.lead_id = lis.lead_id
-            WHERE wl.lead_id IN ({placeholders})""",
-        lead_ids,
-    ).fetchall():
-        linkedin_status[r["lead_id"]].append(r)
-
-    personalization: dict[int, list] = {lid: [] for lid in lead_ids}
-    for r in conn.execute(
-        f"""SELECT lead_id, field_name, field_value, field_date, processed_at
-            FROM lead_personalization
-            WHERE lead_id IN ({placeholders})""",
-        lead_ids,
-    ).fetchall():
-        personalization[r["lead_id"]].append(r)
-
-    return {
-        "leads": leads,
-        "identities": identities,
-        "external_ids": external_ids,
-        "workspace_slugs": workspace_slugs,
-        "workspace_leads": workspace_leads,
-        "tags": tags,
-        "linkedin_status": linkedin_status,
-        "personalization": personalization,
-    }
-
-
-def _entity_key_from_prefetch(prefetch: dict, lead_id: int) -> str:
-    row = prefetch["leads"].get(lead_id)
-    if not row:
-        return ""
-    if row["email"]:
-        return str(row["email"]).strip().lower()
-    if row["linkedin_url"]:
-        return str(row["linkedin_url"]).strip()
-    id_rows = prefetch["identities"].get(lead_id) or []
-    if id_rows:
-        r = id_rows[0]
-        return f"{r['identity_type']}:{r['identity_value_normalized']}"
-    return ""
-
-
-def _build_lead_sync_payload_from_prefetch(
-    conn: sqlite3.Connection,
-    org_id: str,
-    lead_id: int,
-    prefetch: dict,
-    *,
-    workspace_slug: Optional[str] = None,
-) -> dict:
-    """Same output as build_lead_sync_payload using preloaded maps."""
-    row = prefetch["leads"].get(lead_id)
-    if not row:
-        return {}
-
-    payload: dict = {}
-    for field in (
-        "name", "company", "title", "industry", "headcount", "stage", "notes",
-        "location_city", "location_state", "location_country",
-        "email_verification_status",
-    ):
-        val = row[field]
-        if val is not None and str(val).strip():
-            payload[field] = val
-    if row["email"]:
-        payload["email"] = row["email"]
-    if row["linkedin_url"]:
-        payload["linkedin"] = row["linkedin_url"]
-    for id_row in prefetch["identities"].get(lead_id) or []:
-        payload[id_row["identity_type"]] = id_row["identity_value_normalized"]
-    if row["latest_sender"]:
-        payload["latest_sender"] = row["latest_sender"]
-    if row["latest_sender_platform"]:
-        payload["latest_sender_platform"] = row["latest_sender_platform"]
-    if row["email_verified_at"]:
-        payload["email_verified_at"] = row["email_verified_at"]
-    if row["company_domain"]:
-        payload["company_domain"] = row["company_domain"]
-    for hq in ("hq_city", "hq_state", "hq_country"):
-        if row[hq]:
-            payload[hq] = row[hq]
-    ext = prefetch["external_ids"].get(lead_id)
-    if ext:
-        payload["external_id"] = ext
-    if row["latest_source_detail"]:
-        payload["list_source"] = row["latest_source_detail"]
-    if row["original_source_detail"] and row["original_source_detail"] != row["latest_source_detail"]:
-        payload["import_name"] = row["original_source_detail"]
-
-    ws_id = None
-    if workspace_slug:
-        ws_row = resolve_workspace_identity(conn, workspace_slug)
-        ws_id = ws_row["id"] if ws_row else None
-    if ws_id is None:
-        wl = prefetch["workspace_leads"].get(lead_id)
-        if wl:
-            ws_id = wl["workspace_id"]
-
-    if ws_id:
-        wl_row = prefetch["workspace_leads"].get(lead_id)
-        if wl_row:
-            if wl_row["current_status_label"]:
-                payload["lead_status"] = wl_row["current_status_label"]
-            if wl_row["current_status_sentiment"]:
-                payload["lead_sentiment"] = wl_row["current_status_sentiment"]
-            if wl_row["contact_priority"] is not None:
-                payload["contact_order"] = wl_row["contact_priority"]
-            if wl_row["status"] and wl_row["status"] != row["stage"]:
-                payload["workspace_stage"] = wl_row["status"]
-
-        tag_rows = prefetch["tags"].get(lead_id) or []
-        if tag_rows:
-            payload["tags"] = tag_rows
-
-        li_rows = prefetch["linkedin_status"].get(lead_id) or []
-        if li_rows:
-            payload["linkedin_status"] = [
-                {
-                    "sender_profile": r["sender_profile"],
-                    "is_connected": bool(r["is_connected"]),
-                    "is_request_pending": bool(r["is_request_pending"]),
-                }
-                for r in li_rows
-            ]
-
-    p_rows = prefetch["personalization"].get(lead_id) or []
-    if p_rows:
-        pers = {r["field_name"]: {"field_value": r["field_value"], "field_date": r["field_date"], "processed_at": r["processed_at"]} for r in p_rows}
-        values, dates, at = _personalization_sync_payload(pers)
-        payload["personalization"] = values
-        if dates:
-            payload["personalization_dates"] = dates
-        if at:
-            payload["personalization_at"] = at
-
-    return payload
-
-
-def build_lead_sync_payload(
-    conn: sqlite3.Connection,
-    org_id: str,
-    lead_id: int,
-    *,
-    workspace_slug: Optional[str] = None,
-    prefetch: Optional[dict] = None,
-) -> dict:
-    """Full lead snapshot for relay push / agent replay (CSV import round-trip)."""
-    if prefetch is not None:
-        return _build_lead_sync_payload_from_prefetch(
-            conn, org_id, lead_id, prefetch, workspace_slug=workspace_slug,
-        )
-
-    row = conn.execute(
-        """SELECT l.*,
-                  co.domain AS company_domain,
-                  co.hq_city AS hq_city,
-                  co.hq_state AS hq_state,
-                  co.hq_country AS hq_country,
-                  COALESCE(co.name, l.company) AS company_display
-           FROM leads l
-           LEFT JOIN companies co ON l.company_id = co.id
-           WHERE l.id = ?""",
-        (lead_id,),
-    ).fetchone()
-    if not row:
-        return {}
-
-    payload: dict = {}
-    for field in (
-        "name", "company", "title", "industry", "headcount", "stage", "notes",
-        "location_city", "location_state", "location_country",
-        "email_verification_status",
-    ):
-        val = row[field]
-        if val is not None and str(val).strip():
-            payload[field] = val
-    if row["email"]:
-        payload["email"] = row["email"]
-    if row["linkedin_url"]:
-        payload["linkedin"] = row["linkedin_url"]
-    for id_row in conn.execute(
-        """SELECT identity_type, identity_value_normalized FROM lead_identities
-           WHERE org_id = ? AND lead_id = ?
-             AND identity_type IN ('linkedin_sales_nav_id', 'linkedin_member_id')""",
-        (org_id, lead_id),
-    ).fetchall():
-        payload[id_row["identity_type"]] = id_row["identity_value_normalized"]
-    if row["latest_sender"]:
-        payload["latest_sender"] = row["latest_sender"]
-    if row["latest_sender_platform"]:
-        payload["latest_sender_platform"] = row["latest_sender_platform"]
-    if row["email_verified_at"]:
-        payload["email_verified_at"] = row["email_verified_at"]
-    if row["company_domain"]:
-        payload["company_domain"] = row["company_domain"]
-    for hq in ("hq_city", "hq_state", "hq_country"):
-        if row[hq]:
-            payload[hq] = row[hq]
-    ext = lead_external_id_value(conn, org_id, lead_id)
-    if ext:
-        payload["external_id"] = ext
-    if row["latest_source_detail"]:
-        payload["list_source"] = row["latest_source_detail"]
-    if row["original_source_detail"] and row["original_source_detail"] != row["latest_source_detail"]:
-        payload["import_name"] = row["original_source_detail"]
-
-    ws_id = None
-    if workspace_slug:
-        ws_row = resolve_workspace_identity(conn, workspace_slug)
-        ws_id = ws_row["id"] if ws_row else None
-    if ws_id is None:
-        wl = conn.execute(
-            "SELECT workspace_id FROM workspace_leads WHERE lead_id = ? LIMIT 1",
-            (lead_id,),
-        ).fetchone()
-        if wl:
-            ws_id = wl["workspace_id"]
-
-    if ws_id:
-        wl_row = conn.execute(
-            """SELECT status, current_status_label, current_status_sentiment, contact_priority
-               FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?""",
-            (ws_id, lead_id),
-        ).fetchone()
-        if wl_row:
-            if wl_row["current_status_label"]:
-                payload["lead_status"] = wl_row["current_status_label"]
-            if wl_row["current_status_sentiment"]:
-                payload["lead_sentiment"] = wl_row["current_status_sentiment"]
-            if wl_row["contact_priority"] is not None:
-                payload["contact_order"] = wl_row["contact_priority"]
-            if wl_row["status"] and wl_row["status"] != row["stage"]:
-                payload["workspace_stage"] = wl_row["status"]
-
-        tag_rows = conn.execute(
-            "SELECT tag FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ? ORDER BY created_at",
-            (ws_id, lead_id),
-        ).fetchall()
-        if tag_rows:
-            payload["tags"] = [r["tag"] for r in tag_rows]
-
-        li_rows = conn.execute(
-            """SELECT sender_profile, is_connected, is_request_pending
-               FROM workspace_lead_linkedin_status
-               WHERE workspace_id = ? AND lead_id = ?""",
-            (ws_id, lead_id),
-        ).fetchall()
-        if li_rows:
-            payload["linkedin_status"] = [
-                {
-                    "sender_profile": r["sender_profile"],
-                    "is_connected": bool(r["is_connected"]),
-                    "is_request_pending": bool(r["is_request_pending"]),
-                }
-                for r in li_rows
-            ]
-
-    p_rows = conn.execute(
-        "SELECT field_name, field_value, field_date, processed_at FROM lead_personalization WHERE lead_id = ?",
-        (lead_id,),
-    ).fetchall()
-    if p_rows:
-        pers = {r["field_name"]: dict(r) for r in p_rows}
-        values, dates, at = _personalization_sync_payload(pers)
-        payload["personalization"] = values
-        if dates:
-            payload["personalization_dates"] = dates
-        if at:
-            payload["personalization_at"] = at
-
-    return payload
-
-
-def _resolve_lead_from_agent_sync(
-    entity_key: str,
-    payload: dict,
-    *,
-    stage: str = "prospecting",
-) -> dict:
-    """Create or match a lead from a relay agent entry (uses entity_key + full payload)."""
-    extra = dict(import_extra_from_entity_key(entity_key))
-    if payload.get("external_id"):
-        extra["external_id"] = str(payload["external_id"])
-    if payload.get("list_source"):
-        extra["list_source"] = str(payload["list_source"])
-    if payload.get("import_name"):
-        extra["import_name"] = str(payload["import_name"])
-    if payload.get("company_domain"):
-        extra["company_domain"] = str(payload["company_domain"])
-    profile = {
-        k: payload[k]
-        for k in ("email", "name", "company", "title", "industry", "headcount")
-        if payload.get(k)
-    }
-    if payload.get("linkedin"):
-        profile["linkedin"] = payload["linkedin"]
-    return resolve_lead(
-        email=payload.get("email"),
-        linkedin_url=payload.get("linkedin"),
-        name=payload.get("name", "Unknown"),
-        company=payload.get("company"),
-        title=payload.get("title"),
-        industry=payload.get("industry"),
-        headcount=payload.get("headcount"),
-        stage=payload.get("stage") or payload.get("workspace_stage") or stage,
-        notes=payload.get("notes"),
-        company_domain=payload.get("company_domain"),
-        location_city=payload.get("location_city"),
-        location_state=payload.get("location_state"),
-        location_country=payload.get("location_country"),
-        hq_city=payload.get("hq_city"),
-        hq_state=payload.get("hq_state"),
-        hq_country=payload.get("hq_country"),
-        import_extra=extra,
-        import_batch=payload.get("import_batch_id"),
-        source="agent_sync",
-        source_platform="relay",
-        overwrite=True,
-    )
-
-
-def apply_agent_lead_sync_payload(
-    lead_id: int,
-    payload: dict,
-    *,
-    org_id: str = DEFAULT_ORG_ID,
-    workspace_id: Optional[str] = None,
-    entity_key: Optional[str] = None,
-) -> None:
-    """Apply a full lead sync payload after create/match (import round-trip)."""
-    update_fields = {
-        k: v for k, v in payload.items()
-        if k in ("name", "title", "industry", "company", "headcount") and v is not None
-    }
-    if update_fields:
-        enrich_lead(lead_id, overwrite=True, mark_cloud_pending=False, **update_fields)
-
-    loc_sets, loc_params = [], []
-    for col in ("location_city", "location_state", "location_country"):
-        if payload.get(col):
-            loc_sets.append(f"{col} = ?")
-            loc_params.append(payload[col])
-    if loc_sets:
-        loc_conn = get_conn()
-        loc_params.append(lead_id)
-        loc_conn.execute(
-            f"UPDATE leads SET {', '.join(loc_sets)}, updated_at = datetime('now') WHERE id = ?",
-            loc_params,
-        )
-        loc_conn.commit()
-        loc_conn.close()
-
-    if payload.get("company_domain") or any(payload.get(k) for k in ("hq_city", "hq_state", "hq_country")):
-        c_conn = get_conn()
-        domain = normalize_company_domain(payload.get("company_domain"))
-        ensure_company(
-            c_conn,
-            name=payload.get("company"),
-            domain=domain,
-            industry=payload.get("industry"),
-            headcount=payload.get("headcount"),
-            hq_city=payload.get("hq_city"),
-            hq_state=payload.get("hq_state"),
-            hq_country=payload.get("hq_country"),
-        )
-        link_lead_company(
-            c_conn, lead_id,
-            company=payload.get("company"),
-            email=payload.get("email"),
-            industry=payload.get("industry"),
-            headcount=payload.get("headcount"),
-        )
-        c_conn.commit()
-        c_conn.close()
-
-    id_conn = get_conn()
-    identities: list[tuple[str, str]] = []
-    if payload.get("external_id"):
-        identities.append(("external_id", str(payload["external_id"])))
-    itype, val = parse_entity_key(entity_key or "")
-    if itype and val and itype != "email":
-        if not any(t == itype and v == val for t, v in identities):
-            identities.append((itype, val))
-    if identities:
-        upsert_all_identities(id_conn, org_id, lead_id, identities, source="agent_sync")
-    id_conn.commit()
-    id_conn.close()
-
-    if workspace_id:
-        status_label = (payload.get("lead_status") or "").strip().lower().replace("_", " ") or None
-        status_sentiment = (payload.get("lead_sentiment") or "").strip().lower() or None
-        contact_pri = None
-        if payload.get("contact_order") is not None:
-            try:
-                contact_pri = int(payload["contact_order"])
-            except (ValueError, TypeError):
-                pass
-        ws_conn = get_conn()
-        ensure_organization(ws_conn)
-        upsert_workspace_lead(
-            ws_conn, org_id, workspace_id, lead_id,
-            status=payload.get("workspace_stage") or payload.get("stage", "prospecting"),
-            current_status_label=status_label,
-            current_status_sentiment=status_sentiment,
-            contact_priority=contact_pri,
-        )
-        if "tags" in payload:
-            ws_conn.execute(
-                "DELETE FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ?",
-                (workspace_id, lead_id),
-            )
-            for tag in parse_tags_value(payload.get("tags")):
-                tag_id = f"wlt_{workspace_id}_{lead_id}_{hashlib.md5(tag.encode()).hexdigest()[:8]}"
-                ws_conn.execute(
-                    """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
-                       VALUES (?, ?, ?, ?)""",
-                    (tag_id, workspace_id, lead_id, tag),
-                )
-        for li in payload.get("linkedin_status") or []:
-            sender = normalize_linkedin(li.get("sender_profile"))
-            if not sender:
-                continue
-            is_connected = bool(li.get("is_connected"))
-            is_pending = bool(li.get("is_request_pending"))
-            if not is_connected and not is_pending:
-                continue
-            now_ts = datetime.now(timezone.utc).isoformat()
-            li_id = f"lis_{workspace_id}_{lead_id}_{sender[:20]}"
-            ws_conn.execute(
-                """INSERT INTO workspace_lead_linkedin_status
-                   (id, workspace_id, lead_id, sender_profile, is_connected,
-                    is_request_pending, connected_at, request_sent_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT (workspace_id, lead_id, sender_profile) DO UPDATE SET
-                       is_connected = excluded.is_connected,
-                       is_request_pending = excluded.is_request_pending,
-                       updated_at = datetime('now')""",
-                (li_id, workspace_id, lead_id, sender,
-                 int(is_connected), int(is_pending),
-                 now_ts if is_connected else None,
-                 now_ts if is_pending else None),
-            )
-        ws_conn.commit()
-        ws_conn.close()
-
-    personalization = payload.get("personalization")
-    if personalization:
-        _apply_personalization_payload(
-            lead_id, payload, table="lead_personalization", id_col="lead_id", entity_id=lead_id,
-        )
-
-    if payload.get("notes"):
-        n_conn = get_conn()
-        n_conn.execute(
-            "UPDATE leads SET notes = ?, updated_at = datetime('now') WHERE id = ?",
-            (payload["notes"], lead_id),
-        )
-        n_conn.commit()
-        n_conn.close()
-
-    if payload.get("email_verification_status"):
-        verify_email(
-            lead_id,
-            str(payload["email_verification_status"]),
-            "agent_sync",
-        )
-
-
 def _relay_push_batches(agent_key: str, entries: list[dict], client_id: str) -> dict:
     """Push relay entries in batches and return diagnostics."""
     if not entries:
@@ -5515,7 +4990,7 @@ def _push_pending_lead_updates(agent_key: str) -> dict:
     entries = []
     pushed_ids = []
     for row in rows:
-        entity_key = _entity_key_from_prefetch(prefetch, row["id"])
+        entity_key = entity_key_from_prefetch(prefetch, row["id"])
         if not entity_key:
             entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, row["id"])
         if not entity_key:
@@ -6277,7 +5752,7 @@ def ingest_agent_entry(
             lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
             conn.close()
             if not lead_id:
-                result = _resolve_lead_from_agent_sync(entity_key, payload)
+                result = resolve_lead_from_agent_sync(entity_key, payload)
                 if result.get("status") == "error":
                     mark_relay_ingested(dedupe_key, None)
                     return None
@@ -7064,6 +6539,12 @@ def ingest_relay_event(
             event_at=received_at,
             relay_id=str(event.get("relay_id") or "") or None,
         )
+
+    refresh_lead_activity_from_events(conn, lead_id, workspace_id)
+    conn.execute(
+        "UPDATE leads SET cloud_pending = 1, updated_at = datetime('now') WHERE id = ?",
+        (lead_id,),
+    )
 
     conn.commit()
     conn.close()
@@ -8181,10 +7662,33 @@ def main():
     sync_p = sub.add_parser("sync", help="Push pending workspaces and routing rules to the webapp")
     sync_p.add_argument("--status", action="store_true", help="Show what needs syncing without pushing")
     sync_p.add_argument(
+        "--inspect",
+        metavar="EMAIL",
+        help="Compare local activity vs sync payload for one lead (requires --workspace)",
+    )
+    sync_p.add_argument(
+        "--workspace",
+        help="Workspace slug for --inspect",
+    )
+    sync_p.add_argument(
         "--no-health-report",
         action="store_true",
         help="Skip aggregate local DB health POST to portal (lead sync still runs)",
     )
+
+    activity_p = sub.add_parser("activity", help="Lead activity summary (last contacted, counts)")
+    activity_sub = activity_p.add_subparsers(dest="activity_command", required=True)
+    activity_show_p = activity_sub.add_parser("show", help="Show stored/computed/sync activity for a lead")
+    activity_show_p.add_argument("--lead-id", type=int)
+    activity_show_p.add_argument("--email")
+    activity_show_p.add_argument("--workspace", help="Workspace slug (recommended)")
+    activity_show_p.add_argument("--json", action="store_true", default=True)
+    activity_recompute_p = activity_sub.add_parser(
+        "recompute", help="Recompute activity from events for a lead"
+    )
+    activity_recompute_p.add_argument("--lead-id", type=int, required=True)
+    activity_recompute_p.add_argument("--workspace", help="Limit to one workspace")
+    activity_recompute_p.add_argument("--json", action="store_true", default=True)
     db_health_p = sub.add_parser("db-health", help="Local SQLite health (aggregates only)")
     db_health_p.add_argument("--json", action="store_true", help="Print JSON")
     db_health_p.add_argument("--full", action="store_true", help="Run full integrity_check (slower on large DBs)")
@@ -8434,12 +7938,87 @@ def main():
         return
 
     if args.command == "sync":
+        if getattr(args, "inspect", None):
+            if not getattr(args, "workspace", None):
+                print(json.dumps({"error": "--workspace is required with sync --inspect"}))
+                sys.exit(1)
+            email = args.inspect.strip().lower()
+            lead = find_lead(email=email)
+            if not lead:
+                print(json.dumps({"error": f"lead not found: {email}"}))
+                sys.exit(1)
+            conn = get_conn()
+            try:
+                result = inspect_sync_lead(
+                    conn, DEFAULT_ORG_ID, lead["id"], workspace_slug=args.workspace,
+                )
+            finally:
+                conn.close()
+            print(json.dumps(result, indent=2))
+            return
         if getattr(args, "status", False):
             print(json.dumps(get_sync_status(), indent=2))
         else:
             result = sync_all(no_health_report=getattr(args, "no_health_report", False))
             print(json.dumps(result, indent=2))
         return
+
+    if args.command == "activity":
+        if args.activity_command == "show":
+            lead = None
+            if getattr(args, "lead_id", None):
+                conn = get_conn()
+                row = conn.execute("SELECT * FROM leads WHERE id = ?", (args.lead_id,)).fetchone()
+                conn.close()
+                lead = dict(row) if row else None
+            elif getattr(args, "email", None):
+                lead = find_lead(email=args.email.strip().lower())
+            if not lead:
+                print(json.dumps({"error": "lead not found (--lead-id or --email required)"}))
+                sys.exit(1)
+            conn = get_conn()
+            try:
+                result = inspect_sync_lead(
+                    conn,
+                    DEFAULT_ORG_ID,
+                    lead["id"],
+                    workspace_slug=getattr(args, "workspace", None),
+                )
+            finally:
+                conn.close()
+            print(json.dumps(result, indent=2))
+            return
+        if args.activity_command == "recompute":
+            conn = get_conn()
+            try:
+                ws_slug = getattr(args, "workspace", None)
+                ws_id = None
+                if ws_slug:
+                    ws_row = resolve_workspace_identity(conn, ws_slug)
+                    if not ws_row:
+                        print(json.dumps({"error": f"workspace not found: {ws_slug}"}))
+                        sys.exit(1)
+                    ws_id = ws_row["id"]
+                    merged = refresh_lead_activity_from_events(conn, args.lead_id, ws_id)
+                    conn.commit()
+                    results = {ws_slug: merged}
+                else:
+                    rows = conn.execute(
+                        "SELECT workspace_id FROM workspace_leads WHERE lead_id = ?",
+                        (args.lead_id,),
+                    ).fetchall()
+                    results = {}
+                    for row in rows:
+                        merged = refresh_lead_activity_from_events(
+                            conn, args.lead_id, row["workspace_id"],
+                        )
+                        results[row["workspace_id"]] = merged
+                    conn.commit()
+                _mark_lead_cloud_pending(args.lead_id)
+            finally:
+                conn.close()
+            print(json.dumps({"status": "ok", "lead_id": args.lead_id, "activity": results}, indent=2))
+            return
 
     if args.command == "db-health":
         conn = get_conn()

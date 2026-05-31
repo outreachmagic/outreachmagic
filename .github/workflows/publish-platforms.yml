@@ -83,7 +83,7 @@ jobs:
           python3 -c "
           import hashlib, json, pathlib
           files = {}
-          for name in ('pipeline.py', 'relay_extractors.py', 'workspace_routing.py', 'workspace_archive.py', 'routing_cloud.py', 'connections_cloud.py', 'db_health.py', 'om_paths.py', 'VERSION'):
+          for name in ('pipeline.py', 'constants.py', 'db_conn.py', 'formatters.py', 'bounces.py', 'activity_sync.py', 'event_classification.py', 'lead_sync.py', 'relay_extractors.py', 'workspace_routing.py', 'workspace_archive.py', 'routing_cloud.py', 'connections_cloud.py', 'db_health.py', 'om_paths.py', 'device_login.py', 'VERSION'):
               p = pathlib.Path('staging/scripts') / name
               if p.exists():
                   files[name] = hashlib.sha256(p.read_bytes()).hexdigest()

@@ -919,7 +919,7 @@ def upsert_workspace_lead(
         if contact_priority is not None:
             extra_sets.append("contact_priority = ?")
             extra_params.append(contact_priority)
-        sets = "last_activity_at = datetime('now'), updated_at = datetime('now')"
+        sets = "updated_at = datetime('now')"
         if extra_sets:
             sets += ", " + ", ".join(extra_sets)
         conn.execute(
@@ -935,7 +935,7 @@ def upsert_workspace_lead(
                current_status_label, current_status_sentiment, contact_priority,
                stage_entered_at, last_activity_at, created_at, updated_at
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-                     datetime('now'), datetime('now'), datetime('now'), datetime('now'))""",
+                     datetime('now'), NULL, datetime('now'), datetime('now'))""",
         (ws_lead_id, org_id, workspace_id, lead_id, status, owner_user_id,
          current_status_label, current_status_sentiment, contact_priority),
     )

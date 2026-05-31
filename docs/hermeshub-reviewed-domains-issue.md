@@ -4,14 +4,14 @@ Open this issue on [amanning3390/hermeshub](https://github.com/amanning3390/herm
 
 ---
 
-**Title:** Reviewed Domains request — outreachmagic.io for OutreachMagic skill submission
+**Title:** Reviewed Domains request — outreachmagic.io for Outreach Magic skill submission
 
 **Body:**
 
 ```
 Hey HermesHub maintainers,
 
-Planning to submit the OutreachMagic skill to the registry shortly and
+Planning to submit the Outreach Magic skill to the registry shortly and
 wanted to request domain review first per the contribution guidelines.
 
 The skill makes external calls to these domains:

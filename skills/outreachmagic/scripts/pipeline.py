@@ -115,6 +115,7 @@ from bounces import (
 from constants import (
     ATTRIBUTE_INSIGHT_FIELDS,
     AUTO_REPLY_LABELS,
+    BILLING_UPGRADE_URL,
     MAX_EVENT_BODY_STORAGE_CHARS,
     PIPELINE_STAGES,
     PLUSVIBE_BOUNCE_EVENTS,
@@ -127,6 +128,7 @@ from constants import (
     RELAY_PUSH_TIMEOUT_SECONDS,
     SHARED_EMAIL_DOMAINS,
     STAGE_EMOJI,
+    USAGE_WARNING_PERCENT,
 )
 from db_conn import get_conn
 from formatters import (
@@ -326,7 +328,7 @@ def skill_md_url_for_repo(repo_base: str, skill_repo_path: str) -> str:
 
 
 def _fetch_url(url: str, timeout: int = 30) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": f"OutreachMagic/{__version__}"})
+    req = urllib.request.Request(url, headers={"User-Agent": f"Outreach Magic/{__version__}"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -339,7 +341,7 @@ def fetch_latest_release() -> Optional[dict]:
             req = urllib.request.Request(
                 releases_url,
                 headers={
-                    "User-Agent": f"OutreachMagic/{__version__}",
+                    "User-Agent": f"Outreach Magic/{__version__}",
                     "Accept": "application/vnd.github+json",
                 },
             )
@@ -4900,7 +4902,7 @@ def _relay_push_batches(agent_key: str, entries: list[dict], client_id: str) -> 
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {agent_key}",
-                    "User-Agent": f"OutreachMagic/{__version__}",
+                    "User-Agent": f"Outreach Magic/{__version__}",
                 },
             )
             try:
@@ -4937,6 +4939,8 @@ def _relay_push_batches(agent_key: str, entries: list[dict], client_id: str) -> 
                 hint = f" (retry_after={retry_after_raw}s)" if retry_after_raw else ""
                 detail = f": {body_text}" if body_text else ""
                 last_error = f"relay push HTTP {exc.code}{hint}{detail}"
+                if throttled:
+                    last_error += f" — monthly event limit reached. Upgrade at {BILLING_UPGRADE_URL}"
                 break
             except urllib.error.URLError as exc:
                 reason_text = str(exc.reason or exc).strip()
@@ -5875,7 +5879,7 @@ def pull_events_org(
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": f"OutreachMagic/{__version__}",
+            "User-Agent": f"Outreach Magic/{__version__}",
             "Authorization": f"Bearer {agent_key}",
         },
     )
@@ -6804,10 +6808,11 @@ def cmd_status():
         sys.exit(1)
 
     plan = (data.get("plan") or "free").capitalize()
-    events_used = data.get("eventsUsed", 0)
+    events_used = int(data.get("eventsUsed", 0) or 0)
     events_limit = data.get("eventsLimit")
     resets_at = data.get("resetsAt", "")
     is_canceling = data.get("isCanceling", False)
+    upgrade_url = data.get("upgradeUrl") or BILLING_UPGRADE_URL
 
     resets_label = ""
     if resets_at:
@@ -6824,10 +6829,20 @@ def cmd_status():
     usage_str = str(events_used)
     if events_limit:
         usage_str += f" / {events_limit}"
+        pct = round((events_used / events_limit) * 100) if events_limit else 0
+    else:
+        pct = 0
     plan_suffix = ""
     if is_canceling:
         plan_suffix = " (canceling)"
     print(f"Plan: {plan}{plan_suffix}  |  Events this month: {usage_str}  |  Resets: {resets_label}")
+
+    if events_limit:
+        if events_used >= events_limit:
+            print(f"⚠  Monthly limit reached. New relay events are rejected (HTTP 429). Upgrade: {upgrade_url}")
+        elif pct >= USAGE_WARNING_PERCENT:
+            remaining = max(0, events_limit - events_used)
+            print(f"⚠  {pct}% of monthly limit used ({remaining} remaining). Upgrade: {upgrade_url}")
     print()
 
     connections = data.get("connections", [])

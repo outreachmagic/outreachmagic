@@ -1,8 +1,8 @@
-# Releasing OutreachMagic Skill
+# Releasing Outreach Magic Skill
 
 ## Two repos, one layout (read this first)
 
-OutreachMagic has a **private dev monorepo** and a **single public install repo**. Both use the same `skills/outreachmagic/` layout.
+Outreach Magic has a **private dev monorepo** and a **single public install repo**. Both use the same `skills/outreachmagic/` layout.
 
 | | Private monorepo | Public install repo |
 |---|------------------|---------------------|

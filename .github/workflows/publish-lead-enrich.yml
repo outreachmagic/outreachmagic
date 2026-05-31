@@ -59,7 +59,7 @@ jobs:
           TAG="${GITHUB_REF_NAME#lead-enrich-}"
           cd staging
           git init -b main
-          git config user.name "OutreachMagic Bot"
+          git config user.name "Outreach Magic Bot"
           git config user.email "bot@outreachmagic.io"
           git add -A
           git commit -m "Release ${TAG}"

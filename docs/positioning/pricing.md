@@ -23,6 +23,8 @@ Pro is capped at 50k relay events (not “unlimited”) — high enough that nor
 
 Only **relay-synced webhook events** from connected sequencers count toward the monthly limit.
 
+**What counts as a relay event:** any request that hits the Cloudflare relay — sequencer webhooks, agent sync (`push`), duplicate sync attempts, everything. When the limit is reached the relay returns **HTTP 429** and the event is **not stored** (no grace period).
+
 ## Third-party costs (not OM)
 
 | Service | Skill | User pays |

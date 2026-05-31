@@ -4,7 +4,7 @@ globs:
 alwaysApply: false
 ---
 
-# OutreachMagic — Pipeline Tracking
+# Outreach Magic — Pipeline Tracking
 
 All pipeline commands use: `python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py`
 

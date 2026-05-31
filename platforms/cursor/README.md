@@ -1,4 +1,4 @@
-# OutreachMagic for Cursor
+# Outreach Magic for Cursor
 
 The simplest pipeline tracker for AI agents. Auto-logs every outreach action to a local SQLite database. Connect Smartlead, Heyreach, Instantly, PlusVibe via paid relay.
 
@@ -58,10 +58,10 @@ Open any project in Cursor. In Agent chat, run `/outreachmagic` or ask:
 
 ## Pricing
 
-- **Free:** Unlimited agent-originated tracking, CLI pipeline view, 100 relay events/month
-- **Pro ($19/mo):** Unlimited relay events, multi-platform sequencer sync
+- **Free:** Unlimited agent-originated tracking, CLI pipeline view, 1 platform, 1,000 relay events/month
+- **Pro ($9/mo):** 50,000 relay events/month, all platform connections, multi-workspace routing
 
-Sign up at [outreachmagic.io](https://outreachmagic.io)
+Sign up at [outreachmagic.io](https://outreachmagic.io) · Upgrade at [app.outreachmagic.io](https://app.outreachmagic.io/dashboard/billing)
 
 ## License
 

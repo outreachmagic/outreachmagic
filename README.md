@@ -1,6 +1,6 @@
 # Outreach Magic — Development Monorepo
 
-> **Private repo.** Development source for OutreachMagic. The public install repo is [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic).
+> **Private repo.** Development source for Outreach Magic. The public install repo is [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic).
 
 ## Public Install Repo
 

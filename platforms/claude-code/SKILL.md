@@ -3,7 +3,7 @@ name: outreachmagic
 description: Track and manage the user's outbound sales pipeline. Auto-logs leads, events, and stages to a local SQLite database. Use whenever the user asks about their pipeline, leads, campaigns, sequencer activity (Smartlead, Heyreach, Instantly, PlusVibe), or wants to add/update/import leads, log outreach events, or update pipeline stages. ALWAYS run `pipeline.py pull` before showing data.
 ---
 
-# OutreachMagic
+# Outreach Magic
 
 All pipeline commands use: `python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py`
 

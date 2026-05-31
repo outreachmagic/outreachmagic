@@ -1,6 +1,6 @@
-<!-- OutreachMagic -->
+<!-- Outreach Magic -->
 <!-- Deprecated: append this block to CLAUDE.md only if you installed before SKILL.md auto-discovery. New installs use install.sh + SKILL.md; you can remove this block from CLAUDE.md after updating. -->
-## Outreach Pipeline (OutreachMagic)
+## Outreach Pipeline (Outreach Magic)
 
 All pipeline commands use: `python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py`
 
@@ -66,4 +66,4 @@ If not yet connected, get an Agent Key at https://app.outreachmagic.io/setup/age
 ```bash
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py login
 ```
-<!-- /OutreachMagic -->
+<!-- /Outreach Magic -->

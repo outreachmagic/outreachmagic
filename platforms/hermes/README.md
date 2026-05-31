@@ -1,4 +1,4 @@
-# OutreachMagic for Hermes
+# Outreach Magic for Hermes
 
 The simplest pipeline tracker for AI agents. Auto-logs every outreach action to a local SQLite database. Connect Smartlead, Heyreach, Instantly, PlusVibe via paid relay.
 

@@ -94,10 +94,8 @@ Development overrides (in `outreachmagic_config.json`, not environment variables
 Install through Hermes when possible — Hermes runs its own security scan on hub installs:
 
 ```bash
-git clone https://github.com/outreachmagic/hermes-outreachmagic.git /tmp/om-hermes
-mkdir -p ~/.hermes/skills/outreachmagic
-cp -r /tmp/om-hermes/{SKILL.md,scripts,references} ~/.hermes/skills/outreachmagic/
-rm -rf /tmp/om-hermes
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform hermes --migrate
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
 ```
 
@@ -124,4 +122,4 @@ Before submitting to HermesHub, we run their SkillScan locally:
 bash scripts/skill-scan.sh
 ```
 
-See [docs/SKILL_REGISTRY_PLAN.md](docs/SKILL_REGISTRY_PLAN.md) for the full security rollout checklist.
+See [docs/registry-publish.md](docs/registry-publish.md) for the registry submission checklist.

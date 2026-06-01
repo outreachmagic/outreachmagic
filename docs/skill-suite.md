@@ -18,7 +18,7 @@ flowchart LR
 
 | Skill | Role | Public repo | Release tag |
 |-------|------|-------------|-------------|
-| **outreachmagic** | Data layer — pipeline, relay, SQLite | `outreachmagic/hermes-outreachmagic` (+ cursor/claude) | `v*` |
+| **outreachmagic** | Data layer — pipeline, relay, SQLite | `outreachmagic/outreachmagic` | `v*` |
 | **lead-enrich** | Discovery — Serper, LinkedIn, domain | `outreachmagic/lead-enrich` | `lead-enrich-v*` |
 | **email-finder** | Email find (trykitt v1) | `outreachmagic/email-finder` | `email-finder-v*` |
 

@@ -33,7 +33,7 @@ Issue templates: `docs/hermeshub-reviewed-domains-*.md`
 
 | Skill | Monorepo tag | Public repo |
 |-------|--------------|-------------|
-| outreachmagic | `v1.20.x` | `outreachmagic/hermes-outreachmagic` |
+| outreachmagic | `v1.20.x` | `outreachmagic/outreachmagic` |
 | lead-enrich | `lead-enrich-v2.0.0` | `outreachmagic/lead-enrich` |
 | email-finder | `email-finder-v1.0.0` | `outreachmagic/email-finder` (create repo) |
 

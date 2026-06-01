@@ -45,7 +45,7 @@ docs/
 4. CI runs tests + SkillScan, builds tarball on private repo
 5. `publish-platforms.yml` pushes to [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) and creates a GitHub Release
 
-> **Full details:** See [docs/RELEASING.md](docs/RELEASING.md)
+> **Full details:** See [docs/RELEASING.md](docs/RELEASING.md) · [docs/README.md](docs/README.md) for all docs
 
 ## Local Development
 

@@ -51,4 +51,55 @@ Pricing aligned with [pricing.md](./pricing.md): **1,000 free relay events/mo**,
 3. Agensi / MCP directories (as bandwidth allows)  
 4. ClawHub last  
 
-Each listing: one link to [outreachmagic.io](https://outreachmagic.io) + setup URL above.
+Each listing: one link to [outreachmagic.io](https://outreachmagic.io) + setup URL [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent).
+
+---
+
+## Website hero
+
+**Headline:** Your AI Agent Has a Blind Spot. Fix It.
+
+**Subheadline:** Claude Code and Cursor can write brilliant cold outreach. But after they hit send, they go blind. Outreach Magic gives your AI agent a persistent memory of every lead, every reply, every bounce — across every sequencer you use.
+
+**CTA:** [Start Free] [See How It Works]
+
+**Social proof:** "From zero to full pipeline visibility in under 2 minutes. One command."
+
+---
+
+## Website feature blocks
+
+**Stop Stitching CSVs** — Before: export from Smartlead, Heyreach, Instantly, merge in Sheets. After: `pipeline.py pull` → done.
+
+**Local-First by Design** — SQLite on your machine. Push/pull relay to move between Claude Code, Cursor, Hermes.
+
+**Actually Free to Start** — Unlimited local tracking + 1,000 relay events/mo. Pro $9/mo for sequencer sync.
+
+**Built for AI Agents** — Structured CLI output. Every workflow assumes an LLM is on the other end.
+
+**Cross-Platform. One Pipeline.** — Push from one machine, pull on another.
+
+---
+
+## Short copy snippets (social / directories)
+
+**Ultra-short:** The data layer for AI SDRs. Sync Smartlead, Instantly, Heyreach into local SQLite.
+
+**Pain-point hook:** Tired of exporting CSVs from Smartlead and Heyreach just to answer "did we get any replies?"
+
+**Differentiation:** Every GTM skill tells your agent what to write. This one tells your agent what's happening.
+
+---
+
+## FAQ (website / pricing page)
+
+**What counts as an event?** Relay-synced webhook events from connected sequencers. Local commands (`add-lead`, `show`, `stats`, dedup checks) are free and unlimited.
+
+**What happens if I exceed my limit?** Free: friendly upgrade prompt; relay returns HTTP 429 when hard limit hit. Pro: 50k cap — we reach out personally if you're approaching it.
+
+**Can I switch platforms?** `pipeline.py sync` on machine A, `pipeline.py pull --full` on machine B.
+
+**Is it really free?** Yes for local tracking and 1,000 relay events/mo. Pro ($9/mo) unlocks full sequencer sync.
+
+**Install:** [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — `install.sh --platform hermes|cursor|claude`
+

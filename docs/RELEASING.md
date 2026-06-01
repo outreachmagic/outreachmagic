@@ -261,6 +261,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 | `enrich.py update` manifest error | Stale lead-enrich manifest | `python3 scripts/generate-lead-enrich-manifest.py` before `lead-enrich-v*` tag |
 | CI publish fails | `PUBLISH_TOKEN` missing/expired | Rotate secret; re-run workflow |
 | User on old version forever | Never got one successful platform update | See 404 row; ship fix + doc; verify with post-release checklist above |
+| `platforms/common/install-companions.sh not found` on `curl \| bash` | Installer before v1.21.4 (piped script had no sibling files) | Use `main` or tag **v1.21.4+**; installer clones the public repo and re-execs |
 
 ### Bootstrap one stuck Hermes install (last resort)
 

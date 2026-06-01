@@ -19,14 +19,78 @@ LE_TAG=""
 EF_TAG=""
 PROFILES=()
 
-_here="$(cd "$(dirname "$0")" && pwd)"
-if [[ -f "$_here/platforms/common/install-companions.sh" ]]; then
-  # shellcheck source=platforms/common/install-companions.sh
-  source "$_here/platforms/common/install-companions.sh"
-else
-  echo "error: platforms/common/install-companions.sh not found" >&2
-  exit 1
-fi
+_install_root() {
+  local src="${BASH_SOURCE[0]:-$0}"
+  case "$src" in
+    ""|bash|/bin/bash|/bin/sh|dash|-)
+      return 1
+      ;;
+  esac
+  [[ -f "$src" ]] || return 1
+  cd "$(dirname "$src")" && pwd
+}
+
+# curl … | bash has no on-disk script dir; clone the public repo and re-exec.
+_bootstrap_repo_tag_from_args() {
+  local tag="" arg
+  for arg in "$@"; do
+    case "$arg" in
+      --local)
+        echo "error: --local requires a full repo checkout (platforms/common/install-companions.sh missing)" >&2
+        return 2
+        ;;
+    esac
+  done
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tag)
+        if [[ $# -lt 2 ]]; then
+          echo "error: --tag requires a value" >&2
+          return 2
+        fi
+        tag="$2"
+        shift 2
+        ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s' "$tag"
+}
+
+_bootstrap_install_if_needed() {
+  local root=""
+  root="$(_install_root 2>/dev/null || true)"
+  if [[ -n "$root" && -f "$root/platforms/common/install-companions.sh" ]]; then
+    _here="$root"
+    return 0
+  fi
+
+  local tag=""
+  if ! tag="$(_bootstrap_repo_tag_from_args "$@")"; then
+    exit 1
+  fi
+
+  local tmp
+  tmp="$(mktemp -d -t om-install-bootstrap-XXXXXX)"
+  echo "→ Fetching installer bundle from $OM_REPO${tag:+ @ $tag}"
+  if [[ -n "$tag" ]]; then
+    git clone --depth 1 --branch "$tag" "$OM_REPO" "$tmp"
+  else
+    git clone --depth 1 "$OM_REPO" "$tmp"
+  fi
+  if [[ ! -f "$tmp/platforms/common/install-companions.sh" ]]; then
+    echo "error: cloned repo missing platforms/common/install-companions.sh" >&2
+    rm -rf "$tmp"
+    exit 1
+  fi
+  exec bash "$tmp/install.sh" "$@"
+}
+
+_here=""
+_bootstrap_install_if_needed "$@"
+
+# shellcheck source=platforms/common/install-companions.sh
+source "$_here/platforms/common/install-companions.sh"
 
 usage() {
   cat <<'EOF'

@@ -4,6 +4,8 @@ One-time legacy import: Popcam May 2026 export (388 leads).
 
 Imports profiles via import-profiles, then materializes activity summary fields
 (last_contacted, email/linkedin sent counts, replies) for cross-platform sync.
+Activity uses merge=True: latest last_contacted_at and max counts vs existing
+workspace summary (never rolls back newer platform data).
 
 Usage:
   python3 scripts/legacy_import_may2026.py \\
@@ -89,7 +91,7 @@ def apply_activity_for_row(
         email_sent_count=email_sent,
         linkedin_sent_count=linkedin_sent,
         total_replies_count=total_replies,
-        merge=False,
+        merge=True,
         mark_cloud_pending=True,
     )
     return {"status": "updated", "email": email, "lead_id": lead_id, "activity": summary}
@@ -165,10 +167,12 @@ def main() -> int:
         elif result.get("status") == "skipped":
             skipped += 1
 
-    if not args.dry_run and not args.skip_profiles:
+    if not args.dry_run:
         ver_batch = []
         for row in rows:
             email = _strip(row, "email").lower()
+            if not email:
+                continue
             status = _strip(row, "email_verify_result") or "valid"
             lead = om.find_lead(email=email)
             if lead:

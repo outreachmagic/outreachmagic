@@ -87,25 +87,6 @@ def normalize_email(email: Optional[str]) -> Optional[str]:
     return str(email).strip().lower()
 
 
-def normalize_linkedin(url: Optional[str]) -> Optional[str]:
-    """Public profile slug only: linkedin.com/in/handle (no scheme/www)."""
-    raw = (url or "").strip()
-    if not raw:
-        return None
-    norm = raw.lower()
-    for prefix in ("https://", "http://"):
-        if norm.startswith(prefix):
-            norm = norm[len(prefix):]
-    if norm.startswith("www."):
-        norm = norm[4:]
-    match = re.match(r"(linkedin\.com/in/[^/?#]+)", norm)
-    if match:
-        return match.group(1)
-    if re.match(r"^[a-z0-9][a-z0-9\-_%]*$", norm):
-        return f"linkedin.com/in/{norm}"
-    return norm.rstrip("/") or None
-
-
 def normalize_linkedin_sales_nav_id(value: str) -> Optional[str]:
     raw = (value or "").strip()
     if not raw:
@@ -131,6 +112,27 @@ def normalize_linkedin_member_id(value: str) -> Optional[str]:
     return None
 
 
+def normalize_linkedin(url: Optional[str]) -> Optional[str]:
+    """Public profile slug only: linkedin.com/in/handle (no scheme/www)."""
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    if normalize_linkedin_sales_nav_id(raw):
+        return None
+    norm = raw.lower()
+    for prefix in ("https://", "http://"):
+        if norm.startswith(prefix):
+            norm = norm[len(prefix):]
+    if norm.startswith("www."):
+        norm = norm[4:]
+    match = re.match(r"(linkedin\.com/in/[^/?#]+)", norm)
+    if match:
+        return match.group(1)
+    if re.match(r"^[a-z0-9][a-z0-9\-_%]*$", norm):
+        return f"linkedin.com/in/{norm}"
+    return norm.rstrip("/") or None
+
+
 def parse_linkedin_value(raw: str) -> list[tuple[str, str]]:
     """Classify one string into 0..n (identity_type, normalized_value) pairs."""
     text = (raw or "").strip()
@@ -151,11 +153,14 @@ def parse_linkedin_value(raw: str) -> list[tuple[str, str]]:
 
     if "urn:li:member:" in lower:
         add("linkedin_member_id", normalize_linkedin_member_id(text))
+    sales_nav = None
     if "fs_salesprofile" in lower or text.startswith("ACwAA"):
-        add("linkedin_sales_nav_id", normalize_linkedin_sales_nav_id(text))
+        sales_nav = normalize_linkedin_sales_nav_id(text)
+        add("linkedin_sales_nav_id", sales_nav)
     public = normalize_linkedin(text)
     if public and "linkedin.com/in/" in public:
-        add("linkedin_url", public)
+        if not sales_nav or "linkedin.com/in/" in lower:
+            add("linkedin_url", public)
 
     order = {t: i for i, t in enumerate(IDENTITY_PRECEDENCE)}
     out.sort(key=lambda x: order.get(x[0], 99))

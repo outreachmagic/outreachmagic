@@ -6,6 +6,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 # Tests use an isolated temp data root; never pull live routing from env agent keys.
 os.environ.pop("OUTREACHMAGIC_AGENT_KEY", None)
 
@@ -41,6 +43,16 @@ from workspace_routing import (  # noqa: E402
 )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_db():
+    """Isolate each test: other modules share the global data-root override."""
+    db_path = om.get_db_path()
+    if db_path.exists():
+        db_path.unlink()
+    om.init_db()
+    yield
+
+
 def test_normalization():
     assert normalize_email("  Jane@Example.COM ") == "jane@example.com"
     assert normalize_linkedin("https://www.linkedin.com/in/jane/") == "linkedin.com/in/jane"
@@ -56,6 +68,7 @@ def test_parse_linkedin_value():
     assert parsed.get("linkedin_sales_nav_id") == sales
     parsed = dict(parse_linkedin_value(sales))
     assert parsed.get("linkedin_sales_nav_id") == sales
+    assert "linkedin_url" not in parsed
     parsed = dict(parse_linkedin_value("https://www.linkedin.com/in/jane/"))
     assert parsed.get("linkedin_url") == "linkedin.com/in/jane"
 

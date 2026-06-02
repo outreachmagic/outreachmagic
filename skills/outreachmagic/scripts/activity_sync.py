@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from dataclasses import dataclass, fields
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from db_conn import get_conn
@@ -98,7 +98,10 @@ def _parse_activity_ts(raw: Optional[str]) -> Optional[datetime]:
     if " " in normalized and "T" not in normalized:
         normalized = normalized.replace(" ", "T", 1)
     try:
-        return datetime.fromisoformat(normalized)
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except ValueError:
         return None
 

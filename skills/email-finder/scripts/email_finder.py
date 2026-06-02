@@ -9,12 +9,16 @@ Usage:
     email_finder.py config
     email_finder.py check "Jane Doe" "Acme Corp"
     email_finder.py find --name "Jane Doe" --domain acme.com [--linkedin URL] [--save] [--workspace W]
-    email_finder.py batch-find input.json [--delay 8] [--workspace W]
+    email_finder.py batch-find input.json [--delay 8] [--workspace W] [--no-save] [--output-csv PATH]
+    email_finder.py parallel-find input.json [--workers 3] [--delay 3] [--output-csv PATH]
+    email_finder.py prepare-import --csv PATH [--workspace W] [--output PATH]
+    email_finder.py import-to-om --file PATH [--workspace W]
     email_finder.py update [--check] [--tag v1.0.0]
 """
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import re
@@ -23,6 +27,7 @@ import time
 import hashlib
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Optional
 
@@ -237,15 +242,61 @@ def trykitt_find(
     return out
 
 
-def _verify_status_from_validity(validity: str) -> Optional[str]:
+
+def _validity_note_text(validity: str, *, found: bool) -> str:
+    if not found:
+        return "trykitt: no email found"
     v = (validity or "").lower()
     if v == "valid":
-        return "valid"
+        return "trykitt verify: valid"
     if v in ("valid-risky", "risky"):
-        return "risky"
+        return "trykitt verify: catch_all"
     if v:
-        return "unknown"
-    return None
+        return f"trykitt verify: {v}"
+    return "trykitt verify: unknown"
+
+
+def build_import_profile(
+    *,
+    full_name: str,
+    company: str,
+    domain: str,
+    linkedin: str,
+    find_result: dict[str, Any],
+) -> dict[str, Any]:
+    email = find_result.get("email")
+    profile: dict[str, Any] = {
+        "name": full_name,
+        "company": company or domain,
+        "company_domain": domain,
+        "tags": ["trykitt_attempted"],
+    }
+    if linkedin:
+        profile["linkedin"] = _normalize_linkedin(linkedin)
+    if email:
+        profile["email"] = email
+        profile["tags"] = ["trykitt_attempted", "email_found"]
+    profile["notes"] = _validity_note_text(str(find_result.get("validity") or ""), found=bool(email))
+    return profile
+
+
+def batch_import_results(
+    om_dir: Path,
+    profiles: list[dict[str, Any]],
+    *,
+    workspace: str = "",
+    source_detail: str = "email-finder/batch",
+) -> dict[str, Any]:
+    if not profiles:
+        return {"imported": 0, "profiles": []}
+    imported = cc.run_import_profiles(
+        om_dir,
+        profiles,
+        workspace=workspace,
+        source_detail=source_detail,
+        skill_dir=_find_skill_dir(),
+    )
+    return {"imported": len(profiles), "import": imported}
 
 
 def save_find_result(
@@ -261,37 +312,21 @@ def save_find_result(
     email = find_result.get("email")
     if not email:
         return {"saved": False, "reason": "no email to save"}
-    profile: dict[str, Any] = {
-        "name": full_name,
-        "company": company or domain,
-        "email": email,
-        "company_domain": domain,
-        "tags": ["trykitt_attempted"],
-    }
-    if linkedin:
-        profile["linkedin"] = _normalize_linkedin(linkedin)
-    imported = cc.run_import_profiles(
-        om_dir,
-        [profile],
-        workspace=workspace,
-        source_detail="email-finder/trykitt",
-        skill_dir=_find_skill_dir(),
+    profile = build_import_profile(
+        full_name=full_name,
+        company=company,
+        domain=domain,
+        linkedin=linkedin,
+        find_result=find_result,
     )
-    lead_id = find_result.get("lead_id") or imported.get("lead_id")
-    if not lead_id and isinstance(imported.get("results"), list) and imported["results"]:
-        lead_id = imported["results"][0].get("lead_id")
-    verify_status = _verify_status_from_validity(str(find_result.get("validity") or ""))
-    verify_out: dict[str, Any] = {}
-    if lead_id and verify_status:
-        verify_out = cc.run_verify_email(
-            om_dir,
-            int(lead_id),
-            verify_status,
-            "trykitt",
-            source_detail=find_result.get("validity"),
-            skill_dir=_find_skill_dir(),
-        )
-    return {"saved": True, "import": imported, "verify": verify_out, "lead_id": lead_id}
+    imported = batch_import_results(
+        om_dir, [profile], workspace=workspace, source_detail="email-finder/trykitt",
+    )
+    lead_id = None
+    imp = imported.get("import") or {}
+    if isinstance(imp.get("results"), list) and imp["results"]:
+        lead_id = imp["results"][0].get("lead_id") or imp["results"][0].get("id")
+    return {"saved": True, "import": imp, "lead_id": lead_id}
 
 
 def tag_trykitt_attempted(
@@ -304,23 +339,20 @@ def tag_trykitt_attempted(
     workspace: str = "",
 ) -> dict[str, Any]:
     """Record a trykitt attempt on miss so batch re-runs do not repeat."""
-    profile: dict[str, Any] = {
-        "name": full_name,
-        "company": company or domain,
-        "company_domain": domain,
-        "tags": ["trykitt_attempted"],
-    }
-    li = _normalize_linkedin(linkedin)
-    if li:
-        profile["linkedin"] = li
-    imported = cc.run_import_profiles(
+    profile = build_import_profile(
+        full_name=full_name,
+        company=company,
+        domain=domain,
+        linkedin=linkedin,
+        find_result={},
+    )
+    imported = batch_import_results(
         om_dir,
         [profile],
         workspace=workspace,
         source_detail="email-finder/trykitt-miss",
-        skill_dir=_find_skill_dir(),
     )
-    out: dict[str, Any] = {"tagged": True, "import": imported}
+    out: dict[str, Any] = {"tagged": True, "import": imported.get("import", {})}
     if not workspace:
         out["warning"] = (
             "tags require --workspace on import-profiles; "
@@ -378,61 +410,263 @@ def cmd_find(
     print(json.dumps(result, indent=2))
 
 
-def cmd_batch_find(path: str, workspace: str = "", delay: float = 8.0) -> None:
-    cfg = load_config()
-    om_dir = find_outreachmagic(cfg)
+def _load_people_json(path: str) -> list[dict[str, Any]]:
     raw = Path(path).read_text(encoding="utf-8")
     people = json.loads(raw)
     if isinstance(people, dict):
         people = people.get("people") or people.get("rows") or []
     if not isinstance(people, list):
-        print(json.dumps({"error": "input must be a JSON array or {people: [...]}"}))
+        raise ValueError("input must be a JSON array or {people: [...]}")
+    return [r for r in people if isinstance(r, dict)]
+
+
+def _row_fields(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    name = (row.get("full_name") or row.get("name") or "").strip()
+    domain = (row.get("company_domain") or row.get("domain") or "").strip()
+    company = (row.get("company_name") or row.get("company") or "").strip()
+    linkedin = (row.get("linkedin_url") or row.get("linkedin") or "").strip()
+    return name, domain, company, linkedin
+
+
+CSV_COLUMNS = (
+    "name", "company", "title", "company_domain", "linkedin",
+    "found_email", "validity", "validSMTP", "job_id", "status", "error",
+)
+
+
+def _result_to_csv_row(
+    name: str,
+    company: str,
+    domain: str,
+    linkedin: str,
+    result: dict[str, Any],
+    row: dict[str, Any],
+) -> dict[str, str]:
+    return {
+        "name": name,
+        "company": company,
+        "title": (row.get("title") or row.get("job_title") or "").strip(),
+        "company_domain": domain,
+        "linkedin": linkedin,
+        "found_email": str(result.get("email") or ""),
+        "validity": str(result.get("validity") or ""),
+        "validSMTP": str(result.get("validSMTP") or ""),
+        "job_id": str(result.get("jobId") or ""),
+        "status": str(result.get("status") or ""),
+        "error": str(result.get("error") or ""),
+    }
+
+
+def write_results_csv(path: str, rows: list[dict[str, str]]) -> None:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _process_one_lead(
+    cfg: dict[str, Any],
+    om_dir: Optional[Path],
+    row: dict[str, Any],
+    *,
+    workspace: str,
+) -> dict[str, Any]:
+    name, domain, company, linkedin = _row_fields(row)
+    if not name or not domain:
+        return {"status": "skipped", "reason": "missing name or domain", "row": row}
+    if om_dir:
+        existing = check_existing_email(om_dir, name, company or domain, linkedin, workspace=workspace)
+        if existing.get("email"):
+            return {"status": "skipped", "reason": "has_email", "existing": existing}
+    return trykitt_find(cfg, full_name=name, domain=domain, linkedin=linkedin)
+
+
+def _collect_import_profiles(
+    results: list[dict[str, Any]],
+    people_meta: list[tuple[str, str, str, str]],
+) -> list[dict[str, Any]]:
+    profiles: list[dict[str, Any]] = []
+    for (name, domain, company, linkedin), result in zip(people_meta, results):
+        if result.get("status") == "skipped":
+            continue
+        if not _should_tag_trykitt_attempt(result) and not result.get("email"):
+            continue
+        profiles.append(
+            build_import_profile(
+                full_name=name,
+                company=company or domain,
+                domain=domain,
+                linkedin=linkedin,
+                find_result=result,
+            )
+        )
+    return profiles
+
+
+def cmd_batch_find(
+    path: str,
+    workspace: str = "",
+    delay: float = 8.0,
+    *,
+    no_save: bool = False,
+    output_csv: str = "",
+) -> None:
+    cfg = load_config()
+    om_dir = find_outreachmagic(cfg)
+    try:
+        people = _load_people_json(path)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}))
         sys.exit(1)
     max_n = int(cfg.get("max_people_per_run", 50))
     if len(people) > max_n:
         print(json.dumps({"error": f"max {max_n} people per run"}))
         sys.exit(1)
     results: list[dict[str, Any]] = []
+    csv_rows: list[dict[str, str]] = []
+    import_meta: list[tuple[str, str, str, str]] = []
     for i, row in enumerate(people):
-        if not isinstance(row, dict):
-            continue
-        name = (row.get("full_name") or row.get("name") or "").strip()
-        domain = (row.get("company_domain") or row.get("domain") or "").strip()
-        company = (row.get("company_name") or row.get("company") or "").strip()
-        linkedin = (row.get("linkedin_url") or row.get("linkedin") or "").strip()
-        if not name or not domain:
-            results.append({"status": "skipped", "reason": "missing name or domain", "row": row})
-            continue
-        if om_dir:
-            existing = check_existing_email(om_dir, name, company or domain, linkedin, workspace=workspace)
-            if existing.get("email"):
-                results.append({"status": "skipped", "reason": "has_email", "existing": existing})
-                continue
-        find_result = trykitt_find(cfg, full_name=name, domain=domain, linkedin=linkedin)
-        if om_dir:
-            if find_result.get("email"):
-                find_result["save"] = save_find_result(
-                    om_dir,
-                    full_name=name,
-                    company=company or domain,
-                    domain=domain,
-                    linkedin=linkedin,
-                    find_result=find_result,
-                    workspace=workspace,
-                )
-            elif _should_tag_trykitt_attempt(find_result):
-                find_result["tag_attempt"] = tag_trykitt_attempted(
-                    om_dir,
-                    full_name=name,
-                    company=company or domain,
-                    domain=domain,
-                    linkedin=linkedin,
-                    workspace=workspace,
-                )
-        results.append(find_result)
+        name, domain, company, linkedin = _row_fields(row)
+        result = _process_one_lead(cfg, om_dir, row, workspace=workspace)
+        results.append(result)
+        import_meta.append((name, domain, company, linkedin))
+        if output_csv and name and domain:
+            csv_rows.append(_result_to_csv_row(name, company, domain, linkedin, result, row))
         if i + 1 < len(people) and delay > 0:
             time.sleep(delay)
-    print(json.dumps({"count": len(results), "results": results}, indent=2))
+    save_out: dict[str, Any] = {}
+    if om_dir and not no_save:
+        profiles = _collect_import_profiles(results, import_meta)
+        if profiles:
+            save_out = batch_import_results(
+                om_dir, profiles, workspace=workspace, source_detail="email-finder/batch",
+            )
+    if output_csv:
+        write_results_csv(output_csv, csv_rows)
+    out = {"count": len(results), "results": results}
+    if save_out:
+        out["batch_save"] = save_out
+    if output_csv:
+        out["csv"] = output_csv
+    print(json.dumps(out, indent=2))
+
+
+def cmd_parallel_find(
+    path: str,
+    workspace: str = "",
+    workers: int = 3,
+    delay: float = 3.0,
+    *,
+    output_csv: str = "",
+    no_save: bool = False,
+) -> None:
+    cfg = load_config()
+    om_dir = find_outreachmagic(cfg)
+    try:
+        people = _load_people_json(path)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}))
+        sys.exit(1)
+    workers = max(1, min(workers, 10))
+    results: list[Optional[dict[str, Any]]] = [None] * len(people)
+    csv_rows: list[dict[str, str]] = []
+    import_meta: list[tuple[str, str, str, str]] = []
+
+    def _task(idx: int, row: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        if delay > 0:
+            time.sleep(delay * (idx % workers))
+        return idx, _process_one_lead(cfg, om_dir, row, workspace=workspace)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_task, i, row) for i, row in enumerate(people)]
+        for fut in as_completed(futures):
+            idx, result = fut.result()
+            results[idx] = result
+
+    ordered = [r if r is not None else {"status": "error", "error": "missing result"} for r in results]
+    for row, result in zip(people, ordered):
+        name, domain, company, linkedin = _row_fields(row)
+        import_meta.append((name, domain, company, linkedin))
+        if output_csv and name and domain:
+            csv_rows.append(_result_to_csv_row(name, company, domain, linkedin, result, row))
+
+    save_out: dict[str, Any] = {}
+    if om_dir and not no_save:
+        profiles = _collect_import_profiles(ordered, import_meta)
+        if profiles:
+            save_out = batch_import_results(
+                om_dir, profiles, workspace=workspace, source_detail="email-finder/parallel",
+            )
+    if output_csv:
+        write_results_csv(output_csv, csv_rows)
+    out = {"count": len(ordered), "workers": workers, "results": ordered}
+    if save_out:
+        out["batch_save"] = save_out
+    if output_csv:
+        out["csv"] = output_csv
+    print(json.dumps(out, indent=2))
+
+
+def cmd_prepare_import(csv_path: str, workspace: str = "", output_path: str = "") -> None:
+    path = Path(csv_path)
+    if not path.is_file():
+        print(json.dumps({"error": f"File not found: {csv_path}"}))
+        sys.exit(1)
+    profiles: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            name = (row.get("name") or "").strip()
+            domain = (row.get("company_domain") or row.get("domain") or "").strip()
+            company = (row.get("company") or domain).strip()
+            linkedin = (row.get("linkedin") or row.get("linkedin_url") or "").strip()
+            email = (row.get("found_email") or row.get("email") or "").strip()
+            validity = (row.get("validity") or "").strip()
+            find_result: dict[str, Any] = {"validity": validity}
+            if email:
+                find_result["email"] = email
+            if not name or not domain:
+                continue
+            profile = build_import_profile(
+                full_name=name,
+                company=company,
+                domain=domain,
+                linkedin=linkedin,
+                find_result=find_result,
+            )
+            if workspace:
+                profile["workspace"] = workspace
+            profiles.append(profile)
+    payload = {"profiles": profiles, "workspace": workspace or None}
+    if output_path:
+        Path(output_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(json.dumps({"status": "ok", "count": len(profiles), "output": output_path}))
+    else:
+        print(json.dumps(payload, indent=2))
+
+
+def cmd_import_to_om(file_path: str, workspace: str = "") -> None:
+    cfg = load_config()
+    om_dir = find_outreachmagic(cfg)
+    if not om_dir:
+        print(json.dumps({"error": "outreachmagic not found — install outreachmagic first"}))
+        sys.exit(1)
+    raw = Path(file_path).read_text(encoding="utf-8")
+    data = json.loads(raw)
+    profiles = data.get("profiles") if isinstance(data, dict) else data
+    if not isinstance(profiles, list):
+        print(json.dumps({"error": "JSON must be {profiles: [...]} or an array"}))
+        sys.exit(1)
+    ws = workspace or (data.get("workspace") if isinstance(data, dict) else "") or ""
+    result = batch_import_results(
+        om_dir,
+        profiles,
+        workspace=ws,
+        source_detail="email-finder/import-to-om",
+    )
+    print(json.dumps({"status": "ok", **result}, indent=2))
 
 
 def _sha256_hex(data: bytes) -> str:
@@ -582,11 +816,13 @@ def main() -> None:
         cmd_find(name, domain, linkedin, workspace, save, company)
     elif cmd == "batch-find":
         if len(sys.argv) < 3:
-            print("Usage: email_finder.py batch-find [--delay 8] [--workspace W] input.json")
+            print("Usage: email_finder.py batch-find [--delay 8] [--workspace W] [--no-save] [--output-csv PATH] input.json")
             sys.exit(1)
         delay = 8.0
         workspace = ""
         path = ""
+        no_save = False
+        output_csv = ""
         args = sys.argv[2:]
         i = 0
         while i < len(args):
@@ -602,13 +838,127 @@ def main() -> None:
             elif args[i].startswith("--workspace="):
                 workspace = args[i].split("=", 1)[1]
                 i += 1
+            elif args[i] == "--no-save":
+                no_save = True
+                i += 1
+            elif args[i] == "--output-csv" and i + 1 < len(args):
+                output_csv = args[i + 1]
+                i += 2
+            elif args[i].startswith("--output-csv="):
+                output_csv = args[i].split("=", 1)[1]
+                i += 1
             else:
                 path = args[i]
                 i += 1
         if not path:
             print("Usage: email_finder.py batch-find input.json")
             sys.exit(1)
-        cmd_batch_find(path, workspace, delay)
+        cmd_batch_find(path, workspace, delay, no_save=no_save, output_csv=output_csv)
+    elif cmd == "parallel-find":
+        if len(sys.argv) < 3:
+            print("Usage: email_finder.py parallel-find [--workers 3] [--delay 3] [--workspace W] [--output-csv PATH] input.json")
+            sys.exit(1)
+        delay = 3.0
+        workers = 3
+        workspace = ""
+        path = ""
+        no_save = False
+        output_csv = ""
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--workers" and i + 1 < len(args):
+                workers = int(args[i + 1])
+                i += 2
+            elif args[i].startswith("--workers="):
+                workers = int(args[i].split("=", 1)[1])
+                i += 1
+            elif args[i] == "--delay" and i + 1 < len(args):
+                delay = float(args[i + 1])
+                i += 2
+            elif args[i].startswith("--delay="):
+                delay = float(args[i].split("=", 1)[1])
+                i += 1
+            elif args[i] == "--workspace" and i + 1 < len(args):
+                workspace = args[i + 1]
+                i += 2
+            elif args[i].startswith("--workspace="):
+                workspace = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--no-save":
+                no_save = True
+                i += 1
+            elif args[i] == "--output-csv" and i + 1 < len(args):
+                output_csv = args[i + 1]
+                i += 2
+            elif args[i].startswith("--output-csv="):
+                output_csv = args[i].split("=", 1)[1]
+                i += 1
+            else:
+                path = args[i]
+                i += 1
+        if not path:
+            print("Usage: email_finder.py parallel-find input.json")
+            sys.exit(1)
+        cmd_parallel_find(path, workspace, workers, delay, output_csv=output_csv, no_save=no_save)
+    elif cmd == "prepare-import":
+        csv_path = ""
+        workspace = ""
+        output_path = ""
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--csv" and i + 1 < len(args):
+                csv_path = args[i + 1]
+                i += 2
+            elif args[i].startswith("--csv="):
+                csv_path = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--workspace" and i + 1 < len(args):
+                workspace = args[i + 1]
+                i += 2
+            elif args[i].startswith("--workspace="):
+                workspace = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--output" and i + 1 < len(args):
+                output_path = args[i + 1]
+                i += 2
+            elif args[i].startswith("--output="):
+                output_path = args[i].split("=", 1)[1]
+                i += 1
+            else:
+                i += 1
+        if not csv_path:
+            print("Usage: email_finder.py prepare-import --csv PATH [--workspace W] [--output PATH]")
+            sys.exit(1)
+        cmd_prepare_import(csv_path, workspace, output_path)
+    elif cmd == "import-to-om":
+        file_path = ""
+        workspace = ""
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--file" and i + 1 < len(args):
+                file_path = args[i + 1]
+                i += 2
+            elif args[i].startswith("--file="):
+                file_path = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--workspace" and i + 1 < len(args):
+                workspace = args[i + 1]
+                i += 2
+            elif args[i].startswith("--workspace="):
+                workspace = args[i].split("=", 1)[1]
+                i += 1
+            elif not file_path and not args[i].startswith("-"):
+                file_path = args[i]
+                i += 1
+            else:
+                i += 1
+        if not file_path:
+            print("Usage: email_finder.py import-to-om --file PATH [--workspace W]")
+            sys.exit(1)
+        cmd_import_to_om(file_path, workspace)
     elif cmd == "update":
         check_only = "--check" in sys.argv
         tag = ""

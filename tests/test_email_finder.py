@@ -18,15 +18,39 @@ assert spec.loader is not None
 spec.loader.exec_module(lemail)
 
 
-class TestVerifyStatus(unittest.TestCase):
+class TestValidityNotes(unittest.TestCase):
     def test_valid(self):
-        self.assertEqual(lemail._verify_status_from_validity("valid"), "valid")
+        self.assertEqual(lemail._validity_note_text("valid", found=True), "trykitt verify: valid")
 
-    def test_risky(self):
-        self.assertEqual(lemail._verify_status_from_validity("valid-risky"), "risky")
+    def test_catch_all(self):
+        self.assertEqual(lemail._validity_note_text("valid-risky", found=True), "trykitt verify: catch_all")
 
-    def test_empty(self):
-        self.assertIsNone(lemail._verify_status_from_validity(""))
+    def test_not_found(self):
+        self.assertEqual(lemail._validity_note_text("", found=False), "trykitt: no email found")
+
+
+class TestBuildImportProfile(unittest.TestCase):
+    def test_found_tags(self):
+        profile = lemail.build_import_profile(
+            full_name="Jane",
+            company="Acme",
+            domain="acme.com",
+            linkedin="",
+            find_result={"email": "j@acme.com", "validity": "valid"},
+        )
+        self.assertEqual(profile["tags"], ["trykitt_attempted", "email_found"])
+        self.assertEqual(profile["notes"], "trykitt verify: valid")
+
+    def test_miss_tags(self):
+        profile = lemail.build_import_profile(
+            full_name="Jane",
+            company="Acme",
+            domain="acme.com",
+            linkedin="",
+            find_result={},
+        )
+        self.assertEqual(profile["tags"], ["trykitt_attempted"])
+        self.assertNotIn("email", profile)
 
 
 class TestNormalizeLinkedin(unittest.TestCase):
@@ -42,6 +66,7 @@ class TestNormalizeLinkedin(unittest.TestCase):
 class TestTrykittFind(unittest.TestCase):
     @patch.dict("os.environ", {"TRYKITT_API_KEY": "testkey1234567890123456789012"})
     def test_no_key_in_config_still_works(self):
+        lemail.cc._AGENT_ENV_LOADED = False
         cfg = lemail.load_config()
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
@@ -60,11 +85,38 @@ class TestTrykittFind(unittest.TestCase):
 
     def test_missing_key(self):
         with patch.dict("os.environ", {}, clear=True):
-            import companion_common as cc
-            cc._AGENT_ENV_LOADED = False
+            lemail.cc._AGENT_ENV_LOADED = False
             cfg = lemail.load_config()
         result = lemail.trykitt_find(cfg, full_name="Jane", domain="acme.com")
         self.assertEqual(result["status"], "no_key")
+
+
+class TestBatchCollectThenSave(unittest.TestCase):
+    @patch.object(lemail, "trykitt_find")
+    @patch.object(lemail, "check_existing_email")
+    @patch.object(lemail.cc, "run_import_profiles")
+    def test_single_import_at_end(self, mock_import, mock_check, mock_find):
+        mock_check.return_value = {"email": None}
+        mock_find.side_effect = [
+            {"status": "found", "email": "a@acme.com", "validity": "valid"},
+            {"status": "not_found"},
+        ]
+        mock_import.return_value = {"matched": 2}
+        om = Path("/tmp/om")
+        with patch.object(lemail, "find_outreachmagic", return_value=om), patch.object(
+            lemail, "load_config", return_value={"max_people_per_run": 50}
+        ):
+            tmp = Path("/tmp/test_batch.json")
+            tmp.write_text(json.dumps([
+                {"name": "A", "domain": "acme.com"},
+                {"name": "B", "domain": "acme.com"},
+            ]))
+            with patch("sys.stdout") as mock_stdout:
+                lemail.cmd_batch_find(str(tmp), "ws1", delay=0)
+        mock_import.assert_called_once()
+        profiles = mock_import.call_args[0][1]
+        self.assertEqual(len(profiles), 2)
+        self.assertEqual(profiles[0]["tags"], ["trykitt_attempted", "email_found"])
 
 
 class TestTagOnMiss(unittest.TestCase):

@@ -62,6 +62,11 @@ def load_dotenv_file(path: Path) -> None:
             os.environ[key] = value
 
 
+def active_profile() -> Optional[str]:
+    """Hermes profile slug from HERMES_PROFILE env (per-profile .env overrides)."""
+    return (os.environ.get("HERMES_PROFILE") or "").strip() or None
+
+
 def ensure_agent_env_loaded(skill_dir: Optional[Path] = None) -> None:
     global _AGENT_ENV_LOADED
     if _AGENT_ENV_LOADED:
@@ -69,6 +74,9 @@ def ensure_agent_env_loaded(skill_dir: Optional[Path] = None) -> None:
     home = agent_home()
     for name in (".env", "default.env"):
         load_dotenv_file(home / name)
+    profile = active_profile()
+    if profile:
+        load_dotenv_file(home / "profiles" / profile / ".env")
     if skill_dir:
         load_dotenv_file(skill_dir / "default.env")
     _AGENT_ENV_LOADED = True
@@ -178,42 +186,6 @@ def run_import_profiles(
         cmd.extend(["--workspace", workspace])
     if overwrite:
         cmd.append("--overwrite")
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=subprocess_env(skill_dir),
-    )
-    if proc.returncode != 0:
-        err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
-        raise RuntimeError(err)
-    return json.loads(proc.stdout) if proc.stdout.strip() else {}
-
-
-def run_verify_email(
-    om_dir: Path,
-    lead_id: int,
-    status: str,
-    source: str,
-    *,
-    source_detail: Optional[str] = None,
-    skill_dir: Optional[Path] = None,
-    timeout: int = 30,
-) -> dict[str, Any]:
-    cmd = [
-        sys.executable,
-        str(get_pipeline_path(om_dir)),
-        "verify-email",
-        "--lead-id",
-        str(lead_id),
-        "--status",
-        status,
-        "--source",
-        source,
-    ]
-    if source_detail:
-        cmd.extend(["--source-detail", source_detail])
     proc = subprocess.run(
         cmd,
         capture_output=True,

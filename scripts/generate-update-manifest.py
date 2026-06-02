@@ -19,6 +19,8 @@ MANIFEST_FILES = (
     "activity_sync.py",
     "event_classification.py",
     "lead_sync.py",
+    "platform_registry.py",
+    "relay_ingest.py",
     "relay_extractors.py",
     "workspace_routing.py",
     "workspace_archive.py",

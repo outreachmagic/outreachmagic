@@ -232,4 +232,7 @@ def run_device_login(
     if claim.get("status") and claim.get("status") != "pending":
         raise RuntimeError(str(claim.get("status")))
 
-    raise RuntimeError("Authorization timed out. Run login again.")
+    raise RuntimeError(
+        "Authorization timed out — open the link in your browser and confirm the code before it "
+        "expires (this step cannot be completed in chat). Run: pipeline.py login"
+    )

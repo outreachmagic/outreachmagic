@@ -100,8 +100,8 @@ def test_sync_pull_progress_when_not_quiet(capsys, monkeypatch):
 
     out = capsys.readouterr().out
     assert "Contacting relay to pull new events..." in out
-    assert "Pulled 1 relay events (page 1, 1 total seen)..." in out
-    assert "Pulling snapshot profiles... page 1 (1 profiles, 1 total)..." in out
+    assert "Relay events: page 1" in out
+    assert "Snapshot records: page 1" in out
 
 
 def test_pull_uses_id_cursors_only(monkeypatch):
@@ -121,6 +121,61 @@ def test_pull_uses_id_cursors_only(monkeypatch):
     event_pulls = [c for c in calls if not c.get("snapshots_only")]
     assert "since" not in event_pulls[0]
     assert event_pulls[0]["after_id"] == 99
+
+
+def test_format_pull_summary_includes_lead_count():
+    om.init_db()
+    summary = om.format_pull_summary(2, 5, {"skipped_duplicates": 3, "skipped_filtered": 2})
+    assert "2 new events" in summary
+    assert "duplicate relay events skipped" in summary
+
+
+def test_pull_failure_message_routing_hint():
+    msg = om._pull_failure_message(RuntimeError("Routing API 500: Internal Server Error"))
+    assert "--skip-routing-sync" in msg
+
+
+def test_estimate_relay_pages():
+    assert om._estimate_relay_pages(1400) == 2
+    assert om._estimate_relay_pages(1000) == 1
+    assert om._estimate_relay_pages(None) is None
+
+
+def test_sync_progress_with_pending_counts(capsys, monkeypatch):
+    event_calls = {"n": 0}
+    snap_calls = {"n": 0}
+
+    def fake_pull(*_args, **kwargs):
+        if kwargs.get("snapshots_only"):
+            snap_calls["n"] += 1
+            if snap_calls["n"] == 1:
+                return {
+                    "events": [{"relay_id": 1_000_000_001}],
+                    "max_snapshot_id": 1,
+                    "has_more_snapshots": False,
+                    "pending_snapshot_count": 5336,
+                }
+            return {"events": []}
+        event_calls["n"] += 1
+        if event_calls["n"] == 1:
+            return {
+                "events": [{"relay_id": 2}],
+                "max_id": 2,
+                "pending_event_count": 1400,
+            }
+        return {"events": []}
+
+    monkeypatch.setattr(om, "pull_events_org", fake_pull)
+    monkeypatch.setattr(om, "ingest_relay_event", lambda *_a, **_k: None)
+    monkeypatch.setattr(om, "relay_already_ingested", lambda *_a, **_k: True)
+    monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
+    monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
+
+    om.sync_from_relay_org("om_agent_test", after_id=0, full=False, quiet=False)
+    out = capsys.readouterr().out
+    assert "~1400 pending" in out
+    assert "page 1 of ~2" in out
+    assert "~5336 pending" in out
 
 
 def test_pull_diagnostics_verdict_priority():

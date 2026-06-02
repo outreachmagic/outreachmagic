@@ -100,7 +100,6 @@ from bounces import (
     backfill_bounce_events_from_events,
     bounce_stats,
     build_bounce_event_metadata,
-    extract_bounce_details as _extract_bounce_details,
     extract_bounce_payload as _extract_bounce_payload,
     is_bounce_event_type,
     list_bounce_events,
@@ -114,14 +113,9 @@ from bounces import (
 )
 from constants import (
     ATTRIBUTE_INSIGHT_FIELDS,
-    AUTO_REPLY_LABELS,
     BILLING_UPGRADE_URL,
     MAX_EVENT_BODY_STORAGE_CHARS,
     PIPELINE_STAGES,
-    PLUSVIBE_BOUNCE_EVENTS,
-    PLUSVIBE_PLATFORMS,
-    PLUSVIBE_REPLY_EVENTS,
-    PLUSVIBE_SENT_EVENTS,
     RELAY_PUSH_BATCH_SIZE,
     RELAY_PUSH_MAX_ATTEMPTS,
     RELAY_PUSH_RETRY_BASE_SECONDS,
@@ -157,6 +151,20 @@ from lead_sync import (
     resolve_lead_from_agent_sync,
     _load_lead_sync_prefetch,
 )
+from platform_registry import (
+    LINKEDIN_PLATFORMS,
+    PLATFORM_LABELS,
+    PLATFORM_SETUP_HINTS,
+    platform_map_json,
+    reply_event_sql_condition,
+)
+from relay_ingest import (
+    ingest_relay_event,
+    mark_relay_ingested,
+    normalize_lead_status_display,
+    relay_already_ingested,
+    relay_dedupe_key,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -191,6 +199,8 @@ UPDATE_SCRIPT_FILES = (
     "activity_sync.py",
     "event_classification.py",
     "lead_sync.py",
+    "platform_registry.py",
+    "relay_ingest.py",
     "relay_extractors.py",
     "workspace_routing.py",
     "workspace_archive.py",
@@ -204,12 +214,6 @@ UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
 # Unified public release repo (skills/outreachmagic layout).
 SKILL_REPO_PATH = "skills/outreachmagic"
 GITHUB_REPO = "outreachmagic/outreachmagic"
-# Legacy platform repos (pre-v1.21 migration); tried after unified repo on update.
-LEGACY_PLATFORM_REPOS: dict[str, tuple[str, str]] = {
-    "hermes": ("outreachmagic/hermes-outreachmagic", "."),
-    "cursor": ("outreachmagic/cursor-outreachmagic", "."),
-    "claude": ("outreachmagic/claude-code-outreachmagic", "."),
-}
 
 
 def _read_version_file(path: Path) -> str:
@@ -246,26 +250,6 @@ def release_tag_version(tag: str) -> str:
     return normalize_release_tag(tag).lstrip("vV")
 
 
-def infer_platform_key() -> Optional[str]:
-    """Map install directory to a platform id (hermes, cursor, claude)."""
-    path = str(skill_scripts_dir()).lower()
-    if "/.hermes/" in path or path.startswith(str(Path.home() / ".hermes").lower()):
-        return "hermes"
-    if "/.cursor/" in path:
-        return "cursor"
-    if "/.claude/" in path:
-        return "claude"
-    return None
-
-
-def infer_legacy_release_target() -> Optional[tuple[str, str]]:
-    """Pre-unified-repo installs that still point at per-platform public repos."""
-    key = infer_platform_key()
-    if key:
-        return LEGACY_PLATFORM_REPOS.get(key)
-    return None
-
-
 def effective_update_target() -> tuple[str, str]:
     """Repo + path prefix used for update downloads on this machine."""
     return GITHUB_REPO, SKILL_REPO_PATH
@@ -273,23 +257,7 @@ def effective_update_target() -> tuple[str, str]:
 
 def update_release_candidates() -> list[tuple[str, str]]:
     """Ordered repos to try when resolving latest release / downloads."""
-    seen: set[tuple[str, str]] = set()
-    candidates: list[tuple[str, str]] = []
-
-    def add(repo: str, path: str) -> None:
-        key = (repo, path)
-        if key not in seen:
-            seen.add(key)
-            candidates.append(key)
-
-    add(GITHUB_REPO, SKILL_REPO_PATH)
-    legacy = infer_legacy_release_target()
-    if legacy:
-        add(*legacy)
-    # Older dev/monorepo installs
-    add("outreachmagic/outreachmagic-skill", "skills/outreachmagic")
-    add("magic-creators/outreachmagic-skill", "skills/outreachmagic")
-    return candidates
+    return [effective_update_target()]
 
 
 def raw_repo_base_for_tag(
@@ -1649,37 +1617,15 @@ def normalize_email(email: Optional[str]) -> Optional[str]:
     return str(email).strip().lower()
 
 
-_LINKEDIN_PLATFORMS = frozenset({"prosp", "heyreach"})
-
-_CONNECTION_SENT_TYPES = frozenset({
-    "send_connection", "linkedin_connection_sent", "linkedin_connect",
-    "connection_request_sent",
-})
-_CONNECTION_ACCEPTED_TYPES = frozenset({
-    "linkedin_connection_accepted", "connection_request_accepted",
-    "connection_accepted", "linkedin_invite_accepted",
-})
-
-
 def normalize_event_sender(platform: str, sender: str) -> Optional[str]:
     """Normalize relay sender for storage; None if missing or unknown."""
     raw = (sender or "").strip()
     if not raw or raw.lower() == "unknown":
         return None
     plat = (platform or "").lower()
-    if plat in _LINKEDIN_PLATFORMS:
+    if plat in LINKEDIN_PLATFORMS:
         return normalize_linkedin(raw)
     return raw.lower()
-
-
-def map_relay_local_event_type(envelope_event_type: str) -> str:
-    """Map vendor webhook labels to local event_type for logging and LinkedIn status."""
-    et = (envelope_event_type or "unknown").strip().lower()
-    if et in _CONNECTION_SENT_TYPES:
-        return "linkedin_connect"
-    if et in _CONNECTION_ACCEPTED_TYPES:
-        return "linkedin_connection_accepted"
-    return et
 
 
 def normalize_tag(tag: str) -> str:
@@ -4274,15 +4220,10 @@ def get_stats():
     conn = get_conn()
     total = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
     events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-    reply_events = conn.execute(
-        """SELECT COUNT(*) FROM events
-           WHERE lower(event_type) IN ('email_reply', 'linkedin_reply', 'linkedin_message')
-              OR (lower(direction) = 'inbound' AND lower(event_type) = 'email')"""
-    ).fetchone()[0]
+    reply_where = reply_event_sql_condition()
+    reply_events = conn.execute(f"SELECT COUNT(*) FROM events WHERE {reply_where}").fetchone()[0]
     leads_with_replies = conn.execute(
-        """SELECT COUNT(DISTINCT lead_id) FROM events
-           WHERE lower(event_type) IN ('email_reply', 'linkedin_reply', 'linkedin_message')
-              OR (lower(direction) = 'inbound' AND lower(event_type) = 'email')"""
+        f"SELECT COUNT(DISTINCT lead_id) FROM events WHERE {reply_where}"
     ).fetchone()[0]
     stage_counts = get_stage_counts()
     active = sum(v for k, v in stage_counts.items() if k not in ("won", "lost"))
@@ -5414,170 +5355,7 @@ def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int =
     return {"replayed": replayed, "skipped": skipped}
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Relay Integration (api.outreachmagic.io)
-# ──────────────────────────────────────────────────────────────────────
-def normalize_lead_status_display(label: str) -> str:
-    """Underscores to spaces, matching backend normalize_lead_status_status."""
-    if not label:
-        return ""
-    return label.strip().lower().replace("_", " ")
-
-
-def is_auto_reply_label(label: str) -> bool:
-    normalized = (label or "").strip().lower().replace(" ", "_")
-    return normalized in AUTO_REPLY_LABELS or "out_of_office" in normalized
-
-
-def normalize_plusvibe_event(event_type: str, raw: dict) -> tuple[str, str]:
-    """Map PlusVibe webhook_event to local event type and direction."""
-    et = (event_type or "").lower()
-    label = (raw.get("label") or "").strip().lower()
-
-    if et in PLUSVIBE_REPLY_EVENTS:
-        return "email_reply", "inbound"
-    if et in PLUSVIBE_SENT_EVENTS:
-        return "email_sent", "outbound"
-    if et in PLUSVIBE_BOUNCE_EVENTS:
-        return "email_bounce", "outbound"
-    if et.startswith("lead_marked_as_") or et.startswith("marked_as_"):
-        return "lead_status_updated", "inbound"
-    if label in ("interested", "not_interested", "out_of_office"):
-        return "lead_status_updated", "inbound"
-    if raw.get("direction", "").upper() == "IN":
-        return et, "inbound"
-    return et, "outbound"
-
-
-def build_plusvibe_status_metadata(
-    raw: dict,
-    signals: dict,
-    envelope_event_type: str,
-) -> dict:
-    """Normalized status fields stored on event metadata_json."""
-    meta: dict = {}
-    et = (envelope_event_type or "").lower()
-    forced_label = ""
-    for prefix in ("lead_marked_as_", "marked_as_"):
-        if et.startswith(prefix):
-            # Prefer explicit webhook event type over stale payload fields.
-            forced_label = et[len(prefix):]
-            break
-    if et == "bounced_email":
-        forced_label = "email_bounced"
-
-    payload_label = (signals.get("label") or raw.get("label") or "").strip().lower()
-    label = forced_label or payload_label
-
-    payload_sentiment = (signals.get("sentiment") or raw.get("sentiment") or "").strip().lower()
-    sentiment = payload_sentiment
-    if forced_label == "interested":
-        sentiment = "positive"
-    elif forced_label in ("not_interested", "not interested"):
-        sentiment = "negative"
-    if not sentiment and label == "email_bounced":
-        sentiment = "invalid"
-
-    if label:
-        meta["lead_status_raw"] = label
-        meta["lead_status_display"] = normalize_lead_status_display(label)
-    if sentiment:
-        meta["lead_status_sentiment"] = sentiment
-    if signals.get("status"):
-        meta["lead_status_platform_status"] = signals["status"].lower()
-    if envelope_event_type:
-        meta["plusvibe_webhook_event"] = envelope_event_type
-
-    if is_auto_reply_label(label):
-        meta["is_auto_reply"] = True
-        meta["auto_reply_type"] = "ooo"
-
-    return meta
-
-
-def relay_target_stage(
-    platform: str,
-    envelope_event_type: str,
-    local_type: str,
-    raw: dict,
-    metadata: dict,
-) -> Optional[str]:
-    """Pipeline stage to apply after ingest; None = leave stage unchanged."""
-    et = envelope_event_type.lower()
-    label = (metadata.get("lead_status_raw") or raw.get("label") or "").lower()
-    sentiment = (metadata.get("lead_status_sentiment") or "").lower()
-
-    if platform in PLUSVIBE_PLATFORMS:
-        # Bounce/invalid: record on event metadata only; do not force pipeline stage to lost.
-        if local_type == "email_bounce" or et in PLUSVIBE_BOUNCE_EVENTS or sentiment == "invalid":
-            return None
-        if metadata.get("is_auto_reply") or is_auto_reply_label(label):
-            return None
-        if (
-            "not_interested" in et
-            or label in ("not_interested", "not interested")
-            or sentiment == "negative"
-        ):
-            return "lost"
-        if (
-            "interested" in et
-            or label == "interested"
-            or sentiment == "positive"
-        ):
-            return "interested"
-        if local_type == "email_reply" or et in PLUSVIBE_REPLY_EVENTS:
-            return "replied"
-        if local_type == "email_sent" or et in PLUSVIBE_SENT_EVENTS:
-            return "contacted"
-        return None
-
-    if local_type in ("email_reply", "linkedin_message") or et in (
-        "email_reply",
-        "linkedin_reply",
-        "linkedin_message",
-    ):
-        return "replied"
-    if local_type in ("email_sent",) or et in (
-        "email_sent",
-        "linkedin_connect",
-        "linkedin_message_sent",
-    ):
-        return "contacted"
-    return None
-
-
-def relay_dedupe_key(event: dict) -> str:
-    """Stable id so we can re-pull from the relay without duplicating local rows."""
-    if event.get("relay_id"):
-        return f"relay:{event['relay_id']}"
-    raw = event.get("raw") or {}
-    if event.get("platform") in PLUSVIBE_PLATFORMS and raw.get("webhook_id"):
-        return f"pv:{raw['webhook_id']}"
-    if raw.get("sent_email_id"):
-        return f"sent:{raw['sent_email_id']}"
-    if raw.get("message_id"):
-        return f"msg:{raw['message_id']}"
-    return (
-        f"fp:{event.get('platform')}|{event.get('lead')}|{event.get('event_type')}"
-        f"|{event.get('received_at')}"
-    )
-
-
-def relay_already_ingested(dedupe_key: str) -> bool:
-    conn = get_conn()
-    row = conn.execute("SELECT 1 FROM relay_ingested WHERE dedupe_key = ?", (dedupe_key,)).fetchone()
-    conn.close()
-    return row is not None
-
-
-def mark_relay_ingested(dedupe_key: str, lead_id: int):
-    conn = get_conn()
-    conn.execute(
-        "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
-        (dedupe_key, lead_id),
-    )
-    conn.commit()
-    conn.close()
+# Relay ingest lives in relay_ingest.py (imported above).
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -5855,6 +5633,54 @@ def ingest_agent_entry(
     return lead_id
 
 
+RELAY_PULL_PAGE_SIZE = 1000
+RELAY_PULL_HTTP_TIMEOUT = 60
+RELAY_PULL_HTTP_RETRIES = 2
+
+
+def _estimate_relay_pages(pending: Optional[int]) -> Optional[int]:
+    if pending is None or pending <= 0:
+        return None
+    return max(1, (pending + RELAY_PULL_PAGE_SIZE - 1) // RELAY_PULL_PAGE_SIZE)
+
+
+def _pull_failure_message(exc: Exception) -> str:
+    msg = str(exc).strip()
+    if "routing api" in msg.lower():
+        return (
+            f"{msg}\n\nRouting sync failed. Retry without cloud routing sync:\n"
+            "  pipeline.py pull --skip-routing-sync"
+        )
+    return msg
+
+
+def format_pull_summary(imported: int, skipped: int, stats: dict) -> str:
+    dupes = int(stats.get("skipped_duplicates") or 0)
+    filtered = int(stats.get("skipped_filtered") or 0)
+    errors = int(stats.get("skipped_errors") or 0)
+    conn = get_conn()
+    try:
+        lead_count = conn.execute("SELECT COUNT(*) AS n FROM leads").fetchone()["n"]
+    finally:
+        conn.close()
+    lines = [
+        f"Imported {imported} new events. {lead_count} leads in local database.",
+        (
+            f"Already-processed: {dupes} duplicate relay events skipped"
+            + (f", {filtered} filtered" if filtered else "")
+            + (f", {errors} errors" if errors else "")
+            + " (normal on replay)."
+        ),
+    ]
+    snap_records = int(stats.get("snapshot_records_seen") or 0)
+    if snap_records:
+        lines.append(
+            f"Snapshot phase: {snap_records} historical snapshot records processed "
+            "(multiple versions per lead are expected — not 1:1 with unique leads)."
+        )
+    return "\n".join(lines)
+
+
 def pull_events_org(
     agent_key: str,
     after_id: Optional[int] = None,
@@ -5862,6 +5688,7 @@ def pull_events_org(
     *,
     snapshot_after_id: Optional[int] = None,
     snapshots_only: bool = False,
+    include_pending: bool = False,
 ) -> dict:
     """Pull org events from relay (cursor-only: after_id / snapshot_after_id)."""
     params = []
@@ -5873,6 +5700,8 @@ def pull_events_org(
         params.append(f"snapshot_after_id={snapshot_after_id}")
     if snapshots_only:
         params.append("snapshots_only=1")
+    if include_pending:
+        params.append("include_pending=1")
     qs = f"?{'&'.join(params)}" if params else ""
     url = f"{RELAY_URL}/pull{qs}"
 
@@ -5883,14 +5712,21 @@ def pull_events_org(
             "Authorization": f"Bearer {agent_key}",
         },
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode() if e.fp else ""
-        return {"error": True, "status": e.code, "message": body}
-    except urllib.error.URLError as e:
-        return {"error": True, "message": str(e.reason)}
+    last_error: Optional[dict] = None
+    for attempt in range(RELAY_PULL_HTTP_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=RELAY_PULL_HTTP_TIMEOUT) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode() if e.fp else ""
+            return {"error": True, "status": e.code, "message": body}
+        except urllib.error.URLError as e:
+            last_error = {"error": True, "message": str(e.reason)}
+            if attempt < RELAY_PULL_HTTP_RETRIES:
+                time.sleep(2 ** attempt)
+                continue
+            return last_error
+    return last_error or {"error": True, "message": "pull failed"}
 
 def _pull_diagnostics_verdict(stats: dict) -> str:
     if stats.get("cursor_stalled"):
@@ -5982,7 +5818,10 @@ def sync_from_relay_org(
 ) -> tuple[int, int]:
     """Import relay events for the org. Cursors: last_max_id (events), last_snapshot_after_id."""
     if not skip_routing_sync:
-        maybe_sync_routing_from_cloud(quiet=quiet)
+        try:
+            maybe_sync_routing_from_cloud(quiet=quiet)
+        except RuntimeError as exc:
+            raise RuntimeError(_pull_failure_message(exc)) from exc
     elif not quiet:
         print("Skipped routing config sync (--skip-routing-sync).", flush=True)
     if not quiet:
@@ -5993,18 +5832,24 @@ def sync_from_relay_org(
     relay_events_seen = 0
     newest_relay_id_seen = 0
     cursor_stalled = False
-    pages = 0
+    event_pages = 0
+    snap_pages = 0
+    snap_total = 0
 
     page_after_id = 0 if full else int(after_id if after_id is not None else (get_last_max_id() or 0))
     initial_after_id = page_after_id
     snapshot_after = 0 if full else get_last_snapshot_after_id()
     snapshot_after_start = snapshot_after
 
+    pending_events: Optional[int] = None
+    est_event_pages: Optional[int] = None
+
     while True:
-        pages += 1
+        event_pages += 1
         result = pull_events_org(
             agent_key,
             after_id=page_after_id or None,
+            include_pending=event_pages == 1,
         )
         if result.get("error"):
             raise RuntimeError(result.get("message", "pull failed"))
@@ -6013,10 +5858,37 @@ def sync_from_relay_org(
         if not events:
             break
 
+        if event_pages == 1 and result.get("pending_event_count") is not None:
+            pending_events = int(result["pending_event_count"])
+            est_event_pages = _estimate_relay_pages(pending_events)
+            if not quiet and pending_events > 0:
+                pages_hint = f"~{est_event_pages} pages" if est_event_pages else "multiple pages"
+                print(
+                    f"Relay events: ~{pending_events} pending ({pages_hint} @ {RELAY_PULL_PAGE_SIZE}/page)...",
+                    flush=True,
+                )
+        elif (
+            event_pages == 1
+            and pending_events is None
+            and not quiet
+            and len(events) >= RELAY_PULL_PAGE_SIZE
+        ):
+            print(
+                f"Relay events: first page has {len(events)} records "
+                f"(@ {RELAY_PULL_PAGE_SIZE}/page max — more pages follow)...",
+                flush=True,
+            )
+
         relay_events_seen += len(events)
         if not quiet:
+            page_label = f"page {event_pages}"
+            if est_event_pages:
+                page_label = f"page {event_pages} of ~{est_event_pages}"
+            elif len(events) >= RELAY_PULL_PAGE_SIZE:
+                page_label = f"page {event_pages} (more pages likely)"
+            progress = f"{relay_events_seen}/{pending_events}" if pending_events else str(relay_events_seen)
             print(
-                f"Pulled {len(events)} relay events (page {pages}, {relay_events_seen} total seen)...",
+                f"Relay events: {page_label} — {len(events)} this page, {progress} records...",
                 flush=True,
             )
 
@@ -6029,32 +5901,55 @@ def sync_from_relay_org(
         newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
 
         next_after_id = int(result.get("max_id") or page_after_id)
-        if len(events) >= 1000 and next_after_id <= page_after_id:
+        if len(events) >= RELAY_PULL_PAGE_SIZE and next_after_id <= page_after_id:
             cursor_stalled = True
             break
         page_after_id = next_after_id
-        if len(events) < 1000:
+        if len(events) < RELAY_PULL_PAGE_SIZE:
             break
 
-    snap_pages = snap_total = 0
+    pending_snapshots: Optional[int] = None
+    est_snap_pages: Optional[int] = None
+    if not quiet:
+        print(
+            "Pulling lead snapshot records (historical versions per lead, not unique lead count)...",
+            flush=True,
+        )
+
     while True:
+        snap_pages += 1
         snap_result = pull_events_org(
             agent_key,
             snapshot_after_id=snapshot_after or None,
             snapshots_only=True,
+            include_pending=snap_pages == 1,
         )
         if snap_result.get("error"):
             raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
         snap_events = snap_result.get("events") or []
         if not snap_events:
             break
-        pages += 1
-        snap_pages += 1
+
+        if snap_pages == 1 and snap_result.get("pending_snapshot_count") is not None:
+            pending_snapshots = int(snap_result["pending_snapshot_count"])
+            est_snap_pages = _estimate_relay_pages(pending_snapshots)
+            if not quiet and pending_snapshots > 0:
+                pages_hint = f"~{est_snap_pages} pages" if est_snap_pages else "multiple pages"
+                print(
+                    f"Snapshot records: ~{pending_snapshots} pending ({pages_hint} @ {RELAY_PULL_PAGE_SIZE}/page)...",
+                    flush=True,
+                )
+
         snap_total += len(snap_events)
         if not quiet:
+            page_label = f"page {snap_pages}"
+            if est_snap_pages:
+                page_label = f"page {snap_pages} of ~{est_snap_pages}"
+            elif snap_result.get("has_more_snapshots"):
+                page_label = f"page {snap_pages} (more pages likely)"
+            progress = f"{snap_total}/{pending_snapshots}" if pending_snapshots else str(snap_total)
             print(
-                f"Pulling snapshot profiles... page {snap_pages} "
-                f"({len(snap_events)} profiles, {snap_total} total)...",
+                f"Snapshot records: {page_label} — {len(snap_events)} this page, {progress} records...",
                 flush=True,
             )
         batch = _ingest_relay_page(snap_events, debug_sentiment=debug_sentiment, quiet=True)
@@ -6090,8 +5985,13 @@ def sync_from_relay_org(
             "pull_hint": pull_hint,
             "cursor_advanced": cursor_advanced,
             "cursor_stalled": cursor_stalled,
-            "pages": pages,
+            "event_pages": event_pages,
+            "snapshot_pages": snap_pages,
+            "pages": event_pages + snap_pages,
             "relay_events_seen": relay_events_seen,
+            "snapshot_records_seen": snap_total,
+            "pending_events": pending_events,
+            "pending_snapshots": pending_snapshots,
             "newest_relay_id_seen": newest_relay_id_seen or None,
             "imported": imported,
             "skipped_duplicates": skipped_duplicates,
@@ -6123,6 +6023,9 @@ You will lose any local-only data that was NOT synced to the relay.
 pull --full alone does NOT refresh — it still skips rows already in relay_ingested.
 
 Re-run with: pipeline.py refresh --yes
+
+If refresh times out during the relay pull, the database may be partial. Run pull again —
+it resumes from saved cursors: pipeline.py pull --full
 """.strip()
 
 
@@ -6224,7 +6127,10 @@ def refresh_local_database(
         return {
             "status": "error",
             "error": "pull_failed",
-            "message": str(exc),
+            "message": (
+                f"{exc}\n\nDatabase may be partial. Resume with: pipeline.py pull --full "
+                "(continues from saved cursors)."
+            ),
             **result,
         }
 
@@ -6232,7 +6138,7 @@ def refresh_local_database(
     result["skipped"] = skipped
     result["steps"].append("pull_full")
     result["message"] = (
-        f"Refresh complete. Imported {imported} events, skipped {skipped} duplicates. "
+        f"Refresh complete. Imported {imported} events, skipped {skipped} already-processed. "
         f"Backup: {result.get('backup', '(none)')}"
     )
     return result
@@ -6251,347 +6157,6 @@ def cmd_refresh(args) -> None:
     print(json.dumps(result, indent=2))
     if result.get("status") != "ok":
         sys.exit(1)
-
-
-def ingest_relay_event(
-    event: dict,
-    debug_sentiment: bool = False,
-    force_workspace_id: Optional[str] = None,
-    quiet: bool = False,
-) -> Optional[int]:
-    """Take a relay event and write it to the local SQLite database. Returns None if duplicate."""
-    if event.get("platform") == "agent":
-        return ingest_agent_entry(event, quiet=quiet)
-
-    dedupe_key = relay_dedupe_key(event)
-    ws_idempotency = f"ws:{dedupe_key}"
-    conn = get_conn()
-    if conn.execute(
-        "SELECT 1 FROM workspace_lead_events WHERE org_id = ? AND idempotency_key = ?",
-        (DEFAULT_ORG_ID, ws_idempotency),
-    ).fetchone():
-        conn.close()
-        if relay_already_ingested(dedupe_key):
-            return None
-    conn.close()
-
-    if relay_already_ingested(dedupe_key):
-        if debug_sentiment and event.get("platform") in PLUSVIBE_PLATFORMS:
-            print(
-                "[debug:sentiment] skipped duplicate "
-                f"event_type={event.get('event_type','unknown')} "
-                f"relay_id={event.get('relay_id') or '-'} dedupe_key={dedupe_key}"
-            )
-        return None
-
-    envelope_lead = event.get("lead") or ""
-    envelope_event_type = (event.get("event_type") or "unknown").lower()
-    platform = event.get("platform", "unknown")
-    sender_raw = event.get("sender", "")
-    sender_norm = normalize_event_sender(platform, sender_raw)
-    received_at = event.get("received_at", "")
-    raw = event.get("raw") or {}
-
-    extracted = extract_relay_fields(platform, raw)
-    lead_fields = extracted["lead"]
-    event_fields = extracted["event"]
-    signals = extracted.get("signals") or {}
-    identity = extract_relay_identity(platform, raw, envelope_lead)
-
-    email_hint = identity.get("email") or (
-        envelope_lead if "@" in str(envelope_lead) else None
-    )
-    display_name = build_display_name(lead_fields, email_hint)
-    if not display_name and email_hint and "@" in email_hint:
-        display_name = name_from_email(email_hint)
-    elif not display_name and identity.get("linkedin_url"):
-        slug = identity["linkedin_url"].rstrip("/").split("/")[-1]
-        display_name = slug.replace("-", " ").title() or f"Unknown ({platform})"
-    elif not display_name:
-        display_name = f"Unknown ({platform})"
-
-    channel_map = {"smartlead": "email", "instantly": "email", "emailbison": "email",
-                   "heyreach": "linkedin", "prosp": "linkedin",
-                   "plusvibe": "email", "clay": "email"}
-    channel = channel_map.get(platform, "email")
-
-    campaign_ctx = extract_campaign_context(platform, event_fields, raw)
-    workspace_id = force_workspace_id
-    if not workspace_id:
-        conn = get_conn()
-        routing = resolve_workspace_for_ingest(conn, DEFAULT_ORG_ID, campaign_ctx)
-        if not routing:
-            quarantine_event(
-                conn,
-                DEFAULT_ORG_ID,
-                campaign_ctx,
-                reason="no_campaign_map",
-                payload=event,
-                external_event_id=str(event.get("relay_id") or ""),
-            )
-            conn.commit()
-            conn.close()
-            if not quiet:
-                print(format_unmapped_campaign_message(campaign_ctx), file=sys.stderr)
-            return None
-        workspace_id = routing.workspace_id
-        conn.close()
-
-    profile = profile_from_relay_lead(lead_fields, identity, display_name)
-    campaign_name_for_detail = event_fields.get("campaign") or campaign_ctx.campaign_name_raw
-    upsert_result = upsert_lead_profile(
-        profile,
-        channel=channel,
-        stage="prospecting",
-        notes=f"Auto-imported from {platform} via relay",
-        enrich_name=display_name if lead_fields.get("first_name") else None,
-        source="relay_sync",
-        source_detail=campaign_name_for_detail,
-        source_platform=platform,
-    )
-    if upsert_result.get("status") == "error":
-        identities = collect_identities_from_event(identity, raw, platform)
-        if not identities:
-            conn = get_conn()
-            ensure_organization(conn)
-            quarantine_event(
-                conn,
-                DEFAULT_ORG_ID,
-                campaign_ctx,
-                reason="missing_identity",
-                payload=event,
-                external_event_id=str(event.get("relay_id") or ""),
-            )
-            conn.commit()
-            conn.close()
-        return None
-    lead_id = upsert_result["id"]
-
-    conn = get_conn()
-    if get_org_routing_config(conn, DEFAULT_ORG_ID).mode == WORKSPACE_ROUTING_SINGLE:
-        ensure_default_org_workspace(conn)
-    identities = collect_identities_from_event(identity, raw, platform)
-    for itype, val in identities:
-        try:
-            upsert_identity_alias(conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform)
-        except ValueError:
-            enqueue_identity_conflict_merge(
-                conn,
-                DEFAULT_ORG_ID,
-                lead_id,
-                itype,
-                val,
-                source=platform,
-            )
-    conn.commit()
-    conn.close()
-
-    if platform in PLUSVIBE_PLATFORMS:
-        local_type, direction = normalize_plusvibe_event(envelope_event_type, raw)
-    else:
-        event_type_map = {
-            "email_sent": "email_sent", "email_open": "email_open",
-            "email_reply": "email_reply", "email_bounce": "email_bounce",
-            "email_bounced": "email_bounce",
-            "email.bounced": "email_bounce",
-            "email_click": "email_click", "email_unsubscribe": "email_unsubscribe",
-            "linkedin_connect": "linkedin_connect",
-            "linkedin_connection_accepted": "linkedin_connection_accepted",
-            "linkedin_message": "linkedin_message",
-            "linkedin_reply": "linkedin_message",
-        }
-        local_type = map_relay_local_event_type(envelope_event_type)
-        if is_bounce_event_type(envelope_event_type):
-            local_type = "email_bounce"
-        elif envelope_event_type in event_type_map:
-            local_type = event_type_map[envelope_event_type]
-        direction = (
-            "inbound"
-            if envelope_event_type in (
-                "email_reply", "email_open", "email_click",
-                "linkedin_connection_accepted", "linkedin_reply",
-            )
-            or local_type == "linkedin_connection_accepted"
-            else "outbound"
-        )
-
-    bounce_payload = None
-    if local_type == "email_bounce":
-        bounce_payload = _extract_bounce_payload(raw, platform)
-
-    subject = event_fields.get("subject") or f"{platform}: {envelope_event_type}"
-    body = event_fields.get("body") or ""
-    if local_type == "email_bounce" and bounce_payload and bounce_payload.get("bounce_message"):
-        body = bounce_payload["bounce_message"]
-    if body:
-        body, _ = cap_event_body(body)
-        body_preview = body[:200]
-    elif sender_norm:
-        body_preview = f"From {sender_norm}"[:200]
-    else:
-        body_preview = ""
-
-    metadata = {
-        "source": "relay",
-        "platform": platform,
-        "relay_received_at": received_at,
-        "webhook_event": envelope_event_type,
-    }
-    if sender_norm:
-        metadata["sender"] = sender_norm
-    if event_fields.get("campaign"):
-        metadata["campaign"] = event_fields["campaign"]
-    if body:
-        metadata["body"] = body
-    if event.get("relay_id"):
-        metadata["relay_id"] = event["relay_id"]
-
-    if platform in PLUSVIBE_PLATFORMS:
-        metadata.update(
-            build_plusvibe_status_metadata(raw, signals, envelope_event_type)
-        )
-    if local_type == "email_bounce" and bounce_payload:
-        metadata.update(build_bounce_event_metadata(bounce_payload, envelope_event_type))
-
-    if debug_sentiment and platform in PLUSVIBE_PLATFORMS:
-        raw_label = (raw.get("label") or "").strip().lower()
-        raw_sentiment = (raw.get("sentiment") or "").strip().lower()
-        signal_label = (signals.get("label") or "").strip().lower()
-        signal_sentiment = (signals.get("sentiment") or "").strip().lower()
-        normalized_label = metadata.get("lead_status_raw", "")
-        normalized_sentiment = metadata.get("lead_status_sentiment", "")
-        if normalized_label or normalized_sentiment or envelope_event_type.startswith("lead_marked_as_"):
-            print(
-                "[debug:sentiment] "
-                f"event_type={envelope_event_type} "
-                f"raw_label={raw_label or '-'} raw_sentiment={raw_sentiment or '-'} "
-                f"signal_label={signal_label or '-'} signal_sentiment={signal_sentiment or '-'} "
-                f"normalized_label={normalized_label or '-'} "
-                f"normalized_sentiment={normalized_sentiment or '-'}"
-            )
-
-    event_id = log_event(
-        lead_id=lead_id,
-        event_type=local_type,
-        direction=direction,
-        channel=channel,
-        subject=subject,
-        body_preview=body_preview,
-        metadata=metadata,
-        event_at=received_at or None,
-        sender=sender_norm,
-    )
-
-    event_time = received_at or None
-    target_stage = relay_target_stage(
-        platform, envelope_event_type, local_type, raw, metadata
-    )
-    if target_stage:
-        update_lead_stage(lead_id, target_stage, event_at=event_time)
-
-    ws_status = target_stage or "prospecting"
-    conn = get_conn()
-    ws_lead_id = upsert_workspace_lead(
-        conn, DEFAULT_ORG_ID, workspace_id, lead_id, status=ws_status
-    )
-    if target_stage:
-        stage_ts = event_time or datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
-            (target_stage, stage_ts, ws_lead_id),
-        )
-    ws_payload = {
-        "event": metadata,
-        "subject": subject,
-        "body_preview": body_preview,
-        "direction": direction,
-        "channel": channel,
-        "campaign_id": campaign_ctx.campaign_id,
-        "campaign_name": campaign_ctx.campaign_name_raw,
-    }
-    append_workspace_event(
-        conn,
-        DEFAULT_ORG_ID,
-        workspace_id,
-        lead_id,
-        ws_lead_id,
-        event_type=local_type,
-        event_at=received_at or datetime.now(timezone.utc).isoformat(),
-        source_platform=platform,
-        idempotency_key=ws_idempotency,
-        payload=ws_payload,
-        external_event_id=str(event.get("relay_id") or ""),
-    )
-
-    # Materialize status/sentiment on workspace_leads
-    status_label = metadata.get("lead_status_raw")
-    status_sentiment = metadata.get("lead_status_sentiment")
-    if status_label or status_sentiment:
-        mat_sets, mat_params = [], []
-        if status_label:
-            mat_sets.append("current_status_label = ?")
-            mat_params.append(status_label)
-        if status_sentiment:
-            mat_sets.append("current_status_sentiment = ?")
-            mat_params.append(status_sentiment)
-        mat_sets.append("updated_at = datetime('now')")
-        mat_params.append(ws_lead_id)
-        conn.execute(
-            f"UPDATE workspace_leads SET {', '.join(mat_sets)} WHERE id = ?", mat_params
-        )
-
-    if sender_norm:
-        event_at_ts = received_at or datetime.now(timezone.utc).isoformat()
-        _update_lead_sender(conn, lead_id, workspace_id, sender_norm, platform, event_at_ts)
-
-    if local_type in ("linkedin_connect", "linkedin_connection_accepted") and workspace_id:
-        sender_li = sender_norm or normalize_linkedin(sender_raw)
-        if sender_li:
-            event_at_ts = received_at or datetime.now(timezone.utc).isoformat()
-            upsert_linkedin_status(
-                conn, workspace_id, lead_id, sender_li, local_type, event_at_ts
-            )
-
-    if local_type == "email_bounce":
-        payload = bounce_payload or _extract_bounce_payload(raw, platform)
-        bounce_type = payload["bounce_type"]
-        bounce_reason = payload["bounce_message"]
-        _record_platform_bounce(
-            conn, lead_id, email_hint, platform,
-            bounce_type=bounce_type,
-            bounce_reason=bounce_reason,
-            event_at=received_at,
-        )
-        campaign_name = event_fields.get("campaign") or campaign_ctx.campaign_name_raw
-        campaign_id = None
-        if campaign_name and str(campaign_name).strip():
-            campaign_id = ensure_campaign(conn, str(campaign_name).strip(), lead_id)
-        _record_bounce_event(
-            conn,
-            lead_id=lead_id,
-            event_id=event_id,
-            platform=platform,
-            sender_email=sender_norm or raw.get("sender_email") or "unknown",
-            lead_email=email_hint or envelope_lead or "",
-            payload=payload,
-            campaign_id=campaign_id,
-            campaign_name=campaign_name,
-            workspace_id=workspace_id,
-            event_at=received_at,
-            relay_id=str(event.get("relay_id") or "") or None,
-        )
-
-    refresh_lead_activity_from_events(conn, lead_id, workspace_id)
-    conn.execute(
-        "UPDATE leads SET cloud_pending = 1, updated_at = datetime('now') WHERE id = ?",
-        (lead_id,),
-    )
-
-    conn.commit()
-    conn.close()
-
-    mark_relay_ingested(dedupe_key, lead_id)
-    return lead_id
 
 
 def login(
@@ -6660,12 +6225,6 @@ def login(
         print(f"\nLogin failed: {exc}")
         sys.exit(1)
     _save_agent_key_and_validate(agent_key)
-
-
-def setup():
-    """Deprecated alias — use login."""
-    print("Note: use 'pipeline.py login' for device authorization.\n")
-    login()
 
 
 def logout():
@@ -6737,20 +6296,13 @@ def _save_agent_key_and_validate(agent_key: str):
     print("Connected. Run 'pull' to sync events, 'show' to view pipeline.")
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Connection management (via app API)
-# ──────────────────────────────────────────────────────────────────────
+# Connection management (via app API) — platform labels/hints from platform_registry.py
 
-PLATFORM_LABELS = {
-    "smartlead": "Smartlead",
-    "instantly": "Instantly",
-    "emailbison": "EmailBison",
-    "plusvibe": "PlusVibe",
-    "masterinbox": "MasterInbox",
-    "heyreach": "HeyReach",
-    "prosp": "Prosp",
-    "clay": "Clay",
-}
+
+def cmd_platform_map(platform: Optional[str] = None) -> None:
+    """Print platform and event mapping registry (agent discovery)."""
+    data = platform_map_json(platform)
+    print(json.dumps(data, indent=2))
 
 
 def _require_agent_key() -> str:
@@ -6914,18 +6466,6 @@ def cmd_connections(json_output: bool = False):
         else:
             print(f"    Webhook URL:  (paused/revoked)")
     print()
-
-
-PLATFORM_SETUP_HINTS = {
-    "smartlead": "In Smartlead → Settings → Webhooks, paste the URL. Enable: Email Sent, Email Reply, Email Bounced.",
-    "instantly": "In Instantly → Settings → Integrations → Webhooks, paste the URL. Enable all event types.",
-    "heyreach": "In HeyReach → Settings → Webhooks, paste the URL. Enable all campaign events.",
-    "plusvibe": "In PlusVibe → Settings → Webhooks, paste the URL. Subscribe to: ALL_EMAIL_REPLIES, LEAD_MARKED_AS_INTERESTED, LEAD_MARKED_AS_NOT_INTERESTED, LEAD_MARKED_AS_OUT_OF_OFFICE, and any other custom LEAD_MARKED_AS_<label> events you use. Set camp_ids to ALL. Optionally enable ignore_ooo and ignore_automatic to filter noise.",
-    "emailbison": "In EmailBison → Integrations → Webhooks, paste the URL and enable relevant events.",
-    "masterinbox": "In MasterInbox → Settings → Webhooks, paste the URL.",
-    "prosp": "In Prosp → Settings → Webhooks, paste the URL.",
-    "clay": "In Clay → Settings → Webhooks, paste the URL.",
-}
 
 
 def cmd_connect_platform(platform: str):
@@ -7535,6 +7075,13 @@ def main():
     camp_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
     camp_p.add_argument("--json", action="store_true")
 
+    pmap_p = sub.add_parser(
+        "platform-map",
+        help="Show platform/event type mappings (use --json for agents)",
+    )
+    pmap_p.add_argument("--platform", help="Filter to one platform id (e.g. prosp)")
+    pmap_p.add_argument("--json", action="store_true")
+
     add_p = sub.add_parser("add-lead", help="Add a lead")
     add_p.add_argument("--name", required=True)
     add_p.add_argument("--company"); add_p.add_argument("--title")
@@ -7669,7 +7216,6 @@ def main():
         default=30,
         help="Seconds to wait while polling in --claim-token mode (0 = single attempt)",
     )
-    setup_p = sub.add_parser("setup", help="Alias for login (deprecated)")
     sub.add_parser("logout", help="Clear local agent credentials")
 
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
@@ -8194,9 +7740,6 @@ def main():
             wait_seconds=getattr(args, "wait", 30),
         )
         return
-    if args.command == "setup":
-        setup()
-        return
     if args.command == "logout":
         logout()
         return
@@ -8224,7 +7767,7 @@ def main():
             )
         except RuntimeError as e:
             if not args.cron:
-                print(f"Pull failed: {e}")
+                print(f"Pull failed: {_pull_failure_message(e)}")
             sys.exit(0)
 
         if args.diagnose and not args.cron:
@@ -8237,19 +7780,17 @@ def main():
             sys.exit(0)
 
         if not args.cron:
+            print(format_pull_summary(imported, skipped, pull_stats))
             mode = pull_stats.get("mode", "incremental")
             newest = pull_stats.get("newest_relay_id_seen")
-            dupes = pull_stats.get("skipped_duplicates", 0)
-            errors = pull_stats.get("skipped_errors", 0)
-            print(
-                f"Pulled {imported} new, {skipped} skipped "
-                f"(duplicates={dupes}, errors={errors}) "
-                f"[mode={mode}, newest_relay_id={newest or '-'}]."
-            )
+            print(f"[mode={mode}, newest_relay_id={newest or '-'}]")
             if args.full:
                 print("Full replay complete.")
             if pull_stats.get("cursor_stalled"):
-                print("Warning: pull cursor stalled on a 1000-event page; investigate relay max_id pagination.")
+                print(
+                    "Warning: pull cursor stalled on a full relay page; "
+                    "investigate relay max_id pagination."
+                )
             print("Run 'pipeline.py show' to see your updated pipeline.")
         return
 
@@ -8344,6 +7885,8 @@ def main():
         else:
             lines = format_campaign_stats(stats, include_header=False)
             print("\n".join(lines) if lines else "No campaign data yet.")
+    elif args.command == "platform-map":
+        cmd_platform_map(getattr(args, "platform", None))
     elif args.command == "add-lead":
         result = add_lead(name=args.name, company=args.company, title=args.title,
                           industry=args.industry, headcount=args.headcount,

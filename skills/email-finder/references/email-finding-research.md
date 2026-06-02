@@ -88,22 +88,21 @@ Use in this order; stop when a deliverable email is saved to outreachmagic.
 | 3 | **LeadMagic** | Icypeas miss |
 | 4 | **Findymail** | Last resort |
 
-After trykitt (hit or miss), tag the lead `trykitt_attempted` via
-`import-profiles` or `add-tag` so batch re-runs do not burn credits again.
-
-### Bounced email re-find
-
-If the user reports a bounce on a saved email:
-
-1. Clear or note the bad email in outreachmagic.
-2. Remove `trykitt_attempted` tag (or use `--force` on check).
-3. Re-run Phase 5 with the same domain + LinkedIn context.
-
----
+After trykitt (hit or miss), tag the lead `trykitt_attempted` via import; add
+`email_found` when an email was saved. Validity goes in `notes` as
+`trykitt verify: valid` or `trykitt verify: catch_all` — not `verify-email` during batch.
 
 ## Saving found emails
 
-Prefer the email-finder CLI (tags `trykitt_attempted` on hit and miss when `--save` / batch):
+**Batch / large runs:** collect API results first, import once (avoids SQLite lock):
+
+```bash
+python3 scripts/email_finder.py parallel-find --workers 3 --output-csv results.csv --no-save leads.json
+python3 scripts/email_finder.py prepare-import --csv results.csv --output import.json
+python3 scripts/email_finder.py import-to-om --file import.json --workspace your_workspace
+```
+
+**Single lead** — email-finder CLI (tags + notes on `--save`):
 
 ```bash
 python3 ~/.hermes/skills/email-finder/scripts/email_finder.py find \
@@ -117,7 +116,7 @@ Or via outreachmagic directly:
 python3 {outreachmagic_home}/scripts/pipeline.py import-profiles \
   --workspace your_workspace \
   --source-detail "email-finder/trykitt" \
-  --json '[{"name":"Jane Doe","company":"Acme Corp","email":"jane@acme.com","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["trykitt_attempted"]}]'
+  --json '[{"name":"Jane Doe","company":"Acme Corp","email":"jane@acme.com","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["trykitt_attempted","email_found"],"notes":"trykitt verify: valid"}]'
 ```
 
 Include `validity` / `validSMTP` in `notes` when helpful for downstream sequencing.

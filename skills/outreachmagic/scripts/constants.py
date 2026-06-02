@@ -1,5 +1,11 @@
 """Shared constants for outreachmagic pipeline scripts."""
 
+from platform_registry import (
+    PLUSVIBE_BOUNCE_EVENTS,
+    PLUSVIBE_REPLY_EVENTS,
+    PLUSVIBE_SENT_EVENTS,
+)
+
 MAX_EVENT_BODY_STORAGE_CHARS = 65536
 RELAY_PUSH_BATCH_SIZE = 50
 RELAY_PUSH_TIMEOUT_SECONDS = 120
@@ -39,15 +45,6 @@ SHARED_EMAIL_DOMAINS = frozenset({
 })
 
 PLUSVIBE_PLATFORMS = frozenset({"plusvibe"})
-
-PLUSVIBE_REPLY_EVENTS = frozenset({
-    "all_email_replies",
-    "first_email_replies",
-    "all_positive_replies",
-})
-
-PLUSVIBE_SENT_EVENTS = frozenset({"email_sent"})
-PLUSVIBE_BOUNCE_EVENTS = frozenset({"bounced_email"})
 
 AUTO_REPLY_LABELS = frozenset({
     "out_of_office",

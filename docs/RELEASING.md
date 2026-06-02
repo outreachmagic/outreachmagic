@@ -37,20 +37,19 @@ Outreach Magic has a **private dev monorepo** and a **single public install repo
  (profiles symlink)       (+ .mdc overlay)         (+ CLAUDE_SNIPPET)
 ```
 
-### Legacy platform repos (deprecated)
+### Legacy platform repos (removed)
 
-`hermes-outreachmagic`, `cursor-outreachmagic`, and `claude-code-outreachmagic` are no longer published. `pipeline.py update` still tries them as fallbacks for older installs until users reinstall from `outreachmagic/outreachmagic`.
+Fresh installs use [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) only. `pipeline.py update` no longer falls back to deprecated per-platform repos.
 
 ## How `pipeline.py update` works
 
 When a user runs `pipeline.py update`:
 
 1. Resolve download source from `outreachmagic/outreachmagic` (`skills/outreachmagic/` prefix).
-2. Fall back to legacy per-platform repos if needed (pre-v1.21 installs).
-3. `GET https://api.github.com/repos/<GITHUB_REPO>/releases/latest` (or `--tag vX.Y.Z`).
-4. Download each file listed in `update-manifest.json` from `raw.githubusercontent.com`.
-5. Verify SHA256 checksums.
-6. Overwrite local `scripts/` (and `SKILL.md`). Config and SQLite DB are **not** overwritten.
+2. `GET https://api.github.com/repos/<GITHUB_REPO>/releases/latest` (or `--tag vX.Y.Z`).
+3. Download each file listed in `update-manifest.json` from `raw.githubusercontent.com`.
+4. Verify SHA256 checksums.
+5. Overwrite local `scripts/` (and `SKILL.md`). Config and SQLite DB are **not** overwritten.
 
 ### Download URLs (unified repo)
 
@@ -253,7 +252,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Update failed: HTTP Error 404` | Old install still points at deprecated platform repos (`hermes-outreachmagic`, etc.) | Reinstall from `outreachmagic/outreachmagic`, or run `update --tag vX.Y.Z` once a v1.21+ script is on disk |
+| `Update failed: HTTP Error 404` | Release missing on public repo or wrong tag | `gh release view vX.Y.Z --repo outreachmagic/outreachmagic`; reinstall from `outreachmagic/outreachmagic` if scripts are corrupt |
 | `No GitHub release found` | Checking wrong repo (`magic-creators/outreachmagic-skill` is private) or release not created on public repo | `gh release view vX.Y.Z --repo outreachmagic/outreachmagic`; fix CI / `PUBLISH_TOKEN` |
 | Tag on GitHub but update 404 | Release on **private** repo only | User needs **outreachmagic/outreachmagic**, not monorepo |
 | `update --check` says no update but GitHub has newer tag | Wrong `GITHUB_REPO` in installed script | Reinstall or verify `grep GITHUB_REPO …/pipeline.py` → `outreachmagic/outreachmagic` |

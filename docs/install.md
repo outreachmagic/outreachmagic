@@ -59,8 +59,4 @@ bash install.sh --platform hermes --local --with-lead-enrich --with-email-finder
 
 ## CI / automation
 
-Run `login` once on a machine with a browser, then set `OUTREACHMAGIC_AGENT_KEY` in your CI secrets from local config (never commit the key).
-
-## Legacy platform repos
-
-`hermes-outreachmagic`, `cursor-outreachmagic`, and `claude-code-outreachmagic` are deprecated. Existing installs continue to update via fallback logic until you reinstall from `outreachmagic/outreachmagic`.
+Run `pipeline.py login` once on a machine with a browser, then set `OUTREACHMAGIC_AGENT_KEY` in your CI secrets from local config (never commit the key).

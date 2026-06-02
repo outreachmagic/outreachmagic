@@ -83,7 +83,7 @@ Install to `~/.cursor/skills/outreachmagic/`. Invoke with `/outreachmagic` or as
 
 ### Claude Code
 
-Install to `~/.claude/skills/outreachmagic/`. Optional legacy `CLAUDE_SNIPPET.md` is copied at install; SKILL.md is the source of truth.
+Install to `~/.claude/skills/outreachmagic/`. SKILL.md is the source of truth.
 
 Environment variable: `OUTREACHMAGIC_AGENT_KEY` — overrides the config file `agent_key`. Set via `.env`, shell profile, or CI/CD.
 
@@ -184,6 +184,7 @@ Install commands for each platform are in **Platform install** above. After inst
 - **Never run `sync` unless the user asked** to push to the cloud. `sync` also sends aggregate DB health (~1 KB, no lead content) unless `--no-health-report`.
 - **Never run `archive --purge` without explicit user confirmation** after reviewing `--dry-run` counts.
 - **NEVER use `python3 -c`, `sqlite3` directly, raw SQL, or any inline script to inspect or modify the database.** All database operations must go through `pipeline.py` commands. If a command errors, report the error verbatim and stop — do not attempt to debug by accessing the database directly.
+- Before adding platforms or debugging vendor event types, run `python3 scripts/pipeline.py platform-map --json`.
 
 ## MANDATORY: Always Pull First
 
@@ -200,6 +201,8 @@ python3 scripts/pipeline.py pull --skip-routing-sync
 ```
 
 This fetches the latest events from the relay, so the user always sees current data. The local DB may be stale. Never skip pull for activity/timeline queries. This applies across sessions: a new session's first pipeline query must pull.
+
+**Pull progress:** The first page requests total pending count from the relay (`include_pending=1`). You may see `~1400 pending (2 pages @ 1000/page)` — the 1000 is the page size, not the total. Progress shows `records this page / total pending` until all pages import.
 
 ### Workspace inventory (local DB — pull optional)
 
@@ -239,6 +242,7 @@ python3 scripts/pipeline.py history --id 1
 python3 scripts/pipeline.py history --email j@acme.com
 python3 scripts/pipeline.py stats
 python3 scripts/pipeline.py campaigns
+python3 scripts/pipeline.py platform-map --json
 python3 scripts/pipeline.py workspace summary --workspace <slug> --json
 python3 scripts/pipeline.py copy-insights --lead-status interested --json
 python3 scripts/pipeline.py import-profiles --file leads.csv

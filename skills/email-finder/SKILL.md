@@ -25,7 +25,7 @@ metadata:
       - domain: api.trykitt.ai
         purpose: Email find + SMTP verify (POST job/find_email with user API key)
       - domain: api.outreachmagic.io
-        purpose: Via outreachmagic skill — save profiles and record verify-email locally
+        purpose: Via outreachmagic skill — save profiles via import-profiles locally
 ---
 
 # Email Finder — trykitt.ai Email Finding
@@ -49,14 +49,15 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 
 ### 2. trykitt.ai API key
 
-Add to `~/.hermes/.env` (see `default.env`):
+Add to `~/.hermes/.env` or your Hermes profile env (`~/.hermes/profiles/<name>/.env`).
+Set `HERMES_PROFILE=<name>` when running in background/batch so subprocesses pick up the key:
 
 ```bash
 TRYKITT_API_KEY=your_key_here
 ```
 
 Free tier throttles at ~10 concurrent requests — use **8+ second** delays in
-`batch-find` for 50+ leads.
+`batch-find` for 50+ leads, or `parallel-find --workers 3` for large CSV runs.
 
 ### 3. Domain + LinkedIn context
 
@@ -74,10 +75,11 @@ Phase 2–4. Minimum required: `fullName` + `domain`.
 
 1. **Check outreachmagic first** — `email_finder.py check` or `find` (auto-skips if email exists).
 2. **Never fabricate emails** — only save trykitt (or documented waterfall) results.
-3. **Tag `trykitt_attempted`** after each attempt (hit or miss) so batch runs do not repeat.
-4. **Record verification** — after save, `verify-email` records validity (`valid`, `risky`, etc.).
-5. **Batch delays** — `batch-find --delay 8` on free tier.
-6. **Setup in terminal** — `pipeline.py login`, not chat secrets.
+3. **Tag `trykitt_attempted`** after each attempt; add **`email_found`** when an email is saved.
+4. **Record validity in notes** — e.g. `trykitt verify: valid` or `catch_all` for `valid-risky` (do not call `verify-email` during batch import).
+5. **Batch saves once** — `batch-find` / `parallel-find` collect results then one `import-profiles` call (avoids SQLite lock).
+6. **Batch delays** — `batch-find --delay 8` on free tier; large runs: `parallel-find --workers 3 --output-csv results.csv`.
+7. **Setup in terminal** — `pipeline.py login`, not chat secrets.
 
 ## Commands
 
@@ -87,8 +89,18 @@ python3 scripts/email_finder.py check "Jane Doe" "Acme Corp"
 python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com \
   --linkedin "https://linkedin.com/in/janedoe" --company "Acme Corp" --save
 python3 scripts/email_finder.py batch-find --delay 8 --workspace client_slug leads.json
+python3 scripts/email_finder.py batch-find --output-csv results.csv --no-save leads.json
+python3 scripts/email_finder.py parallel-find --workers 3 --output-csv results.csv leads.json
+python3 scripts/email_finder.py prepare-import --csv results.csv --output import.json
+python3 scripts/email_finder.py import-to-om --file import.json --workspace client_slug
 python3 scripts/email_finder.py update --check
 ```
+
+### Recommended large-batch workflow
+
+1. `parallel-find --workers 3 --output-csv results.csv --no-save leads.json` (API only)
+2. `prepare-import --csv results.csv --output import.json`
+3. `import-to-om --file import.json --workspace client_slug` (single SQLite write)
 
 ## Workflow with lead-enrich
 

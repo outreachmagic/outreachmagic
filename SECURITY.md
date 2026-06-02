@@ -59,7 +59,6 @@ We do **not** use our servers as the long-term store for webhook payload content
 - **`sync`** — the **only** command that POSTs lead data to `api.outreachmagic.io/push`. The agent or user must run it explicitly. At the end of the same `sync`, the CLI may POST aggregate DB health to the portal (throttled ~6h); use `sync --no-health-report` to skip.
 - **`db-health`** — local inspection only unless `--push` is passed explicitly.
 - **`archive`** — local export/purge only; never calls the network.
-- **`setup`** — validates the agent key and may **import** existing relay events (pull); it does not push local data.
 - Hermes cron examples in docs use `pull --cron` (inbound only), not `sync`.
 
 Override portal API: `"api_base_url"` in config (default `https://app.outreachmagic.io`).

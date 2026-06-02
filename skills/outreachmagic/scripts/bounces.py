@@ -351,12 +351,6 @@ def bounce_stats(*, since: Optional[str] = None) -> dict:
     }
 
 
-def extract_bounce_details(raw: dict, platform: str) -> tuple:
-    """Backward-compatible wrapper returning (bounce_type, bounce_reason)."""
-    payload = extract_bounce_payload(raw, platform)
-    return payload["bounce_type"], payload["bounce_message"]
-
-
 def _compute_verification_status(conn: sqlite3.Connection, lead_id: int):
     """Compute consolidated verification status from all sources and materialize on leads."""
     rows = conn.execute(

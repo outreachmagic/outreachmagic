@@ -57,11 +57,11 @@ class BounceExtractionTests(unittest.TestCase):
         self.assertIn("does not exist", fields["message"])
         self.assertEqual(fields["recipient_mx"], "GOOGLE_WORKSPACE")
 
-    def test_legacy_extract_bounce_details_empty_without_msg(self):
+    def test_extract_bounce_payload_empty_without_msg(self):
         raw = {"bounce_reason": "Mailbox does not exist"}
-        bounce_type, reason = om._extract_bounce_details(raw, "smartlead")
-        self.assertEqual(bounce_type, "hard")
-        self.assertEqual(reason, "Mailbox does not exist")
+        payload = om._extract_bounce_payload(raw, "smartlead")
+        self.assertEqual(payload["bounce_type"], "hard")
+        self.assertEqual(payload["bounce_message"], "Mailbox does not exist")
 
     def test_plusvibe_payload_classifies_hard_and_soft(self):
         hard = om._extract_bounce_payload(PLUSVIBE_BOUNCE_SAMPLES[0], "plusvibe")

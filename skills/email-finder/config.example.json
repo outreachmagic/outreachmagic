@@ -1,7 +1,14 @@
 {
-  "_comment_keys": "Prefer ~/.hermes/.env: TRYKITT_API_KEY and OUTREACHMAGIC_AGENT_KEY (see default.env)",
+  "_comment_keys": "Prefer ~/.hermes/.env: TRYKITT_API_KEY, ICYPEAS_API_KEY, and OUTREACHMAGIC_AGENT_KEY (see default.env)",
   "trykitt_api_key": "",
+  "icypeas_api_key": "",
   "trykitt_endpoint": "https://api.trykitt.ai/job/find_email",
+  "icypeas_endpoint": "https://app.icypeas.com/api/email-search",
+  "icypeas_read_endpoint": "https://app.icypeas.com/api/bulk-single-searchs/read",
+  "trykitt_enabled": true,
+  "icypeas_enabled": true,
+  "icypeas_poll_attempts": 8,
+  "icypeas_poll_delay_seconds": 2,
   "batch_delay_seconds": 8,
   "outreachmagic_home": "",
   "max_people_per_run": 50

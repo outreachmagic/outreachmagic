@@ -1,7 +1,7 @@
 # Email Finding — Research & Waterfall
 
 Optional Phase 5 after Serper enrichment saves `company_domain` and `linkedin_url`.
-Requires `TRYKITT_API_KEY` for trykitt.ai; other providers are manual fallbacks.
+Supports dual providers with fallback: trykitt first, Icypeas second.
 
 ## trykitt.ai (primary — finder + verifier)
 
@@ -88,9 +88,10 @@ Use in this order; stop when a deliverable email is saved to outreachmagic.
 | 3 | **LeadMagic** | Icypeas miss |
 | 4 | **Findymail** | Last resort |
 
-After trykitt (hit or miss), tag the lead `trykitt_attempted` via import; add
-`email_found` when an email was saved. Validity goes in `notes` as
-`trykitt verify: valid` or `trykitt verify: catch_all` — not `verify-email` during batch.
+After provider attempts, tag the lead with provider-specific attempt tags:
+`trykitt_attempted` and/or `icypeas_attempted`; add `email_found` when an email
+was saved. Keep provider-specific validity/certainty details in `notes` and do
+not call `verify-email` during batch.
 
 ## Saving found emails
 

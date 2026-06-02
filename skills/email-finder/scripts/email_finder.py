@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Email Finder — trykitt.ai email finding for Hermes / Cursor / Claude Code.
+Email Finder — trykitt.ai + Icypeas email finding for Hermes / Cursor / Claude Code.
 
-Checks outreachmagic before spending trykitt credits. Saves via import-profiles
+Checks outreachmagic before spending provider credits. Saves via import-profiles
 and verify-email (record-only).
 
 Usage:
@@ -38,6 +38,8 @@ GITHUB_REPO = "outreachmagic/email-finder"
 GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RAW_BASE = "https://raw.githubusercontent.com"
 TRYKITT_FIND_URL = "https://api.trykitt.ai/job/find_email"
+ICYPEAS_FIND_URL = "https://app.icypeas.com/api/email-search"
+ICYPEAS_READ_URL = "https://app.icypeas.com/api/bulk-single-searchs/read"
 UPDATE_FILES = (
     "SKILL.md",
     "README.md",
@@ -84,9 +86,18 @@ def load_config() -> dict[str, Any]:
     key = os.environ.get("TRYKITT_API_KEY", "").strip()
     if key:
         cfg["trykitt_api_key"] = key
+    icypeas_key = os.environ.get("ICYPEAS_API_KEY", "").strip()
+    if icypeas_key:
+        cfg["icypeas_api_key"] = icypeas_key
     if os.environ.get("OUTREACHMAGIC_HOME"):
         cfg["outreachmagic_home"] = os.environ["OUTREACHMAGIC_HOME"]
     cfg.setdefault("trykitt_endpoint", TRYKITT_FIND_URL)
+    cfg.setdefault("icypeas_endpoint", ICYPEAS_FIND_URL)
+    cfg.setdefault("icypeas_read_endpoint", ICYPEAS_READ_URL)
+    cfg.setdefault("trykitt_enabled", True)
+    cfg.setdefault("icypeas_enabled", True)
+    cfg.setdefault("icypeas_poll_attempts", 8)
+    cfg.setdefault("icypeas_poll_delay_seconds", 2)
     cfg.setdefault("batch_delay_seconds", 8)
     cfg.setdefault("max_people_per_run", 50)
     cfg.setdefault("outreachmagic_home", "")
@@ -107,10 +118,15 @@ def cmd_config() -> None:
     cfg = load_config()
     om_dir = find_outreachmagic(cfg)
     key = cfg.get("trykitt_api_key", "")
+    icypeas_key = cfg.get("icypeas_api_key", "")
     out: dict[str, Any] = {
         "skill": SKILL_NAME,
         "trykitt_api_key_set": bool(key),
         "trykitt_api_key_preview": _mask_key(key) if key else None,
+        "icypeas_api_key_set": bool(icypeas_key),
+        "icypeas_api_key_preview": _mask_key(icypeas_key) if icypeas_key else None,
+        "trykitt_enabled": _cfg_bool(cfg, "trykitt_enabled", True),
+        "icypeas_enabled": _cfg_bool(cfg, "icypeas_enabled", True),
         "outreachmagic_found": om_dir is not None,
         "outreachmagic_home": str(om_dir) if om_dir else None,
         "batch_delay_seconds": cfg.get("batch_delay_seconds", 8),
@@ -126,6 +142,38 @@ def _normalize_linkedin(url: str) -> str:
     if u and not u.startswith("http"):
         u = f"https://linkedin.com/in/{u.strip('/')}"
     return u
+
+
+def _cfg_bool(cfg: dict[str, Any], key: str, default: bool = False) -> bool:
+    raw = cfg.get(key, default)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        v = raw.strip().lower()
+        if v in ("1", "true", "yes", "on"):
+            return True
+        if v in ("0", "false", "no", "off"):
+            return False
+    return bool(raw)
+
+
+def _enabled_providers(cfg: dict[str, Any]) -> list[str]:
+    providers: list[str] = []
+    if _cfg_bool(cfg, "trykitt_enabled", True):
+        providers.append("trykitt")
+    if _cfg_bool(cfg, "icypeas_enabled", True):
+        providers.append("icypeas")
+    return providers
+
+
+def _split_name(full_name: str) -> tuple[str, str]:
+    cleaned = " ".join((full_name or "").split()).strip()
+    if not cleaned:
+        return "", ""
+    parts = cleaned.split(" ")
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], " ".join(parts[1:])
 
 
 def check_existing_email(
@@ -236,6 +284,7 @@ def trykitt_find(
         "validity": validity or None,
         "validSMTP": payload.get("validSMTP"),
         "jobId": payload.get("jobId"),
+        "provider": "trykitt",
         "domain": domain,
         "full_name": full_name,
     }
@@ -243,7 +292,196 @@ def trykitt_find(
 
 
 
+def icypeas_find(
+    cfg: dict[str, Any],
+    *,
+    full_name: str,
+    domain: str,
+) -> dict[str, Any]:
+    api_key = (cfg.get("icypeas_api_key") or "").strip()
+    if not api_key:
+        return {"error": "ICYPEAS_API_KEY not set", "status": "no_key", "provider": "icypeas"}
+    domain = domain.strip().lower().lstrip("@")
+    if not domain:
+        return {"error": "valid --domain required", "status": "bad_input", "provider": "icypeas"}
+    firstname, lastname = _split_name(full_name)
+    if not firstname and not lastname:
+        return {"error": "valid --name required", "status": "bad_input", "provider": "icypeas"}
+    body = {
+        "firstname": firstname,
+        "lastname": lastname,
+        "domainOrCompany": domain,
+    }
+    req = urllib.request.Request(
+        cfg.get("icypeas_endpoint", ICYPEAS_FIND_URL),
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": api_key,
+            "User-Agent": "email-finder/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        return {
+            "status": "http_error",
+            "http_status": e.code,
+            "error": err_body[:500],
+            "provider": "icypeas",
+        }
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+        return {"status": "error", "error": str(e), "provider": "icypeas"}
+
+    if payload.get("success") is False:
+        return {
+            "status": "error",
+            "error": str(payload.get("error") or payload.get("message") or "icypeas request failed"),
+            "provider": "icypeas",
+        }
+    item = payload.get("item") or {}
+    search_id = item.get("_id") or payload.get("_id")
+    if not search_id:
+        return {"status": "error", "error": "icypeas missing search id", "provider": "icypeas"}
+    return _icypeas_poll_result(cfg, str(search_id), domain=domain, full_name=full_name)
+
+
+def _icypeas_poll_result(
+    cfg: dict[str, Any],
+    search_id: str,
+    *,
+    domain: str,
+    full_name: str,
+) -> dict[str, Any]:
+    poll_attempts = max(1, int(cfg.get("icypeas_poll_attempts", 8)))
+    poll_delay = float(cfg.get("icypeas_poll_delay_seconds", 2))
+    read_url = cfg.get("icypeas_read_endpoint", ICYPEAS_READ_URL)
+    for attempt in range(poll_attempts):
+        req = urllib.request.Request(
+            read_url,
+            data=json.dumps({"id": search_id}).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": str(cfg.get("icypeas_api_key") or ""),
+                "User-Agent": "email-finder/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            return {
+                "status": "http_error",
+                "http_status": e.code,
+                "error": err_body[:500],
+                "provider": "icypeas",
+            }
+        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+            return {"status": "error", "error": str(e), "provider": "icypeas"}
+
+        if payload.get("success") is False:
+            return {
+                "status": "error",
+                "error": str(payload.get("error") or payload.get("message") or "icypeas read failed"),
+                "provider": "icypeas",
+            }
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        item = items[0] if items else {}
+        status = str(item.get("status") or "").upper()
+        processing = status in ("", "NONE", "SCHEDULED", "IN_PROGRESS")
+        if processing and attempt + 1 < poll_attempts:
+            time.sleep(max(0.0, poll_delay))
+            continue
+
+        results = item.get("results") if isinstance(item.get("results"), dict) else {}
+        emails = results.get("emails") if isinstance(results.get("emails"), list) else []
+        first_email = emails[0] if emails and isinstance(emails[0], dict) else {}
+        email = str(first_email.get("email") or "").strip()
+        certainty = str(first_email.get("certainty") or "").strip()
+        return {
+            "status": "found" if email else "not_found",
+            "email": email or None,
+            "validity": certainty or None,
+            "validSMTP": None,
+            "jobId": search_id,
+            "provider": "icypeas",
+            "icypeas_status": status or None,
+            "domain": domain,
+            "full_name": full_name,
+        }
+    return {
+        "status": "error",
+        "error": "icypeas polling exhausted",
+        "jobId": search_id,
+        "provider": "icypeas",
+        "domain": domain,
+        "full_name": full_name,
+    }
+
+
+def run_find_with_fallback(
+    cfg: dict[str, Any],
+    *,
+    full_name: str,
+    domain: str,
+    linkedin: str = "",
+) -> dict[str, Any]:
+    providers = _enabled_providers(cfg)
+    if not providers:
+        return {
+            "status": "skipped",
+            "reason": "no providers enabled",
+            "provider_attempts": [],
+        }
+    attempts: list[dict[str, Any]] = []
+    for provider in providers:
+        if provider == "trykitt":
+            res = trykitt_find(cfg, full_name=full_name, domain=domain, linkedin=linkedin)
+        elif provider == "icypeas":
+            res = icypeas_find(cfg, full_name=full_name, domain=domain)
+        else:
+            continue
+        attempt = {
+            "provider": provider,
+            "status": res.get("status"),
+            "error": res.get("error"),
+            "attempted": res.get("status") not in ("no_key", "bad_input"),
+        }
+        attempts.append(attempt)
+        if res.get("email"):
+            res["provider_attempts"] = attempts
+            return res
+    if attempts:
+        final = dict(attempts[-1])
+        final.setdefault("status", "not_found")
+        final.setdefault("email", None)
+        final.setdefault("validity", None)
+        final["provider_attempts"] = attempts
+        return final
+    return {
+        "status": "skipped",
+        "reason": "no providers available",
+        "provider_attempts": attempts,
+    }
+
+
 def _validity_note_text(validity: str, *, found: bool) -> str:
+    return _provider_note_text("trykitt", validity, found=found)
+
+
+def _provider_note_text(provider: str, validity: str, *, found: bool) -> str:
+    if provider == "icypeas":
+        if not found:
+            return "icypeas: no email found"
+        v = (validity or "").lower()
+        if v:
+            return f"icypeas certainty: {v}"
+        return "icypeas: email found"
     if not found:
         return "trykitt: no email found"
     v = (validity or "").lower()
@@ -265,18 +503,38 @@ def build_import_profile(
     find_result: dict[str, Any],
 ) -> dict[str, Any]:
     email = find_result.get("email")
+    attempts = find_result.get("provider_attempts") if isinstance(find_result.get("provider_attempts"), list) else []
+    attempted_tags: list[str] = []
+    if attempts:
+        for attempt in attempts:
+            provider = str((attempt or {}).get("provider") or "")
+            if provider == "trykitt" and "trykitt_attempted" not in attempted_tags:
+                attempted_tags.append("trykitt_attempted")
+            if provider == "icypeas" and "icypeas_attempted" not in attempted_tags:
+                attempted_tags.append("icypeas_attempted")
+    else:
+        provider = str(find_result.get("provider") or "trykitt")
+        if provider == "icypeas":
+            attempted_tags.append("icypeas_attempted")
+        else:
+            attempted_tags.append("trykitt_attempted")
     profile: dict[str, Any] = {
         "name": full_name,
         "company": company or domain,
         "company_domain": domain,
-        "tags": ["trykitt_attempted"],
+        "tags": attempted_tags,
     }
     if linkedin:
         profile["linkedin"] = _normalize_linkedin(linkedin)
     if email:
         profile["email"] = email
-        profile["tags"] = ["trykitt_attempted", "email_found"]
-    profile["notes"] = _validity_note_text(str(find_result.get("validity") or ""), found=bool(email))
+        profile["tags"] = [*attempted_tags, "email_found"]
+    provider = str(find_result.get("provider") or "trykitt")
+    profile["notes"] = _provider_note_text(
+        provider,
+        str(find_result.get("validity") or ""),
+        found=bool(email),
+    )
     return profile
 
 
@@ -319,8 +577,9 @@ def save_find_result(
         linkedin=linkedin,
         find_result=find_result,
     )
+    provider = str(find_result.get("provider") or "unknown")
     imported = batch_import_results(
-        om_dir, [profile], workspace=workspace, source_detail="email-finder/trykitt",
+        om_dir, [profile], workspace=workspace, source_detail=f"email-finder/{provider}",
     )
     lead_id = None
     imp = imported.get("import") or {}
@@ -329,7 +588,7 @@ def save_find_result(
     return {"saved": True, "import": imp, "lead_id": lead_id}
 
 
-def tag_trykitt_attempted(
+def tag_provider_attempt(
     om_dir: Path,
     *,
     full_name: str,
@@ -337,34 +596,37 @@ def tag_trykitt_attempted(
     domain: str,
     linkedin: str = "",
     workspace: str = "",
+    provider: str = "trykitt",
 ) -> dict[str, Any]:
-    """Record a trykitt attempt on miss so batch re-runs do not repeat."""
+    """Record provider attempts on miss so batch re-runs do not repeat."""
     profile = build_import_profile(
         full_name=full_name,
         company=company,
         domain=domain,
         linkedin=linkedin,
-        find_result={},
+        find_result={"provider": provider},
     )
+    source_suffix = f"{provider}-miss"
+    tag_name = "trykitt_attempted" if provider == "trykitt" else "icypeas_attempted"
     imported = batch_import_results(
         om_dir,
         [profile],
         workspace=workspace,
-        source_detail="email-finder/trykitt-miss",
+        source_detail=f"email-finder/{source_suffix}",
     )
     out: dict[str, Any] = {"tagged": True, "import": imported.get("import", {})}
     if not workspace:
         out["warning"] = (
             "tags require --workspace on import-profiles; "
-            "pass --workspace so trykitt_attempted persists"
+            f"pass --workspace so {tag_name} persists"
         )
     return out
 
 
-def _should_tag_trykitt_attempt(result: dict[str, Any]) -> bool:
-    if result.get("error") in ("TRYKITT_API_KEY not set", "valid --domain required"):
+def _should_tag_provider_attempt(result: dict[str, Any]) -> bool:
+    if result.get("attempted") is False:
         return False
-    return result.get("status") not in ("skipped", "no_key", "bad_input")
+    return result.get("status") in ("found", "not_found")
 
 
 def cmd_find(
@@ -386,7 +648,7 @@ def cmd_find(
                 "existing": existing,
             }, indent=2))
             return
-    result = trykitt_find(cfg, full_name=name, domain=domain, linkedin=linkedin)
+    result = run_find_with_fallback(cfg, full_name=name, domain=domain, linkedin=linkedin)
     if om_dir and save:
         if result.get("email"):
             result["save"] = save_find_result(
@@ -398,15 +660,26 @@ def cmd_find(
                 find_result=result,
                 workspace=workspace,
             )
-        elif _should_tag_trykitt_attempt(result):
-            result["tag_attempt"] = tag_trykitt_attempted(
-                om_dir,
-                full_name=name,
-                company=company or domain,
-                domain=domain,
-                linkedin=linkedin,
-                workspace=workspace,
-            )
+        else:
+            attempts = result.get("provider_attempts") if isinstance(result.get("provider_attempts"), list) else []
+            taggable = [a for a in attempts if isinstance(a, dict) and _should_tag_provider_attempt(a)]
+            if taggable:
+                tag_result = batch_import_results(
+                    om_dir,
+                    [build_import_profile(
+                        full_name=name,
+                        company=company or domain,
+                        domain=domain,
+                        linkedin=linkedin,
+                        find_result={
+                            "provider": str(taggable[-1].get("provider") or "trykitt"),
+                            "provider_attempts": taggable,
+                        },
+                    )],
+                    workspace=workspace,
+                    source_detail="email-finder/fallback-miss",
+                )
+                result["tag_attempt"] = {"tagged": True, "import": tag_result.get("import", {})}
     print(json.dumps(result, indent=2))
 
 
@@ -480,7 +753,7 @@ def _process_one_lead(
         existing = check_existing_email(om_dir, name, company or domain, linkedin, workspace=workspace)
         if existing.get("email"):
             return {"status": "skipped", "reason": "has_email", "existing": existing}
-    return trykitt_find(cfg, full_name=name, domain=domain, linkedin=linkedin)
+    return run_find_with_fallback(cfg, full_name=name, domain=domain, linkedin=linkedin)
 
 
 def _collect_import_profiles(
@@ -491,7 +764,9 @@ def _collect_import_profiles(
     for (name, domain, company, linkedin), result in zip(people_meta, results):
         if result.get("status") == "skipped":
             continue
-        if not _should_tag_trykitt_attempt(result) and not result.get("email"):
+        attempts = result.get("provider_attempts") if isinstance(result.get("provider_attempts"), list) else []
+        should_tag = any(_should_tag_provider_attempt(a) for a in attempts if isinstance(a, dict))
+        if not should_tag and not result.get("email"):
             continue
         profiles.append(
             build_import_profile(

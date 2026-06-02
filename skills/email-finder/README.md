@@ -1,6 +1,6 @@
 # Email Finder
 
-Find work emails with **trykitt.ai**. Checks **outreachmagic** before spending credits; saves via `import-profiles` + `verify-email`.
+Find work emails with **trykitt.ai** and **Icypeas**. Checks **outreachmagic** before spending credits; when both providers are enabled it runs trykitt first and Icypeas second.
 
 Part of the [Outreach Magic skill suite](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/skill-suite.md).
 
@@ -17,6 +17,7 @@ Or clone a release tag into your platform skills dir (e.g. `~/.hermes/skills/ema
 | Key | Purpose |
 |-----|---------|
 | `TRYKITT_API_KEY` | trykitt find API |
+| `ICYPEAS_API_KEY` | Icypeas email-search API |
 | outreachmagic + agent key | Dedup + save |
 
 ## Quick start

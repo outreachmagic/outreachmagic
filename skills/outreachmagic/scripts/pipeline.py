@@ -2721,7 +2721,7 @@ RESERVED_IMPORT_FIELDS = frozenset([
     "company_domain", "is_connected_linkedin", "is_linkedin_request_pending",
     "lead_status", "lead_sentiment", "import_name", "list_source",
     "tags", "contact_order", "hq_city", "hq_state", "hq_country",
-    "external_id", "notes",
+    "external_id", "notes", "last_message_sent", "last_message_received",
 ])
 
 def _extract_extra_import_fields(raw: dict) -> dict[str, str]:

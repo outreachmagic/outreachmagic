@@ -140,10 +140,42 @@ def format_event_timeline(lead, events):
         f"Title:   {lead.get('title') or '—'}",
         f"Email:   {lead.get('email') or '—'}",
         f"Company: {lead.get('company_display') or lead.get('company') or '—'}",
-        f"Industry:{lead.get('industry') or '—'}  |  Headcount: {lead.get('headcount') or '—'}",
-        f"Notes:   {lead.get('notes') or '—'}",
-        "",
     ]
+
+    # Add HQ / Tags if available
+    hq = []
+    if lead.get("hq_city"): hq.append(lead["hq_city"])
+    if lead.get("hq_state"): hq.append(lead["hq_state"])
+    if lead.get("hq_country"): hq.append(lead["hq_country"])
+    hq_str = ", ".join(hq) if hq else "—"
+
+    tags = ", ".join(lead.get("tags") or []) or "—"
+    
+    lines.extend([
+        f"HQ:      {hq_str}",
+        f"Industry:{lead.get('industry') or '—'}  |  Headcount: {lead.get('headcount') or '—'}",
+        f"Tags:    {tags}",
+        f"Notes:   {lead.get('notes') or '—'}",
+    ])
+
+    # Add Activity Summary if available
+    if "email_sent_count" in lead or "linkedin_sent_count" in lead:
+        sent = []
+        if lead.get("email_sent_count"): sent.append(f"{lead['email_sent_count']} emails")
+        if lead.get("linkedin_sent_count"): sent.append(f"{lead['linkedin_sent_count']} linkedin")
+        sent_str = " + ".join(sent) if sent else "0 messages"
+        replies = lead.get("total_replies_count") or 0
+        last_contact = lead.get("last_contacted_at") or lead.get("last_contact_at") or "—"
+        lines.append(f"Activity: {sent_str} | {replies} replies | Last: {last_contact}")
+
+    # Add personalization
+    pers = lead.get("personalization") or {}
+    if pers:
+        pers_clean = {k: v for k, v in pers.items() if v}
+        if pers_clean:
+            lines.append(f"Vars:    {json.dumps(pers_clean)}")
+
+    lines.append("")
     if not events:
         lines.append("No events recorded yet.")
         return "\n".join(lines)

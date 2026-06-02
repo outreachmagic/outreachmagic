@@ -8632,11 +8632,13 @@ def main():
         if not lead:
             print(json.dumps({"error": "Lead not found"}))
             sys.exit(1)
+
+        enriched = enrich_lead_rows([lead], workspace=getattr(args, "workspace", None))
+        lead = enriched[0] if enriched else lead
+
         events = get_lead_events(lead["id"], args.limit)
         if args.json:
-            enriched = enrich_lead_rows([lead], workspace=getattr(args, "workspace", None))
-            lead_out = enriched[0] if enriched else dict(lead)
-            print(json.dumps({"lead": lead_out, "events": events}, indent=2))
+            print(json.dumps({"lead": lead, "events": events}, indent=2))
         else:
             print(format_event_timeline(lead, events))
     elif args.command == "copy-insights":

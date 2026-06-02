@@ -1,10 +1,10 @@
 {
-  "version": "1.22.6",
+  "version": "1.22.7",
   "files": {
-    "pipeline.py": "326b5d46e97f8e6cdc6cc06331f8f465cf8f00a6fbb09bd9729f87c3262a7165",
+    "pipeline.py": "e6ee2c5aede23520833e4aa38f7eae350e00f5bac21320eb4f89b0ee5a0bfa8f",
     "constants.py": "57029bedf1b06e6ade27e9948e3f1f7347e04b96c3edb6927a75756005808409",
     "db_conn.py": "70a9315eeef7b9057e45a24a9cb331f43a5d6e2592fcf85254dec3c3f7b433ff",
-    "formatters.py": "f23d6ea04be3bca1311c0f9c5cacb1613d6421348d7aeaec164f67e307e5aafb",
+    "formatters.py": "529d8b5b0f3afebed3c828d3ef47fedba695799c8bd8e32b72fccca31d45a857",
     "bounces.py": "2bf3fb478c374990ebf6831145da054358d6a2692d04422f59617dd0b9c2220e",
     "activity_sync.py": "a1d36da5b1b35863ecdff8e366d89601ef622729978b148ee1e1cba0da3a04d2",
     "event_classification.py": "95dd951213fa08f27f871fcfa0717bc9598d9d71d01e687ce90ba20fe3d1e9fe",
@@ -20,7 +20,7 @@
     "db_health.py": "5de3432e0cc058a60055993a0b62a553b49aaf948e1b0fc0c750f17ce2a263a3",
     "om_paths.py": "28ea823ce4c10e6698f58bec1d716ea69bf54c96afe010a3144c22ff94d76844",
     "device_login.py": "231086ce0efeb4238f2d9544d91b20d67183cc0f6a96791073ccb5340870855e",
-    "VERSION": "dc7d158217c7b028788d0fa5dbeff7e9fe6cc11f074b5900e213206d2f59aa30",
-    "SKILL.md": "72023ec5d193ab0ee2869313c79b7b10d3c418ba321d227096ce40fb115cafa9"
+    "VERSION": "0d63416e2cd8879a7a924d6d1b5f198b4a257deaee70c3d3f7c715d2c9425d99",
+    "SKILL.md": "5c9627c8062a143e648e80fc2efa74b782f3877759217ce267f35805eb8e9b51"
   }
 }

@@ -636,12 +636,26 @@ _SNAPSHOT_CURSOR_KEYS = {
 }
 
 
-def get_last_snapshot_after_id(kind: str = "workspace") -> int:
+def migrate_legacy_snapshot_cursor(cfg: Optional[dict] = None) -> dict:
+    """Move pre-v2 last_snapshot_after_id into last_snapshot_workspace_after_id."""
+    cfg = dict(cfg if cfg is not None else load_config())
+    legacy = int(cfg.get("last_snapshot_after_id") or 0)
+    ws_key = _SNAPSHOT_CURSOR_KEYS["workspace"]
+    if legacy and not int(cfg.get(ws_key) or 0):
+        cfg[ws_key] = legacy
+    if "last_snapshot_after_id" in cfg:
+        del cfg["last_snapshot_after_id"]
+        save_config(cfg)
+    return cfg
+
+
+def get_snapshot_cursor(kind: str = "workspace") -> int:
     key = _SNAPSHOT_CURSOR_KEYS.get(kind, _SNAPSHOT_CURSOR_KEYS["workspace"])
-    return int(load_config().get(key) or 0)
+    cfg = migrate_legacy_snapshot_cursor()
+    return int(cfg.get(key) or 0)
 
 
-def set_last_snapshot_after_id(snapshot_id: int, kind: str = "workspace") -> None:
+def set_snapshot_cursor(snapshot_id: int, kind: str = "workspace") -> None:
     key = _SNAPSHOT_CURSOR_KEYS.get(kind, _SNAPSHOT_CURSOR_KEYS["workspace"])
     cfg = load_config()
     cfg[key] = int(snapshot_id)
@@ -4776,7 +4790,7 @@ def format_local_sync_hint(counts: dict) -> str:
         parts.append(f"{n} agent event{'s' if n != 1 else ''}")
     if counts.get("cloud_pending_leads"):
         n = counts["cloud_pending_leads"]
-        parts.append(f"{n} lead update{'s' if n != 1 else ''}")
+        parts.append(f"{n} lead snapshot{'s' if n != 1 else ''}")
     return f"\n⚠ Not synced: {', '.join(parts)}. Run: pipeline.py sync"
 
 
@@ -4888,19 +4902,19 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
                 f"Synced {q_synced} quarantine resolution{'s' if q_synced != 1 else ''} to relay."
             )
 
-        lead_push = _push_pending_lead_updates(agent_key)
+        lead_push = _push_pending_lead_snapshots(agent_key)
         leads_pushed = int(lead_push.get("pushed", 0) or 0)
-        results["lead_updates_pushed"] = leads_pushed
+        results["lead_snapshots_pushed"] = leads_pushed
         if lead_push.get("timeouts"):
-            results["lead_updates_timeouts"] = int(lead_push.get("timeouts", 0) or 0)
+            results["lead_snapshots_timeouts"] = int(lead_push.get("timeouts", 0) or 0)
         if lead_push.get("error"):
-            results["lead_updates_error"] = lead_push["error"]
+            results["lead_snapshots_error"] = lead_push["error"]
         if lead_push.get("throttled"):
-            results["lead_updates_throttled"] = True
+            results["lead_snapshots_throttled"] = True
         if lead_push.get("recommendation"):
-            results["lead_updates_recommendation"] = lead_push["recommendation"]
+            results["lead_snapshots_recommendation"] = lead_push["recommendation"]
         if leads_pushed > 0:
-            parts.append(f"Pushed {leads_pushed} lead update{'s' if leads_pushed != 1 else ''} to relay.")
+            parts.append(f"Pushed {leads_pushed} lead snapshot{'s' if leads_pushed != 1 else ''} to relay.")
 
         company_push = _push_pending_company_updates(agent_key)
         cos_pushed = int(company_push.get("pushed", 0) or 0)
@@ -5059,7 +5073,7 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
     return _relay_push_batches(agent_key, entries, client_id)
 
 
-def _push_pending_lead_updates(agent_key: str) -> dict:
+def _push_pending_lead_snapshots(agent_key: str) -> dict:
     """Push pending lead core + workspace snapshots to relay /push."""
     conn = get_conn()
     core_rows = conn.execute(
@@ -5999,8 +6013,7 @@ def format_pull_summary(imported: int, skipped: int, stats: dict) -> str:
     snap_records = int(stats.get("snapshot_records_seen") or 0)
     if snap_records:
         lines.append(
-            f"Snapshot phase: {snap_records} historical snapshot records processed "
-            "(multiple versions per lead are expected — not 1:1 with unique leads)."
+            f"Snapshot phase: {snap_records} core/workspace/company snapshot record(s) applied."
         )
     return "\n".join(lines)
 
@@ -6082,8 +6095,8 @@ def print_pull_diagnostics(stats: dict):
         f"({'advanced' if stats.get('cursor_advanced') else 'unchanged'})"
     )
     print(
-        f"Snapshot cursor: {stats.get('snapshot_after_start') or '-'} -> "
-        f"{stats.get('snapshot_after_end') or '-'}"
+        f"Snapshot cursors: {stats.get('snapshot_cursors_start') or '-'} -> "
+        f"{stats.get('snapshot_cursors_end') or '-'}"
     )
     print(
         f"Skips: duplicates={stats.get('skipped_duplicates', 0)} "
@@ -6197,7 +6210,7 @@ def sync_from_relay_org(
     *,
     skip_routing_sync: bool = False,
 ) -> tuple[int, int]:
-    """Import relay events for the org. Cursors: last_max_id (events), last_snapshot_after_id."""
+    """Import relay events for the org. Cursors: last_max_id (events), snapshot cursors (core/workspace/company)."""
     if not skip_routing_sync:
         try:
             maybe_sync_routing_from_cloud(quiet=quiet)
@@ -6220,10 +6233,10 @@ def sync_from_relay_org(
     page_after_id = 0 if full else int(after_id if after_id is not None else (get_last_max_id() or 0))
     initial_after_id = page_after_id
     snapshot_cursors = {
-        kind: 0 if full else get_last_snapshot_after_id(kind)
+        kind: 0 if full else get_snapshot_cursor(kind)
         for kind in ("core", "workspace", "company")
     }
-    snapshot_after_start = dict(snapshot_cursors)
+    snapshot_cursors_start = dict(snapshot_cursors)
 
     pending_events: Optional[int] = None
     est_event_pages: Optional[int] = None
@@ -6361,7 +6374,7 @@ def sync_from_relay_org(
         set_last_max_id(page_after_id)
     for kind, cursor in snapshot_cursors.items():
         if cursor:
-            set_last_snapshot_after_id(cursor, kind)
+            set_snapshot_cursor(cursor, kind)
     set_last_pull(datetime.now(timezone.utc).isoformat())
 
     pull_hint = None
@@ -6375,8 +6388,8 @@ def sync_from_relay_org(
             "config_last_max_id_before": after_id,
             "pull_after_id_start": initial_after_id,
             "pull_after_id_end": page_after_id,
-            "snapshot_after_start": snapshot_after_start,
-            "snapshot_after_end": snapshot_cursors,
+            "snapshot_cursors_start": snapshot_cursors_start,
+            "snapshot_cursors_end": snapshot_cursors,
             "pull_hint": pull_hint,
             "cursor_advanced": cursor_advanced,
             "cursor_stalled": cursor_stalled,

@@ -445,7 +445,7 @@ def build_lead_sync_payload(
     workspace_slug: Optional[str] = None,
     prefetch: Optional[dict] = None,
 ) -> dict:
-    """Combined core + workspace payload (inspect/debug only — relay uses split snapshots)."""
+    """Merged core + workspace payload for inspect/export only; relay push uses split snapshots."""
     core = build_lead_core_sync_payload(conn, org_id, lead_id, prefetch=prefetch)
     if not workspace_slug:
         ws_id, _ = _resolve_sync_workspace(conn, lead_id, None, prefetch)

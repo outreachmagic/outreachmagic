@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.22.0
+version: 1.22.1
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -724,7 +724,7 @@ Diagnostic verdicts:
 - `relay has events but deduped` — relay returned events already recorded in local `relay_ingested`.
 - `cursor advanced` — event cursor moved forward (`last_max_id` increased).
 - `cursor stalled` — relay returned a full page but cursor did not advance; inspect relay pagination.
-- Pull uses id cursors only: `last_max_id` (webhooks) and `last_snapshot_after_id` (lead profiles). No `since` on relay pull.
+- Pull uses id cursors only: `last_max_id` (webhooks) and per-table snapshot cursors (`last_snapshot_core_after_id`, `last_snapshot_workspace_after_id`, `last_snapshot_company_after_id`). No `since` on relay pull.
 
 If events were ingested but still seem missing, inspect a specific lead timeline:
 

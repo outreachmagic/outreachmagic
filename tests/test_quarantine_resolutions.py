@@ -120,7 +120,7 @@ class QuarantineResolutionTests(unittest.TestCase):
                     "fetch_routing_bundle",
                     return_value={"workspaces": [], "campaignMaps": []},
                 ):
-                    with patch.object(om, "_push_pending_lead_updates", return_value={"pushed": 0}):
+                    with patch.object(om, "_push_pending_lead_snapshots", return_value={"pushed": 0}):
                         with patch.object(om, "_push_pending_company_updates", return_value={"pushed": 0}):
                             with patch.object(om, "_push_agent_events_to_relay", return_value={"pushed": 0}):
                                 om.sync_all(no_health_report=True)
@@ -152,7 +152,7 @@ class QuarantineResolutionTests(unittest.TestCase):
                     "fetch_routing_bundle",
                     return_value={"workspaces": [], "campaignMaps": []},
                 ):
-                    with patch.object(om, "_push_pending_lead_updates", return_value={"pushed": 0}):
+                    with patch.object(om, "_push_pending_lead_snapshots", return_value={"pushed": 0}):
                         with patch.object(om, "_push_pending_company_updates", return_value={"pushed": 0}):
                             with patch.object(om, "_push_agent_events_to_relay", return_value={"pushed": 0}):
                                 om._push_pending_quarantine_resolutions("om_agent_test")
@@ -177,9 +177,9 @@ class QuarantineResolutionTests(unittest.TestCase):
         with patch.object(om, "pull_events_org", side_effect=fake_pull):
             with patch.object(om, "maybe_sync_routing_from_cloud"):
                 with patch.object(om, "get_last_max_id", return_value=0):
-                    with patch.object(om, "get_last_snapshot_after_id", return_value=0):
+                    with patch.object(om, "get_snapshot_cursor", return_value=0):
                         with patch.object(om, "set_last_max_id"):
-                            with patch.object(om, "set_last_snapshot_after_id"):
+                            with patch.object(om, "set_snapshot_cursor"):
                                 om.sync_from_relay_org("key", full=True, quiet=True)
         event_calls = [c for c in calls if not c.get("snapshots_only")]
         self.assertGreaterEqual(len(event_calls), 1)

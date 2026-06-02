@@ -27,7 +27,23 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
+#
+# Important: this script must run against the *installed* Outreach Magic skill
+# (e.g. ~/.cursor/skills/outreachmagic/...), not against the repo copy. Otherwise
+# om_paths' default data_root points at the repo and you end up with a partially
+# initialized / mismatched database schema.
+#
+# We prefer Cursor, then fall back to the repo scripts.
+#
+HOME = Path.home()
+_cursor_scripts = HOME / ".cursor" / "skills" / "outreachmagic" / "scripts"
+_hermes_scripts = HOME / ".hermes" / "skills" / "outreachmagic" / "scripts"
+
+SCRIPTS = (
+    ROOT / "skills" / "outreachmagic" / "scripts"
+    if (ROOT / "skills" / "outreachmagic" / "scripts" / "pipeline.py").exists()
+    else (_cursor_scripts if (_cursor_scripts / "pipeline.py").exists() else _hermes_scripts)
+)
 sys.path.insert(0, str(SCRIPTS))
 
 import pipeline as om  # noqa: E402
@@ -60,11 +76,29 @@ def apply_activity_for_row(
     if not email:
         return {"status": "skipped", "reason": "no_email"}
 
-    lead = om.find_lead(email=email)
-    if not lead:
+    # Use the same tiered identity matching as import-profiles, not just email.
+    # The CSV contains some leads that match an existing row via external_id /
+    # unified_lead_id (not email).
+    profile = om.normalize_profile_row(row)
+    extra = om._extract_extra_import_fields(row)
+    idents = om.build_import_identities(
+        profile,
+        extra,
+        import_batch=IMPORT_BATCH,
+        company_domain=extra.get("company_domain"),
+    )
+    if not idents:
+        return {"status": "skipped", "reason": "no_identities", "email": email}
+
+    match = om.resolve_lead(
+        name=profile.get("name") or "Unknown",
+        identities=idents,
+        dry_run=True,
+    )
+    if match.get("status") != "matched" or not match.get("id"):
         return {"status": "skipped", "reason": "lead_not_found", "email": email}
 
-    lead_id = lead["id"]
+    lead_id = match["id"]
     last_contacted = _strip(row, "last_contacted") or None
     email_sent = _int_field(row, "email_sent")
     linkedin_sent = _int_field(row, "linkedin_sent")
@@ -94,6 +128,50 @@ def apply_activity_for_row(
         merge=True,
         mark_cloud_pending=True,
     )
+
+    # Log legacy messages as events
+    last_sent = _strip(row, "last_message_sent")
+    last_received = _strip(row, "last_message_received")
+
+    if not dry_run and (last_sent or last_received):
+        conn = om.get_conn()
+        # Clear existing legacy events for this lead to avoid duplicates on re-run
+        conn.execute(
+            "DELETE FROM events WHERE lead_id = ? AND event_type = 'outreachmagic-legacy'",
+            (lead_id,)
+        )
+        conn.commit()
+        conn.close()
+
+    if last_sent:
+        om.log_event(
+            lead_id,
+            "outreachmagic-legacy",
+            direction="outbound",
+            body_preview=last_sent,
+            event_at=last_contacted,
+            metadata={"source": "legacy_import", "legacy_type": "last_message_sent"}
+        )
+    if last_received:
+        om.log_event(
+            lead_id,
+            "outreachmagic-legacy",
+            direction="inbound",
+            body_preview=last_received,
+            event_at=last_contacted,
+            metadata={"source": "legacy_import", "legacy_type": "last_message_received"}
+        )
+
+    # Clear old personalization fields if they exist
+    if not dry_run:
+        conn = om.get_conn()
+        conn.execute(
+            "DELETE FROM lead_personalization WHERE lead_id = ? AND field_name IN ('last_message_sent', 'last_message_received')",
+            (lead_id,)
+        )
+        conn.commit()
+        conn.close()
+
     return {"status": "updated", "email": email, "lead_id": lead_id, "activity": summary}
 
 
@@ -111,6 +189,7 @@ def main() -> int:
         action="store_true",
         help="Skip import-profiles (activity only)",
     )
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing fields")
     args = parser.parse_args()
 
     csv_path = Path(args.file).expanduser()
@@ -118,7 +197,17 @@ def main() -> int:
         print(json.dumps({"error": f"file not found: {csv_path}"}))
         return 1
 
-    om.init_db()
+    try:
+        om.init_db()
+    except Exception as e:
+        # If the local DB is from an older schema, init_db can fail while creating
+        # indices that reference columns added later (e.g. cloud_pending).
+        # In that case, run incremental migrations and retry once.
+        if "cloud_pending" in str(e):
+            om.migrate_db()
+            om.init_db()
+        else:
+            raise
     conn = om.get_conn()
     ws = om.resolve_workspace_identity(conn, args.workspace)
     conn.close()
@@ -148,6 +237,7 @@ def main() -> int:
                 sender_profile=args.sender_profile,
                 source_detail=SOURCE_DETAIL,
                 import_batch_id=IMPORT_BATCH,
+                overwrite=args.overwrite,
             )
             summary["import_profiles"] = {
                 "processed": imp.get("processed"),
@@ -174,9 +264,26 @@ def main() -> int:
             if not email:
                 continue
             status = _strip(row, "email_verify_result") or "valid"
-            lead = om.find_lead(email=email)
-            if lead:
-                ver_batch.append({"lead_id": lead["id"], "status": status, "source": "legacy_import"})
+
+            profile = om.normalize_profile_row(row)
+            extra = om._extract_extra_import_fields(row)
+            idents = om.build_import_identities(
+                profile,
+                extra,
+                import_batch=IMPORT_BATCH,
+                company_domain=extra.get("company_domain"),
+            )
+            if not idents:
+                continue
+            match = om.resolve_lead(
+                name=profile.get("name") or "Unknown",
+                identities=idents,
+                dry_run=True,
+            )
+            if match.get("status") == "matched" and match.get("id"):
+                ver_batch.append(
+                    {"lead_id": match["id"], "status": status, "source": "legacy_import"}
+                )
         if ver_batch:
             summary["verify_email"] = om.verify_email_batch(ver_batch)
 

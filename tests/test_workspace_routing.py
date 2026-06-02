@@ -6,8 +6,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-import pytest
-
 # Tests use an isolated temp data root; never pull live routing from env agent keys.
 os.environ.pop("OUTREACHMAGIC_AGENT_KEY", None)
 
@@ -43,14 +41,12 @@ from workspace_routing import (  # noqa: E402
 )
 
 
-@pytest.fixture(autouse=True)
-def _fresh_db():
-    """Isolate each test: other modules share the global data-root override."""
+def _reset_db():
+    """Fresh SQLite per test (shared global data-root override across test modules)."""
     db_path = om.get_db_path()
     if db_path.exists():
         db_path.unlink()
     om.init_db()
-    yield
 
 
 def test_normalization():
@@ -74,7 +70,7 @@ def test_parse_linkedin_value():
 
 
 def test_linkedin_sales_nav_then_public_slug_same_lead():
-    om.init_db()
+    _reset_db()
     sales = "ACwAAAN-JhcBW3CyV59ymKdIvvot8il9llc-L8w"
     r1 = om.resolve_lead(
         name="Jane", email="jane-linkedin@test.com",
@@ -100,7 +96,7 @@ def test_linkedin_sales_nav_then_public_slug_same_lead():
 
 
 def test_campaign_routing():
-    om.init_db()
+    _reset_db()
     conn = om.get_conn()
     ws_id = om.ensure_default_org_workspace(conn)
     om.assign_campaign_map(
@@ -148,7 +144,7 @@ def test_prosp_camelcase_campaign_fields_are_extracted():
 
 
 def test_single_mode_routes_all_to_default():
-    om.init_db()
+    _reset_db()
     # Force single mode via config sync (set_workspace_routing blocks multi → single).
     cfg = om.load_config()
     cfg["workspace_routing_mode"] = WORKSPACE_ROUTING_SINGLE
@@ -171,7 +167,7 @@ def test_single_mode_routes_all_to_default():
 
 
 def test_multi_mode_no_default_workspace_on_init():
-    om.init_db()
+    _reset_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
     conn = om.get_conn()
     config = om.get_org_routing_config(conn, DEFAULT_ORG_ID)
@@ -184,7 +180,7 @@ def test_multi_mode_no_default_workspace_on_init():
 
 
 def test_multi_mode_quarantines_unmapped():
-    om.init_db()
+    _reset_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
     om.create_workspace("Team Alpha", slug="alpha")
     om.add_campaign_map_cli("smartlead", "alpha", campaign_id="c1", campaign_name="Alpha")
@@ -221,7 +217,7 @@ def test_multi_mode_quarantines_unmapped():
 
 
 def test_multi_mode_resolves_mapped_campaign():
-    om.init_db()
+    _reset_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
     om.create_workspace("Team Alpha", slug="alpha")
     om.add_campaign_map_cli("smartlead", "alpha", campaign_id="c1", campaign_name="Alpha")
@@ -260,7 +256,7 @@ def test_quarantine_summary_requires_rules_or_manual_mapping():
 
 
 def test_ingest_quarantine_and_route():
-    om.init_db()
+    _reset_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
     om.create_workspace("Team Alpha", slug="alpha")
     om.add_campaign_map_cli("smartlead", "alpha", campaign_id="c1", campaign_name="Alpha")
@@ -288,7 +284,7 @@ def test_ingest_quarantine_and_route():
 
 
 def test_replay_pending_quarantine_applies_prefix_rules():
-    om.init_db()
+    _reset_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
     om.create_workspace("LeadgenPH", slug="leadgenph")
     event = {
@@ -321,7 +317,7 @@ def test_replay_pending_quarantine_applies_prefix_rules():
 
 
 def test_replay_pending_quarantine_applies_contains_rules():
-    om.init_db()
+    _reset_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
     om.create_workspace("Acme", slug="acme")
     event = {
@@ -348,7 +344,7 @@ def test_replay_pending_quarantine_applies_contains_rules():
 
 
 def test_replay_pending_quarantine_applies_unknown_name_mapping():
-    om.init_db()
+    _reset_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
     om.create_workspace("Acme Corp", slug="acme_corp")
     event = {
@@ -369,7 +365,7 @@ def test_replay_pending_quarantine_applies_unknown_name_mapping():
 
 
 def test_campaign_stats_splits_workspace_and_counts_interested():
-    om.init_db()
+    _reset_db()
     lead_a = om.add_lead(name="Lead A", email="leada@test.com").get("id")
     lead_b = om.add_lead(name="Lead B", email="leadb@test.com").get("id")
     assert lead_a and lead_b
@@ -437,7 +433,7 @@ def test_import_key_stable_within_batch():
 
 
 def test_agent_sync_full_payload_roundtrip():
-    om.init_db()
+    _reset_db()
     row = {
         "name": "Sync Test",
         "company": "Acme",
@@ -461,7 +457,7 @@ def test_agent_sync_full_payload_roundtrip():
     assert "vip" in (payload.get("tags") or [])
     assert payload.get("personalization", {}).get("first_name") == "Sync"
 
-    om.init_db()
+    _reset_db()
     entity_key = f"external_id:{payload['external_id']}"
     replay_conn = om.get_conn()
     om.ingest_agent_entry({
@@ -494,7 +490,7 @@ def test_agent_sync_full_payload_roundtrip():
 
 
 def test_import_profiles_weak_identity_and_entity_key():
-    om.init_db()
+    _reset_db()
     row = {
         "name": "Melynie Schiel",
         "company": "ACCJC",
@@ -530,7 +526,7 @@ def test_import_profiles_weak_identity_and_entity_key():
 
 
 def test_import_profiles_persists_row_notes_and_overwrite_behavior():
-    om.init_db()
+    _reset_db()
     ws = om.create_workspace("Notes WS", slug="notesws")
 
     row1 = {
@@ -574,7 +570,7 @@ def test_import_profiles_persists_row_notes_and_overwrite_behavior():
 
 
 def test_import_profiles_accepts_tags_json_list():
-    om.init_db()
+    _reset_db()
     ws = om.create_workspace("Tag List WS", slug="tagws")
 
     row = {
@@ -609,7 +605,7 @@ def test_parse_tags_value_rejects_bracket_literal_string():
 
 
 def test_repair_malformed_tags_fixes_bracket_form():
-    om.init_db()
+    _reset_db()
     ws = om.create_workspace("Repair Tag WS", slug="repairtagws")
     lead_id = om.add_lead(name="Repair Lead", email="repairtag@test.com")["id"]
     conn = om.get_conn()
@@ -633,7 +629,7 @@ def test_repair_malformed_tags_fixes_bracket_form():
 
 
 def test_campaign_stats_normalizes_linkedin_sent_and_reply_counts():
-    om.init_db()
+    _reset_db()
     lead_id = om.add_lead(name="LinkedIn Lead", email="linkedinlead@test.com").get("id")
     assert lead_id
 

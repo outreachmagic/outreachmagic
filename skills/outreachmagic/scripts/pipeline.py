@@ -5898,6 +5898,7 @@ def export_local_changes(
         if not entity_key:
             continue
         ws_slug = _lead_workspace_slug(conn, row["lead_id"])
+        meta = _decode_event_metadata(row["metadata_json"])
         event_entry: dict = {
             "action": "event_log",
             "entity_key": entity_key,
@@ -5915,6 +5916,8 @@ def export_local_changes(
             event_entry["payload"]["subject"] = row["subject"]
         if row["body_preview"]:
             event_entry["payload"]["body_preview"] = row["body_preview"]
+        if meta.get("body"):
+            event_entry["payload"]["body"] = str(meta.get("body"))
         entries.append(event_entry)
 
     conn.close()
@@ -6036,6 +6039,9 @@ def ingest_agent_entry(
             lead_id = find_lead_by_identifier(conn, entity_key)
             conn.close()
             if lead_id:
+                event_meta = {"source": "agent_sync", "origin_client": client_id}
+                if payload.get("body"):
+                    event_meta["body"] = str(payload.get("body"))
                 log_event(
                     lead_id,
                     event_type=payload.get("event_type", "email_sent"),
@@ -6043,7 +6049,7 @@ def ingest_agent_entry(
                     channel=payload.get("channel", "email"),
                     subject=payload.get("subject"),
                     body_preview=payload.get("body_preview"),
-                    metadata={"source": "agent_sync", "origin_client": client_id},
+                    metadata=event_meta,
                 )
         else:
             conn.close()

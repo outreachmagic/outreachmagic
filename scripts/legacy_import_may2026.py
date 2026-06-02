@@ -150,7 +150,11 @@ def apply_activity_for_row(
             direction="outbound",
             body_preview=last_sent,
             event_at=last_contacted,
-            metadata={"source": "legacy_import", "legacy_type": "last_message_sent"}
+            metadata={
+                "source": "legacy_import",
+                "legacy_type": "last_message_sent",
+                "body": last_sent,
+            }
         )
     if last_received:
         om.log_event(
@@ -159,7 +163,11 @@ def apply_activity_for_row(
             direction="inbound",
             body_preview=last_received,
             event_at=last_contacted,
-            metadata={"source": "legacy_import", "legacy_type": "last_message_received"}
+            metadata={
+                "source": "legacy_import",
+                "legacy_type": "last_message_received",
+                "body": last_received,
+            }
         )
 
     # Clear old personalization fields if they exist

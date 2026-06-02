@@ -641,10 +641,31 @@ def extract_reply_body(
     return body.strip()
 
 
+_HTML_TAG_RE = re.compile(r"<[a-zA-Z!/]")
+
+
+def looks_like_html(text: str) -> bool:
+    """True when text likely contains HTML markup (not plain `<` in prose)."""
+    if not text or "<" not in text or ">" not in text:
+        return False
+    return bool(_HTML_TAG_RE.search(text))
+
+
 def strip_html_reply(text: str, max_len: int = 250) -> str:
-    """Strip HTML from email reply body previews."""
+    """Strip HTML tags and collapse whitespace. max_len=0 keeps full plain text."""
     import html as html_mod
-    clean = re.sub(r"<[^>]+>", " ", text or "")
+    clean = text or ""
+    clean = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", clean, flags=re.I | re.S)
+    clean = re.sub(r"<[^>]+>", " ", clean)
     clean = html_mod.unescape(clean)
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean[:max_len] if max_len else clean
+
+
+def normalize_event_body_for_storage(text: str) -> tuple[str, bool]:
+    """Convert HTML bodies to plain text before SQLite storage. Returns (text, was_html)."""
+    if not text:
+        return "", False
+    if not looks_like_html(text):
+        return text, False
+    return strip_html_reply(text, max_len=0), True

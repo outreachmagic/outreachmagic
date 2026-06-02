@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -79,6 +80,83 @@ class TestExtractReplyBody(unittest.TestCase):
         )
         self.assertIn("Thanks for reaching out", body)
         self.assertNotIn("A lead has replied", body)
+
+
+class TestHtmlBodyNormalization(unittest.TestCase):
+    def test_looks_like_html(self):
+        self.assertTrue(pr.looks_like_html("<p>Hi</p>"))
+        self.assertFalse(pr.looks_like_html("plain text reply"))
+        self.assertFalse(pr.looks_like_html("use x < y and z > 0"))
+
+    def test_strip_html_reply_entities(self):
+        html = "<p>Hello <b>world</b> &amp; team</p>"
+        self.assertEqual(pr.strip_html_reply(html, max_len=0), "Hello world & team")
+
+    def test_normalize_skips_plain_text(self):
+        plain, was_html = pr.normalize_event_body_for_storage("Thanks for reaching out!")
+        self.assertEqual(plain, "Thanks for reaching out!")
+        self.assertFalse(was_html)
+
+    def test_normalize_strips_html(self):
+        html = "<html><body><div>Yes, let's talk.</div></body></html>"
+        plain, was_html = pr.normalize_event_body_for_storage(html)
+        self.assertEqual(plain, "Yes, let's talk.")
+        self.assertTrue(was_html)
+
+    def test_strip_html_ignores_style_blocks(self):
+        html = "<p>Hi</p><style>.x{color:red}</style>"
+        self.assertEqual(pr.strip_html_reply(html, max_len=0), "Hi")
+
+
+class TestLogEventHtmlBody(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.mkdtemp()
+        from om_paths import set_data_root_override  # noqa: E402
+
+        set_data_root_override(Path(cls._tmpdir))
+        om_spec = importlib.util.spec_from_file_location("pipeline", SCRIPTS / "pipeline.py")
+        cls.om = importlib.util.module_from_spec(om_spec)
+        sys.modules["pipeline"] = cls.om
+        assert om_spec.loader is not None
+        om_spec.loader.exec_module(cls.om)
+
+    def setUp(self):
+        self.om.init_db()
+        conn = self.om.get_conn()
+        conn.execute(
+            "INSERT INTO leads (name, email, stage) VALUES (?, ?, ?)",
+            ("Jane", "jane@acme.com", "prospecting"),
+        )
+        conn.commit()
+        self.lead_id = conn.execute("SELECT id FROM leads LIMIT 1").fetchone()[0]
+        conn.close()
+
+    def test_log_event_strips_html_before_save(self):
+        html = (
+            "<html><body><p>Interested in learning more.</p>"
+            "<style>.x{color:red}</style></body></html>"
+        )
+        event_id = self.om.log_event(
+            self.lead_id,
+            "email_reply",
+            direction="inbound",
+            channel="email",
+            body_preview=html[:200],
+            metadata={"body": html},
+        )
+        conn = self.om.get_conn()
+        row = conn.execute(
+            "SELECT body_preview, metadata_json FROM events WHERE id = ?",
+            (event_id,),
+        ).fetchone()
+        conn.close()
+        meta = json.loads(row["metadata_json"])
+        self.assertTrue(meta.get("body_was_html"))
+        self.assertGreater(meta.get("body_original_length", 0), len(meta["body"]))
+        self.assertEqual(meta["body"], "Interested in learning more.")
+        self.assertEqual(row["body_preview"], "Interested in learning more.")
+        self.assertNotIn("<", meta["body"])
 
 
 class TestPlatformMapCli(unittest.TestCase):

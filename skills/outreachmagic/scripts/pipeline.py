@@ -155,8 +155,11 @@ from platform_registry import (
     LINKEDIN_PLATFORMS,
     PLATFORM_LABELS,
     PLATFORM_SETUP_HINTS,
+    looks_like_html,
+    normalize_event_body_for_storage,
     platform_map_json,
     reply_event_sql_condition,
+    strip_html_reply,
 )
 from relay_ingest import (
     ingest_relay_event,
@@ -3259,7 +3262,7 @@ def backfill_plusvibe_status_metadata(conn=None):
 
 
 def cap_event_body(body: str) -> tuple[str, bool]:
-    """Truncate stored email/HTML body to MAX_EVENT_BODY_STORAGE_CHARS. Returns (text, was_truncated)."""
+    """Truncate stored event body to MAX_EVENT_BODY_STORAGE_CHARS. Returns (text, was_truncated)."""
     if not body:
         return "", False
     limit = MAX_EVENT_BODY_STORAGE_CHARS
@@ -3268,24 +3271,38 @@ def cap_event_body(body: str) -> tuple[str, bool]:
     return body[:limit], True
 
 
+def _prepare_stored_event_body(meta: dict, body_preview: Optional[str]) -> str:
+    """Normalize HTML bodies, cap length, and derive body_preview for events row."""
+    preview = (body_preview or "")[:200]
+    if meta.get("body"):
+        raw_body = str(meta["body"])
+        plain, was_html = normalize_event_body_for_storage(raw_body)
+        if was_html:
+            meta["body_was_html"] = True
+            meta["body_original_length"] = len(raw_body)
+        pre_cap_len = len(plain)
+        capped, truncated = cap_event_body(plain)
+        meta["body"] = capped
+        if truncated:
+            meta["body_truncated"] = True
+            if not was_html:
+                meta["body_original_length"] = pre_cap_len
+        preview = capped[:200]
+    elif looks_like_html(preview):
+        preview = strip_html_reply(preview, max_len=200)
+    return preview
+
+
 def log_event(lead_id, event_type, direction="outbound", channel="email",
               subject=None, body_preview=None, metadata=None, campaign=None,
               event_at=None, sender=None):
     meta = dict(metadata or {})
-    if meta.get("body"):
-        raw_body = str(meta["body"])
-        original_len = len(raw_body)
-        capped, truncated = cap_event_body(raw_body)
-        meta["body"] = capped
-        if truncated:
-            meta["body_truncated"] = True
-            meta["body_original_length"] = original_len
+    preview = _prepare_stored_event_body(meta, body_preview)
     campaign_name = campaign or meta.get("campaign")
     conn = get_conn()
     campaign_id = None
     if campaign_name and str(campaign_name).strip():
         campaign_id = ensure_campaign(conn, str(campaign_name).strip(), lead_id)
-    preview = (body_preview or "")[:200]
     created = event_at or None
     if created:
         conn.execute(

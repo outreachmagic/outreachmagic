@@ -49,6 +49,7 @@ sys.path.insert(0, str(SCRIPTS))
 import pipeline as om  # noqa: E402
 
 IMPORT_BATCH = "legacy-may-2026"
+SOURCE = "legacy"
 SOURCE_DETAIL = "legacy_export_may_2026"
 
 
@@ -64,6 +65,13 @@ def _int_field(row: dict, key: str) -> int:
 
 def _strip(row: dict, key: str) -> str:
     return (row.get(key) or "").strip()
+
+
+def _infer_legacy_channel(email_sent: int, linkedin_sent: int) -> str:
+    """Best-effort channel inference for legacy message fields."""
+    if linkedin_sent > 0 and email_sent == 0:
+        return "linkedin"
+    return "email"
 
 
 def apply_activity_for_row(
@@ -132,40 +140,64 @@ def apply_activity_for_row(
     # Log legacy messages as events
     last_sent = _strip(row, "last_message_sent")
     last_received = _strip(row, "last_message_received")
+    last_campaign = _strip(row, "last_campaign") or None
 
     if not dry_run and (last_sent or last_received):
         conn = om.get_conn()
         # Clear existing legacy events for this lead to avoid duplicates on re-run
         conn.execute(
-            "DELETE FROM events WHERE lead_id = ? AND event_type = 'outreachmagic-legacy'",
+            """DELETE FROM events
+               WHERE lead_id = ?
+                 AND (
+                    event_type = 'outreachmagic-legacy'
+                    OR (
+                        (metadata_json LIKE '%"source": "legacy_import"%' OR metadata_json LIKE '%"source":"legacy_import"%')
+                        AND (
+                            metadata_json LIKE '%"legacy_type": "last_message_sent"%'
+                            OR metadata_json LIKE '%"legacy_type":"last_message_sent"%'
+                            OR metadata_json LIKE '%"legacy_type": "last_message_received"%'
+                            OR metadata_json LIKE '%"legacy_type":"last_message_received"%'
+                        )
+                    )
+                 )""",
             (lead_id,)
         )
         conn.commit()
         conn.close()
 
+    channel = _infer_legacy_channel(email_sent, linkedin_sent)
+    sent_event_type = "linkedin_message" if channel == "linkedin" else "email_sent"
+    reply_event_type = "linkedin_reply" if channel == "linkedin" else "email_reply"
+
     if last_sent:
         om.log_event(
             lead_id,
-            "outreachmagic-legacy",
+            sent_event_type,
             direction="outbound",
+            channel=channel,
             body_preview=last_sent,
             event_at=last_contacted,
+            campaign=last_campaign,
             metadata={
                 "source": "legacy_import",
                 "legacy_type": "last_message_sent",
+                "campaign": last_campaign,
                 "body": last_sent,
             }
         )
     if last_received:
         om.log_event(
             lead_id,
-            "outreachmagic-legacy",
+            reply_event_type,
             direction="inbound",
+            channel=channel,
             body_preview=last_received,
             event_at=last_contacted,
+            campaign=last_campaign,
             metadata={
                 "source": "legacy_import",
                 "legacy_type": "last_message_received",
+                "campaign": last_campaign,
                 "body": last_received,
             }
         )
@@ -243,6 +275,7 @@ def main() -> int:
                 rows,
                 workspace=args.workspace,
                 sender_profile=args.sender_profile,
+                source=SOURCE,
                 source_detail=SOURCE_DETAIL,
                 import_batch_id=IMPORT_BATCH,
                 overwrite=args.overwrite,

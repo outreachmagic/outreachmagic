@@ -2755,6 +2755,20 @@ RESERVED_IMPORT_FIELDS = frozenset([
     "external_id", "notes", "last_message_sent", "last_message_received",
 ])
 
+def csv_import_source_fields(
+    extra: dict[str, str],
+    *,
+    default_source: str,
+    default_source_detail: Optional[str] = None,
+) -> tuple[str, Optional[str]]:
+    """Map CSV columns: list_source -> source, import_name -> source_detail."""
+    list_src = (extra.get("list_source") or "").strip()
+    import_name = (extra.get("import_name") or "").strip()
+    lead_source = list_src or default_source
+    lead_source_detail = import_name or default_source_detail
+    return lead_source, lead_source_detail
+
+
 def _extract_extra_import_fields(raw: dict) -> dict[str, str]:
     """Extract non-PROFILE_ALIASES fields from the raw CSV/JSON row."""
     out: dict[str, str] = {}
@@ -2836,10 +2850,12 @@ def import_profiles(
     notes: Optional[str] = None,
     workspace: Optional[str] = None,
     sender_profile: Optional[str] = None,
+    source: Optional[str] = None,
     source_detail: Optional[str] = None,
     import_batch_id: Optional[str] = None,
 ) -> dict:
     """Import many profile rows (CSV dicts or JSON objects). Tiered identity match keys."""
+    default_source = source if source is not None else "csv_import"
     summary: dict = {
         "processed": 0,
         "created": 0,
@@ -2906,7 +2922,11 @@ def import_profiles(
             continue
         summary["processed"] += 1
 
-        row_source_detail = extra.get("import_name") or extra.get("list_source") or source_detail
+        row_source, row_source_detail = csv_import_source_fields(
+            extra,
+            default_source=default_source,
+            default_source_detail=source_detail,
+        )
         row_hq_city = extra.get("hq_city")
         row_hq_state = extra.get("hq_state")
         row_hq_country = extra.get("hq_country")
@@ -2920,7 +2940,7 @@ def import_profiles(
                 dry_run=dry_run,
                 overwrite=overwrite,
                 company_domain=row_company_domain,
-                source="csv_import",
+                source=row_source,
                 source_detail=row_source_detail,
                 source_platform="csv",
                 hq_city=row_hq_city,
@@ -6124,9 +6144,9 @@ def format_pull_summary(imported: int, skipped: int, stats: dict) -> str:
     finally:
         conn.close()
     lines = [
-        f"Imported {imported} new events. {lead_count} leads in local database.",
+        f"Imported: {imported} events ({lead_count} total leads).",
         (
-            f"Already-processed: {dupes} duplicate relay events skipped"
+            f"Processed: {dupes} dupes"
             + (f", {filtered} filtered" if filtered else "")
             + (f", {errors} errors" if errors else "")
             + " (normal on replay)."
@@ -6135,7 +6155,7 @@ def format_pull_summary(imported: int, skipped: int, stats: dict) -> str:
     snap_records = int(stats.get("snapshot_records_seen") or 0)
     if snap_records:
         lines.append(
-            f"Snapshot phase: {snap_records} core/workspace/company snapshot record(s) applied."
+            f"Snapshots: {snap_records} records applied."
         )
     return "\n".join(lines)
 
@@ -6388,9 +6408,9 @@ def sync_from_relay_org(
             pending_events = int(result["pending_event_count"])
             est_event_pages = _estimate_relay_pages(pending_events)
             if not quiet and pending_events > 0:
-                pages_hint = f"~{est_event_pages} pages" if est_event_pages else "multiple pages"
+                pages_hint = f"~{est_event_pages}p" if est_event_pages else "mult"
                 print(
-                    f"Relay events: ~{pending_events} pending ({pages_hint} @ {RELAY_PULL_PAGE_SIZE}/page)...",
+                    f"Relay: ~{pending_events} pending ({pages_hint} @ {RELAY_PULL_PAGE_SIZE}/p)...",
                     flush=True,
                 )
         elif (
@@ -6407,14 +6427,14 @@ def sync_from_relay_org(
 
         relay_events_seen += len(events)
         if not quiet:
-            page_label = f"page {event_pages}"
+            page_label = f"p{event_pages}"
             if est_event_pages:
-                page_label = f"page {event_pages} of ~{est_event_pages}"
+                page_label = f"p{event_pages}/~{est_event_pages}"
             elif len(events) >= RELAY_PULL_PAGE_SIZE:
-                page_label = f"page {event_pages} (more pages likely)"
+                page_label = f"p{event_pages}+"
             progress = f"{relay_events_seen}/{pending_events}" if pending_events else str(relay_events_seen)
             print(
-                f"Relay events: {page_label} — {len(events)} this page, {progress} records...",
+                f"Relay: {page_label} — {len(events)} this page, {progress} ...",
                 flush=True,
             )
 
@@ -6447,7 +6467,7 @@ def sync_from_relay_org(
     for snap_kind in ("core", "workspace", "company"):
         kind_pages = 0
         if not quiet:
-            print(f"Pulling {snap_kind} snapshot records...", flush=True)
+            print(f"Pulling {snap_kind}...", flush=True)
         while True:
             snap_pages += 1
             kind_pages += 1
@@ -6462,31 +6482,33 @@ def sync_from_relay_org(
                 raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
             snap_events = snap_result.get("events") or []
             if not snap_events:
+                snap_pages -= 1
+                kind_pages -= 1
                 break
 
             if snap_pages == 1 and kind_pages == 1 and snap_result.get("pending_snapshot_count") is not None:
                 pending_snapshots = int(snap_result["pending_snapshot_count"])
                 est_snap_pages = _estimate_relay_pages(pending_snapshots)
                 if not quiet and pending_snapshots > 0:
-                    pages_hint = f"~{est_snap_pages} pages" if est_snap_pages else "multiple pages"
+                    pages_hint = f"~{est_snap_pages}p" if est_snap_pages else "mult"
                     print(
-                        f"Snapshot records: ~{pending_snapshots} pending ({pages_hint} @ {RELAY_PULL_PAGE_SIZE}/page)...",
+                        f"Snapshots: ~{pending_snapshots} pending ({pages_hint} @ {RELAY_PULL_PAGE_SIZE}/p)...",
                         flush=True,
                     )
 
             snap_total += len(snap_events)
             if not quiet:
                 if pending_snapshots and pending_snapshots > 0:
-                    pages_hint = f"~{est_snap_pages}" if est_snap_pages else "multiple"
+                    pages_hint = f"~{est_snap_pages}" if est_snap_pages else "mult"
                     print(
-                        f"Snapshot records ({snap_kind}): page {kind_pages} of {pages_hint} - "
-                        f"{len(snap_events)} this page, {snap_total}/{pending_snapshots} records...",
+                        f"Snapshot ({snap_kind}): p{snap_pages}/{pages_hint} — "
+                        f"{len(snap_events)} this page, {snap_total}/{pending_snapshots} ...",
                         flush=True,
                     )
                 else:
                     print(
-                        f"Snapshot records ({snap_kind}): page {kind_pages} - "
-                        f"{len(snap_events)} this page, {snap_total} total...",
+                        f"Snapshot ({snap_kind}): p{snap_pages} — "
+                        f"{len(snap_events)} this page, {snap_total} total ...",
                         flush=True,
                     )
             batch = _ingest_relay_page(snap_events, debug_sentiment=debug_sentiment, quiet=True)

@@ -4711,7 +4711,12 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
     ).fetchone()["n"]
     local_event_count = conn2.execute(
         """SELECT COUNT(*) AS n FROM events
-           WHERE metadata_json NOT LIKE '%"source": "relay"%'
+           WHERE id NOT IN (
+               SELECT CAST(SUBSTR(dedupe_key, 7) AS INTEGER)
+               FROM relay_ingested
+               WHERE dedupe_key LIKE 'event:%'
+           )
+             AND metadata_json NOT LIKE '%"source": "relay"%'
              AND metadata_json NOT LIKE '%"source":"relay"%'
              AND metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
@@ -5130,7 +5135,25 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
     client_id = export.get("client_id", "unknown")
-    return _relay_push_batches(agent_key, entries, client_id)
+    result = _relay_push_batches(agent_key, entries, client_id)
+    if result.get("pushed", 0) > 0:
+        # Mark events as ingested locally so we don't push them again
+        conn = get_conn()
+        now_ts = datetime.now(timezone.utc).isoformat()
+        # For entries with an event_id, mark them as ingested
+        event_ids = [e["event_id"] for e in entries if e.get("event_id")]
+        if event_ids:
+            for i in range(0, len(event_ids), 100):
+                batch = event_ids[i : i + 100]
+                # Use event:{id} as dedupe_key for events
+                for eid in batch:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO relay_ingested (dedupe_key, ingested_at) VALUES (?, ?)",
+                        (f"event:{eid}", now_ts)
+                    )
+            conn.commit()
+        conn.close()
+    return result
 
 
 def _push_pending_lead_snapshots(agent_key: str) -> dict:
@@ -5859,7 +5882,11 @@ def export_local_changes(
         """SELECT e.*, l.email, l.linkedin_url
            FROM events e
            JOIN leads l ON e.lead_id = l.id
-           WHERE e.metadata_json NOT LIKE '%"source": "relay"%'
+           WHERE 'event:' || CAST(e.id AS TEXT) NOT IN (
+                 SELECT dedupe_key FROM relay_ingested
+                 WHERE dedupe_key LIKE 'event:%'
+             )
+             AND e.metadata_json NOT LIKE '%"source": "relay"%'
              AND e.metadata_json NOT LIKE '%"source":"relay"%'
              AND e.metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND e.metadata_json NOT LIKE '%"source":"agent_sync"%'
@@ -5875,6 +5902,7 @@ def export_local_changes(
             "action": "event_log",
             "entity_key": entity_key,
             "timestamp": normalize_relay_timestamp(row["created_at"]),
+            "event_id": row["id"],
             "payload": {
                 "event_type": row["event_type"],
                 "direction": row["direction"],

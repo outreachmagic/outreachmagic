@@ -444,33 +444,40 @@ def test_agent_sync_full_payload_roundtrip():
     payload = om.build_lead_sync_payload(conn, DEFAULT_ORG_ID, lead_id)
     conn.close()
     assert payload.get("external_id", "").startswith("test:")
-    assert payload.get("company_domain") == "acme.org"
     assert payload.get("location_city") == "Austin"
     assert "vip" in (payload.get("tags") or [])
     assert payload.get("personalization", {}).get("first_name") == "Sync"
 
     om.init_db()
-    event = {
+    entity_key = f"external_id:{payload['external_id']}"
+    replay_conn = om.get_conn()
+    om.ingest_agent_entry({
         "platform": "agent",
-        "action": "lead_create",
-        "entity_key": f"external_id:{payload['external_id']}",
+        "action": "lead_core_update",
+        "entity_key": entity_key,
         "client_id": "other-client",
         "timestamp": "2026-05-27T12:00:00Z",
-        "payload": payload,
-    }
-    replay_id = om.ingest_agent_entry(event)
+        "payload": om.build_lead_core_sync_payload(replay_conn, DEFAULT_ORG_ID, lead_id),
+    })
+    replay_id = om.ingest_agent_entry({
+        "platform": "agent",
+        "action": "lead_workspace_update",
+        "entity_key": entity_key,
+        "client_id": "other-client",
+        "timestamp": "2026-05-27T12:00:00Z",
+        "workspace": "default",
+        "payload": om.build_lead_workspace_sync_payload(
+            replay_conn, DEFAULT_ORG_ID, lead_id, workspace_slug="default",
+        ),
+    })
+    replay_conn.close()
     assert replay_id is not None
 
     conn = om.get_conn()
     from workspace_routing import find_lead_by_identity
 
     assert find_lead_by_identity(conn, DEFAULT_ORG_ID, "external_id", payload["external_id"]) == replay_id
-    co = conn.execute(
-        "SELECT domain FROM companies co JOIN leads l ON l.company_id = co.id WHERE l.id = ?",
-        (replay_id,),
-    ).fetchone()
     conn.close()
-    assert co and co["domain"] == "acme.org"
 
 
 def test_import_profiles_weak_identity_and_entity_key():

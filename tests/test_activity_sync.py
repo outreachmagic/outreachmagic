@@ -96,18 +96,29 @@ class ActivitySyncTests(unittest.TestCase):
         self.assertEqual(activity.get("last_contacted_at"), "2026-02-23T21:35:48.310000")
 
         om.init_db()
-        replay_payload = dict(payload)
-        replay_payload["email"] = "activity@example.com"
-        event = {
+        replay_conn = om.get_conn()
+        core_payload = om.build_lead_core_sync_payload(replay_conn, DEFAULT_ORG_ID, lead_id)
+        ws_payload = om.build_lead_workspace_sync_payload(
+            replay_conn, DEFAULT_ORG_ID, lead_id, workspace_slug="default",
+        )
+        replay_conn.close()
+        om.ingest_agent_entry({
             "platform": "agent",
-            "action": "lead_update",
+            "action": "lead_core_update",
+            "entity_key": "activity@example.com",
+            "client_id": "other-client-activity",
+            "timestamp": "2026-05-27T12:00:00Z",
+            "payload": core_payload,
+        })
+        replay_id = om.ingest_agent_entry({
+            "platform": "agent",
+            "action": "lead_workspace_update",
             "entity_key": "activity@example.com",
             "client_id": "other-client-activity",
             "timestamp": "2026-05-27T12:00:00Z",
             "workspace": "default",
-            "payload": replay_payload,
-        }
-        replay_id = om.ingest_agent_entry(event)
+            "payload": ws_payload,
+        })
         self.assertIsNotNone(replay_id)
 
         conn = om.get_conn()

@@ -84,9 +84,10 @@ def test_sync_pull_progress_when_not_quiet(capsys, monkeypatch):
 
     def fake_pull(*_args, **kwargs):
         if kwargs.get("snapshots_only"):
+            kind = kwargs.get("snapshot_kind", "workspace")
             calls["n"] += 1
-            if calls["n"] == 1:
-                return {"events": [{"relay_id": 1}], "max_snapshot_id": 1}
+            if kind == "core" and calls["n"] == 1:
+                return {"events": [{"relay_id": 1_000_000_001}], "max_snapshot_id": 1}
             return {"events": []}
         return {"events": [{"relay_id": 2}], "max_id": 2}
 
@@ -101,7 +102,8 @@ def test_sync_pull_progress_when_not_quiet(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "Contacting relay to pull new events..." in out
     assert "Relay events: page 1" in out
-    assert "Snapshot records: page 1" in out
+    assert "Pulling core snapshot records" in out
+    assert "Snapshot core: page 1" in out
 
 
 def test_pull_uses_id_cursors_only(monkeypatch):

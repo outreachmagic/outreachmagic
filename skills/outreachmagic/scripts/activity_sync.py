@@ -338,11 +338,15 @@ def refresh_lead_activity_for_lead(
     conn.commit()
     conn.close()
     if mark_pending_fn is None:
-        from pipeline import _mark_lead_cloud_pending
+        from pipeline import _mark_workspace_lead_cloud_pending
 
-        mark_pending_fn = _mark_lead_cloud_pending
+        def _default_pending(lid: int, wid: str) -> None:
+            _mark_workspace_lead_cloud_pending(lid, wid)
+
+        mark_pending_fn = _default_pending
     if mark_pending_fn:
-        mark_pending_fn(lead_id)
+        for row in rows:
+            mark_pending_fn(lead_id, row["workspace_id"])
 
 
 def set_lead_activity_summary(
@@ -377,10 +381,10 @@ def set_lead_activity_summary(
     conn.close()
     if mark_cloud_pending:
         if mark_pending_fn is None:
-            from pipeline import _mark_lead_cloud_pending
+            from pipeline import _mark_workspace_lead_cloud_pending
 
-            mark_pending_fn = _mark_lead_cloud_pending
-        mark_pending_fn(lead_id)
+            mark_pending_fn = lambda lid, wid=workspace_id: _mark_workspace_lead_cloud_pending(lid, wid)
+        mark_pending_fn(lead_id, workspace_id)
     return result
 
 

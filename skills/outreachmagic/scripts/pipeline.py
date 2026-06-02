@@ -144,7 +144,10 @@ from activity_sync import (
     set_lead_activity_summary,
 )
 from lead_sync import (
-    apply_agent_lead_sync_payload,
+    apply_agent_lead_core_payload,
+    apply_agent_lead_workspace_payload,
+    build_lead_core_sync_payload,
+    build_lead_workspace_sync_payload,
     build_lead_sync_payload,
     entity_key_from_prefetch,
     inspect_sync_lead,
@@ -626,13 +629,30 @@ def get_last_max_id() -> Optional[int]:
     return load_config().get("last_max_id")
 
 
-def get_last_snapshot_after_id() -> int:
-    return int(load_config().get("last_snapshot_after_id") or 0)
+_SNAPSHOT_CURSOR_KEYS = {
+    "core": "last_snapshot_core_after_id",
+    "workspace": "last_snapshot_workspace_after_id",
+    "company": "last_snapshot_company_after_id",
+}
 
 
-def set_last_snapshot_after_id(snapshot_id: int):
+def get_last_snapshot_after_id(kind: str = "workspace") -> int:
+    key = _SNAPSHOT_CURSOR_KEYS.get(kind, _SNAPSHOT_CURSOR_KEYS["workspace"])
+    return int(load_config().get(key) or 0)
+
+
+def set_last_snapshot_after_id(snapshot_id: int, kind: str = "workspace") -> None:
+    key = _SNAPSHOT_CURSOR_KEYS.get(kind, _SNAPSHOT_CURSOR_KEYS["workspace"])
     cfg = load_config()
-    cfg["last_snapshot_after_id"] = int(snapshot_id)
+    cfg[key] = int(snapshot_id)
+    save_config(cfg)
+
+
+def clear_snapshot_cursors() -> None:
+    cfg = load_config()
+    for key in _SNAPSHOT_CURSOR_KEYS.values():
+        cfg.pop(key, None)
+    cfg.pop("last_snapshot_after_id", None)
     save_config(cfg)
 
 
@@ -869,6 +889,7 @@ CREATE TABLE IF NOT EXISTS workspace_leads (
     current_status_sentiment TEXT,
     contact_priority         INTEGER,
     latest_sender            TEXT,
+    cloud_pending            INTEGER NOT NULL DEFAULT 0,
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (workspace_id, lead_id)
@@ -1454,6 +1475,14 @@ def migrate_db(conn=None):
            SET last_contacted_at = last_activity_at
            WHERE last_contacted_at IS NULL AND last_activity_at IS NOT NULL"""
     )
+    try:
+        conn.execute("ALTER TABLE workspace_leads ADD COLUMN cloud_pending INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workspace_leads_cloud_pending "
+        "ON workspace_leads(cloud_pending) WHERE cloud_pending = 1"
+    )
     repair_malformed_tags(conn)
     backfill_bounce_events_from_events(conn)
     conn.execute(
@@ -1482,7 +1511,7 @@ def _lead_should_cloud_pending(
 
 
 def _mark_lead_cloud_pending(lead_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
-    """Flag lead snapshot for relay push (e.g. personalization-only edits)."""
+    """Flag org-wide lead profile for relay lead_core_update."""
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
@@ -1490,6 +1519,37 @@ def _mark_lead_cloud_pending(lead_id: int, conn: Optional[sqlite3.Connection] = 
         "UPDATE leads SET cloud_pending = 1, updated_at = datetime('now') WHERE id = ?",
         (lead_id,),
     )
+    if own_conn:
+        conn.commit()
+        conn.close()
+
+
+def _mark_workspace_lead_cloud_pending(
+    lead_id: int,
+    workspace_id: str,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Flag workspace overlay for relay lead_workspace_update."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    conn.execute(
+        """UPDATE workspace_leads SET cloud_pending = 1, updated_at = datetime('now')
+           WHERE lead_id = ? AND workspace_id = ?""",
+        (lead_id, workspace_id),
+    )
+    if own_conn:
+        conn.commit()
+        conn.close()
+
+
+def mark_all_lead_snapshots_pending(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Queue full snapshot v2 backfill (core + every workspace membership)."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    conn.execute("UPDATE leads SET cloud_pending = 1")
+    conn.execute("UPDATE workspace_leads SET cloud_pending = 1")
     if own_conn:
         conn.commit()
         conn.close()
@@ -3348,7 +3408,7 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
     event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
     conn.close()
-    refresh_lead_activity_for_lead(lead_id, mark_pending_fn=_mark_lead_cloud_pending)
+    refresh_lead_activity_for_lead(lead_id)
     return event_id
 
 
@@ -4582,8 +4642,11 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
              AND metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
     ).fetchone()["n"]
-    pending_lead_count = conn2.execute(
+    pending_lead_core_count = conn2.execute(
         "SELECT COUNT(*) AS n FROM leads WHERE cloud_pending = 1"
+    ).fetchone()["n"]
+    pending_workspace_count = conn2.execute(
+        "SELECT COUNT(*) AS n FROM workspace_leads WHERE cloud_pending = 1"
     ).fetchone()["n"]
     pending_quarantine_count = conn2.execute(
         """SELECT COUNT(*) AS n FROM unmapped_campaign_queue
@@ -4592,14 +4655,21 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
     conn2.close()
 
     pending_total = len(pending_ws) + len(pending_maps)
-    cloud_pending = local_event_count + pending_lead_count + pending_quarantine_count
+    cloud_pending = (
+        local_event_count
+        + pending_lead_core_count
+        + pending_workspace_count
+        + pending_quarantine_count
+    )
     return {
         "can_sync": True,
         "pending_workspaces": pending_ws,
         "pending_rules": pending_maps,
         "relay_untracked_leads": local_lead_count,
         "local_agent_events": local_event_count,
-        "cloud_pending_leads": pending_lead_count,
+        "cloud_pending_lead_core": pending_lead_core_count,
+        "cloud_pending_lead_workspaces": pending_workspace_count,
+        "cloud_pending_leads": pending_lead_core_count + pending_workspace_count,
         "pending_quarantine_resolutions": pending_quarantine_count,
         "pending_total": pending_total + cloud_pending,
         "synced": pending_total == 0 and cloud_pending == 0,
@@ -4616,7 +4686,8 @@ def format_sync_status(status: dict) -> str:
     ws = status.get("pending_workspaces") or []
     rules = status.get("pending_rules") or []
     local_events = status.get("local_agent_events", 0)
-    cloud_pending = status.get("cloud_pending_leads", 0)
+    cloud_pending_core = status.get("cloud_pending_lead_core", 0)
+    cloud_pending_ws = status.get("cloud_pending_lead_workspaces", 0)
     relay_untracked = status.get("relay_untracked_leads", 0)
     if ws:
         names = ", ".join(w["name"] for w in ws[:3])
@@ -4626,8 +4697,12 @@ def format_sync_status(status: dict) -> str:
         parts.append(f"{len(rules)} routing rule{'s' if len(rules) != 1 else ''}")
     if local_events:
         parts.append(f"{local_events} agent event{'s' if local_events != 1 else ''}")
-    if cloud_pending:
-        parts.append(f"{cloud_pending} lead update{'s' if cloud_pending != 1 else ''}")
+    if cloud_pending_core:
+        parts.append(f"{cloud_pending_core} lead core snapshot{'s' if cloud_pending_core != 1 else ''}")
+    if cloud_pending_ws:
+        parts.append(
+            f"{cloud_pending_ws} workspace snapshot{'s' if cloud_pending_ws != 1 else ''}"
+        )
     out = ""
     if parts:
         out = f"\n⚠ Not synced to cloud: {', '.join(parts)}. Run pipeline.py sync."
@@ -4669,16 +4744,21 @@ def get_local_pending_counts(org_id: str = DEFAULT_ORG_ID) -> dict:
              AND metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
     ).fetchone()["n"]
-    cloud_pending_leads = conn.execute(
+    cloud_pending_core = conn.execute(
         "SELECT COUNT(*) AS n FROM leads WHERE cloud_pending = 1"
+    ).fetchone()["n"]
+    cloud_pending_workspaces = conn.execute(
+        "SELECT COUNT(*) AS n FROM workspace_leads WHERE cloud_pending = 1"
     ).fetchone()["n"]
     conn.close()
     return {
         "workspaces": unsynced_ws,
         "rules": unsynced_rules,
         "local_agent_events": local_events,
-        "cloud_pending_leads": cloud_pending_leads,
-        "total": unsynced_ws + unsynced_rules + local_events + cloud_pending_leads,
+        "cloud_pending_lead_core": cloud_pending_core,
+        "cloud_pending_lead_workspaces": cloud_pending_workspaces,
+        "cloud_pending_leads": cloud_pending_core + cloud_pending_workspaces,
+        "total": unsynced_ws + unsynced_rules + local_events + cloud_pending_core + cloud_pending_workspaces,
     }
 
 
@@ -4980,88 +5060,114 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
 
 
 def _push_pending_lead_updates(agent_key: str) -> dict:
-    """Push pending lead updates to Cloudflare relay /push endpoint."""
+    """Push pending lead core + workspace snapshots to relay /push."""
     conn = get_conn()
-    rows = conn.execute(
-        """SELECT l.*, COALESCE(co.name, l.company) AS company_display
-           FROM leads l
-           LEFT JOIN companies co ON l.company_id = co.id
-           WHERE l.cloud_pending = 1"""
+    core_rows = conn.execute(
+        "SELECT id, updated_at FROM leads WHERE cloud_pending = 1"
     ).fetchall()
-    if not rows:
+    ws_rows = conn.execute(
+        """SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
+           FROM workspace_leads wl
+           JOIN workspaces w ON w.id = wl.workspace_id
+           WHERE wl.cloud_pending = 1"""
+    ).fetchall()
+    if not core_rows and not ws_rows:
         conn.close()
         return {"pushed": 0, "error": None, "throttled": False}
 
-    print(f"Loading {len(rows)} pending lead update(s)...", flush=True)
-    lead_ids = [row["id"] for row in rows]
+    lead_ids = sorted({r["id"] for r in core_rows} | {r["lead_id"] for r in ws_rows})
     prefetch = _load_lead_sync_prefetch(conn, DEFAULT_ORG_ID, lead_ids)
-
     client_id = get_or_create_client_id()
-    entries = []
-    pushed_ids = []
-    for row in rows:
+
+    core_entries: list[dict] = []
+    core_mark_ids: list[int] = []
+    for row in core_rows:
         lead_id = row["id"]
-        entity_key = entity_key_from_prefetch(prefetch, lead_id)
-        if not entity_key:
-            entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, lead_id)
+        entity_key = entity_key_from_prefetch(prefetch, lead_id) or lead_entity_key(
+            conn, DEFAULT_ORG_ID, lead_id,
+        )
         if not entity_key:
             continue
-        memberships = prefetch.get("memberships", {}).get(lead_id) or []
-        if not memberships:
-            ws_slug = _lead_workspace_slug(conn, lead_id)
-            payload = build_lead_sync_payload(
-                conn, DEFAULT_ORG_ID, lead_id, workspace_slug=ws_slug, prefetch=prefetch,
-            )
-            entry: dict = {
-                "action": "lead_update",
-                "entity_key": entity_key,
-                "timestamp": normalize_relay_timestamp(row["updated_at"]),
-                "payload": payload,
-            }
-            if ws_slug:
-                entry["workspace"] = ws_slug
-            entries.append(entry)
-            pushed_ids.append(lead_id)
+        payload = build_lead_core_sync_payload(
+            conn, DEFAULT_ORG_ID, lead_id, prefetch=prefetch,
+        )
+        if not payload:
             continue
-        for mem in memberships:
-            ws_slug = mem["slug"]
-            payload = build_lead_sync_payload(
-                conn, DEFAULT_ORG_ID, lead_id, workspace_slug=ws_slug, prefetch=prefetch,
-            )
-            entry = {
-                "action": "lead_update",
-                "entity_key": entity_key,
-                "timestamp": normalize_relay_timestamp(row["updated_at"]),
-                "payload": payload,
-                "workspace": ws_slug,
-            }
-            entries.append(entry)
-        pushed_ids.append(lead_id)
+        core_entries.append({
+            "action": "lead_core_update",
+            "entity_key": entity_key,
+            "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            "payload": payload,
+        })
+        core_mark_ids.append(lead_id)
+
+    ws_entries: list[dict] = []
+    ws_mark_keys: list[tuple[int, str]] = []
+    for row in ws_rows:
+        lead_id = row["lead_id"]
+        entity_key = entity_key_from_prefetch(prefetch, lead_id) or lead_entity_key(
+            conn, DEFAULT_ORG_ID, lead_id,
+        )
+        if not entity_key:
+            continue
+        ws_slug = row["slug"]
+        payload = build_lead_workspace_sync_payload(
+            conn, DEFAULT_ORG_ID, lead_id, workspace_slug=ws_slug, prefetch=prefetch,
+        )
+        if not payload:
+            continue
+        ws_entries.append({
+            "action": "lead_workspace_update",
+            "entity_key": entity_key,
+            "workspace": ws_slug,
+            "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            "payload": payload,
+        })
+        ws_mark_keys.append((lead_id, row["workspace_id"]))
 
     conn.close()
-    if not entries:
-        return {"pushed": 0, "error": None, "throttled": False}
+    total_pushed = 0
+    last_result: dict = {"pushed": 0, "error": None, "throttled": False}
 
-    push_result = _relay_push_batches(agent_key, entries, client_id)
-    total_pushed = int(push_result.get("pushed", 0) or 0)
-    if total_pushed <= 0:
-        return push_result
+    if core_entries:
+        print(f"Pushing {len(core_entries)} lead core snapshot(s)...", flush=True)
+        last_result = _relay_push_batches(agent_key, core_entries, client_id)
+        total_pushed += int(last_result.get("pushed", 0) or 0)
+        if last_result.get("error"):
+            last_result["pushed"] = total_pushed
+            return last_result
+        if int(last_result.get("pushed", 0) or 0) >= len(core_entries) and core_mark_ids:
+            mark_conn = get_conn()
+            ph = ",".join("?" for _ in core_mark_ids)
+            mark_conn.execute(f"UPDATE leads SET cloud_pending = 0 WHERE id IN ({ph})", core_mark_ids)
+            mark_conn.execute(
+                f"UPDATE lead_personalization SET cloud_pending = 0 WHERE lead_id IN ({ph})",
+                core_mark_ids,
+            )
+            mark_conn.commit()
+            mark_conn.close()
 
-    mark_count = min(total_pushed, len(pushed_ids))
-    mark_ids = pushed_ids[:mark_count]
-    mark_conn = get_conn()
-    placeholders = ",".join("?" for _ in mark_ids)
-    mark_conn.execute(
-        f"UPDATE leads SET cloud_pending = 0 WHERE id IN ({placeholders})",
-        mark_ids,
-    )
-    mark_conn.execute(
-        f"UPDATE lead_personalization SET cloud_pending = 0 WHERE lead_id IN ({placeholders})",
-        mark_ids,
-    )
-    mark_conn.commit()
-    mark_conn.close()
-    return push_result
+    if ws_entries:
+        print(f"Pushing {len(ws_entries)} lead workspace snapshot(s)...", flush=True)
+        ws_result = _relay_push_batches(agent_key, ws_entries, client_id)
+        total_pushed += int(ws_result.get("pushed", 0) or 0)
+        last_result = ws_result
+        if ws_result.get("error"):
+            last_result["pushed"] = total_pushed
+            return last_result
+        if int(ws_result.get("pushed", 0) or 0) >= len(ws_entries) and ws_mark_keys:
+            mark_conn = get_conn()
+            for lead_id, workspace_id in ws_mark_keys:
+                mark_conn.execute(
+                    """UPDATE workspace_leads SET cloud_pending = 0
+                       WHERE lead_id = ? AND workspace_id = ?""",
+                    (lead_id, workspace_id),
+                )
+            mark_conn.commit()
+            mark_conn.close()
+
+    last_result["pushed"] = total_pushed
+    return last_result
 
 
 def _push_pending_company_updates(agent_key: str) -> dict:
@@ -5624,27 +5730,48 @@ def export_local_changes(
     for row in lead_rows:
         lead_id = row["id"]
         if row["cloud_pending"]:
-            # Full snapshot is sent via lead_update during explicit `pipeline.py sync`.
             continue
         lead_ids.add(lead_id)
-        ws_slug = _lead_workspace_slug(conn, lead_id)
         entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, lead_id)
-        entry = {
-            "action": "lead_create",
-            "entity_key": entity_key,
-            "timestamp": normalize_relay_timestamp(row["created_at"]),
-        }
-        if ws_slug:
-            entry["workspace"] = ws_slug
-        entry["payload"] = build_lead_sync_payload(
-            conn, DEFAULT_ORG_ID, lead_id, workspace_slug=ws_slug,
-        )
-        entries.append(entry)
+        if not entity_key:
+            continue
+        core_payload = build_lead_core_sync_payload(conn, DEFAULT_ORG_ID, lead_id)
+        if core_payload:
+            entries.append({
+                "action": "lead_core_update",
+                "entity_key": entity_key,
+                "timestamp": normalize_relay_timestamp(row["created_at"]),
+                "payload": core_payload,
+            })
+        memberships = conn.execute(
+            """SELECT w.slug FROM workspace_leads wl
+               JOIN workspaces w ON w.id = wl.workspace_id
+               WHERE wl.lead_id = ?""",
+            (lead_id,),
+        ).fetchall()
+        if not memberships:
+            ws_slug = _lead_workspace_slug(conn, lead_id)
+            memberships = [{"slug": ws_slug}] if ws_slug else []
+        for mem in memberships:
+            ws_slug = mem["slug"]
+            ws_payload = build_lead_workspace_sync_payload(
+                conn, DEFAULT_ORG_ID, lead_id, workspace_slug=ws_slug,
+            )
+            if not ws_payload:
+                continue
+            entries.append({
+                "action": "lead_workspace_update",
+                "entity_key": entity_key,
+                "workspace": ws_slug,
+                "timestamp": normalize_relay_timestamp(row["created_at"]),
+                "payload": ws_payload,
+            })
+        ws_slug = memberships[0]["slug"] if memberships else _lead_workspace_slug(conn, lead_id)
 
         if row["stage"] and row["stage"] != "prospecting":
             stage_entry: dict = {
                 "action": "stage_change",
-                "entity_key": entry["entity_key"],
+                "entity_key": entity_key,
                 "timestamp": normalize_relay_timestamp(row["updated_at"]),
                 "payload": {"stage": row["stage"]},
             }
@@ -5699,7 +5826,10 @@ def export_local_changes(
 
 def write_export_csv(result: dict, path: str):
     """Write lead entries from an export as a CSV compatible with import-profiles."""
-    lead_entries = [e for e in result.get("entries", []) if e["action"] == "lead_create"]
+    lead_entries = [
+        e for e in result.get("entries", [])
+        if e["action"] in ("lead_core_update", "lead_workspace_update")
+    ]
     if not lead_entries:
         print(json.dumps({"status": "empty", "message": "No local leads to export"}))
         return
@@ -5748,8 +5878,7 @@ def ingest_agent_entry(
                 ws_row = resolve_workspace_identity(conn, workspace_slug)
                 workspace_id = ws_row["id"] if ws_row else None
 
-        # Org-wide actions: proceed without workspace
-        if action in ("lead_create", "lead_update"):
+        if action == "lead_core_update":
             lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
             conn.close()
             if not lead_id:
@@ -5759,12 +5888,25 @@ def ingest_agent_entry(
                     return None
                 lead_id = result.get("id")
             if lead_id:
-                apply_agent_lead_sync_payload(
-                    lead_id,
-                    payload,
-                    org_id=org_id,
-                    workspace_id=workspace_id,
-                    entity_key=entity_key,
+                apply_agent_lead_core_payload(
+                    lead_id, payload, org_id=org_id, entity_key=entity_key,
+                )
+        elif action == "lead_workspace_update":
+            if not workspace_id:
+                conn.close()
+                mark_relay_ingested(dedupe_key, None)
+                return None
+            lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
+            conn.close()
+            if not lead_id:
+                result = resolve_lead_from_agent_sync(entity_key, {})
+                if result.get("status") == "error":
+                    mark_relay_ingested(dedupe_key, None)
+                    return None
+                lead_id = result.get("id")
+            if lead_id:
+                apply_agent_lead_workspace_payload(
+                    lead_id, payload, org_id=org_id, workspace_id=workspace_id,
                 )
         elif action == "company_update":
             company_id = resolve_company_from_entity_key(conn, entity_key) if entity_key else None
@@ -5810,7 +5952,7 @@ def ingest_agent_entry(
             pass
         raise
 
-    if lead_id is not None or action == "company_update":
+    if lead_id is not None or action in ("company_update", "lead_core_update", "lead_workspace_update"):
         mark_relay_ingested(dedupe_key, lead_id)
     return lead_id
 
@@ -5869,6 +6011,7 @@ def pull_events_org(
     platform: Optional[str] = None,
     *,
     snapshot_after_id: Optional[int] = None,
+    snapshot_kind: str = "workspace",
     snapshots_only: bool = False,
     include_pending: bool = False,
     include_queue_resolutions: bool = False,
@@ -5881,6 +6024,8 @@ def pull_events_org(
         params.append(f"platform={urllib.parse.quote(platform)}")
     if snapshot_after_id:
         params.append(f"snapshot_after_id={snapshot_after_id}")
+    if snapshots_only and snapshot_kind:
+        params.append(f"snapshot_kind={urllib.parse.quote(snapshot_kind)}")
     if snapshots_only:
         params.append("snapshots_only=1")
     if include_pending:
@@ -6074,8 +6219,11 @@ def sync_from_relay_org(
 
     page_after_id = 0 if full else int(after_id if after_id is not None else (get_last_max_id() or 0))
     initial_after_id = page_after_id
-    snapshot_after = 0 if full else get_last_snapshot_after_id()
-    snapshot_after_start = snapshot_after
+    snapshot_cursors = {
+        kind: 0 if full else get_last_snapshot_after_id(kind)
+        for kind in ("core", "workspace", "company")
+    }
+    snapshot_after_start = dict(snapshot_cursors)
 
     pending_events: Optional[int] = None
     est_event_pages: Optional[int] = None
@@ -6161,63 +6309,59 @@ def sync_from_relay_org(
 
     pending_snapshots: Optional[int] = None
     est_snap_pages: Optional[int] = None
-    if not quiet:
-        print(
-            "Pulling lead snapshot records (historical versions per lead, not unique lead count)...",
-            flush=True,
-        )
+    for snap_kind in ("core", "workspace", "company"):
+        kind_pages = 0
+        if not quiet:
+            print(f"Pulling {snap_kind} snapshot records...", flush=True)
+        while True:
+            snap_pages += 1
+            kind_pages += 1
+            snap_result = pull_events_org(
+                agent_key,
+                snapshot_after_id=snapshot_cursors[snap_kind] or None,
+                snapshot_kind=snap_kind,
+                snapshots_only=True,
+                include_pending=snap_pages == 1 and kind_pages == 1,
+            )
+            if snap_result.get("error"):
+                raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
+            snap_events = snap_result.get("events") or []
+            if not snap_events:
+                break
 
-    while True:
-        snap_pages += 1
-        snap_result = pull_events_org(
-            agent_key,
-            snapshot_after_id=snapshot_after or None,
-            snapshots_only=True,
-            include_pending=snap_pages == 1,
-        )
-        if snap_result.get("error"):
-            raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
-        snap_events = snap_result.get("events") or []
-        if not snap_events:
-            break
+            if snap_pages == 1 and kind_pages == 1 and snap_result.get("pending_snapshot_count") is not None:
+                pending_snapshots = int(snap_result["pending_snapshot_count"])
+                est_snap_pages = _estimate_relay_pages(pending_snapshots)
+                if not quiet and pending_snapshots > 0:
+                    pages_hint = f"~{est_snap_pages} pages" if est_snap_pages else "multiple pages"
+                    print(
+                        f"Snapshot records: ~{pending_snapshots} pending ({pages_hint} @ {RELAY_PULL_PAGE_SIZE}/page)...",
+                        flush=True,
+                    )
 
-        if snap_pages == 1 and snap_result.get("pending_snapshot_count") is not None:
-            pending_snapshots = int(snap_result["pending_snapshot_count"])
-            est_snap_pages = _estimate_relay_pages(pending_snapshots)
-            if not quiet and pending_snapshots > 0:
-                pages_hint = f"~{est_snap_pages} pages" if est_snap_pages else "multiple pages"
+            snap_total += len(snap_events)
+            if not quiet:
                 print(
-                    f"Snapshot records: ~{pending_snapshots} pending ({pages_hint} @ {RELAY_PULL_PAGE_SIZE}/page)...",
+                    f"Snapshot {snap_kind}: page {kind_pages} — {len(snap_events)} records "
+                    f"({snap_total} total)...",
                     flush=True,
                 )
-
-        snap_total += len(snap_events)
-        if not quiet:
-            page_label = f"page {snap_pages}"
-            if est_snap_pages:
-                page_label = f"page {snap_pages} of ~{est_snap_pages}"
-            elif snap_result.get("has_more_snapshots"):
-                page_label = f"page {snap_pages} (more pages likely)"
-            progress = f"{snap_total}/{pending_snapshots}" if pending_snapshots else str(snap_total)
-            print(
-                f"Snapshot records: {page_label} — {len(snap_events)} this page, {progress} records...",
-                flush=True,
-            )
-        batch = _ingest_relay_page(snap_events, debug_sentiment=debug_sentiment, quiet=True)
-        imported += batch["imported"]
-        skipped += batch["skipped"]
-        skipped_duplicates += batch["skipped_duplicates"]
-        skipped_filtered += batch["skipped_filtered"]
-        skipped_errors += batch["skipped_errors"]
-        newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
-        snapshot_after = int(snap_result.get("max_snapshot_id") or 0)
-        if not snap_result.get("has_more_snapshots"):
-            break
+            batch = _ingest_relay_page(snap_events, debug_sentiment=debug_sentiment, quiet=True)
+            imported += batch["imported"]
+            skipped += batch["skipped"]
+            skipped_duplicates += batch["skipped_duplicates"]
+            skipped_filtered += batch["skipped_filtered"]
+            skipped_errors += batch["skipped_errors"]
+            newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
+            snapshot_cursors[snap_kind] = int(snap_result.get("max_snapshot_id") or 0)
+            if not snap_result.get("has_more_snapshots"):
+                break
 
     if page_after_id:
         set_last_max_id(page_after_id)
-    if snapshot_after:
-        set_last_snapshot_after_id(snapshot_after)
+    for kind, cursor in snapshot_cursors.items():
+        if cursor:
+            set_last_snapshot_after_id(cursor, kind)
     set_last_pull(datetime.now(timezone.utc).isoformat())
 
     pull_hint = None
@@ -6232,7 +6376,7 @@ def sync_from_relay_org(
             "pull_after_id_start": initial_after_id,
             "pull_after_id_end": page_after_id,
             "snapshot_after_start": snapshot_after_start,
-            "snapshot_after_end": snapshot_after,
+            "snapshot_after_end": snapshot_cursors,
             "pull_hint": pull_hint,
             "cursor_advanced": cursor_advanced,
             "cursor_stalled": cursor_stalled,
@@ -6287,7 +6431,7 @@ def _clear_pull_cursors() -> None:
     cfg = load_config()
     cfg.pop("last_pull", None)
     cfg.pop("last_max_id", None)
-    cfg.pop("last_snapshot_after_id", None)
+    clear_snapshot_cursors()
     save_config(cfg)
 
 
@@ -7527,6 +7671,11 @@ def main():
         action="store_true",
         help="Skip aggregate local DB health POST to portal (lead sync still runs)",
     )
+    sync_p.add_argument(
+        "--full-snapshot-v2",
+        action="store_true",
+        help="Mark all leads and workspace memberships pending, then push snapshot v2 to relay",
+    )
 
     activity_p = sub.add_parser("activity", help="Lead activity summary (last contacted, counts)")
     activity_sub = activity_p.add_subparsers(dest="activity_command", required=True)
@@ -7819,6 +7968,9 @@ def main():
         if getattr(args, "status", False):
             print(json.dumps(get_sync_status(), indent=2))
         else:
+            if getattr(args, "full_snapshot_v2", False):
+                mark_all_lead_snapshots_pending()
+                print("Marked all leads and workspace memberships for snapshot v2 push.", flush=True)
             result = sync_all(no_health_report=getattr(args, "no_health_report", False))
             print(json.dumps(result, indent=2))
         return

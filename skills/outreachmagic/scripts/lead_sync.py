@@ -110,20 +110,14 @@ def _resolve_sync_workspace(
     return None, None
 
 
-def _assemble_lead_sync_payload(
-    conn: sqlite3.Connection,
-    org_id: str,
-    lead_id: int,
+def _assemble_lead_core_sync_payload(
     row: sqlite3.Row,
     *,
-    ws_id: Optional[str],
-    wl_row: Optional[sqlite3.Row],
     identity_rows: list,
     external_id: Optional[str],
-    tags: list[str],
-    linkedin_status: list,
     personalization_rows: list,
 ) -> dict:
+    """Org-wide lead profile for relay core snapshot."""
     payload: dict = {}
     for field in SYNC_PROFILE_FIELDS:
         val = row[field]
@@ -141,6 +135,8 @@ def _assemble_lead_sync_payload(
         payload["latest_sender_platform"] = row["latest_sender_platform"]
     if row["email_verified_at"]:
         payload["email_verified_at"] = row["email_verified_at"]
+    if "email_verification_status" in row.keys() and row["email_verification_status"]:
+        payload["email_verification_status"] = row["email_verification_status"]
     if row["company_domain"]:
         payload["company_domain"] = row["company_domain"]
     for hq in ("hq_city", "hq_state", "hq_country"):
@@ -152,30 +148,6 @@ def _assemble_lead_sync_payload(
         payload["list_source"] = row["latest_source_detail"]
     if row["original_source_detail"] and row["original_source_detail"] != row["latest_source_detail"]:
         payload["import_name"] = row["original_source_detail"]
-
-    if ws_id and wl_row:
-        if wl_row["current_status_label"]:
-            payload["lead_status"] = wl_row["current_status_label"]
-        if wl_row["current_status_sentiment"]:
-            payload["lead_sentiment"] = wl_row["current_status_sentiment"]
-        if wl_row["contact_priority"] is not None:
-            payload["contact_order"] = wl_row["contact_priority"]
-        if wl_row["status"] and wl_row["status"] != row["stage"]:
-            payload["workspace_stage"] = wl_row["status"]
-
-    if tags:
-        payload["tags"] = tags
-
-    if linkedin_status:
-        payload["linkedin_status"] = [
-            {
-                "sender_profile": r["sender_profile"],
-                "is_connected": bool(r["is_connected"]),
-                "is_request_pending": bool(r["is_request_pending"]),
-            }
-            for r in linkedin_status
-        ]
-
     if personalization_rows:
         pers = {
             r["field_name"]: {
@@ -191,9 +163,41 @@ def _assemble_lead_sync_payload(
             payload["personalization_dates"] = dates
         if at:
             payload["personalization_at"] = at
+    return payload
 
+
+def _assemble_lead_workspace_sync_payload(
+    conn: sqlite3.Connection,
+    lead_id: int,
+    row: sqlite3.Row,
+    *,
+    ws_id: str,
+    wl_row: sqlite3.Row,
+    tags: list[str],
+    linkedin_status: list,
+) -> dict:
+    """Per-workspace pipeline state for relay workspace snapshot."""
+    payload: dict = {}
+    if wl_row["current_status_label"]:
+        payload["lead_status"] = wl_row["current_status_label"]
+    if wl_row["current_status_sentiment"]:
+        payload["lead_sentiment"] = wl_row["current_status_sentiment"]
+    if wl_row["contact_priority"] is not None:
+        payload["contact_order"] = wl_row["contact_priority"]
+    if wl_row["status"] and wl_row["status"] != row["stage"]:
+        payload["workspace_stage"] = wl_row["status"]
+    payload["tags"] = list(tags)
+    if linkedin_status:
+        payload["linkedin_status"] = [
+            {
+                "sender_profile": r["sender_profile"],
+                "is_connected": bool(r["is_connected"]),
+                "is_request_pending": bool(r["is_request_pending"]),
+            }
+            for r in linkedin_status
+        ]
     attach_activity_to_sync_payload(
-        payload, conn, lead_id, workspace_id=ws_id, wl_row=wl_row if ws_id else None,
+        payload, conn, lead_id, workspace_id=ws_id, wl_row=wl_row,
     )
     return payload
 
@@ -333,33 +337,16 @@ def entity_key_from_prefetch(prefetch: dict, lead_id: int) -> str:
     return ""
 
 
-def build_lead_sync_payload(
+def _lead_row_for_sync(
     conn: sqlite3.Connection,
     org_id: str,
     lead_id: int,
     *,
-    workspace_slug: Optional[str] = None,
     prefetch: Optional[dict] = None,
-) -> dict:
-    """Full lead snapshot for relay push / agent replay (CSV import round-trip)."""
+) -> Optional[sqlite3.Row]:
     if prefetch is not None:
-        row = prefetch["leads"].get(lead_id)
-        if not row:
-            return {}
-        ws_id, wl_row = _resolve_sync_workspace(conn, lead_id, workspace_slug, prefetch)
-        mem = _prefetch_membership(prefetch, lead_id, workspace_id=ws_id) if ws_id else None
-        return _assemble_lead_sync_payload(
-            conn, org_id, lead_id, row,
-            ws_id=ws_id,
-            wl_row=wl_row,
-            identity_rows=prefetch["identities"].get(lead_id) or [],
-            external_id=prefetch["external_ids"].get(lead_id),
-            tags=mem["tags"] if mem else [],
-            linkedin_status=mem["linkedin_status"] if mem else [],
-            personalization_rows=prefetch["personalization"].get(lead_id) or [],
-        )
-
-    row = conn.execute(
+        return prefetch["leads"].get(lead_id)
+    return conn.execute(
         """SELECT l.*,
                   co.domain AS company_domain,
                   co.hq_city AS hq_city,
@@ -371,21 +358,63 @@ def build_lead_sync_payload(
            WHERE l.id = ?""",
         (lead_id,),
     ).fetchone()
+
+
+def build_lead_core_sync_payload(
+    conn: sqlite3.Connection,
+    org_id: str,
+    lead_id: int,
+    *,
+    prefetch: Optional[dict] = None,
+) -> dict:
+    """Org-wide lead profile for relay lead_core_update."""
+    row = _lead_row_for_sync(conn, org_id, lead_id, prefetch=prefetch)
     if not row:
         return {}
+    if prefetch is not None:
+        identity_rows = prefetch["identities"].get(lead_id) or []
+        external_id = prefetch["external_ids"].get(lead_id)
+        personalization_rows = prefetch["personalization"].get(lead_id) or []
+    else:
+        identity_rows = conn.execute(
+            """SELECT identity_type, identity_value_normalized FROM lead_identities
+               WHERE org_id = ? AND lead_id = ?
+                 AND identity_type IN ('linkedin_sales_nav_id', 'linkedin_member_id')""",
+            (org_id, lead_id),
+        ).fetchall()
+        external_id = lead_external_id_value(conn, org_id, lead_id)
+        personalization_rows = conn.execute(
+            "SELECT field_name, field_value, field_date, processed_at FROM lead_personalization WHERE lead_id = ?",
+            (lead_id,),
+        ).fetchall()
+    return _assemble_lead_core_sync_payload(
+        row,
+        identity_rows=identity_rows,
+        external_id=external_id,
+        personalization_rows=personalization_rows,
+    )
 
-    ws_id, wl_row = _resolve_sync_workspace(conn, lead_id, workspace_slug, None)
-    identity_rows = conn.execute(
-        """SELECT identity_type, identity_value_normalized FROM lead_identities
-           WHERE org_id = ? AND lead_id = ?
-             AND identity_type IN ('linkedin_sales_nav_id', 'linkedin_member_id')""",
-        (org_id, lead_id),
-    ).fetchall()
-    ext = lead_external_id_value(conn, org_id, lead_id)
-    tags: list[str] = []
-    linkedin_status: list = []
-    personalization_rows: list = []
-    if ws_id:
+
+def build_lead_workspace_sync_payload(
+    conn: sqlite3.Connection,
+    org_id: str,
+    lead_id: int,
+    *,
+    workspace_slug: str,
+    prefetch: Optional[dict] = None,
+) -> dict:
+    """Per-workspace pipeline state for relay lead_workspace_update."""
+    row = _lead_row_for_sync(conn, org_id, lead_id, prefetch=prefetch)
+    if not row:
+        return {}
+    ws_id, wl_row = _resolve_sync_workspace(conn, lead_id, workspace_slug, prefetch)
+    if not ws_id or not wl_row:
+        return {}
+    if prefetch is not None:
+        mem = _prefetch_membership(prefetch, lead_id, workspace_id=ws_id)
+        tags = mem["tags"] if mem else []
+        linkedin_status = mem["linkedin_status"] if mem else []
+    else:
         tags = [
             r["tag"]
             for r in conn.execute(
@@ -399,21 +428,46 @@ def build_lead_sync_payload(
                WHERE workspace_id = ? AND lead_id = ?""",
             (ws_id, lead_id),
         ).fetchall()
-    personalization_rows = conn.execute(
-        "SELECT field_name, field_value, field_date, processed_at FROM lead_personalization WHERE lead_id = ?",
-        (lead_id,),
-    ).fetchall()
-
-    return _assemble_lead_sync_payload(
-        conn, org_id, lead_id, row,
+    return _assemble_lead_workspace_sync_payload(
+        conn, lead_id, row,
         ws_id=ws_id,
         wl_row=wl_row,
-        identity_rows=identity_rows,
-        external_id=ext,
         tags=tags,
         linkedin_status=linkedin_status,
-        personalization_rows=personalization_rows,
     )
+
+
+def build_lead_sync_payload(
+    conn: sqlite3.Connection,
+    org_id: str,
+    lead_id: int,
+    *,
+    workspace_slug: Optional[str] = None,
+    prefetch: Optional[dict] = None,
+) -> dict:
+    """Combined core + workspace payload (inspect/debug only — relay uses split snapshots)."""
+    core = build_lead_core_sync_payload(conn, org_id, lead_id, prefetch=prefetch)
+    if not workspace_slug:
+        ws_id, _ = _resolve_sync_workspace(conn, lead_id, None, prefetch)
+        if prefetch and ws_id:
+            mems = prefetch.get("memberships", {}).get(lead_id) or []
+            workspace_slug = mems[0]["slug"] if len(mems) == 1 else None
+        elif ws_id:
+            wl = conn.execute(
+                "SELECT w.slug FROM workspaces w JOIN workspace_leads wl ON wl.workspace_id = w.id WHERE wl.lead_id = ? LIMIT 1",
+                (lead_id,),
+            ).fetchone()
+            workspace_slug = wl["slug"] if wl else None
+    ws_payload = (
+        build_lead_workspace_sync_payload(
+            conn, org_id, lead_id, workspace_slug=workspace_slug, prefetch=prefetch,
+        )
+        if workspace_slug
+        else {}
+    )
+    merged = dict(core)
+    merged.update(ws_payload)
+    return merged
 
 
 def resolve_lead_from_agent_sync(
@@ -466,22 +520,21 @@ def resolve_lead_from_agent_sync(
     )
 
 
-def apply_agent_lead_sync_payload(
+def apply_agent_lead_core_payload(
     lead_id: int,
     payload: dict,
     *,
     org_id: str = DEFAULT_ORG_ID,
-    workspace_id: Optional[str] = None,
     entity_key: Optional[str] = None,
 ) -> None:
-    """Apply a full lead sync payload after create/match (import round-trip)."""
+    """Apply org-wide lead profile from relay lead_core_update."""
     from bounces import verify_email
     from pipeline import (
         enrich_lead,
         ensure_company,
         link_lead_company,
         normalize_company_domain,
-        parse_tags_value,
+        _apply_personalization_payload,
     )
 
     update_fields = {
@@ -542,74 +595,8 @@ def apply_agent_lead_sync_payload(
     id_conn.commit()
     id_conn.close()
 
-    if workspace_id:
-        status_label = (payload.get("lead_status") or "").strip().lower().replace("_", " ") or None
-        status_sentiment = (payload.get("lead_sentiment") or "").strip().lower() or None
-        contact_pri = None
-        if payload.get("contact_order") is not None:
-            try:
-                contact_pri = int(payload["contact_order"])
-            except (ValueError, TypeError):
-                pass
-        ws_conn = get_conn()
-        ensure_organization(ws_conn)
-        upsert_workspace_lead(
-            ws_conn, org_id, workspace_id, lead_id,
-            status=payload.get("workspace_stage") or payload.get("stage", "prospecting"),
-            current_status_label=status_label,
-            current_status_sentiment=status_sentiment,
-            contact_priority=contact_pri,
-        )
-        if "tags" in payload:
-            ws_conn.execute(
-                "DELETE FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ?",
-                (workspace_id, lead_id),
-            )
-            for tag in parse_tags_value(payload.get("tags")):
-                tag_id = f"wlt_{workspace_id}_{lead_id}_{hashlib.md5(tag.encode()).hexdigest()[:8]}"
-                ws_conn.execute(
-                    """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
-                       VALUES (?, ?, ?, ?)""",
-                    (tag_id, workspace_id, lead_id, tag),
-                )
-        for li in payload.get("linkedin_status") or []:
-            sender = normalize_linkedin(li.get("sender_profile"))
-            if not sender:
-                continue
-            is_connected = bool(li.get("is_connected"))
-            is_pending = bool(li.get("is_request_pending"))
-            if not is_connected and not is_pending:
-                continue
-            now_ts = datetime.now(timezone.utc).isoformat()
-            li_id = f"lis_{workspace_id}_{lead_id}_{sender[:20]}"
-            ws_conn.execute(
-                """INSERT INTO workspace_lead_linkedin_status
-                   (id, workspace_id, lead_id, sender_profile, is_connected,
-                    is_request_pending, connected_at, request_sent_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT (workspace_id, lead_id, sender_profile) DO UPDATE SET
-                       is_connected = excluded.is_connected,
-                       is_request_pending = excluded.is_request_pending,
-                       updated_at = datetime('now')""",
-                (li_id, workspace_id, lead_id, sender,
-                 int(is_connected), int(is_pending),
-                 now_ts if is_connected else None,
-                 now_ts if is_pending else None),
-            )
-
-        activity = payload.get("activity")
-        if activity:
-            apply_activity_sync_payload(
-                ws_conn, lead_id, workspace_id, activity, merge=True,
-            )
-
-        ws_conn.commit()
-        ws_conn.close()
-
     personalization = payload.get("personalization")
     if personalization:
-        from pipeline import _apply_personalization_payload
-
         _apply_personalization_payload(
             lead_id, payload, table="lead_personalization", id_col="lead_id", entity_id=lead_id,
         )
@@ -629,6 +616,78 @@ def apply_agent_lead_sync_payload(
             str(payload["email_verification_status"]),
             "agent_sync",
         )
+
+
+def apply_agent_lead_workspace_payload(
+    lead_id: int,
+    payload: dict,
+    *,
+    org_id: str = DEFAULT_ORG_ID,
+    workspace_id: str,
+) -> None:
+    """Apply per-workspace pipeline state from relay lead_workspace_update."""
+    from pipeline import parse_tags_value
+
+    status_label = (payload.get("lead_status") or "").strip().lower().replace("_", " ") or None
+    status_sentiment = (payload.get("lead_sentiment") or "").strip().lower() or None
+    contact_pri = None
+    if payload.get("contact_order") is not None:
+        try:
+            contact_pri = int(payload["contact_order"])
+        except (ValueError, TypeError):
+            pass
+    ws_conn = get_conn()
+    ensure_organization(ws_conn)
+    upsert_workspace_lead(
+        ws_conn, org_id, workspace_id, lead_id,
+        status=payload.get("workspace_stage") or payload.get("stage", "prospecting"),
+        current_status_label=status_label,
+        current_status_sentiment=status_sentiment,
+        contact_priority=contact_pri,
+    )
+    if "tags" in payload:
+        ws_conn.execute(
+            "DELETE FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ?",
+            (workspace_id, lead_id),
+        )
+        for tag in parse_tags_value(payload.get("tags")):
+            tag_id = f"wlt_{workspace_id}_{lead_id}_{hashlib.md5(tag.encode()).hexdigest()[:8]}"
+            ws_conn.execute(
+                """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
+                   VALUES (?, ?, ?, ?)""",
+                (tag_id, workspace_id, lead_id, tag),
+            )
+    for li in payload.get("linkedin_status") or []:
+        sender = normalize_linkedin(li.get("sender_profile"))
+        if not sender:
+            continue
+        is_connected = bool(li.get("is_connected"))
+        is_pending = bool(li.get("is_request_pending"))
+        if not is_connected and not is_pending:
+            continue
+        now_ts = datetime.now(timezone.utc).isoformat()
+        li_id = f"lis_{workspace_id}_{lead_id}_{sender[:20]}"
+        ws_conn.execute(
+            """INSERT INTO workspace_lead_linkedin_status
+               (id, workspace_id, lead_id, sender_profile, is_connected,
+                is_request_pending, connected_at, request_sent_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (workspace_id, lead_id, sender_profile) DO UPDATE SET
+                   is_connected = excluded.is_connected,
+                   is_request_pending = excluded.is_request_pending,
+                   updated_at = datetime('now')""",
+            (li_id, workspace_id, lead_id, sender,
+             int(is_connected), int(is_pending),
+             now_ts if is_connected else None,
+             now_ts if is_pending else None),
+        )
+    activity = payload.get("activity")
+    if activity:
+        apply_activity_sync_payload(
+            ws_conn, lead_id, workspace_id, activity, merge=True,
+        )
+    ws_conn.commit()
+    ws_conn.close()
 
 
 def inspect_sync_lead(

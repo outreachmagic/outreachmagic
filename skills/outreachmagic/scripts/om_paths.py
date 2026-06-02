@@ -6,6 +6,7 @@ Hermes: install real files under <home>/skills/outreachmagic/; profile dirs use 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -85,6 +86,9 @@ def _read_bootstrap_data_root(default_root: Path) -> Path:
 def get_data_root() -> Path:
     if _DATA_ROOT_OVERRIDE is not None:
         return _DATA_ROOT_OVERRIDE
+    env_root = os.environ.get("OUTREACHMAGIC_DATA_ROOT")
+    if env_root:
+        return Path(env_root).expanduser()
     return _read_bootstrap_data_root(DEFAULT_DATA_ROOT)
 
 

@@ -3859,6 +3859,8 @@ def get_pipeline(
     order="desc",
     workspace: Optional[str] = None,
     since: Optional[str] = None,
+    email: Optional[str] = None,
+    name: Optional[str] = None,
 ):
     """List leads; optional filters use latest status-bearing event per lead (current-only)."""
     conn = get_conn()
@@ -3945,6 +3947,16 @@ def get_pipeline(
             since_date = datetime.now().strftime("%Y-%m-%d")
         query += " AND (l.created_at >= ? OR l.updated_at >= ?)"
         params.extend([since_date, since_date])
+
+    if email:
+        em = normalize_email(email)
+        if em:
+            query += " AND l.email = ?"
+            params.append(em)
+
+    if name:
+        query += " AND l.name LIKE ?"
+        params.append(f"%{name}%")
 
     order_sql = {
         "updated_at": f"l.updated_at {order.upper()}",
@@ -7458,6 +7470,8 @@ def main():
     show_p.add_argument("--limit", type=int, default=50)
     show_p.add_argument("--workspace", help="Filter by workspace name or slug")
     show_p.add_argument("--since", help="Show leads created or updated on/after this date (YYYY-MM-DD or 'today')")
+    show_p.add_argument("--email", help="Filter by exact email")
+    show_p.add_argument("--name", help="Filter by name (partial match)")
     show_p.add_argument("--json", action="store_true")
 
     lead_table_p = sub.add_parser("lead-table", help="Show canonical lead information table")
@@ -7475,6 +7489,8 @@ def main():
     lead_table_p.add_argument("--limit", type=int, default=50)
     lead_table_p.add_argument("--workspace", help="Filter by workspace name or slug")
     lead_table_p.add_argument("--since", help="Show leads created or updated on/after this date (YYYY-MM-DD or 'today')")
+    lead_table_p.add_argument("--email", help="Filter by exact email")
+    lead_table_p.add_argument("--name", help="Filter by name (partial match)")
     lead_table_p.add_argument("--markdown", action="store_true", help="Render as markdown table")
     lead_table_p.add_argument("--json", action="store_true")
 
@@ -8251,6 +8267,8 @@ def main():
                 order=getattr(args, "order", "desc"),
                 workspace=getattr(args, "workspace", None),
                 since=getattr(args, "since", None),
+                email=getattr(args, "email", None),
+                name=getattr(args, "name", None),
             )
         except ValueError as e:
             print(str(e))
@@ -8275,6 +8293,8 @@ def main():
                 order=getattr(args, "order", "desc"),
                 workspace=getattr(args, "workspace", None),
                 since=getattr(args, "since", None),
+                email=getattr(args, "email", None),
+                name=getattr(args, "name", None),
             )
         except ValueError as e:
             print(str(e))

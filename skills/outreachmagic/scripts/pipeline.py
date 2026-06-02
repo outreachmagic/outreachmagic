@@ -5015,7 +5015,13 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
     return results
 
 
-def _relay_push_batches(agent_key: str, entries: list[dict], client_id: str) -> dict:
+def _relay_push_batches(
+    agent_key: str,
+    entries: list[dict],
+    client_id: str,
+    *,
+    stream_label: str = "entries",
+) -> dict:
     """Push relay entries in batches and return diagnostics."""
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
@@ -5036,7 +5042,8 @@ def _relay_push_batches(agent_key: str, entries: list[dict], client_id: str) -> 
         batch = entries[i : i + batch_size]
         batch_num = i // batch_size + 1
         print(
-            f"Pushing batch {batch_num}/{total_batches} ({len(batch)} entries)...",
+            f"{stream_label}: batch {batch_num}/{total_batches} "
+            f"({len(batch)} this batch, {total_pushed}/{len(entries)} pushed so far)...",
             flush=True,
         )
         body = json.dumps({"client_id": client_id, "entries": batch}).encode()
@@ -5058,7 +5065,8 @@ def _relay_push_batches(agent_key: str, entries: list[dict], client_id: str) -> 
                     total_pushed += count
                     last_error = None
                     print(
-                        f"Batch {batch_num}/{total_batches} pushed ({total_pushed} total so far).",
+                        f"{stream_label}: batch {batch_num}/{total_batches} complete "
+                        f"({total_pushed}/{len(entries)} pushed).",
                         flush=True,
                     )
                     break
@@ -5135,7 +5143,12 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
     client_id = export.get("client_id", "unknown")
-    result = _relay_push_batches(agent_key, entries, client_id)
+    result = _relay_push_batches(
+        agent_key,
+        entries,
+        client_id,
+        stream_label="Agent events",
+    )
     if result.get("pushed", 0) > 0:
         # Mark events as ingested locally so we don't push them again
         conn = get_conn()
@@ -5228,7 +5241,12 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
 
     if core_entries:
         print(f"Pushing {len(core_entries)} lead core snapshot(s)...", flush=True)
-        last_result = _relay_push_batches(agent_key, core_entries, client_id)
+        last_result = _relay_push_batches(
+            agent_key,
+            core_entries,
+            client_id,
+            stream_label="Lead core snapshots",
+        )
         total_pushed += int(last_result.get("pushed", 0) or 0)
         if last_result.get("error"):
             last_result["pushed"] = total_pushed
@@ -5246,7 +5264,12 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
 
     if ws_entries:
         print(f"Pushing {len(ws_entries)} lead workspace snapshot(s)...", flush=True)
-        ws_result = _relay_push_batches(agent_key, ws_entries, client_id)
+        ws_result = _relay_push_batches(
+            agent_key,
+            ws_entries,
+            client_id,
+            stream_label="Lead workspace snapshots",
+        )
         total_pushed += int(ws_result.get("pushed", 0) or 0)
         last_result = ws_result
         if ws_result.get("error"):
@@ -5293,7 +5316,12 @@ def _push_pending_company_updates(agent_key: str) -> dict:
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
 
-    push_result = _relay_push_batches(agent_key, entries, client_id)
+    push_result = _relay_push_batches(
+        agent_key,
+        entries,
+        client_id,
+        stream_label="Company updates",
+    )
     if int(push_result.get("pushed", 0) or 0) <= 0:
         return push_result
 

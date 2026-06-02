@@ -78,7 +78,6 @@ from workspace_routing import (
     lead_external_id_value,
     parse_entity_key,
     quarantine_event,
-    replay_quarantine_item,
     resolve_workspace,
     resolve_workspace_for_ingest,
     upsert_all_identities,
@@ -93,6 +92,7 @@ from workspace_routing import (
 import routing_cloud
 import connections_cloud
 import db_health
+import quarantine_resolutions as qres
 import workspace_archive
 
 import bounces
@@ -938,13 +938,17 @@ CREATE TABLE IF NOT EXISTS unmapped_campaign_queue (
     status                  TEXT NOT NULL DEFAULT 'pending',
     payload_json            TEXT NOT NULL,
     received_at             TEXT NOT NULL DEFAULT (datetime('now')),
-    resolved_at             TEXT
+    resolved_at             TEXT,
+    cloud_pending           INTEGER NOT NULL DEFAULT 0,
+    assigned_workspace      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_quarantine_status ON unmapped_campaign_queue(org_id, status, received_at);
 CREATE INDEX IF NOT EXISTS idx_quarantine_campaign ON unmapped_campaign_queue(
     org_id, source_platform, campaign_id, status
 );
+CREATE INDEX IF NOT EXISTS idx_quarantine_cloud_pending ON unmapped_campaign_queue(cloud_pending)
+    WHERE cloud_pending = 1;
 
 CREATE TABLE IF NOT EXISTS lead_merge_jobs (
     id              TEXT PRIMARY KEY,
@@ -1189,7 +1193,9 @@ def migrate_db(conn=None):
             status TEXT NOT NULL DEFAULT 'pending',
             payload_json TEXT NOT NULL,
             received_at TEXT NOT NULL DEFAULT (datetime('now')),
-            resolved_at TEXT
+            resolved_at TEXT,
+            cloud_pending INTEGER NOT NULL DEFAULT 0,
+            assigned_workspace TEXT
         );
         CREATE TABLE IF NOT EXISTS lead_merge_jobs (
             id TEXT PRIMARY KEY,
@@ -1344,6 +1350,14 @@ def migrate_db(conn=None):
         conn.execute("ALTER TABLE companies ADD COLUMN cloud_pending INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    for col, col_type in [
+        ("cloud_pending", "INTEGER NOT NULL DEFAULT 0"),
+        ("assigned_workspace", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE unmapped_campaign_queue ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
     try:
         conn.execute("ALTER TABLE lead_personalization ADD COLUMN field_date TEXT")
     except sqlite3.OperationalError:
@@ -4571,10 +4585,14 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
     pending_lead_count = conn2.execute(
         "SELECT COUNT(*) AS n FROM leads WHERE cloud_pending = 1"
     ).fetchone()["n"]
+    pending_quarantine_count = conn2.execute(
+        """SELECT COUNT(*) AS n FROM unmapped_campaign_queue
+           WHERE cloud_pending = 1 AND status IN ('skipped', 'assigned')"""
+    ).fetchone()["n"]
     conn2.close()
 
     pending_total = len(pending_ws) + len(pending_maps)
-    cloud_pending = local_event_count + pending_lead_count
+    cloud_pending = local_event_count + pending_lead_count + pending_quarantine_count
     return {
         "can_sync": True,
         "pending_workspaces": pending_ws,
@@ -4582,6 +4600,7 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
         "relay_untracked_leads": local_lead_count,
         "local_agent_events": local_event_count,
         "cloud_pending_leads": pending_lead_count,
+        "pending_quarantine_resolutions": pending_quarantine_count,
         "pending_total": pending_total + cloud_pending,
         "synced": pending_total == 0 and cloud_pending == 0,
     }
@@ -4779,6 +4798,16 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
         )
 
     if agent_key:
+        q_push = _push_pending_quarantine_resolutions(agent_key)
+        q_synced = int(q_push.get("synced") or 0)
+        results["quarantine_resolutions_synced"] = q_synced
+        if q_push.get("errors"):
+            results["quarantine_resolution_errors"] = q_push["errors"]
+        if q_synced:
+            parts.append(
+                f"Synced {q_synced} quarantine resolution{'s' if q_synced != 1 else ''} to relay."
+            )
+
         lead_push = _push_pending_lead_updates(agent_key)
         leads_pushed = int(lead_push.get("pushed", 0) or 0)
         results["lead_updates_pushed"] = leads_pushed
@@ -5167,16 +5196,32 @@ def add_campaign_map_cli(
     return result
 
 
-def list_quarantine(org_id: str = DEFAULT_ORG_ID, status: str = "pending", limit: int = 50) -> list[dict]:
+def list_quarantine(
+    org_id: str = DEFAULT_ORG_ID,
+    status: str = "pending",
+    limit: int = 50,
+) -> list[dict]:
     conn = get_conn()
-    rows = conn.execute(
-        """SELECT id, source_platform, campaign_id, campaign_name_raw,
-                  campaign_name_normalized, reason, status, received_at
-           FROM unmapped_campaign_queue
-           WHERE org_id = ? AND status = ?
-           ORDER BY received_at DESC LIMIT ?""",
-        (org_id, status, limit),
-    ).fetchall()
+    if status == "all":
+        rows = conn.execute(
+            """SELECT id, source_platform, campaign_id, campaign_name_raw,
+                      campaign_name_normalized, external_event_id, reason, status,
+                      assigned_workspace, cloud_pending, received_at, resolved_at
+               FROM unmapped_campaign_queue
+               WHERE org_id = ?
+               ORDER BY received_at DESC LIMIT ?""",
+            (org_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT id, source_platform, campaign_id, campaign_name_raw,
+                      campaign_name_normalized, external_event_id, reason, status,
+                      assigned_workspace, cloud_pending, received_at, resolved_at
+               FROM unmapped_campaign_queue
+               WHERE org_id = ? AND status = ?
+               ORDER BY received_at DESC LIMIT ?""",
+            (org_id, status, limit),
+        ).fetchall()
     conn.close()
     out = []
     for row in rows:
@@ -5277,7 +5322,8 @@ def format_quarantine_campaign_summary(
         lines.extend(
             [
                 "4. Replay quarantined events:  pipeline.py quarantine replay",
-                "   (or assign one manually: pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG)",
+                "   (or skip junk: pipeline.py quarantine skip --id QUEUE_ID)",
+                "   (or assign one: pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG; then sync + pull)",
             ]
         )
 
@@ -5293,7 +5339,42 @@ def print_quarantine_guidance() -> None:
     print(format_quarantine_campaign_summary(get_quarantine_campaign_summary()), file=sys.stderr)
 
 
-def assign_quarantine_and_replay(queue_id: str, workspace_slug: str) -> dict:
+def _quarantine_relay_id(row: dict) -> Optional[int]:
+    raw = row.get("external_event_id")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def skip_quarantine(queue_id: str) -> dict:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, external_event_id FROM unmapped_campaign_queue WHERE id = ? AND status = 'pending'",
+        (queue_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return {"status": "error", "error": "queue item not found or not pending"}
+    relay_id = _quarantine_relay_id(dict(row))
+    if not relay_id:
+        conn.close()
+        return {"status": "error", "error": "missing relay id on queue item"}
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """UPDATE unmapped_campaign_queue
+           SET status = 'skipped', resolved_at = ?, cloud_pending = 1
+           WHERE id = ?""",
+        (now, queue_id),
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "id": queue_id, "relay_id": relay_id}
+
+
+def assign_quarantine(queue_id: str, workspace_slug: str) -> dict:
     conn = get_conn()
     ws = conn.execute(
         "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
@@ -5302,43 +5383,130 @@ def assign_quarantine_and_replay(queue_id: str, workspace_slug: str) -> dict:
     if not ws:
         conn.close()
         return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
-    try:
-        result = replay_quarantine_item(conn, queue_id, ws["id"])
-    except ValueError as e:
-        conn.close()
-        return {"status": "error", "error": str(e)}
-    if result.get("status") != "assigned":
-        conn.close()
-        return result
     row = conn.execute(
-        "SELECT payload_json FROM unmapped_campaign_queue WHERE id = ?", (queue_id,)
+        "SELECT id, external_event_id FROM unmapped_campaign_queue WHERE id = ? AND status = 'pending'",
+        (queue_id,),
     ).fetchone()
+    if not row:
+        conn.close()
+        return {"status": "error", "error": "queue item not found or not pending"}
+    relay_id = _quarantine_relay_id(dict(row))
+    if not relay_id:
+        conn.close()
+        return {"status": "error", "error": "missing relay id on queue item"}
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """UPDATE unmapped_campaign_queue
+           SET status = 'assigned', assigned_workspace = ?, resolved_at = ?,
+               cloud_pending = 1
+           WHERE id = ?""",
+        (workspace_slug, now, queue_id),
+    )
     conn.commit()
     conn.close()
+    return {
+        "status": "ok",
+        "id": queue_id,
+        "relay_id": relay_id,
+        "workspace": workspace_slug,
+    }
+
+
+def _push_pending_quarantine_resolutions(agent_key: str) -> dict:
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT external_event_id, status, assigned_workspace, resolved_at
+           FROM unmapped_campaign_queue
+           WHERE cloud_pending = 1 AND status IN ('skipped', 'assigned')"""
+    ).fetchall()
+    resolves: list[dict] = []
+    relay_ids_sent: list[int] = []
+    for row in rows:
+        relay_id = _quarantine_relay_id(dict(row))
+        if not relay_id:
+            continue
+        relay_ids_sent.append(relay_id)
+        entry: dict = {
+            "relay_id": relay_id,
+            "status": row["status"],
+            "resolved_at": row["resolved_at"] or normalize_relay_timestamp(None),
+        }
+        if row["status"] == "assigned":
+            entry["workspace_slug"] = row["assigned_workspace"]
+        resolves.append(entry)
+    conn.close()
+
+    if not resolves:
+        return {"synced": 0, "errors": []}
+
+    result = qres.push_resolutions_to_relay(
+        RELAY_URL, agent_key, resolves, version=__version__
+    )
+    if result.get("status") == "error":
+        return {"synced": 0, "errors": [{"error": result.get("error")}]}
+
+    errors = result.get("errors") or []
+    failed: set[int] = set()
+    for err in errors:
+        try:
+            failed.add(int(err["relay_id"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+    if errors and not failed:
+        return {"synced": 0, "errors": errors}
+
+    succeeded = [rid for rid in relay_ids_sent if rid not in failed]
+    if succeeded:
+        placeholders = ",".join("?" * len(succeeded))
+        conn = get_conn()
+        conn.execute(
+            f"""UPDATE unmapped_campaign_queue SET cloud_pending = 0
+                WHERE cloud_pending = 1 AND external_event_id IN ({placeholders})""",
+            [str(rid) for rid in succeeded],
+        )
+        conn.commit()
+        conn.close()
+
+    return {"synced": len(succeeded), "errors": errors}
+
+
+def _replay_quarantine_row(queue_id: str, workspace_id: str) -> dict:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT payload_json FROM unmapped_campaign_queue WHERE id = ? AND status = 'pending'",
+        (queue_id,),
+    ).fetchone()
     if not row:
-        return result
+        conn.close()
+        return {"status": "error", "error": "queue item not found or not pending"}
     try:
         event = json.loads(row["payload_json"])
     except (json.JSONDecodeError, TypeError):
-        return {**result, "replay": "failed", "error": "invalid payload"}
-    lead_id = ingest_relay_event(event, force_workspace_id=ws["id"])
+        conn.close()
+        return {"status": "error", "error": "invalid payload"}
+    conn.close()
+    lead_id = ingest_relay_event(event, force_workspace_id=workspace_id, quiet=True)
     conn = get_conn()
     conn.execute(
-        """UPDATE unmapped_campaign_queue SET status = 'replayed', resolved_at = datetime('now')
+        """UPDATE unmapped_campaign_queue
+           SET status = 'replayed', resolved_at = datetime('now'), cloud_pending = 0
            WHERE id = ?""",
         (queue_id,),
     )
     conn.commit()
     conn.close()
-    return {**result, "replay": "ok", "lead_id": lead_id}
+    if lead_id is None:
+        return {"status": "error", "error": "ingest failed", "queue_id": queue_id}
+    return {"status": "ok", "queue_id": queue_id, "lead_id": lead_id}
 
 
 def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int = 100) -> dict:
     pending = list_quarantine(status="pending", limit=limit)
     replayed = skipped = 0
+    slug_cache = qres.WorkspaceSlugCache()
     for item in pending:
         if workspace_slug:
-            r = assign_quarantine_and_replay(item["id"], workspace_slug)
+            ws_id = slug_cache.workspace_id(workspace_slug)
         else:
             conn = get_conn()
             campaign_name = item.get("campaign_name_raw") or item.get("campaign_name_normalized")
@@ -5353,19 +5521,16 @@ def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int =
                 },
             )
             routing = resolve_workspace(conn, DEFAULT_ORG_ID, ctx)
-            if not routing:
-                conn.close()
-                skipped += 1
-                continue
-            slug = conn.execute(
-                "SELECT slug FROM workspaces WHERE id = ?", (routing.workspace_id,)
-            ).fetchone()
             conn.close()
-            if not slug:
+            if not routing:
                 skipped += 1
                 continue
-            r = assign_quarantine_and_replay(item["id"], slug["slug"])
-        if r.get("replay") == "ok":
+            ws_id = routing.workspace_id
+        if not ws_id:
+            skipped += 1
+            continue
+        r = _replay_quarantine_row(item["id"], ws_id)
+        if r.get("status") == "ok":
             replayed += 1
         else:
             skipped += 1
@@ -5706,6 +5871,7 @@ def pull_events_org(
     snapshot_after_id: Optional[int] = None,
     snapshots_only: bool = False,
     include_pending: bool = False,
+    include_queue_resolutions: bool = False,
 ) -> dict:
     """Pull org events from relay (cursor-only: after_id / snapshot_after_id)."""
     params = []
@@ -5719,6 +5885,8 @@ def pull_events_org(
         params.append("snapshots_only=1")
     if include_pending:
         params.append("include_pending=1")
+    if include_queue_resolutions:
+        params.append("include_queue_resolutions=1")
     qs = f"?{'&'.join(params)}" if params else ""
     url = f"{RELAY_URL}/pull{qs}"
 
@@ -5774,7 +5942,9 @@ def print_pull_diagnostics(stats: dict):
     )
     print(
         f"Skips: duplicates={stats.get('skipped_duplicates', 0)} "
-        f"errors={stats.get('skipped_errors', 0)}"
+        f"errors={stats.get('skipped_errors', 0)} "
+        f"cloud_skipped={stats.get('skipped_resolved', 0)} "
+        f"cloud_assigned={stats.get('assigned_resolved', 0)}"
     )
     if stats.get("cursor_stalled"):
         print("Cursor stall guard: triggered")
@@ -5788,13 +5958,60 @@ def _ingest_relay_page(
     *,
     debug_sentiment: bool = False,
     quiet: bool = True,
+    resolution_map: Optional[dict[int, dict]] = None,
+    slug_cache: Optional[qres.WorkspaceSlugCache] = None,
 ) -> dict:
     imported = skipped = skipped_duplicates = skipped_filtered = skipped_errors = 0
+    skipped_resolved = assigned_resolved = 0
     newest_relay_id_seen = 0
+    resolutions = resolution_map or {}
+    ws_cache = slug_cache or qres.WorkspaceSlugCache()
+
     for event in events:
         relay_id = event.get("relay_id")
         if isinstance(relay_id, int) and relay_id > newest_relay_id_seen:
             newest_relay_id_seen = relay_id
+
+        resolution = None
+        if isinstance(relay_id, int):
+            resolution = resolutions.get(relay_id)
+        if resolution:
+            if resolution["status"] == "skipped":
+                skipped_resolved += 1
+                continue
+            if resolution["status"] == "assigned":
+                ws_id = ws_cache.workspace_id(resolution.get("workspace_slug") or "")
+                if not ws_id:
+                    skipped += 1
+                    skipped_errors += 1
+                    if not quiet:
+                        print(
+                            f"Warning: assigned resolution for relay {relay_id} "
+                            f"but workspace '{resolution.get('workspace_slug')}' not found",
+                            file=sys.stderr,
+                        )
+                    continue
+                try:
+                    ingested = ingest_relay_event(
+                        event,
+                        force_workspace_id=ws_id,
+                        debug_sentiment=debug_sentiment,
+                        quiet=quiet,
+                    )
+                except Exception as exc:
+                    if not quiet:
+                        print(f"Warning: skipped relay event {relay_id}: {exc}")
+                    skipped += 1
+                    skipped_errors += 1
+                    continue
+                if ingested is None:
+                    skipped += 1
+                    skipped_filtered += 1
+                else:
+                    imported += 1
+                    assigned_resolved += 1
+                continue
+
         dedupe_key = relay_dedupe_key(event)
         was_duplicate = relay_already_ingested(dedupe_key)
         try:
@@ -5819,6 +6036,8 @@ def _ingest_relay_page(
         "skipped_duplicates": skipped_duplicates,
         "skipped_filtered": skipped_filtered,
         "skipped_errors": skipped_errors,
+        "skipped_resolved": skipped_resolved,
+        "assigned_resolved": assigned_resolved,
         "newest_relay_id_seen": newest_relay_id_seen,
     }
 
@@ -5860,6 +6079,9 @@ def sync_from_relay_org(
 
     pending_events: Optional[int] = None
     est_event_pages: Optional[int] = None
+    resolution_map: dict[int, dict] = {}
+    slug_cache = qres.WorkspaceSlugCache()
+    skipped_resolved = assigned_resolved = 0
 
     while True:
         event_pages += 1
@@ -5867,9 +6089,13 @@ def sync_from_relay_org(
             agent_key,
             after_id=page_after_id or None,
             include_pending=event_pages == 1,
+            include_queue_resolutions=event_pages == 1,
         )
         if result.get("error"):
             raise RuntimeError(result.get("message", "pull failed"))
+
+        if event_pages == 1:
+            resolution_map = qres.parse_queue_resolutions(result.get("queue_resolutions"))
 
         events = result.get("events") or []
         if not events:
@@ -5909,12 +6135,20 @@ def sync_from_relay_org(
                 flush=True,
             )
 
-        batch = _ingest_relay_page(events, debug_sentiment=debug_sentiment, quiet=True)
+        batch = _ingest_relay_page(
+            events,
+            debug_sentiment=debug_sentiment,
+            quiet=True,
+            resolution_map=resolution_map,
+            slug_cache=slug_cache,
+        )
         imported += batch["imported"]
         skipped += batch["skipped"]
         skipped_duplicates += batch["skipped_duplicates"]
         skipped_filtered += batch["skipped_filtered"]
         skipped_errors += batch["skipped_errors"]
+        skipped_resolved += batch.get("skipped_resolved", 0)
+        assigned_resolved += batch.get("assigned_resolved", 0)
         newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
 
         next_after_id = int(result.get("max_id") or page_after_id)
@@ -6014,6 +6248,9 @@ def sync_from_relay_org(
             "skipped_duplicates": skipped_duplicates,
             "skipped_filtered": skipped_filtered,
             "skipped_errors": skipped_errors,
+            "skipped_resolved": skipped_resolved,
+            "assigned_resolved": assigned_resolved,
+            "resolution_count": len(resolution_map),
             "skipped_total": skipped,
             "verdict": _pull_diagnostics_verdict({
                 "cursor_stalled": cursor_stalled,
@@ -7424,13 +7661,21 @@ def main():
 
     q_p = sub.add_parser("quarantine", help="Unmapped campaign queue")
     q_sub = q_p.add_subparsers(dest="quarantine_cmd")
-    q_list = q_sub.add_parser("list", help="List pending quarantined events by campaign")
-    q_list.add_argument("--limit", type=int, default=0, help="Limit pending queue items in JSON mode (0 = all)")
+    q_list = q_sub.add_parser("list", help="List quarantined events")
+    q_list.add_argument(
+        "--status",
+        default="pending",
+        choices=("pending", "skipped", "assigned", "replayed", "all"),
+        help="Filter by queue status (default: pending)",
+    )
+    q_list.add_argument("--limit", type=int, default=0, help="Limit rows in JSON mode (0 = all)")
     q_list.add_argument("--json", action="store_true", help="Output raw queue rows as JSON")
-    q_assign = q_sub.add_parser("assign", help="Assign workspace and replay one item")
+    q_skip = q_sub.add_parser("skip", help="Skip quarantined event (syncs to relay)")
+    q_skip.add_argument("--id", required=True, help="Queue item id")
+    q_assign = q_sub.add_parser("assign", help="Assign workspace (syncs to relay; ingested on next pull)")
     q_assign.add_argument("--id", required=True, help="Queue item id")
     q_assign.add_argument("--workspace", required=True, help="Workspace slug")
-    q_replay = q_sub.add_parser("replay", help="Replay assigned quarantine items")
+    q_replay = q_sub.add_parser("replay", help="Replay pending items locally after campaign-map rules")
     q_replay.add_argument("--workspace")
     q_replay.add_argument("--limit", type=int, default=100)
 
@@ -8274,17 +8519,22 @@ def main():
         else:
             print(json.dumps(list_campaign_maps(), indent=2))
     elif args.command == "quarantine":
-        if args.quarantine_cmd == "assign":
-            print(json.dumps(assign_quarantine_and_replay(args.id, args.workspace), indent=2))
+        if args.quarantine_cmd == "skip":
+            print(json.dumps(skip_quarantine(args.id), indent=2))
+        elif args.quarantine_cmd == "assign":
+            print(json.dumps(assign_quarantine(args.id, args.workspace), indent=2))
         elif args.quarantine_cmd == "replay":
             print(json.dumps(replay_pending_quarantine(args.workspace, args.limit), indent=2))
         else:
+            status = getattr(args, "status", "pending") or "pending"
             if getattr(args, "json", False):
                 raw_limit = getattr(args, "limit", 0) or 0
                 limit = raw_limit if raw_limit > 0 else 1000000
-                print(json.dumps(list_quarantine(limit=limit), indent=2))
-            else:
+                print(json.dumps(list_quarantine(status=status, limit=limit), indent=2))
+            elif status == "pending":
                 print(format_quarantine_campaign_summary(get_quarantine_campaign_summary()))
+            else:
+                print(json.dumps(list_quarantine(status=status, limit=50), indent=2))
     elif args.command == "personalize-set":
         if args.batch:
             items = json.loads(args.json_input or "[]")

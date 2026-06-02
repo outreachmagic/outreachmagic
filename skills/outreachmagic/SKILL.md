@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.21.0
+version: 1.21.8
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -294,7 +294,26 @@ python3 scripts/pipeline.py agent-changes --all
 python3 scripts/pipeline.py sync
 ```
 
-`sync` pushes pending lead snapshots (profile, `external_id`, `company_domain`, HQ/location, tags, mailmerge, workspace status, LinkedIn connection flags) plus local events. At the end of the same command it may POST aggregate local DB health to the portal (file size, row counts, top tables — throttled ~6h). Skip with `sync --no-health-report`. Other machines run `pull --full` after a DB reset to restore everything that was synced.
+`sync` pushes pending lead snapshots (profile, `external_id`, `company_domain`, HQ/location, tags, mailmerge, workspace status, LinkedIn connection flags) plus local events, and **quarantine resolutions** (`skip` / `assign`) to the relay. At the end of the same command it may POST aggregate local DB health to the portal (file size, row counts, top tables — throttled ~6h). Skip with `sync --no-health-report`. Other machines run `pull --full` after a DB reset to restore everything that was synced.
+
+### Quarantine (multi-workspace)
+
+Unmapped relay events land in `unmapped_campaign_queue`. Resolve them locally, then `sync` so other machines and `pull --full` stay consistent:
+
+```bash
+python3 scripts/pipeline.py quarantine list
+python3 scripts/pipeline.py quarantine list --status all --json
+python3 scripts/pipeline.py quarantine skip --id QUEUE_ID
+python3 scripts/pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG
+python3 scripts/pipeline.py sync
+python3 scripts/pipeline.py pull
+```
+
+- **`skip`** — ignore junk/test events on the relay (permanent after sync).
+- **`assign`** — route future pulls to a workspace (ingested on next `pull`, not immediately).
+- **`replay`** — bulk re-ingest **pending** rows locally after adding `campaign-map` rules (no relay resolution).
+
+Relay stores resolutions in D1 (`queue_resolutions`). The first event page of each `pull` requests them (`include_queue_resolutions=1`); later pages reuse the in-memory map.
 
 **`sync --status` counters:** `relay_untracked_leads` = imported/local leads with no relay pull history (normal after CSV; data is still in the shared DB). `cloud_pending_leads` = rows waiting to push — run `sync`. `local_agent_events` = agent-originated events not yet on relay.
 

@@ -538,9 +538,10 @@ def format_unmapped_campaign_message(ctx: CampaignContext) -> str:
         f'     pipeline.py campaign-map add --workspace WORKSPACE_SLUG --campaign-name "{label}"',
         "   Or use a contains/prefix/regex rule:",
         f'     pipeline.py campaign-map add --workspace WORKSPACE_SLUG --match-strategy rule_contains --campaign-name "substring"',
-        "3. Or assign one quarantined event manually:",
+        "3. Or resolve one item:",
         "     pipeline.py quarantine list",
-        "     pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG",
+        "     pipeline.py quarantine skip --id QUEUE_ID",
+        "     pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG  (then sync + pull)",
     ]
     if ctx.campaign_id and ctx.campaign_name_raw and ctx.campaign_id != ctx.campaign_name_raw:
         lines[6] = (
@@ -1080,30 +1081,3 @@ def assign_campaign_map(
     )
     return map_id
 
-
-def replay_quarantine_item(conn: sqlite3.Connection, queue_id: str, workspace_id: str) -> dict:
-    """Assign workspace to quarantined payload and mark for reprocessing."""
-    row = conn.execute(
-        "SELECT * FROM unmapped_campaign_queue WHERE id = ? AND status = 'pending'",
-        (queue_id,),
-    ).fetchone()
-    if not row:
-        return {"status": "error", "error": "queue item not found or not pending"}
-
-    org_id = row["org_id"]
-    if row["campaign_id"] or row["campaign_name_raw"]:
-        assign_campaign_map(
-            conn,
-            org_id,
-            source_platform="*",
-            workspace_id=workspace_id,
-            campaign_id=row["campaign_id"],
-            campaign_name=row["campaign_name_raw"],
-            match_strategy="id_exact" if row["campaign_id"] else "name_exact",
-        )
-    conn.execute(
-        """UPDATE unmapped_campaign_queue
-           SET status = 'assigned', resolved_at = datetime('now') WHERE id = ?""",
-        (queue_id,),
-    )
-    return {"status": "assigned", "queue_id": queue_id, "workspace_id": workspace_id}

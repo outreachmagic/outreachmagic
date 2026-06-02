@@ -14,6 +14,6 @@ Canonical schema is defined in `scripts/pipeline.py` (`SCHEMA_SQL`). This refere
 | `campaigns` | Campaign names from relay imports |
 | `workspaces` | Multi-workspace routing (org-scoped) |
 | `campaign_maps` | Platform campaign ID → workspace |
-| `quarantine_queue` | Events awaiting workspace assignment |
+| `unmapped_campaign_queue` | Quarantined relay events (pending / skipped / assigned); `cloud_pending` syncs resolutions to relay |
 
 Use `pipeline.py show`, `history`, `stats`, and `campaigns` instead of raw SQL when possible.

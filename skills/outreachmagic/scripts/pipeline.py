@@ -2036,6 +2036,20 @@ def find_lead(
                    WHERE l.email = ?""",
                 tuple(params),
             ).fetchone()
+            if not row:
+                # Try finding by identity
+                found_id = find_lead_by_identity(conn, DEFAULT_ORG_ID, "email", em)
+                if found_id:
+                    params = [*workspace_params, found_id]
+                    row = conn.execute(
+                        f"""SELECT l.*, COALESCE(c.name, l.company) AS company_display
+                           FROM leads l
+                           LEFT JOIN companies c ON l.company_id = c.id
+                           {workspace_join}
+                           WHERE l.id = ?""",
+                        tuple(params),
+                    ).fetchone()
+
     elif linkedin:
         norm = normalize_linkedin(linkedin)
         if norm:
@@ -2047,6 +2061,23 @@ def find_lead(
                    WHERE l.linkedin_url = ?""",
                 tuple(params),
             ).fetchone()
+            if not row:
+                # Try finding by identity (public url or member/salesnav)
+                li_parsed = parse_linkedin_value(linkedin)
+                for itype, val in li_parsed:
+                    found_id = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
+                    if found_id:
+                        params = [*workspace_params, found_id]
+                        row = conn.execute(
+                            f"""SELECT l.*, COALESCE(c.name, l.company) AS company_display
+                               FROM leads l
+                               LEFT JOIN companies c ON l.company_id = c.id
+                               {workspace_join}
+                               WHERE l.id = ?""",
+                            tuple(params),
+                        ).fetchone()
+                        if row:
+                            break
     elif name:
         params = [*workspace_params, f"%{name}%"]
         row = conn.execute(

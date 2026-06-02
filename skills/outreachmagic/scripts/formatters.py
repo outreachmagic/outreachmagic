@@ -139,8 +139,19 @@ def format_event_timeline(lead, events):
         f"Lead:    {lead['name']} ({emoji} {lead.get('stage', '?')})",
         f"Title:   {lead.get('title') or '—'}",
         f"Email:   {lead.get('email') or '—'}",
+        f"LinkedIn:{lead.get('linkedin_url') or lead.get('linkedin') or '—'}",
         f"Company: {lead.get('company_display') or lead.get('company') or '—'}",
     ]
+
+    # Add Status / Verification
+    status_parts = []
+    if lead.get("lead_status"): status_parts.append(lead["lead_status"])
+    if lead.get("lead_sentiment"): status_parts.append(f"[{lead['lead_sentiment']}]")
+    status_str = " ".join(status_parts) if status_parts else "—"
+    
+    verify_str = lead.get("email_verification_status") or "—"
+    
+    lines.append(f"Status:  {status_str:<30} | Verify: {verify_str}")
 
     # Add HQ / Tags if available
     hq = []
@@ -157,6 +168,15 @@ def format_event_timeline(lead, events):
         f"Tags:    {tags}",
         f"Notes:   {lead.get('notes') or '—'}",
     ])
+
+    # Add LinkedIn Connection Status
+    li_status = lead.get("linkedin_status")
+    if li_status:
+        for s in li_status:
+            if s.get("is_connected"):
+                lines.append(f"Connect: Connected to {s['sender_profile']}")
+            elif s.get("is_request_pending"):
+                lines.append(f"Connect: Request pending from {s['sender_profile']}")
 
     # Add Activity Summary if available
     if "email_sent_count" in lead or "linkedin_sent_count" in lead:

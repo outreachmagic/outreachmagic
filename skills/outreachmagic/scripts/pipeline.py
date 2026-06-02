@@ -2517,7 +2517,7 @@ PROFILE_ALIASES: dict[str, tuple[str, ...]] = {
     "title": ("title", "job_title", "role"),
     "company": ("company", "company_name", "organization", "org"),
     "industry": ("industry",),
-    "headcount": ("headcount", "company_size", "employees", "employee_count"),
+    "headcount": ("headcount", "company_size", "employees", "employee_count", "company_headcount"),
     "location_city": ("location_city", "city", "lead_city"),
     "location_state": ("location_state", "state", "region", "lead_state"),
     "location_country": ("location_country", "country", "lead_country"),
@@ -2714,7 +2714,15 @@ IMPORT_EXTRA_FIELDS = (
     "tags", "contact_order",
     "hq_city", "hq_state", "hq_country",
     "external_id", "notes",
+    "last_message_sent", "last_message_received",
 )
+
+RESERVED_IMPORT_FIELDS = frozenset([
+    "company_domain", "is_connected_linkedin", "is_linkedin_request_pending",
+    "lead_status", "lead_sentiment", "import_name", "list_source",
+    "tags", "contact_order", "hq_city", "hq_state", "hq_country",
+    "external_id", "notes",
+])
 
 def _extract_extra_import_fields(raw: dict) -> dict[str, str]:
     """Extract non-PROFILE_ALIASES fields from the raw CSV/JSON row."""
@@ -2919,9 +2927,18 @@ def import_profiles(
         lead_items = []
         co_items = []
         for key, val in extra.items():
-            if not key.startswith("mailmerge_") or not val:
+            if not val:
                 continue
-            field = key[len("mailmerge_"):]
+            
+            field = None
+            if key.startswith("mailmerge_"):
+                field = key[len("mailmerge_"):]
+            elif key not in RESERVED_IMPORT_FIELDS:
+                field = key
+            
+            if not field:
+                continue
+
             item = {"field": field, "value": val}
             if is_company_personalization_field(field):
                 co_items.append(item)

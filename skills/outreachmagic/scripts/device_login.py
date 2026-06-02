@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import socket
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -110,19 +112,22 @@ def start_device_authorization(
     load_config_fn: Callable[[], dict],
     *,
     platform: Optional[str] = None,
+    client_id: Optional[str] = None,
 ) -> dict[str, Any]:
     api_base = get_api_base(load_config_fn)
     client_platform = detect_client_platform(override=platform)
     client_label = default_client_label(platform=client_platform)
 
-    start = _post_json(
-        f"{api_base}/api/device/code",
-        {
-            "client_label": client_label,
-            "client_platform": client_platform,
-            "client_hostname": socket.gethostname(),
-        },
-    )
+    body: dict[str, Any] = {
+        "client_label": client_label,
+        "client_platform": client_platform,
+        "client_hostname": socket.gethostname(),
+    }
+    # Stable machine identity lets server-side login records be updated/reused.
+    if client_id:
+        body["client_id"] = client_id
+
+    start = _post_json(f"{api_base}/api/device/code", body)
 
     device_code = start.get("device_code")
     user_code = start.get("user_code")
@@ -198,8 +203,9 @@ def run_device_login(
     load_config_fn: Callable[[], dict],
     *,
     platform: Optional[str] = None,
+    client_id: Optional[str] = None,
 ) -> str:
-    flow = start_device_authorization(load_config_fn, platform=platform)
+    flow = start_device_authorization(load_config_fn, platform=platform, client_id=client_id)
     device_code = str(flow["device_code"])
     connect_url = str(flow["connect_url"])
     user_code = str(flow["user_code"])
@@ -216,10 +222,29 @@ def run_device_login(
     print("  Waiting for authorization in your browser…")
     print()
 
+    opened = False
     try:
-        webbrowser.open(connect_url)
+        opened = bool(webbrowser.open(connect_url))
     except Exception:
-        pass
+        opened = False
+    if not opened:
+        try:
+            system = platform.system().lower()
+            if system == "darwin":
+                subprocess.run(["open", connect_url], check=False)
+                opened = True
+            elif system == "windows":
+                os.startfile(connect_url)  # type: ignore[attr-defined]
+                opened = True
+            else:
+                subprocess.run(["xdg-open", connect_url], check=False)
+                opened = True
+        except Exception:
+            opened = False
+
+    if opened:
+        print("  Opened your default browser.")
+        print()
 
     claim = claim_device_token(
         api_base,

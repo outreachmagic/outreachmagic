@@ -6448,11 +6448,19 @@ def sync_from_relay_org(
 
             snap_total += len(snap_events)
             if not quiet:
-                print(
-                    f"Snapshot {snap_kind}: page {kind_pages} — {len(snap_events)} records "
-                    f"({snap_total} total)...",
-                    flush=True,
-                )
+                if pending_snapshots and pending_snapshots > 0:
+                    pages_hint = f"~{est_snap_pages}" if est_snap_pages else "multiple"
+                    print(
+                        f"Snapshot records ({snap_kind}): page {kind_pages} of {pages_hint} - "
+                        f"{len(snap_events)} this page, {snap_total}/{pending_snapshots} records...",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"Snapshot records ({snap_kind}): page {kind_pages} - "
+                        f"{len(snap_events)} this page, {snap_total} total...",
+                        flush=True,
+                    )
             batch = _ingest_relay_page(snap_events, debug_sentiment=debug_sentiment, quiet=True)
             imported += batch["imported"]
             skipped += batch["skipped"]
@@ -6688,7 +6696,11 @@ def login(
 
     if generate_url:
         try:
-            flow = device_login.start_device_authorization(load_config, platform=platform)
+            flow = device_login.start_device_authorization(
+                load_config,
+                platform=platform,
+                client_id=get_or_create_client_id(),
+            )
         except RuntimeError as exc:
             print(f"\nLogin failed: {exc}")
             sys.exit(1)
@@ -6725,7 +6737,11 @@ def login(
         sys.exit(1)
 
     try:
-        agent_key = device_login.run_device_login(load_config, platform=platform)
+        agent_key = device_login.run_device_login(
+            load_config,
+            platform=platform,
+            client_id=get_or_create_client_id(),
+        )
     except RuntimeError as exc:
         print(f"\nLogin failed: {exc}")
         sys.exit(1)

@@ -40,6 +40,12 @@ jobs:
           cp SECURITY.md "$STAGING/"
           cp platforms/outreachmagic-README.md "$STAGING/README.md"
 
+          python3 -c "
+          import sys
+          sys.path.insert(0, 'skills/outreachmagic/scripts')
+          import pipeline as om
+          om.sync_skill_md_version()
+          "
           python3 scripts/generate-update-manifest.py
           cp skills/outreachmagic/update-manifest.json "$STAGING/skills/outreachmagic/"
 

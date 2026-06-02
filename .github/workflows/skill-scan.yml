@@ -51,6 +51,12 @@ jobs:
 
       - name: Verify update-manifest.json is current
         run: |
+          python3 -c "
+          import sys
+          sys.path.insert(0, 'skills/outreachmagic/scripts')
+          import pipeline as om
+          om.sync_skill_md_version()
+          "
           python3 scripts/generate-update-manifest.py
           git diff --exit-code skills/outreachmagic/update-manifest.json
 

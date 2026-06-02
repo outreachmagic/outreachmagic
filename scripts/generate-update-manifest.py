@@ -21,6 +21,7 @@ MANIFEST_FILES = (
     "lead_sync.py",
     "platform_registry.py",
     "relay_ingest.py",
+    "quarantine_resolutions.py",
     "relay_extractors.py",
     "workspace_routing.py",
     "workspace_archive.py",

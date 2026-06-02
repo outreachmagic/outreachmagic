@@ -78,7 +78,13 @@ For tag `v1.21.0`:
 # 1. Bump version
 echo "1.20.9" > skills/outreachmagic/scripts/VERSION
 
-# 2. Regenerate checksums for the monorepo manifest (used before CI republishes per platform)
+# 2. Sync SKILL.md frontmatter, then regenerate checksums (order matters for CI)
+python3 -c "
+import sys
+sys.path.insert(0, 'skills/outreachmagic/scripts')
+import pipeline as om
+om.sync_skill_md_version()
+"
 python3 scripts/generate-update-manifest.py
 
 # 3. Commit

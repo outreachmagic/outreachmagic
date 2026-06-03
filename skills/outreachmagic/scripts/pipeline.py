@@ -219,6 +219,7 @@ SKILL_NAME = "outreachmagic"
 RELAY_URL = "https://api.outreachmagic.io"
 
 SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
+# Keep in sync with scripts/generate-update-manifest.py MANIFEST_FILES (minus VERSION/SKILL.md).
 UPDATE_SCRIPT_FILES = (
     "pipeline.py",
     "constants.py",
@@ -230,6 +231,7 @@ UPDATE_SCRIPT_FILES = (
     "lead_sync.py",
     "platform_registry.py",
     "relay_ingest.py",
+    "quarantine_resolutions.py",
     "relay_extractors.py",
     "workspace_routing.py",
     "workspace_archive.py",
@@ -238,6 +240,10 @@ UPDATE_SCRIPT_FILES = (
     "db_health.py",
     "om_paths.py",
     "device_login.py",
+    "read_queries.py",
+    "query_cli.py",
+    "schema.py",
+    "schema_views.py",
 )
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
 # Unified public release repo (skills/outreachmagic layout).

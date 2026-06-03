@@ -123,6 +123,7 @@ from constants import (
     RELAY_PULL_EVENT_MAX,
     RELAY_PULL_MAX,
     RELAY_PULL_PAGE_SIZE,
+    RELAY_PULL_SNAPSHOT_MAX,
     RELAY_PUSH_BATCH_SIZE,
     RELAY_PUSH_EVENTS_BULK,
     RELAY_PUSH_SNAPSHOT_BULK,
@@ -6630,9 +6631,8 @@ def _estimate_relay_pages(pending: Optional[int], page_size: int = RELAY_PULL_PA
 
 
 def _snapshot_pull_limit_for_kind(kind: str, base: int) -> int:
-    if str(kind).lower() == "company":
-        return min(int(base), RELAY_PULL_COMPANY_MAX)
-    return int(base)
+    cap = RELAY_PULL_COMPANY_MAX if str(kind).lower() == "company" else RELAY_PULL_SNAPSHOT_MAX
+    return min(int(base), cap)
 
 
 PULL_KINDS_ALL = frozenset({"events", "core", "workspace", "company"})
@@ -6882,9 +6882,10 @@ def pull_events_org(
     """Pull org events from relay (cursor-only: after_id / snapshot_after_id)."""
     params = []
     if limit and limit > 0:
-        cap = RELAY_PULL_MAX if snapshots_only else RELAY_PULL_EVENT_MAX
-        if snapshots_only and str(snapshot_kind).lower() == "company":
-            cap = min(cap, RELAY_PULL_COMPANY_MAX)
+        if snapshots_only:
+            cap = _snapshot_pull_limit_for_kind(snapshot_kind, RELAY_PULL_SNAPSHOT_MAX)
+        else:
+            cap = RELAY_PULL_EVENT_MAX
         params.append(f"limit={min(int(limit), cap)}")
     pull_timeout = timeout if timeout is not None else RELAY_PULL_HTTP_TIMEOUT
     if after_id:
@@ -7201,7 +7202,7 @@ def sync_from_relay_org(
     skipped_resolved = assigned_resolved = 0
 
     event_pull_limit = RELAY_PULL_EVENT_MAX if full else RELAY_PULL_PAGE_SIZE
-    snap_pull_limit = RELAY_PULL_MAX if full else RELAY_PULL_PAGE_SIZE
+    snap_pull_limit = RELAY_PULL_SNAPSHOT_MAX if full else RELAY_PULL_PAGE_SIZE
     pull_timeout = RELAY_PULL_HTTP_TIMEOUT
 
     if not quiet and do_events:
@@ -7356,6 +7357,12 @@ def sync_from_relay_org(
         while True:
             snap_pages += 1
             kind_pages += 1
+            if not quiet:
+                print(
+                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                    f"fetching p{kind_pages} (@ {kind_limit}/p)...",
+                    flush=True,
+                )
             snap_result = pull_events_org(
                 agent_key,
                 snapshot_after_id=snapshot_cursors[snap_kind] or None,
@@ -7376,9 +7383,9 @@ def sync_from_relay_org(
             if kind_pages == 1 and snap_result.get("pending_snapshot_count") is not None:
                 pending_snapshots = int(snap_result["pending_snapshot_count"])
                 if pending_snapshots >= RELAY_BULK_THRESHOLD:
-                    snap_pull_limit = RELAY_PULL_MAX
+                    snap_pull_limit = RELAY_PULL_SNAPSHOT_MAX
                     kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
-                    pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS
+                    pull_timeout = RELAY_PULL_HTTP_TIMEOUT
                 est_snap_pages = _estimate_relay_pages(pending_snapshots, kind_limit)
                 if not quiet and pending_snapshots > 0:
                     print(

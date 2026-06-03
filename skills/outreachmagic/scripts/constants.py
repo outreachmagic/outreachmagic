@@ -13,8 +13,9 @@ RELAY_PUSH_EVENTS_BULK = 1500  # event_log backfill: smaller pages avoid D1 memo
 RELAY_PUSH_SNAPSHOT_BULK = 1000  # lead_core / lead_workspace snapshot pages
 RELAY_PUSH_ROUTINE_MAX = 500
 RELAY_PULL_PAGE_SIZE = 1000
-RELAY_PULL_MAX = 5000  # snapshots only — fat webhook event_json OOMs D1 above ~1k rows
+RELAY_PULL_MAX = 5000  # legacy cap for ?limit= on relay; pull client never requests this for events
 RELAY_PULL_EVENT_MAX = 1000
+RELAY_PULL_SNAPSHOT_MAX = 1000  # match RELAY_PUSH_SNAPSHOT_BULK — 5k ingest/D1 spikes on pull
 RELAY_PULL_COMPANY_MAX = 1000  # company_update ingest is heavy on the agent DB
 RELAY_BULK_THRESHOLD = 2500
 RELAY_PUSH_TIMEOUT_SECONDS = 120

@@ -389,9 +389,9 @@ def test_probe_relay_backlog(monkeypatch):
     assert report["snapshots"]["core"]["pending"] == 10
 
 
-def test_snapshot_pull_limit_for_kind_caps_company():
-    assert om._snapshot_pull_limit_for_kind("company", 5000) == om.RELAY_PULL_COMPANY_MAX
-    assert om._snapshot_pull_limit_for_kind("core", 5000) == 5000
+def test_snapshot_pull_limit_for_kind_caps_all_snapshots():
+    assert om._snapshot_pull_limit_for_kind("company", 5000) == om.RELAY_PULL_SNAPSHOT_MAX
+    assert om._snapshot_pull_limit_for_kind("core", 5000) == om.RELAY_PULL_SNAPSHOT_MAX
 
 
 def test_pull_events_org_caps_company_snapshot_limit(monkeypatch):
@@ -441,8 +441,8 @@ def test_pull_events_org_caps_event_limit(monkeypatch):
     monkeypatch.setattr(om.urllib.request, "urlopen", fake_urlopen)
     om.pull_events_org("om_agent_test", limit=5000)
     assert "limit=1000" in captured[0]
-    om.pull_events_org("om_agent_test", limit=5000, snapshots_only=True)
-    assert "limit=5000" in captured[1]
+    om.pull_events_org("om_agent_test", limit=5000, snapshots_only=True, snapshot_kind="core")
+    assert "limit=1000" in captured[1]
 
 
 def test_pull_diagnostics_verdict_priority():

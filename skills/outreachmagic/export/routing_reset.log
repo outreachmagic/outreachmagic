@@ -1,0 +1,397 @@
+Waiting for batch sync to finish (poll every 30s)...
+  batch sync still running… [2026-06-03T02:02:48Z] batch-12: Lead core snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:02:48Z] batch-12: Lead core snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:03:57Z] batch-12: Lead core snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:03:57Z] batch-12: Lead core snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:05:06Z] batch-12: Lead core snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:05:06Z] batch-12: Lead core snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:06:14Z] batch-12: Lead core snapshots: batch 7/7 (100 entries, 2400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:06:32Z] batch-12: Lead workspace snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:06:32Z] batch-12: Lead workspace snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:07:40Z] batch-12: Lead workspace snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:07:40Z] batch-12: Lead workspace snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:08:47Z] batch-12: Lead workspace snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:08:47Z] batch-12: Lead workspace snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:08:47Z] batch-12: Lead workspace snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:09:53Z] batch-12: Lead workspace snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:09:53Z] batch-12: Lead workspace snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:11:01Z] batch-12: Lead workspace snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:11:01Z] batch-12: Lead workspace snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:12:08Z] batch-12: Lead workspace snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:12:08Z] batch-12: Lead workspace snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:13:15Z] batch-12: Lead workspace snapshots: batch 7/7 (100 entries, 2400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:13:40Z] batch-13: Lead core snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:13:40Z] batch-13: Lead core snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:14:45Z] batch-13: Lead core snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:14:45Z] batch-13: Lead core snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:14:45Z] batch-13: Lead core snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:15:53Z] batch-13: Lead core snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:15:53Z] batch-13: Lead core snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:17:01Z] batch-13: Lead core snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:17:01Z] batch-13: Lead core snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:18:09Z] batch-13: Lead core snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:18:09Z] batch-13: Lead core snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:19:16Z] batch-13: Lead core snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:19:16Z] batch-13: Lead core snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:19:16Z] batch-13: Lead core snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:20:42Z] batch-13: Lead workspace snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:20:42Z] batch-13: Lead workspace snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:21:48Z] batch-13: Lead workspace snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:21:48Z] batch-13: Lead workspace snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:21:48Z] batch-13: Lead workspace snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:22:56Z] batch-13: Lead workspace snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:22:56Z] batch-13: Lead workspace snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:24:01Z] batch-13: Lead workspace snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:24:01Z] batch-13: Lead workspace snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:25:07Z] batch-13: Lead workspace snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:25:07Z] batch-13: Lead workspace snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:26:12Z] batch-13: Lead workspace snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:26:12Z] batch-13: Lead workspace snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:27:19Z] batch-13: Lead workspace snapshots: batch 7/7 (100 entries, 2400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:27:44Z] batch-14: Lead core snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:27:44Z] batch-14: Lead core snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:28:50Z] batch-14: Lead core snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:28:50Z] batch-14: Lead core snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:28:50Z] batch-14: Lead core snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:29:59Z] batch-14: Lead core snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:29:59Z] batch-14: Lead core snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:31:06Z] batch-14: Lead core snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:31:06Z] batch-14: Lead core snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:32:15Z] batch-14: Lead core snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:32:15Z] batch-14: Lead core snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:33:23Z] batch-14: Lead core snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:33:23Z] batch-14: Lead core snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:33:23Z] batch-14: Lead core snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:34:49Z] batch-14: Lead workspace snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:34:49Z] batch-14: Lead workspace snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:34:49Z] batch-14: Lead workspace snapshots: batch 1/7 (400 entries, 0/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:36:01Z] batch-14: Lead workspace snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:36:01Z] batch-14: Lead workspace snapshots: batch 2/7 (400 entries, 400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:37:11Z] batch-14: Lead workspace snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:37:11Z] batch-14: Lead workspace snapshots: batch 3/7 (400 entries, 800/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:38:20Z] batch-14: Lead workspace snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:38:20Z] batch-14: Lead workspace snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:38:20Z] batch-14: Lead workspace snapshots: batch 4/7 (400 entries, 1200/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:39:28Z] batch-14: Lead workspace snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:39:28Z] batch-14: Lead workspace snapshots: batch 5/7 (400 entries, 1600/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:40:36Z] batch-14: Lead workspace snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:40:36Z] batch-14: Lead workspace snapshots: batch 6/7 (400 entries, 2000/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:41:44Z] batch-14: Lead workspace snapshots: batch 7/7 (100 entries, 2400/2500 pushed so far)...
+  batch sync still running… [2026-06-03T02:42:09Z] batch-15: Lead core snapshots: batch 1/5 (400 entries, 0/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:42:09Z] batch-15: Lead core snapshots: batch 1/5 (400 entries, 0/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:43:17Z] batch-15: Lead core snapshots: batch 2/5 (400 entries, 400/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:43:17Z] batch-15: Lead core snapshots: batch 2/5 (400 entries, 400/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:43:17Z] batch-15: Lead core snapshots: batch 2/5 (400 entries, 400/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:44:26Z] batch-15: Lead core snapshots: batch 3/5 (400 entries, 800/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:44:26Z] batch-15: Lead core snapshots: batch 3/5 (400 entries, 800/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:45:32Z] batch-15: Lead core snapshots: batch 4/5 (400 entries, 1200/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:45:32Z] batch-15: Lead core snapshots: batch 4/5 (400 entries, 1200/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:46:39Z] batch-15: Lead core snapshots: batch 5/5 (126 entries, 1600/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:47:01Z] batch-15: Lead workspace snapshots: batch 1/5 (400 entries, 0/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:47:01Z] batch-15: Lead workspace snapshots: batch 1/5 (400 entries, 0/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:48:08Z] batch-15: Lead workspace snapshots: batch 2/5 (400 entries, 400/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:48:08Z] batch-15: Lead workspace snapshots: batch 2/5 (400 entries, 400/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:49:15Z] batch-15: Lead workspace snapshots: batch 3/5 (400 entries, 800/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:49:15Z] batch-15: Lead workspace snapshots: batch 3/5 (400 entries, 800/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:50:24Z] batch-15: Lead workspace snapshots: batch 4/5 (400 entries, 1200/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:50:24Z] batch-15: Lead workspace snapshots: batch 4/5 (400 entries, 1200/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:50:24Z] batch-15: Lead workspace snapshots: batch 4/5 (400 entries, 1200/1726 pushed so far)...
+  batch sync still running… [2026-06-03T02:51:54Z] batch 15 upload ok (relay reported pushed=?)
+Batch sync complete.
+Cloud has 283 active routing rule(s).
+  deleted cmpx9ddig00fgowduknky6x7d
+  deleted cmpx9encr00fqowdu4kf19j0r
+  deleted cmpx9rjoe00g0owdukbj4m2w6
+  deleted cmpx9xogc00gaowdu99mn8oft
+  deleted cmpxa4o5h00gkowdu2y3c0gco
+  deleted cmpxambp800guowduaty9fn80
+  deleted cmpxb3zeq00h4owdut4aiqciw
+  deleted cmpxblql300heowdu87i766bx
+  deleted cmpxc3dfb00hoowduoxbuz9wj
+  deleted cmpxcl8t800hyowduqw5bh7ie
+  deleted cmpxd330b00i8owduqr9zbbke
+  deleted cmpxdlsst00iiowduj72h16jq
+  deleted cmpxe4b6o00isowduniize8q2
+  deleted cmpxemkkq00j2owduketzqniz
+  deleted cmpxf4jpu00jcowdu9yrq0m5n
+  deleted cmpx9dgdp00foowduzqlk5ksj
+  deleted cmpx9eq5j00fyowdumd6o90im
+  deleted cmpx9rmfq00g8owdupm9q9l52
+  deleted cmpx9xr6300giowdu1y3f0tn9
+  deleted cmpxa4qy200gsowdu99rlezcj
+  deleted cmpxamejr00h2owdusn1luynb
+  deleted cmpxb424j00hcowdu4ufviehz
+  deleted cmpxblthg00hmowduczm7f4iv
+  deleted cmpxc3gbm00hwowdu93exetqp
+  deleted cmpxclbkz00i6owduwjvp01db
+  deleted cmpxd35sn00igowdu6vlruq5l
+  deleted cmpxdlwnz00iqowdum7mo872p
+  deleted cmpxe4g0m00j0owdudoe3edkg
+  deleted cmpxemnmq00jaowdu9zuscca1
+  deleted cmpxf4nci00jkowdug6bs280p
+  deleted cmpx9df1f00fkowduq2txq668
+  deleted cmpx9eoti00fuowduck1kx14x
+  deleted cmpx9rl4200g4owdu4qctwxni
+  deleted cmpx9xpt200geowduji66uium
+  deleted cmpxa4pn300goowdu6kofp3it
+  deleted cmpxamd6d00gyowduod5d3ols
+  deleted cmpxb40rp00h8owduzkzuq072
+  deleted cmpxbls6400hiowdurx5n4wo7
+  deleted cmpxc3eu200hsowduowta4twb
+  deleted cmpxcla7100i2owdu4qahvzye
+  deleted cmpxd34eq00icowduv1mu7hfy
+  deleted cmpxdlv4k00imowdul6vdab46
+  deleted cmpxe4dla00iwowdu60sez6vr
+  deleted cmpxemm6x00j6owduf8ue8lac
+  deleted cmpxf4lfv00jgowdu755zn7ra
+  deleted cmpx9de7200fiowduex40c9nn
+  deleted cmpx9eo2z00fsowdu0y780vfi
+  deleted cmpx9rkep00g2owduiaj4q43l
+  deleted cmpx9xp5r00gcowdukrjz1cx1
+  deleted cmpxa4ovv00gmowdu2udmoog2
+  deleted cmpxamcfj00gwowdu0g0635di
+  deleted cmpxb403h00h6owdu7m0m5790
+  deleted cmpxblrh100hgowduftcjpzml
+  deleted cmpxc3e5j00hqowdutvdtlgta
+  deleted cmpxcl9ik00i0owdupwwkkdbg
+  deleted cmpxd33q900iaowdumyxw0vfn
+  deleted cmpxdludc00ikowdu3s39imc4
+  deleted cmpxe4bwm00iuowdua0ikzjwi
+  deleted cmpxemldw00j4owduwt04754r
+  deleted cmpxf4kmq00jeowduy1scl7es
+  deleted cmpx9dfp200fmowduzvk0yald
+  deleted cmpx9epif00fwowduknrhlnvk
+  deleted cmpx9rlsm00g6owducq13pckw
+  deleted cmpx9xqho00ggowdu6fy2ndqk
+  deleted cmpxa4qay00gqowdumf1evgah
+  deleted cmpxamduz00h0owdua89g3b2b
+  deleted cmpxb41gm00haowdujfd60fyu
+  deleted cmpxblstu00hkowdukp0sm6i7
+  deleted cmpxc3fl700huowdu6ko6x1qt
+  deleted cmpxclaww00i4owdubm8qen2l
+  deleted cmpxd353w00ieowdufe2r36g6
+  deleted cmpxdlvvi00ioowdu3yfeqdxv
+  deleted cmpxe4eib00iyowdu7i530hfh
+  deleted cmpxemmvv00j8owdu5wahlknx
+  deleted cmpxf4mnl00jiowduuh5ssr85
+  deleted cmpm8mdf7000qv4o0tc3m5xrn
+  deleted cmpm8mott000xv4o0n5a9uhr9
+  deleted cmpmf38tw0003jcr23tmx65a9
+  deleted cmpnyst8m0003y0srsumu8a1r
+  deleted cmpws083x0044owduthfbevo6
+  deleted cmpws09fg0046owdurd4bpr49
+  deleted cmpwsrsmz004gowdudge9fje3
+  deleted cmpwsrt3e004iowduin76yds1
+  deleted cmpwwrgnn004sowdu3r8mdcro
+  deleted cmpwwrh4y004uowdurqh5nihj
+  deleted cmpwx6ru80054owdu2r6el2l4
+  deleted cmpwx6t3q0056owdur89mbnmg
+  deleted cmpwxm5h7005gowduun8wi6n5
+  deleted cmpwxm621005iowduyuav91p6
+  deleted cmpwy14bq005sowdulwi7oo3f
+  deleted cmpwy14tq005uowdul16zccr4
+  deleted cmpwyfuds0064owdu9xroow6p
+  deleted cmpwyfuxg0066owduzaxxvj1f
+  deleted cmpwyuiph006gowdue01kqroq
+  deleted cmpwyuj85006iowdutua9gk4p
+  deleted cmpwz98fs006sowduj6t7xywv
+  deleted cmpwz98zm006uowduslfyb60j
+  deleted cmpwznmhp0074owduyo5gj811
+  deleted cmpwznn1f0076owdu63ilavl9
+  deleted cmpx01yui007gowdu1cqe8lgt
+  deleted cmpx01ze6007iowduvbs78cfy
+  deleted cmpx0g8n1007sowduf0ig1l02
+  deleted cmpx0g985007uowdutc6oc9p4
+  deleted cmpx0ufyj0084owdu5ftwms75
+  deleted cmpx0ugie0086owduzv4ae637
+  deleted cmpx18tel008gowdu19rje4rb
+  deleted cmpx18txw008iowdu4wybunn2
+  deleted cmpx1n74l008sowdu742j47o2
+  deleted cmpx1n7nv008uowduscyy0ijb
+  deleted cmpx21hre0094owduh80h4yxv
+  deleted cmpx21j1u0096owduhxjzcgus
+  deleted cmpx2g1fu009gowdurwfte7ij
+  deleted cmpx2g1zg009iowduv7ott00m
+  deleted cmpx2uctb009sowdujn21lirn
+  deleted cmpx2ue58009uowdu2ucm61ik
+  deleted cmpx38q6400a4owdue2vaxued
+  deleted cmpx38qq800a6owdummfvmo3u
+  deleted cmpx3n35f00agowdud2dlo9si
+  deleted cmpx3n3pn00aiowdul87pt0gp
+  deleted cmpx41dyl00asowduaotqz2ou
+  deleted cmpx41eix00auowdusv1o8899
+  deleted cmpx4fhi000b4owdufu4zkynv
+  deleted cmpx4fi4d00b6owduhoqde907
+  deleted cmpx4ts7300bgowdu0g012rwb
+  deleted cmpx4tsu900biowduokc2hth3
+  deleted cmpx5820e00bsowdul7fpr0ux
+  deleted cmpx582tc00buowduo71l0vpo
+  deleted cmpx5mdpe00c4owdu20z8zrkw
+  deleted cmpx5mec800c6owduxeoro4tq
+  deleted cmpx63it800cgowduzoufm1o4
+  deleted cmpx63jg700ciowdu2pmul81q
+  deleted cmpx6jdwn00csowdu0wwbzln9
+  deleted cmpx6jeje00cuowdurkltr2ln
+  deleted cmpx6xgxh00d4owdu8t8kxxn5
+  deleted cmpx6xhlu00d6owdubsshaw2t
+  deleted cmpx7ecrq00dgowdukbbxunop
+  deleted cmpx7edf100diowdu4omwzjti
+  deleted cmpx7w5rr00dsowduam2wwbqn
+  deleted cmpx7w6fe00duowduo5e2unv9
+  deleted cmpx8dl3f00e4owdupog8tryh
+  deleted cmpx8dlrc00e6owdukir1y4o5
+  deleted cmpx8vfoo00egowdu0v5d2uhv
+  deleted cmpx8vgcw00eiowduinymmtyy
+  deleted cmpx8w3ck00esowduz4qp0s78
+  deleted cmpx8w40e00euowdul8u2b5p9
+  deleted cmpx8xril00f4owduhq032dwt
+  deleted cmpx8xs6t00f6owduvnbscj9i
+  deleted cmpws0ad70048owdus5rigibw
+  deleted cmpwsruhc004kowduqmofocst
+  deleted cmpwwri26004wowduigyprr7k
+  deleted cmpwx6tyn0058owdu4zhtm5hq
+  deleted cmpwxm6x7005kowdu1q6aszjo
+  deleted cmpwy15sn005wowdub5jco0ku
+  deleted cmpwyfvt30068owdud0cvyv9r
+  deleted cmpwyuk3u006kowduzhzkpfli
+  deleted cmpwz99w5006wowduhi1z0tu9
+  deleted cmpwzno0m0078owdu9v934wjb
+  deleted cmpx020ct007kowduslgqohf3
+  deleted cmpx0ga57007wowdu9nmyitr6
+  deleted cmpx0uhh00088owdu9reczz0m
+  deleted cmpx18uxr008kowduoa5b48o5
+  deleted cmpx1n8mm008wowdu70s9l16l
+  deleted cmpx21k1h0098owduwl75veyy
+  deleted cmpx2g33z009kowdupwsk32h2
+  deleted cmpx2uf39009wowduvr9eb8z0
+  deleted cmpx38rqn00a8owdun4v5kmvh
+  deleted cmpx3n4oy00akowduewkw3wuz
+  deleted cmpx41fk300awowdu8ca6zlzk
+  deleted cmpx4fjd100b8owduc497t5bb
+  deleted cmpx4ttwl00bkowduu5kymid3
+  deleted cmpx583ur00bwowduye4bkfob
+  deleted cmpx5mfcs00c8owdujcl5bs4w
+  deleted cmpx63kix00ckowduc6vddb61
+  deleted cmpx6jfm000cwowduox88k096
+  deleted cmpx6ximy00d8owduo9fqxp1d
+  deleted cmpx7eeja00dkowduu6w07dgy
+  deleted cmpx7w7hg00dwowduns19rubx
+  deleted cmpx8dmss00e8owducz6433hg
+  deleted cmpx8vhhq00ekowdumn55zr4h
+  deleted cmpx8w5nr00ewowdutjcyd6r9
+  deleted cmpx8xta100f8owduo35mvy7x
+  deleted cmpws0atg004aowduq61imm1k
+  deleted cmpws0bap004cowdujxg6354y
+  deleted cmpws0bu8004eowduqo4hy12v
+  deleted cmpwsruyo004mowduw66xvt22
+  deleted cmpwsrvfn004oowdu53eg03j5
+  deleted cmpwsrvvi004qowduffyr751y
+  deleted cmpwwrijg004yowduu9v6hv7p
+  deleted cmpwwrizx0050owdu44t34lqh
+  deleted cmpwwrjgh0052owduvxu8mqwb
+  deleted cmpwx6ufl005aowdufq7aop4e
+  deleted cmpwx6uw3005cowduqgve5gef
+  deleted cmpwx6vcb005eowdupljo0950
+  deleted cmpwxm7dn005mowduke37l115
+  deleted cmpwxm7um005oowduoh08mxck
+  deleted cmpwxm8be005qowdu9ctxzu1b
+  deleted cmpwy16cg005yowduz9l4cz37
+  deleted cmpwy16v60060owdulxa7i7sg
+  deleted cmpwy17cc0062owduikapvfg8
+  deleted cmpwyfx0q006aowduhx554q71
+  deleted cmpwyfxiq006cowdu5mkmzmvu
+  deleted cmpwyfxzy006eowdu4opq0rwr
+  deleted cmpwyukkn006mowdun42cxp0s
+  deleted cmpwyul8m006oowdu575jzkq2
+  deleted cmpwyulpe006qowduuxhe3hrz
+  deleted cmpwz9adx006yowdusleih14w
+  deleted cmpwz9awn0070owduzvsarvs8
+  deleted cmpwz9bem0072owdupm6tggvc
+  deleted cmpwznoj8007aowduh0hiaiv3
+  deleted cmpwznp33007cowdu4yrbpis0
+  deleted cmpwznpmj007eowduogsi5s2l
+  deleted cmpx020v9007mowdumj3i4pnj
+  deleted cmpx021de007oowdusi60v0hu
+  deleted cmpx021vv007qowdu7g3v4uj8
+  deleted cmpx0gaq0007yowdu99yw6xr8
+  deleted cmpx0gb8j0080owduizgu8n65
+  deleted cmpx0gbr00082owdue9n1h7qi
+  deleted cmpx0ui0a008aowdu73zcrwqu
+  deleted cmpx0uiib008cowdubpbshs3k
+  deleted cmpx0uj0x008eowduk05i8jan
+  deleted cmpx18vgf008mowdux6w20jeq
+  deleted cmpx18vzc008oowduplpz3zlg
+  deleted cmpx18wii008qowdu11rk3lmt
+  deleted cmpx1n9cs008yowdu7nfdu3mb
+  deleted cmpx1napf0090owduq9juyfl0
+  deleted cmpx1nb7y0092owdult40yj92
+  deleted cmpx21kkr009aowdusrosv45c
+  deleted cmpx21l53009cowdu4w413huj
+  deleted cmpx21lp2009eowdu8vn9qr6v
+  deleted cmpx2g3m8009mowdu96j3wjwm
+  deleted cmpx2g472009oowduazp49xri
+  deleted cmpx2g4qv009qowdudsr3p1sl
+  deleted cmpx2ufod009yowdudtmqtlh5
+  deleted cmpx2ugza00a0owdug7aqkzy8
+  deleted cmpx2uhkp00a2owdul3727c3h
+  deleted cmpx38s9t00aaowduda1g4chu
+  deleted cmpx38ssk00acowduj9gk5wwg
+  deleted cmpx38tdq00aeowduzq0kr5b2
+  deleted cmpx3n5gc00amowdueg0cb8za
+  deleted cmpx3n5zl00aoowduc5shzfoo
+  deleted cmpx3n6li00aqowduksr43asi
+  deleted cmpx41g7900ayowduvn12ooym
+  deleted cmpx41h0q00b0owdu01ludivt
+  deleted cmpx41hn400b2owduqhhcde7j
+  deleted cmpx4fjxk00baowdubntbch7l
+  deleted cmpx4fl9p00bcowduonulcury
+  deleted cmpx4flvc00beowdugu6lp39i
+  deleted cmpx4tugl00bmowdupode3z8p
+  deleted cmpx4tv0k00boowdujhlhizxf
+  deleted cmpx4tvkp00bqowduq6c3cex9
+  deleted cmpx584ea00byowdu0e75q9pw
+  deleted cmpx584zu00c0owduc55smcr6
+  deleted cmpx585ld00c2owduen587tf2
+  deleted cmpx5mfyg00caowdu6n5awj3f
+  deleted cmpx5mgnh00ccowdus26upps0
+  deleted cmpx5mh9k00ceowdu9kmif978
+  deleted cmpx63l3s00cmowduzlymh6m8
+  deleted cmpx63ltq00coowduxnayx00r
+  deleted cmpx63mft00cqowdusa4js1oy
+  deleted cmpx6jg8200cyowduxhkfy33a
+  deleted cmpx6jgu800d0owduu4lmkdfi
+  deleted cmpx6jhdb00d2owduunjioof3
+  deleted cmpx6xj8k00daowdun0unry87
+  deleted cmpx6xjvd00dcowdujw3yay4j
+  deleted cmpx6xkho00deowdu302lwfg5
+  deleted cmpx7ef4c00dmowdumd3m86o3
+  deleted cmpx7efrl00doowdu055g1xi9
+  deleted cmpx7egfm00dqowdurqzs8smi
+  deleted cmpx7w84s00dyowdudck0ur4l
+  deleted cmpx7w8s500e0owduwykhkfi5
+  deleted cmpx7w9es00e2owdura0kz4du
+  deleted cmpx8dnfj00eaowduttue7e40
+  deleted cmpx8do2e00ecowduhvtl6265
+  deleted cmpx8dopn00eeowduptzkif3t
+  deleted cmpx8vi4j00emowduse2cnwx8
+  deleted cmpx8vist00eoowduyk612961
+  deleted cmpx8vjhq00eqowduyx8rivte
+  deleted cmpx8w6b000eyowduo4yu2g5g
+  deleted cmpx8w70c00f0owduac0iv10w
+  deleted cmpx8w7p300f2owdua5ouy5qa
+  deleted cmpx8xty500faowdufbq6qmgu
+  deleted cmpx8xula00fcowdu76iyc2p2
+  deleted cmpx8xv8c00feowduxqlwc6b9
+  created rule_contains 'popcam' → popcam
+  created rule_contains 'leadgenph' → leadgenph
+  created rule_contains 'm2n' → m2n
+Traceback (most recent call last):
+  File "/Users/spencermcmurtry/Developer/outreachmagic-skill/scripts/reset_routing_rules_after_sync.py", line 174, in <module>
+    main()
+  File "/Users/spencermcmurtry/Developer/outreachmagic-skill/scripts/reset_routing_rules_after_sync.py", line 169, in main
+    result = reset_routing_rules(dry_run=args.dry_run)
+  File "/Users/spencermcmurtry/Developer/outreachmagic-skill/scripts/reset_routing_rules_after_sync.py", line 143, in reset_routing_rules
+    routing_cloud.sync_routing_from_cloud(
+  File "/Users/spencermcmurtry/Developer/outreachmagic-skill/skills/outreachmagic/scripts/routing_cloud.py", line 236, in sync_routing_from_cloud
+    conn.commit()
+sqlite3.IntegrityError: FOREIGN KEY constraint failed

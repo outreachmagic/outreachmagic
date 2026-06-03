@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.24.3
+version: 1.24.4
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -216,7 +216,7 @@ This fetches the latest events from the relay, so the user always sees current d
 **Relay sync limits:** Same endpoints always — `POST /push` and `GET /pull`. No separate bulk URLs.
 
 - **`sync` (upload):** When local `cloud_pending` snapshots ≥ **2500**, uses **5000 entries per `/push`**; otherwise routine batch size (default 200, max 500 per request).
-- **`pull` (download):** **1000 rows/page** for webhook events and company snapshots (D1 / ingest limits). Core/workspace snapshots may use **5000/page** on large backlogs (`include_pending=1` on first page per stream).
+- **`pull` (download):** **1000 rows/page** for events and all snapshots (D1 + local ingest). Use `pull --kind events` if snapshots are already synced.
 - Filter downloaded data locally (`show --since`, workspace queries) — the relay does not filter by date or workspace.
 
 ### Workspace inventory (local DB — pull optional)

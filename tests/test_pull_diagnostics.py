@@ -319,7 +319,7 @@ def test_event_pull_continues_after_pending_count_on_page_one(monkeypatch):
 
 def test_event_pull_continues_when_worker_caps_below_request(monkeypatch):
     """Pre-cap client requested 5k; worker returns 1k + pull_limit + has_more false → keep paging."""
-    monkeypatch.setattr(om, "RELAY_PULL_PAGE_SIZE", 5000)
+    monkeypatch.setattr(om, "RELAY_PULL_EVENT_MAX", 5000)
     pages = [
         {
             "events": [{"relay_id": i} for i in range(1, 1001)],

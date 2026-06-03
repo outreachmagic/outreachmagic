@@ -2195,17 +2195,25 @@ def _pick_merge_keep_id(conn: sqlite3.Connection, id_a: int, id_b: int) -> tuple
     return id_b, id_a
 
 
-def merge_leads(keep_id: int, merge_id: int, reason: str = "manual") -> dict:
+def merge_leads(
+    keep_id: int,
+    merge_id: int,
+    reason: str = "manual",
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict:
     """Combine two lead rows; merge_id is deleted after moving children."""
     if keep_id == merge_id:
         return {"status": "noop", "keep_id": keep_id}
-    conn = get_conn()
-    try:
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
         conn.execute("BEGIN")
+    try:
         keep = conn.execute("SELECT * FROM leads WHERE id = ?", (keep_id,)).fetchone()
         other = conn.execute("SELECT * FROM leads WHERE id = ?", (merge_id,)).fetchone()
         if not keep or not other:
-            conn.execute("ROLLBACK")
+            if own_conn:
+                conn.execute("ROLLBACK")
             return {"status": "error", "error": "lead not found"}
 
         events_moved = conn.execute(
@@ -2297,12 +2305,18 @@ def merge_leads(keep_id: int, merge_id: int, reason: str = "manual") -> dict:
                 company, title, industry, headcount, new_stage, keep_id,
             ),
         )
-        conn.execute("COMMIT")
+        if own_conn:
+            conn.execute("COMMIT")
     except Exception:
-        conn.execute("ROLLBACK")
+        if own_conn:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
         raise
     finally:
-        conn.close()
+        if own_conn and conn is not None:
+            conn.close()
     return {
         "status": "merged",
         "keep_id": keep_id,
@@ -2385,7 +2399,10 @@ def resolve_lead(
         keep_id, merge_id = _pick_merge_keep_id(conn, by_email, by_li)
         if own_conn:
             conn.close()
-        merge_leads(keep_id, merge_id, reason="auto_dual_identifier")
+        merge_leads(
+            keep_id, merge_id, reason="auto_dual_identifier",
+            conn=None if own_conn else conn,
+        )
         if own_conn:
             conn = get_conn()
         lead_id = keep_id
@@ -6881,9 +6898,9 @@ def _pull_failure_message(exc: Exception) -> str:
         )
     if "sqlitenomem" in msg.lower() or "out of memory" in msg.lower():
         return (
-            f"{msg}\n\nRelay D1 ran out of memory on a large event page. "
-            f"Update the skill (events pull capped at {RELAY_PULL_EVENT_MAX}/page) and re-run pull — "
-            "your cursor should resume from the last successful page."
+            f"{msg}\n\nRelay D1 ran out of memory on a large pull page. "
+            f"Re-run the same pull command — your cursor should resume from the last successful page. "
+            f"(Events are capped at {RELAY_PULL_EVENT_MAX}/page.)"
         )
     if "timed out" in msg.lower() or "timeout" in msg.lower():
         return (
@@ -7064,8 +7081,6 @@ def _ingest_relay_page(
     if own_page_conn:
         if not db_exists():
             init_db()
-        else:
-            migrate_db()
         pull_conn = get_conn()
         apply_bulk_pull_pragmas(pull_conn)
         routing_config = get_org_routing_config(pull_conn, DEFAULT_ORG_ID)
@@ -7264,7 +7279,8 @@ def sync_from_relay_org(
     slug_cache = qres.WorkspaceSlugCache()
     skipped_resolved = assigned_resolved = 0
 
-    event_pull_limit = RELAY_PULL_EVENT_MAX if full else RELAY_PULL_PAGE_SIZE
+    # Always cap event pulls (D1 + local ingest); --full only resets after_id to 0.
+    event_pull_limit = RELAY_PULL_EVENT_MAX
     snap_pull_limit = RELAY_PULL_SNAPSHOT_MAX if full else RELAY_PULL_PAGE_SIZE
     pull_timeout = RELAY_PULL_HTTP_TIMEOUT
     snapshot_pull_timeout = RELAY_PULL_SNAPSHOT_HTTP_TIMEOUT
@@ -7353,8 +7369,6 @@ def sync_from_relay_org(
             if pull_session is None:
                 if not db_exists():
                     init_db()
-                else:
-                    migrate_db()
                 pull_session = get_conn()
                 apply_bulk_pull_pragmas(pull_session)
                 pull_routing_config = get_org_routing_config(pull_session, DEFAULT_ORG_ID)
@@ -7364,10 +7378,11 @@ def sync_from_relay_org(
                         pull_session, DEFAULT_ORG_ID, pull_routing_config,
                     )
 
+            ingest_started = time.monotonic()
             batch = _ingest_relay_page(
                 events,
                 debug_sentiment=debug_sentiment,
-                quiet=True,
+                quiet=quiet,
                 resolution_map=resolution_map,
                 slug_cache=slug_cache,
                 pull_conn=pull_session,
@@ -7375,6 +7390,15 @@ def sync_from_relay_org(
                 ws_slug_map=pull_ws_slug_map,
                 routing_cache=pull_routing_cache,
             )
+            ingest_elapsed = time.monotonic() - ingest_started
+            if not quiet:
+                print(
+                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+                    f"ingest {ingest_elapsed:.1f}s "
+                    f"(+{batch['imported']} new, {batch['skipped_duplicates']} dupes, "
+                    f"{batch['skipped_filtered']} filtered, {batch['skipped_errors']} errors)",
+                    flush=True,
+                )
             imported += batch["imported"]
             skipped += batch["skipped"]
             skipped_duplicates += batch["skipped_duplicates"]

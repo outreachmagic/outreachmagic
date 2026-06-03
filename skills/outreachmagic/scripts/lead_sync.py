@@ -526,6 +526,7 @@ def apply_agent_lead_core_payload(
     *,
     org_id: str = DEFAULT_ORG_ID,
     entity_key: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """Apply org-wide lead profile from relay lead_core_update."""
     from bounces import verify_email
@@ -537,12 +538,18 @@ def apply_agent_lead_core_payload(
         _apply_personalization_payload,
     )
 
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+
     update_fields = {
         k: v for k, v in payload.items()
         if k in ("name", "title", "industry", "company", "headcount") and v is not None
     }
     if update_fields:
-        enrich_lead(lead_id, overwrite=True, mark_cloud_pending=False, **update_fields)
+        enrich_lead(
+            lead_id, overwrite=True, mark_cloud_pending=False, conn=conn, **update_fields,
+        )
 
     loc_sets, loc_params = [], []
     for col in ("location_city", "location_state", "location_country"):
@@ -550,20 +557,16 @@ def apply_agent_lead_core_payload(
             loc_sets.append(f"{col} = ?")
             loc_params.append(payload[col])
     if loc_sets:
-        loc_conn = get_conn()
         loc_params.append(lead_id)
-        loc_conn.execute(
+        conn.execute(
             f"UPDATE leads SET {', '.join(loc_sets)}, updated_at = datetime('now') WHERE id = ?",
             loc_params,
         )
-        loc_conn.commit()
-        loc_conn.close()
 
     if payload.get("company_domain") or any(payload.get(k) for k in ("hq_city", "hq_state", "hq_country")):
-        c_conn = get_conn()
         domain = normalize_company_domain(payload.get("company_domain"))
         ensure_company(
-            c_conn,
+            conn,
             name=payload.get("company"),
             domain=domain,
             industry=payload.get("industry"),
@@ -573,16 +576,13 @@ def apply_agent_lead_core_payload(
             hq_country=payload.get("hq_country"),
         )
         link_lead_company(
-            c_conn, lead_id,
+            conn, lead_id,
             company=payload.get("company"),
             email=payload.get("email"),
             industry=payload.get("industry"),
             headcount=payload.get("headcount"),
         )
-        c_conn.commit()
-        c_conn.close()
 
-    id_conn = get_conn()
     identities: list[tuple[str, str]] = []
     if payload.get("external_id"):
         identities.append(("external_id", str(payload["external_id"])))
@@ -591,24 +591,24 @@ def apply_agent_lead_core_payload(
         if not any(t == itype and v == val for t, v in identities):
             identities.append((itype, val))
     if identities:
-        upsert_all_identities(id_conn, org_id, lead_id, identities, source="agent_sync")
-    id_conn.commit()
-    id_conn.close()
+        upsert_all_identities(conn, org_id, lead_id, identities, source="agent_sync")
 
     personalization = payload.get("personalization")
     if personalization:
         _apply_personalization_payload(
             lead_id, payload, table="lead_personalization", id_col="lead_id", entity_id=lead_id,
+            conn=conn,
         )
 
     if payload.get("notes"):
-        n_conn = get_conn()
-        n_conn.execute(
+        conn.execute(
             "UPDATE leads SET notes = ?, updated_at = datetime('now') WHERE id = ?",
             (payload["notes"], lead_id),
         )
-        n_conn.commit()
-        n_conn.close()
+
+    if own_conn:
+        conn.commit()
+        conn.close()
 
     if payload.get("email_verification_status"):
         verify_email(
@@ -624,6 +624,7 @@ def apply_agent_lead_workspace_payload(
     *,
     org_id: str = DEFAULT_ORG_ID,
     workspace_id: str,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """Apply per-workspace pipeline state from relay lead_workspace_update."""
     from pipeline import parse_tags_value
@@ -636,23 +637,25 @@ def apply_agent_lead_workspace_payload(
             contact_pri = int(payload["contact_order"])
         except (ValueError, TypeError):
             pass
-    ws_conn = get_conn()
-    ensure_organization(ws_conn)
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    ensure_organization(conn)
     upsert_workspace_lead(
-        ws_conn, org_id, workspace_id, lead_id,
+        conn, org_id, workspace_id, lead_id,
         status=payload.get("workspace_stage") or payload.get("stage", "prospecting"),
         current_status_label=status_label,
         current_status_sentiment=status_sentiment,
         contact_priority=contact_pri,
     )
     if "tags" in payload:
-        ws_conn.execute(
+        conn.execute(
             "DELETE FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ?",
             (workspace_id, lead_id),
         )
         for tag in parse_tags_value(payload.get("tags")):
             tag_id = f"wlt_{workspace_id}_{lead_id}_{hashlib.md5(tag.encode()).hexdigest()[:8]}"
-            ws_conn.execute(
+            conn.execute(
                 """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
                    VALUES (?, ?, ?, ?)""",
                 (tag_id, workspace_id, lead_id, tag),
@@ -667,7 +670,7 @@ def apply_agent_lead_workspace_payload(
             continue
         now_ts = datetime.now(timezone.utc).isoformat()
         li_id = f"lis_{workspace_id}_{lead_id}_{sender[:20]}"
-        ws_conn.execute(
+        conn.execute(
             """INSERT INTO workspace_lead_linkedin_status
                (id, workspace_id, lead_id, sender_profile, is_connected,
                 is_request_pending, connected_at, request_sent_at)
@@ -684,10 +687,11 @@ def apply_agent_lead_workspace_payload(
     activity = payload.get("activity")
     if activity:
         apply_activity_sync_payload(
-            ws_conn, lead_id, workspace_id, activity, merge=True,
+            conn, lead_id, workspace_id, activity, merge=True,
         )
-    ws_conn.commit()
-    ws_conn.close()
+    if own_conn:
+        conn.commit()
+        conn.close()
 
 
 def inspect_sync_lead(

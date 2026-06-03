@@ -55,7 +55,9 @@ from relay_extractors import (
 )
 from workspace_routing import (
     CampaignContext,
+    CampaignRoutingCache,
     DEFAULT_ORG_ID,
+    OrgRoutingConfig,
     VALID_WORKSPACE_ROUTING_MODES,
     WORKSPACE_ROUTING_MULTI,
     WORKSPACE_ROUTING_SINGLE,
@@ -129,7 +131,7 @@ from constants import (
     STAGE_EMOJI,
     USAGE_WARNING_PERCENT,
 )
-from db_conn import get_conn
+from db_conn import apply_bulk_pull_pragmas, end_bulk_pull_session, get_conn
 from formatters import (
     format_campaign_stats,
     format_copy_insights,
@@ -174,6 +176,7 @@ from relay_ingest import (
     mark_relay_ingested,
     mark_relay_ingested_many,
     prefetch_relay_ingested,
+    prefetch_ws_idempotency_keys,
     normalize_lead_status_display,
     relay_already_ingested,
     relay_dedupe_key,
@@ -1406,6 +1409,9 @@ def migrate_db(conn=None):
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain) WHERE domain IS NOT NULL"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_companies_name_lower ON companies(lower(name))"
+    )
     backfill_campaigns_from_events(conn)
     backfill_plusvibe_status_metadata(conn)
     for col, col_type in [
@@ -1500,9 +1506,9 @@ def migrate_db(conn=None):
             conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
-    # Backfill companies derived from existing leads only after ensuring
-    # all referenced company columns exist (e.g. `headcount_numeric`).
-    backfill_companies_from_leads(conn)
+    # Backfill once when companies is empty (avoid re-scanning all leads on every pull).
+    if conn.execute("SELECT COUNT(*) AS n FROM companies").fetchone()["n"] == 0:
+        backfill_companies_from_leads(conn)
     for col, col_type in [
         ("latest_sender", "TEXT"),
         ("latest_sender_platform", "TEXT"),
@@ -1992,17 +1998,27 @@ def link_lead_company(
     return cid
 
 
-def ensure_lead_domain(lead_id: int, email: Optional[str]):
+def ensure_lead_domain(
+    lead_id: int,
+    email: Optional[str],
+    conn: Optional[sqlite3.Connection] = None,
+    *,
+    commit: bool = True,
+):
     domain = email_domain(email)
     if not domain:
         return
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     conn.execute(
         "UPDATE leads SET email_domain = ? WHERE id = ? AND (email_domain IS NULL OR email_domain = '')",
         (domain, lead_id),
     )
-    conn.commit()
-    conn.close()
+    if commit and own_conn:
+        conn.commit()
+    if own_conn and conn is not None:
+        conn.close()
 
 
 def find_lead_by_email(conn: sqlite3.Connection, email: str) -> Optional[int]:
@@ -2420,7 +2436,8 @@ def resolve_lead(
         )
         lead_id = int(cur.lastrowid)
         match_method = match_method or identities[0][0]
-        conn.commit()
+        if own_conn:
+            conn.commit()
     else:
         sets, params = [], []
         if email_norm:
@@ -2459,32 +2476,41 @@ def resolve_lead(
         sets.append("updated_at = datetime('now')")
         params.append(lead_id)
         conn.execute(f"UPDATE leads SET {', '.join(sets)} WHERE id = ?", params)
-        conn.commit()
+        if own_conn:
+            conn.commit()
 
     id_conflicts = upsert_all_identities(
         conn, DEFAULT_ORG_ID, int(lead_id), identities, source=source_platform,
     )
-    if own_conn:
-        conn.commit()
-        conn.close()
 
     name_for_enrich = enrich_name if enrich_name is not None else name
     filled = enrich_lead(
         lead_id, name=name_for_enrich, title=title, industry=industry,
         company=company, headcount=headcount, overwrite=overwrite,
         mark_cloud_pending=mark_pending,
+        conn=conn if not own_conn else None,
     )
     if email_norm:
-        ensure_lead_domain(lead_id, email_norm)
-    link_conn = get_conn()
-    link_lead_company(link_conn, lead_id, company=company, email=email_norm,
-                      industry=industry, headcount=headcount)
-    if domain_explicit:
-        ensure_company(link_conn, name=company, domain=domain_explicit,
-                       industry=industry, headcount=headcount,
-                       hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
-    link_conn.commit()
-    link_conn.close()
+        ensure_lead_domain(lead_id, email_norm, conn=conn if not own_conn else None, commit=False)
+    if not own_conn:
+        link_lead_company(conn, lead_id, company=company, email=email_norm,
+                          industry=industry, headcount=headcount)
+        if domain_explicit:
+            ensure_company(conn, name=company, domain=domain_explicit,
+                           industry=industry, headcount=headcount,
+                           hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
+    else:
+        link_conn = get_conn()
+        link_lead_company(link_conn, lead_id, company=company, email=email_norm,
+                          industry=industry, headcount=headcount)
+        if domain_explicit:
+            ensure_company(link_conn, name=company, domain=domain_explicit,
+                           industry=industry, headcount=headcount,
+                           hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
+        link_conn.commit()
+        link_conn.close()
+        conn.commit()
+        conn.close()
 
     method = match_method or identities[0][0]
     return {
@@ -2652,9 +2678,12 @@ def enrich_lead(
     headcount=None,
     overwrite: bool = False,
     mark_cloud_pending: bool = True,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> list[str]:
     """Fill empty lead profile fields (won't overwrite non-empty unless overwrite=True)."""
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     row = conn.execute(
         "SELECT name, email, title, industry, company, headcount FROM leads WHERE id = ?",
         (lead_id,),
@@ -2688,8 +2717,10 @@ def enrich_lead(
             updates.append("cloud_pending = 1")
         updates.append("updated_at = datetime('now')")
         conn.execute(f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", (*params, lead_id))
-        conn.commit()
-    conn.close()
+        if own_conn:
+            conn.commit()
+    if own_conn:
+        conn.close()
     return filled
 
 
@@ -3364,19 +3395,31 @@ def load_profile_rows_from_file(path: Path) -> list[dict]:
     raise ValueError("JSON file must be an array of objects or a single object")
 
 
-def update_lead_stage(lead_id, stage, next_action=None, event_at=None):
+def update_lead_stage(
+    lead_id,
+    stage,
+    next_action=None,
+    event_at=None,
+    conn: Optional[sqlite3.Connection] = None,
+    *,
+    commit: bool = True,
+):
     if stage not in PIPELINE_STAGES:
         raise ValueError(f"Invalid stage: {stage}. Valid: {PIPELINE_STAGES}")
     ts_expr = "?" if event_at else "datetime('now')"
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     conn.execute(
         f"""UPDATE leads SET stage = ?, cloud_pending = 1, updated_at = {ts_expr},
            next_action = CASE WHEN ? IS NOT NULL THEN ? ELSE next_action END WHERE id = ?""",
         (stage, event_at, next_action, next_action, lead_id) if event_at
         else (stage, next_action, next_action, lead_id),
     )
-    conn.commit()
-    conn.close()
+    if commit and own_conn:
+        conn.commit()
+    if own_conn and conn is not None:
+        conn.close()
 
 def ensure_campaign(conn, name: str, lead_id: int) -> int:
     """Return campaign id, creating the row and campaign_leads link if needed."""
@@ -3496,11 +3539,16 @@ def _prepare_stored_event_body(meta: dict, body_preview: Optional[str]) -> str:
 
 def log_event(lead_id, event_type, direction="outbound", channel="email",
               subject=None, body_preview=None, metadata=None, campaign=None,
-              event_at=None, sender=None):
+              event_at=None, sender=None, *,
+              conn: Optional[sqlite3.Connection] = None,
+              commit: bool = True,
+              refresh_activity: bool = True):
     meta = dict(metadata or {})
     preview = _prepare_stored_event_body(meta, body_preview)
     campaign_name = campaign or meta.get("campaign")
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     campaign_id = None
     if campaign_name and str(campaign_name).strip():
         campaign_id = ensure_campaign(conn, str(campaign_name).strip(), lead_id)
@@ -3533,9 +3581,12 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
             (lead_id,),
         )
     event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    conn.commit()
-    conn.close()
-    refresh_lead_activity_for_lead(lead_id)
+    if commit:
+        conn.commit()
+    if own_conn:
+        conn.close()
+    if refresh_activity:
+        refresh_lead_activity_for_lead(lead_id)
     return event_id
 
 
@@ -6241,6 +6292,18 @@ def pull_page_dedupe_keys(events: list, local_client_id: str) -> list[str]:
     return keys
 
 
+def pull_page_ws_idempotency_keys(events: list) -> list[str]:
+    """Workspace event idempotency keys for sequencer events on one pull page."""
+    from relay_ingest import relay_dedupe_key
+
+    keys: list[str] = []
+    for event in events:
+        if event.get("platform") == "agent":
+            continue
+        keys.append(f"ws:{relay_dedupe_key(event)}")
+    return keys
+
+
 def _append_pull_ingest_marks(
     pending_marks: list,
     event: dict,
@@ -6251,6 +6314,13 @@ def _append_pull_ingest_marks(
     from relay_ingest import relay_dedupe_key
 
     pending_marks.append((relay_dedupe_key(event), lead_id))
+
+
+def _pull_workspace_slug_map(conn: sqlite3.Connection, org_id: str) -> dict[str, str]:
+    rows = conn.execute(
+        "SELECT slug, id FROM workspaces WHERE org_id = ?", (org_id,),
+    ).fetchall()
+    return {str(r["slug"]): str(r["id"]) for r in rows}
 
 
 def _pull_page_already_ingested(
@@ -6272,6 +6342,9 @@ def ingest_agent_entry(
     *,
     defer_mark: bool = False,
     pending_marks: Optional[list] = None,
+    pull_conn: Optional[sqlite3.Connection] = None,
+    routing_config: Optional[OrgRoutingConfig] = None,
+    ws_slug_map: Optional[dict[str, str]] = None,
 ) -> Optional[int]:
     """Replay an agent-originated mutation from another client during pull."""
     action = event.get("action", "")
@@ -6286,7 +6359,8 @@ def ingest_agent_entry(
         return None
 
     dedupe_key = f"agent:{client_id}:{entity_key}:{action}:{timestamp}"
-    if relay_already_ingested(dedupe_key):
+    # Pull pages prefetch dedupe keys; skip per-row SELECT when batching marks.
+    if not defer_mark and relay_already_ingested(dedupe_key):
         return None
 
     def _record_mark(key: str, lid: Optional[int]) -> None:
@@ -6295,96 +6369,151 @@ def ingest_agent_entry(
         else:
             mark_relay_ingested(key, lid)
 
-    conn = get_conn()
+    own_conn = pull_conn is None
+    conn = pull_conn or get_conn()
     lead_id = None
     company_id = None
+    slug_map = ws_slug_map or {}
     try:
         org_id = DEFAULT_ORG_ID
-        routing_config = get_org_routing_config(conn, org_id)
-        workspace_id = None
-
-        if routing_config.mode == WORKSPACE_ROUTING_SINGLE:
-            workspace_id = routing_config.default_workspace_id
-        elif routing_config.mode == WORKSPACE_ROUTING_MULTI:
-            if workspace_slug:
-                ws_row = resolve_workspace_identity(conn, workspace_slug)
-                workspace_id = ws_row["id"] if ws_row else None
-
-        if action == "lead_core_update":
+        if action == "company_update":
+            company_id = resolve_company_from_entity_key(conn, entity_key) if entity_key else None
+            if company_id:
+                _apply_personalization_payload(
+                    company_id,
+                    payload,
+                    table="company_personalization",
+                    id_col="company_id",
+                    entity_id=company_id,
+                    conn=conn,
+                )
+            if own_conn:
+                conn.commit()
+                conn.close()
+                conn = None
+        elif action == "lead_core_update":
             lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
-            conn.close()
             if not lead_id:
+                if own_conn:
+                    conn.close()
+                    conn = None
                 result = resolve_lead_from_agent_sync(entity_key, payload)
                 if result.get("status") == "error":
                     _record_mark(dedupe_key, None)
                     return None
                 lead_id = result.get("id")
+                if not own_conn:
+                    conn = pull_conn
             if lead_id:
                 apply_agent_lead_core_payload(
-                    lead_id, payload, org_id=org_id, entity_key=entity_key,
+                    lead_id, payload, org_id=org_id, entity_key=entity_key, conn=conn,
                 )
-        elif action == "lead_workspace_update":
-            if not workspace_id:
+            if own_conn and conn is not None:
+                conn.commit()
                 conn.close()
+                conn = None
+        elif action == "lead_workspace_update":
+            routing = routing_config or get_org_routing_config(conn, org_id)
+            workspace_id = None
+            if routing.mode == WORKSPACE_ROUTING_SINGLE:
+                workspace_id = routing.default_workspace_id
+            elif workspace_slug:
+                workspace_id = slug_map.get(workspace_slug)
+                if not workspace_id:
+                    ws_row = resolve_workspace_identity(conn, workspace_slug)
+                    workspace_id = ws_row["id"] if ws_row else None
+            if not workspace_id:
+                if own_conn:
+                    conn.close()
+                    conn = None
                 _record_mark(dedupe_key, None)
                 return None
             lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
-            conn.close()
             if not lead_id:
+                if own_conn:
+                    conn.close()
+                    conn = None
                 result = resolve_lead_from_agent_sync(entity_key, {})
                 if result.get("status") == "error":
                     _record_mark(dedupe_key, None)
                     return None
                 lead_id = result.get("id")
+                if not own_conn:
+                    conn = pull_conn
             if lead_id:
                 apply_agent_lead_workspace_payload(
-                    lead_id, payload, org_id=org_id, workspace_id=workspace_id,
+                    lead_id, payload, org_id=org_id, workspace_id=workspace_id, conn=conn,
                 )
-        elif action == "company_update":
-            company_id = resolve_company_from_entity_key(conn, entity_key) if entity_key else None
-            conn.close()
-            if company_id:
-                apply_agent_company_sync_payload(company_id, payload)
-        # Workspace-scoped actions: skip if no workspace (don't quarantine)
-        elif action == "stage_change":
-            if not workspace_id:
+            if own_conn and conn is not None:
+                conn.commit()
                 conn.close()
-                _record_mark(dedupe_key, None)
-                return None
-            lead_id = find_lead_by_identifier(conn, entity_key)
-            conn.close()
-            if lead_id and payload.get("stage"):
-                try:
-                    update_lead_stage(lead_id, payload["stage"], payload.get("next_action"))
-                except ValueError:
-                    pass
-        elif action == "event_log":
-            if not workspace_id:
-                conn.close()
-                _record_mark(dedupe_key, None)
-                return None
-            lead_id = find_lead_by_identifier(conn, entity_key)
-            conn.close()
-            if lead_id:
-                event_meta = {"source": "agent_sync", "origin_client": client_id}
-                if payload.get("body"):
-                    event_meta["body"] = str(payload.get("body"))
-                log_event(
-                    lead_id,
-                    event_type=payload.get("event_type", "email_sent"),
-                    direction=payload.get("direction", "outbound"),
-                    channel=payload.get("channel", "email"),
-                    subject=payload.get("subject"),
-                    body_preview=payload.get("body_preview"),
-                    metadata=event_meta,
-                )
+                conn = None
         else:
-            conn.close()
+            routing = routing_config or get_org_routing_config(conn, org_id)
+            workspace_id = None
+            if routing.mode == WORKSPACE_ROUTING_SINGLE:
+                workspace_id = routing.default_workspace_id
+            elif workspace_slug:
+                workspace_id = slug_map.get(workspace_slug)
+                if not workspace_id:
+                    ws_row = resolve_workspace_identity(conn, workspace_slug)
+                    workspace_id = ws_row["id"] if ws_row else None
+
+            if action == "stage_change":
+                if not workspace_id:
+                    if own_conn:
+                        conn.close()
+                        conn = None
+                    _record_mark(dedupe_key, None)
+                    return None
+                lead_id = find_lead_by_identifier(conn, entity_key)
+                if own_conn:
+                    conn.close()
+                    conn = None
+                if lead_id and payload.get("stage"):
+                    try:
+                        update_lead_stage(
+                            lead_id,
+                            payload["stage"],
+                            payload.get("next_action"),
+                            conn=pull_conn if not own_conn else None,
+                            commit=not own_conn,
+                        )
+                    except ValueError:
+                        pass
+            elif action == "event_log":
+                if not workspace_id:
+                    if own_conn:
+                        conn.close()
+                        conn = None
+                    _record_mark(dedupe_key, None)
+                    return None
+                lead_id = find_lead_by_identifier(conn, entity_key)
+                if own_conn:
+                    conn.close()
+                    conn = None
+                if lead_id:
+                    event_meta = {"source": "agent_sync", "origin_client": client_id}
+                    if payload.get("body"):
+                        event_meta["body"] = str(payload.get("body"))
+                    log_event(
+                        lead_id,
+                        event_type=payload.get("event_type", "email_sent"),
+                        direction=payload.get("direction", "outbound"),
+                        channel=payload.get("channel", "email"),
+                        subject=payload.get("subject"),
+                        body_preview=payload.get("body_preview"),
+                        metadata=event_meta,
+                    )
+            elif own_conn:
+                conn.close()
+                conn = None
     except Exception:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if own_conn and conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
         raise
 
     if lead_id is not None or action in ("company_update", "lead_core_update", "lead_workspace_update"):
@@ -6653,6 +6782,10 @@ def _ingest_relay_page(
     quiet: bool = True,
     resolution_map: Optional[dict[int, dict]] = None,
     slug_cache: Optional[qres.WorkspaceSlugCache] = None,
+    pull_conn: Optional[sqlite3.Connection] = None,
+    routing_config: Optional[OrgRoutingConfig] = None,
+    ws_slug_map: Optional[dict[str, str]] = None,
+    routing_cache: Optional[CampaignRoutingCache] = None,
 ) -> dict:
     imported = skipped = skipped_duplicates = skipped_filtered = skipped_errors = 0
     skipped_resolved = assigned_resolved = 0
@@ -6673,89 +6806,145 @@ def _ingest_relay_page(
         }
 
     local_client_id = get_or_create_client_id()
-    ingested_prefetch = prefetch_relay_ingested(pull_page_dedupe_keys(events, local_client_id))
     pending_marks: list[tuple[str, Optional[int]]] = []
+    own_page_conn = pull_conn is None
+    if own_page_conn:
+        if not db_exists():
+            init_db()
+        else:
+            migrate_db()
+        pull_conn = get_conn()
+        apply_bulk_pull_pragmas(pull_conn)
+        routing_config = get_org_routing_config(pull_conn, DEFAULT_ORG_ID)
+        ws_slug_map = (
+            _pull_workspace_slug_map(pull_conn, DEFAULT_ORG_ID)
+            if routing_config.mode == WORKSPACE_ROUTING_MULTI
+            else {}
+        )
+        if routing_cache is None and routing_config.mode == WORKSPACE_ROUTING_MULTI:
+            routing_cache = CampaignRoutingCache.load(
+                pull_conn, DEFAULT_ORG_ID, routing_config,
+            )
+    dedupe_keys = pull_page_dedupe_keys(events, local_client_id)
+    ingested_prefetch = prefetch_relay_ingested(dedupe_keys, conn=pull_conn)
+    ws_idempotent_prefetch = prefetch_ws_idempotency_keys(
+        pull_conn, DEFAULT_ORG_ID, pull_page_ws_idempotency_keys(events),
+    )
+    activity_refresh_pairs: set[tuple[int, str]] = set()
     ingest_kw = {
         "debug_sentiment": debug_sentiment,
         "quiet": quiet,
         "defer_mark": True,
         "pending_marks": pending_marks,
+        "pull_conn": pull_conn,
+        "routing_config": routing_config,
+        "ws_slug_map": ws_slug_map or {},
+        "routing_cache": routing_cache,
+        "ingested_prefetch": ingested_prefetch,
+        "ws_idempotent_prefetch": ws_idempotent_prefetch,
+        "defer_activity_refresh": True,
+        "activity_refresh_pairs": activity_refresh_pairs,
     }
 
-    for event in events:
-        relay_id = event.get("relay_id")
-        if isinstance(relay_id, int) and relay_id > newest_relay_id_seen:
-            newest_relay_id_seen = relay_id
+    page_start = time.monotonic()
+    try:
+        for event in events:
+            relay_id = event.get("relay_id")
+            if isinstance(relay_id, int) and relay_id > newest_relay_id_seen:
+                newest_relay_id_seen = relay_id
 
-        resolution = None
-        if isinstance(relay_id, int):
-            resolution = resolutions.get(relay_id)
-        if resolution:
-            if resolution["status"] == "skipped":
-                skipped_resolved += 1
-                continue
-            if resolution["status"] == "assigned":
-                ws_id = ws_cache.workspace_id(resolution.get("workspace_slug") or "")
-                if not ws_id:
-                    skipped += 1
-                    skipped_errors += 1
-                    if not quiet:
-                        print(
-                            f"Warning: assigned resolution for relay {relay_id} "
-                            f"but workspace '{resolution.get('workspace_slug')}' not found",
-                            file=sys.stderr,
+            resolution = None
+            if isinstance(relay_id, int):
+                resolution = resolutions.get(relay_id)
+            if resolution:
+                if resolution["status"] == "skipped":
+                    skipped_resolved += 1
+                    continue
+                if resolution["status"] == "assigned":
+                    ws_id = ws_cache.workspace_id(resolution.get("workspace_slug") or "")
+                    if not ws_id:
+                        skipped += 1
+                        skipped_errors += 1
+                        if not quiet:
+                            print(
+                                f"Warning: assigned resolution for relay {relay_id} "
+                                f"but workspace '{resolution.get('workspace_slug')}' not found",
+                                file=sys.stderr,
+                            )
+                        continue
+                    if _pull_page_already_ingested(event, ingested_prefetch, local_client_id):
+                        skipped += 1
+                        skipped_duplicates += 1
+                        continue
+                    try:
+                        ingested = ingest_relay_event(
+                            event,
+                            force_workspace_id=ws_id,
+                            **ingest_kw,
                         )
+                    except Exception as exc:
+                        if not quiet:
+                            print(f"Warning: skipped relay event {relay_id}: {exc}")
+                        skipped += 1
+                        skipped_errors += 1
+                        continue
+                    if ingested is None:
+                        skipped += 1
+                        skipped_filtered += 1
+                    else:
+                        imported += 1
+                        assigned_resolved += 1
+                        if event.get("platform") != "agent":
+                            _append_pull_ingest_marks(
+                                pending_marks, event, ingested, local_client_id
+                            )
                     continue
-                if _pull_page_already_ingested(event, ingested_prefetch, local_client_id):
-                    skipped += 1
-                    skipped_duplicates += 1
-                    continue
-                try:
-                    ingested = ingest_relay_event(
-                        event,
-                        force_workspace_id=ws_id,
-                        **ingest_kw,
-                    )
-                except Exception as exc:
-                    if not quiet:
-                        print(f"Warning: skipped relay event {relay_id}: {exc}")
-                    skipped += 1
-                    skipped_errors += 1
-                    continue
-                if ingested is None:
-                    skipped += 1
-                    skipped_filtered += 1
-                else:
-                    imported += 1
-                    assigned_resolved += 1
-                    if event.get("platform") != "agent":
-                        _append_pull_ingest_marks(
-                            pending_marks, event, ingested, local_client_id
-                        )
+
+            if _pull_page_already_ingested(event, ingested_prefetch, local_client_id):
+                skipped += 1
+                skipped_duplicates += 1
                 continue
 
-        if _pull_page_already_ingested(event, ingested_prefetch, local_client_id):
-            skipped += 1
-            skipped_duplicates += 1
-            continue
+            try:
+                ingested = ingest_relay_event(event, **ingest_kw)
+            except Exception as exc:
+                if not quiet:
+                    print(f"Warning: skipped relay event {event.get('relay_id') or '?'}: {exc}")
+                skipped += 1
+                skipped_errors += 1
+                continue
+            if ingested is None:
+                skipped += 1
+                skipped_filtered += 1
+            else:
+                imported += 1
+                if event.get("platform") != "agent":
+                    _append_pull_ingest_marks(pending_marks, event, ingested, local_client_id)
 
-        try:
-            ingested = ingest_relay_event(event, **ingest_kw)
-        except Exception as exc:
-            if not quiet:
-                print(f"Warning: skipped relay event {event.get('relay_id') or '?'}: {exc}")
-            skipped += 1
-            skipped_errors += 1
-            continue
-        if ingested is None:
-            skipped += 1
-            skipped_filtered += 1
-        else:
-            imported += 1
-            if event.get("platform") != "agent":
-                _append_pull_ingest_marks(pending_marks, event, ingested, local_client_id)
-
-    mark_relay_ingested_many(pending_marks)
+        for lead_id, workspace_id in activity_refresh_pairs:
+            refresh_lead_activity_from_events(pull_conn, lead_id, workspace_id)
+        if pending_marks and pull_conn is not None:
+            mark_relay_ingested_many(pending_marks, conn=pull_conn, commit=False)
+        if pull_conn is not None:
+            pull_conn.commit()
+    except Exception:
+        if pull_conn is not None:
+            try:
+                pull_conn.rollback()
+            except sqlite3.Error:
+                pass
+        raise
+    finally:
+        elapsed = time.monotonic() - page_start
+        if not quiet and elapsed >= 30:
+            print(
+                f"Slow pull page ingest: {len(events):,} events in {elapsed:.1f}s "
+                f"(imported={imported}, skipped_dup={skipped_duplicates})",
+                flush=True,
+            )
+        if own_page_conn and pull_conn is not None:
+            end_bulk_pull_session(pull_conn)
+            pull_conn.close()
 
     return {
         "imported": imported,
@@ -6820,93 +7009,124 @@ def sync_from_relay_org(
         mode = "large pages" if pull_limit >= RELAY_PULL_MAX else "routine pages"
         print(f"Pulling from relay ({mode}: {pull_limit}/page)...", flush=True)
 
-    while True:
-        event_pages += 1
-        result = pull_events_org(
-            agent_key,
-            after_id=page_after_id or None,
-            include_pending=event_pages == 1,
-            include_queue_resolutions=event_pages == 1,
-            limit=pull_limit,
-            timeout=pull_timeout,
-        )
-        if result.get("error"):
-            raise RuntimeError(result.get("message", "pull failed"))
+    pull_session: Optional[sqlite3.Connection] = None
+    pull_routing_config: Optional[OrgRoutingConfig] = None
+    pull_ws_slug_map: dict[str, str] = {}
+    pull_routing_cache: Optional[CampaignRoutingCache] = None
 
-        if event_pages == 1:
-            resolution_map = qres.parse_queue_resolutions(result.get("queue_resolutions"))
+    try:
+        while True:
+            event_pages += 1
+            request_limit = pull_limit
+            result = pull_events_org(
+                agent_key,
+                after_id=page_after_id or None,
+                include_pending=event_pages == 1,
+                include_queue_resolutions=event_pages == 1,
+                limit=request_limit,
+                timeout=pull_timeout,
+            )
+            if result.get("error"):
+                raise RuntimeError(result.get("message", "pull failed"))
 
-        events = result.get("events") or []
-        if not events:
-            break
+            if event_pages == 1:
+                resolution_map = qres.parse_queue_resolutions(result.get("queue_resolutions"))
 
-        if event_pages == 1 and result.get("pending_event_count") is not None:
-            pending_events = int(result["pending_event_count"])
-            if pending_events >= RELAY_BULK_THRESHOLD:
-                pull_limit = RELAY_PULL_MAX
-                pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS
-            est_event_pages = _estimate_relay_pages(pending_events, pull_limit)
-            if not quiet and pending_events > 0:
+            events = result.get("events") or []
+            if not events:
+                break
+
+            if event_pages == 1 and result.get("pending_event_count") is not None:
+                pending_events = int(result["pending_event_count"])
+                if pending_events >= RELAY_BULK_THRESHOLD:
+                    pull_limit = RELAY_PULL_MAX
+                    pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS
+                est_event_pages = _estimate_relay_pages(pending_events, pull_limit)
+                if not quiet and pending_events > 0:
+                    print(
+                        _format_pull_pending_banner(
+                            _RELAY_STREAM_EVENT,
+                            pending_events,
+                            est_event_pages,
+                            pull_limit,
+                        ),
+                        flush=True,
+                    )
+            elif (
+                event_pages == 1
+                and pending_events is None
+                and not quiet
+                and len(events) >= pull_limit
+            ):
                 print(
-                    _format_pull_pending_banner(
+                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+                    f"first page has {len(events):,} records "
+                    f"(@ {pull_limit}/page — more pages follow)...",
+                    flush=True,
+                )
+
+            relay_events_seen += len(events)
+            if not quiet:
+                print(
+                    _format_pull_progress(
                         _RELAY_STREAM_EVENT,
-                        pending_events,
-                        est_event_pages,
-                        pull_limit,
+                        page_n=event_pages,
+                        total_pages=est_event_pages,
+                        page_len=len(events),
+                        seen=relay_events_seen,
+                        total=pending_events,
+                        more_follow=len(events) >= request_limit and not est_event_pages,
                     ),
                     flush=True,
                 )
-        elif (
-            event_pages == 1
-            and pending_events is None
-            and not quiet
-            and len(events) >= pull_limit
-        ):
-            print(
-                f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(_RELAY_STREAM_EVENT)}: "
-                f"first page has {len(events):,} records "
-                f"(@ {pull_limit}/page — more pages follow)...",
-                flush=True,
+
+            if pull_session is None:
+                if not db_exists():
+                    init_db()
+                else:
+                    migrate_db()
+                pull_session = get_conn()
+                apply_bulk_pull_pragmas(pull_session)
+                pull_routing_config = get_org_routing_config(pull_session, DEFAULT_ORG_ID)
+                if pull_routing_config.mode == WORKSPACE_ROUTING_MULTI:
+                    pull_ws_slug_map = _pull_workspace_slug_map(pull_session, DEFAULT_ORG_ID)
+                    pull_routing_cache = CampaignRoutingCache.load(
+                        pull_session, DEFAULT_ORG_ID, pull_routing_config,
+                    )
+
+            batch = _ingest_relay_page(
+                events,
+                debug_sentiment=debug_sentiment,
+                quiet=True,
+                resolution_map=resolution_map,
+                slug_cache=slug_cache,
+                pull_conn=pull_session,
+                routing_config=pull_routing_config,
+                ws_slug_map=pull_ws_slug_map,
+                routing_cache=pull_routing_cache,
             )
+            imported += batch["imported"]
+            skipped += batch["skipped"]
+            skipped_duplicates += batch["skipped_duplicates"]
+            skipped_filtered += batch["skipped_filtered"]
+            skipped_errors += batch["skipped_errors"]
+            skipped_resolved += batch.get("skipped_resolved", 0)
+            assigned_resolved += batch.get("assigned_resolved", 0)
+            newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
 
-        relay_events_seen += len(events)
-        if not quiet:
-            print(
-                _format_pull_progress(
-                    _RELAY_STREAM_EVENT,
-                    page_n=event_pages,
-                    total_pages=est_event_pages,
-                    page_len=len(events),
-                    seen=relay_events_seen,
-                    total=pending_events,
-                    more_follow=len(events) >= pull_limit and not est_event_pages,
-                ),
-                flush=True,
-            )
-
-        batch = _ingest_relay_page(
-            events,
-            debug_sentiment=debug_sentiment,
-            quiet=True,
-            resolution_map=resolution_map,
-            slug_cache=slug_cache,
-        )
-        imported += batch["imported"]
-        skipped += batch["skipped"]
-        skipped_duplicates += batch["skipped_duplicates"]
-        skipped_filtered += batch["skipped_filtered"]
-        skipped_errors += batch["skipped_errors"]
-        skipped_resolved += batch.get("skipped_resolved", 0)
-        assigned_resolved += batch.get("assigned_resolved", 0)
-        newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
-
-        next_after_id = int(result.get("max_id") or page_after_id)
-        if len(events) >= pull_limit and next_after_id <= page_after_id:
-            cursor_stalled = True
-            break
-        page_after_id = next_after_id
-        if len(events) < pull_limit:
-            break
+            next_after_id = int(result.get("max_id") or page_after_id)
+            if len(events) >= request_limit and next_after_id <= page_after_id:
+                cursor_stalled = True
+                break
+            page_after_id = next_after_id
+            if page_after_id:
+                set_last_max_id(page_after_id)
+            if len(events) < request_limit or result.get("has_more_events") is False:
+                break
+    finally:
+        if pull_session is not None:
+            end_bulk_pull_session(pull_session)
+            pull_session.close()
 
     pending_snapshots: Optional[int] = None
     est_snap_pages: Optional[int] = None
@@ -6981,14 +7201,40 @@ def sync_from_relay_org(
                         ),
                         flush=True,
                     )
+            ingest_started = time.monotonic()
             batch = _ingest_relay_page(snap_events, debug_sentiment=debug_sentiment, quiet=True)
+            ingest_elapsed = time.monotonic() - ingest_started
             imported += batch["imported"]
             skipped += batch["skipped"]
             skipped_duplicates += batch["skipped_duplicates"]
             skipped_filtered += batch["skipped_filtered"]
             skipped_errors += batch["skipped_errors"]
             newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
-            snapshot_cursors[snap_kind] = int(snap_result.get("max_snapshot_id") or 0)
+            prev_snap_cursor = snapshot_cursors[snap_kind]
+            next_snap_cursor = int(snap_result.get("max_snapshot_id") or 0)
+            if (
+                len(snap_events) >= pull_limit
+                and next_snap_cursor <= prev_snap_cursor
+            ):
+                cursor_stalled = True
+                if not quiet:
+                    print(
+                        f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                        f"cursor stalled at snapshot_id={prev_snap_cursor} — stopping",
+                        flush=True,
+                    )
+                break
+            snapshot_cursors[snap_kind] = next_snap_cursor
+            if snapshot_cursors[snap_kind]:
+                set_snapshot_cursor(snapshot_cursors[snap_kind], snap_kind)
+            if not quiet and ingest_elapsed >= 30:
+                print(
+                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                    f"ingest {ingest_elapsed:.1f}s "
+                    f"(+{batch['imported']} new, {batch['skipped_duplicates']} dupes, "
+                    f"{batch['skipped_errors']} errors)",
+                    flush=True,
+                )
             if not snap_result.get("has_more_snapshots"):
                 break
 
@@ -8011,26 +8257,33 @@ def _apply_personalization_payload(
     table: str,
     id_col: str,
     entity_id: int,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     pers = payload.get("personalization") or {}
     if not pers:
         return
     dates = payload.get("personalization_dates") or {}
     p_at = payload.get("personalization_at", datetime.now(timezone.utc).isoformat())
-    conn = get_conn()
-    for fname, fval in pers.items():
-        conn.execute(f"""
-            INSERT INTO {table} ({id_col}, field_name, field_value, field_date, processed_at, cloud_pending)
-            VALUES (?, ?, ?, ?, ?, 0)
-            ON CONFLICT ({id_col}, field_name) DO UPDATE SET
-                field_value = excluded.field_value,
-                field_date = excluded.field_date,
-                processed_at = excluded.processed_at,
-                cloud_pending = 0
-            WHERE excluded.processed_at > {table}.processed_at
-        """, (entity_id, fname, fval, dates.get(fname), p_at))
-    conn.commit()
-    conn.close()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        for fname, fval in pers.items():
+            conn.execute(f"""
+                INSERT INTO {table} ({id_col}, field_name, field_value, field_date, processed_at, cloud_pending)
+                VALUES (?, ?, ?, ?, ?, 0)
+                ON CONFLICT ({id_col}, field_name) DO UPDATE SET
+                    field_value = excluded.field_value,
+                    field_date = excluded.field_date,
+                    processed_at = excluded.processed_at,
+                    cloud_pending = 0
+                WHERE excluded.processed_at > {table}.processed_at
+            """, (entity_id, fname, fval, dates.get(fname), p_at))
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def cleanup_campaign_rules(dry_run: bool = False) -> dict:

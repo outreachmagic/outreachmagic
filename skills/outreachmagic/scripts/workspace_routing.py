@@ -569,6 +569,96 @@ def format_unmapped_campaign_message(ctx: CampaignContext) -> str:
     return "\n".join(lines)
 
 
+@dataclass
+class CampaignRoutingCache:
+    """In-memory campaign maps for one pull session (avoids per-event SQL)."""
+
+    config: OrgRoutingConfig
+    _id_exact: dict[tuple[str, str], RoutingResult]
+    _name_exact: dict[tuple[str, str], RoutingResult]
+    _rules: list[tuple[str, str, str, RoutingResult]]
+
+    @classmethod
+    def load(
+        cls,
+        conn: sqlite3.Connection,
+        org_id: str,
+        config: OrgRoutingConfig,
+    ) -> CampaignRoutingCache:
+        id_exact: dict[tuple[str, str], RoutingResult] = {}
+        name_exact: dict[tuple[str, str], RoutingResult] = {}
+        rules: list[tuple[str, str, str, RoutingResult]] = []
+        if config.mode != WORKSPACE_ROUTING_MULTI:
+            return cls(config=config, _id_exact=id_exact, _name_exact=name_exact, _rules=rules)
+
+        rows = conn.execute(
+            """SELECT id, workspace_id, match_strategy, source_platform, campaign_id,
+                      campaign_name_normalized, priority
+               FROM campaign_workspace_map
+               WHERE org_id = ? AND is_active = 1
+               ORDER BY priority ASC""",
+            (org_id,),
+        ).fetchall()
+        for row in rows:
+            sp = str(row["source_platform"] or "*")
+            result = RoutingResult(
+                workspace_id=row["workspace_id"],
+                match_strategy=row["match_strategy"],
+                map_id=row["id"],
+            )
+            strat = row["match_strategy"]
+            if strat == "id_exact" and row["campaign_id"]:
+                key = (sp, str(row["campaign_id"]))
+                if key not in id_exact:
+                    id_exact[key] = result
+            elif strat == "name_exact" and row["campaign_name_normalized"]:
+                key = (sp, str(row["campaign_name_normalized"]))
+                if key not in name_exact:
+                    name_exact[key] = result
+            elif strat in ("rule_contains", "rule_prefix", "rule_regex"):
+                pattern = str(row["campaign_name_normalized"] or "")
+                if pattern:
+                    rules.append((sp, strat, pattern, result))
+
+        return cls(config=config, _id_exact=id_exact, _name_exact=name_exact, _rules=rules)
+
+    def resolve(self, ctx: CampaignContext) -> Optional[RoutingResult]:
+        if self.config.mode == WORKSPACE_ROUTING_SINGLE:
+            if not self.config.default_workspace_id:
+                return None
+            return RoutingResult(
+                workspace_id=self.config.default_workspace_id,
+                match_strategy="single_workspace",
+            )
+        platform = ctx.source_platform
+        platforms = (platform, "*")
+        if ctx.campaign_id:
+            for sp in platforms:
+                hit = self._id_exact.get((sp, ctx.campaign_id))
+                if hit:
+                    return hit
+        if ctx.campaign_name_normalized:
+            for sp in platforms:
+                hit = self._name_exact.get((sp, ctx.campaign_name_normalized))
+                if hit:
+                    return hit
+            name_for_rules = ctx.campaign_name_normalized
+            for sp, strat, pattern, result in self._rules:
+                if sp not in platforms:
+                    continue
+                if strat == "rule_contains" and pattern in name_for_rules:
+                    return result
+                if strat == "rule_prefix" and name_for_rules.startswith(pattern):
+                    return result
+                if strat == "rule_regex":
+                    try:
+                        if re.search(pattern, name_for_rules):
+                            return result
+                    except re.error:
+                        continue
+        return None
+
+
 def resolve_workspace(
     conn: sqlite3.Connection,
     org_id: str,
@@ -652,13 +742,18 @@ def resolve_workspace_for_ingest(
     conn: sqlite3.Connection,
     org_id: str,
     ctx: CampaignContext,
+    *,
+    routing_config: Optional[OrgRoutingConfig] = None,
+    routing_cache: Optional[CampaignRoutingCache] = None,
 ) -> Optional[RoutingResult]:
     """
     Resolve workspace using org routing mode:
       single — all events go to default_workspace_id
       multi  — campaign maps required; None if unmapped
     """
-    config = get_org_routing_config(conn, org_id)
+    if routing_cache is not None:
+        return routing_cache.resolve(ctx)
+    config = routing_config or get_org_routing_config(conn, org_id)
     if config.mode == WORKSPACE_ROUTING_SINGLE:
         if not config.default_workspace_id:
             return None

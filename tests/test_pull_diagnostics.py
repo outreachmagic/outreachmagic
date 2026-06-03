@@ -17,6 +17,19 @@ set_data_root_override(Path(_tmp))
 import pipeline as om  # noqa: E402
 
 
+def _prefetch_all(keys, conn=None):
+    return set(keys)
+
+
+def _prefetch_ws_empty(conn, org_id, keys):
+    return set()
+
+
+def _patch_pull_prefetch(monkeypatch, relay_keys=_prefetch_all):
+    monkeypatch.setattr(om, "prefetch_relay_ingested", relay_keys)
+    monkeypatch.setattr(om, "prefetch_ws_idempotency_keys", _prefetch_ws_empty)
+
+
 def test_sync_stats_incremental_duplicate_only_advances_cursor(monkeypatch):
     pages = [
         {"events": [{"relay_id": 10}, {"relay_id": 11}], "max_id": 11},
@@ -30,11 +43,7 @@ def test_sync_stats_incremental_duplicate_only_advances_cursor(monkeypatch):
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
     monkeypatch.setattr(om, "ingest_relay_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        om,
-        "prefetch_relay_ingested",
-        lambda keys: set(keys),
-    )
+    _patch_pull_prefetch(monkeypatch)
     monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_kwargs: None)
 
     stats = {}
@@ -64,7 +73,7 @@ def test_sync_stats_cursor_stall_guard(monkeypatch):
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
     monkeypatch.setattr(om, "ingest_relay_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(om, "prefetch_relay_ingested", lambda keys: set())
+    _patch_pull_prefetch(monkeypatch, lambda keys, conn=None: set())
     monkeypatch.setattr(om, "relay_already_ingested", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_kwargs: None)
 
@@ -98,7 +107,7 @@ def test_sync_pull_progress_when_not_quiet(capsys, monkeypatch):
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
     monkeypatch.setattr(om, "ingest_relay_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(om, "prefetch_relay_ingested", lambda keys: set(keys))
+    _patch_pull_prefetch(monkeypatch)
     monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_kwargs: None)
     monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
 
@@ -207,7 +216,7 @@ def test_pull_snapshot_pending_requested_per_kind(monkeypatch):
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
     monkeypatch.setattr(om, "ingest_relay_event", lambda *_a, **_k: None)
-    monkeypatch.setattr(om, "prefetch_relay_ingested", lambda keys: set(keys))
+    _patch_pull_prefetch(monkeypatch)
     monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
     monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
 
@@ -241,7 +250,7 @@ def test_sync_progress_with_pending_counts(capsys, monkeypatch):
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
     monkeypatch.setattr(om, "ingest_relay_event", lambda *_a, **_k: None)
-    monkeypatch.setattr(om, "prefetch_relay_ingested", lambda keys: set(keys))
+    _patch_pull_prefetch(monkeypatch)
     monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
     monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
 
@@ -251,6 +260,41 @@ def test_sync_progress_with_pending_counts(capsys, monkeypatch):
     assert "p1/2" in out
     assert "~5,336 pending" in out or "~5336 pending" in out
     assert "%" in out
+
+
+def test_event_pull_continues_after_bulk_limit_upgrade(monkeypatch):
+    """Page 1 must not exit early when pull_limit bumps 1000→5000 after first response."""
+    pages = [
+        {
+            "events": [{"relay_id": i} for i in range(1, 1001)],
+            "max_id": 1000,
+            "pending_event_count": 3000,
+            "has_more_events": True,
+        },
+        {
+            "events": [{"relay_id": i} for i in range(1001, 6001)],
+            "max_id": 6000,
+            "has_more_events": False,
+        },
+    ]
+
+    def fake_pull(*_args, **kwargs):
+        if kwargs.get("snapshots_only"):
+            return {"events": []}
+        return pages.pop(0)
+
+    monkeypatch.setattr(om, "pull_events_org", fake_pull)
+    monkeypatch.setattr(om, "ingest_relay_event", lambda *_a, **_k: None)
+    _patch_pull_prefetch(monkeypatch, lambda keys, conn=None: set())
+    monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
+    monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
+
+    stats = {}
+    om.sync_from_relay_org("om_agent_test", after_id=0, full=False, quiet=True, stats=stats)
+
+    assert stats["event_pages"] == 2
+    assert stats["pull_after_id_end"] == 6000
+    assert stats["relay_events_seen"] == 6000
 
 
 def test_pull_diagnostics_verdict_priority():

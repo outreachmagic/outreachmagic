@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from typing import Optional
@@ -155,13 +156,18 @@ def relay_already_ingested(dedupe_key: str) -> bool:
     return row is not None
 
 
-def prefetch_relay_ingested(dedupe_keys: list[str]) -> set[str]:
+def prefetch_relay_ingested(
+    dedupe_keys: list[str],
+    conn: Optional[sqlite3.Connection] = None,
+) -> set[str]:
     """Return which dedupe keys already exist (batched IN lookup for pull pages)."""
     if not dedupe_keys:
         return set()
     unique = list(dict.fromkeys(dedupe_keys))
     found: set[str] = set()
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     try:
         for i in range(0, len(unique), RELAY_INGESTED_PREFETCH_CHUNK):
             chunk = unique[i : i + RELAY_INGESTED_PREFETCH_CHUNK]
@@ -172,7 +178,30 @@ def prefetch_relay_ingested(dedupe_keys: list[str]) -> set[str]:
             ).fetchall()
             found.update(row[0] for row in rows)
     finally:
-        conn.close()
+        if own_conn and conn is not None:
+            conn.close()
+    return found
+
+
+def prefetch_ws_idempotency_keys(
+    conn: sqlite3.Connection,
+    org_id: str,
+    idempotency_keys: list[str],
+) -> set[str]:
+    """Return workspace_lead_events idempotency keys already stored for a pull page."""
+    if not idempotency_keys:
+        return set()
+    unique = list(dict.fromkeys(idempotency_keys))
+    found: set[str] = set()
+    for i in range(0, len(unique), RELAY_INGESTED_PREFETCH_CHUNK):
+        chunk = unique[i : i + RELAY_INGESTED_PREFETCH_CHUNK]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"""SELECT idempotency_key FROM workspace_lead_events
+                WHERE org_id = ? AND idempotency_key IN ({placeholders})""",
+            [org_id, *chunk],
+        ).fetchall()
+        found.update(row[0] for row in rows)
     return found
 
 
@@ -186,7 +215,12 @@ def mark_relay_ingested(dedupe_key: str, lead_id: Optional[int]) -> None:
     conn.close()
 
 
-def mark_relay_ingested_many(entries: list[tuple[str, Optional[int]]]) -> None:
+def mark_relay_ingested_many(
+    entries: list[tuple[str, Optional[int]]],
+    conn: Optional[sqlite3.Connection] = None,
+    *,
+    commit: bool = True,
+) -> None:
     """Batch-insert dedupe keys after a pull page (single commit)."""
     if not entries:
         return
@@ -197,15 +231,19 @@ def mark_relay_ingested_many(entries: list[tuple[str, Optional[int]]]) -> None:
             continue
         seen.add(key)
         unique.append((key, lead_id))
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     try:
         conn.executemany(
             "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
             unique,
         )
-        conn.commit()
+        if commit:
+            conn.commit()
     finally:
-        conn.close()
+        if own_conn and conn is not None:
+            conn.close()
 
 
 def ingest_relay_event(
@@ -216,6 +254,14 @@ def ingest_relay_event(
     *,
     defer_mark: bool = False,
     pending_marks: Optional[list] = None,
+    pull_conn: Optional[sqlite3.Connection] = None,
+    routing_config: Optional[object] = None,
+    ws_slug_map: Optional[dict[str, str]] = None,
+    routing_cache: Optional[object] = None,
+    ingested_prefetch: Optional[set[str]] = None,
+    ws_idempotent_prefetch: Optional[set[str]] = None,
+    defer_activity_refresh: bool = False,
+    activity_refresh_pairs: Optional[set[tuple[int, str]]] = None,
 ) -> Optional[int]:
     """Take a relay event and write it to the local SQLite database. Returns None if duplicate."""
     import pipeline as om  # noqa: PLC0415 — avoid circular import at module load
@@ -226,27 +272,39 @@ def ingest_relay_event(
             quiet=quiet,
             defer_mark=defer_mark,
             pending_marks=pending_marks,
+            pull_conn=pull_conn,
+            routing_config=routing_config,
+            ws_slug_map=ws_slug_map,
         )
 
     dedupe_key = relay_dedupe_key(event)
     ws_idempotency = f"ws:{dedupe_key}"
-    conn = get_conn()
-    if conn.execute(
-        "SELECT 1 FROM workspace_lead_events WHERE org_id = ? AND idempotency_key = ?",
-        (DEFAULT_ORG_ID, ws_idempotency),
-    ).fetchone():
-        conn.close()
-        if relay_already_ingested(dedupe_key):
-            return None
-    conn.close()
-
-    if relay_already_ingested(dedupe_key):
-        if debug_sentiment and event.get("platform") in PLUSVIBE_PLATFORMS:
+    own_conn = pull_conn is None
+    conn = pull_conn or get_conn()
+    prefetched = ingested_prefetch or set()
+    if ws_idempotent_prefetch is not None:
+        ws_dup = ws_idempotency in ws_idempotent_prefetch
+    else:
+        ws_dup = bool(
+            conn.execute(
+                "SELECT 1 FROM workspace_lead_events WHERE org_id = ? AND idempotency_key = ?",
+                (DEFAULT_ORG_ID, ws_idempotency),
+            ).fetchone()
+        )
+    relay_dup = (
+        dedupe_key in prefetched
+        if defer_mark or ingested_prefetch is not None
+        else relay_already_ingested(dedupe_key)
+    )
+    if ws_dup or relay_dup:
+        if debug_sentiment and relay_dup and event.get("platform") in PLUSVIBE_PLATFORMS:
             print(
                 "[debug:sentiment] skipped duplicate "
                 f"event_type={event.get('event_type','unknown')} "
                 f"relay_id={event.get('relay_id') or '-'} dedupe_key={dedupe_key}"
             )
+        if own_conn:
+            conn.close()
         return None
 
     envelope_lead = event.get("lead") or ""
@@ -280,8 +338,13 @@ def ingest_relay_event(
     campaign_ctx = extract_campaign_context(platform, event_fields, raw)
     workspace_id = force_workspace_id
     if not workspace_id:
-        conn = get_conn()
-        routing = om.resolve_workspace_for_ingest(conn, DEFAULT_ORG_ID, campaign_ctx)
+        routing = om.resolve_workspace_for_ingest(
+            conn,
+            DEFAULT_ORG_ID,
+            campaign_ctx,
+            routing_config=routing_config,
+            routing_cache=routing_cache,
+        )
         if not routing:
             om.quarantine_event(
                 conn,
@@ -291,13 +354,13 @@ def ingest_relay_event(
                 payload=event,
                 external_event_id=str(event.get("relay_id") or ""),
             )
-            conn.commit()
-            conn.close()
+            if own_conn:
+                conn.commit()
+                conn.close()
             if not quiet:
                 print(om.format_unmapped_campaign_message(campaign_ctx), file=sys.stderr)
             return None
         workspace_id = routing.workspace_id
-        conn.close()
 
     profile = om.profile_from_relay_lead(lead_fields, identity, display_name)
     campaign_name_for_detail = event_fields.get("campaign") or campaign_ctx.campaign_name_raw
@@ -310,11 +373,11 @@ def ingest_relay_event(
         source="relay_sync",
         source_detail=campaign_name_for_detail,
         source_platform=platform,
+        conn=conn,
     )
     if upsert_result.get("status") == "error":
         identities = om.collect_identities_from_event(identity, raw, platform)
         if not identities:
-            conn = get_conn()
             om.ensure_organization(conn)
             om.quarantine_event(
                 conn,
@@ -324,13 +387,16 @@ def ingest_relay_event(
                 payload=event,
                 external_event_id=str(event.get("relay_id") or ""),
             )
-            conn.commit()
+            if own_conn:
+                conn.commit()
+                conn.close()
+        elif own_conn:
             conn.close()
         return None
     lead_id = upsert_result["id"]
 
-    conn = get_conn()
-    if om.get_org_routing_config(conn, DEFAULT_ORG_ID).mode == om.WORKSPACE_ROUTING_SINGLE:
+    cfg = routing_config or om.get_org_routing_config(conn, DEFAULT_ORG_ID)
+    if cfg.mode == om.WORKSPACE_ROUTING_SINGLE:
         om.ensure_default_org_workspace(conn)
     identities = om.collect_identities_from_event(identity, raw, platform)
     for itype, val in identities:
@@ -340,8 +406,6 @@ def ingest_relay_event(
             om.enqueue_identity_conflict_merge(
                 conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform,
             )
-    conn.commit()
-    conn.close()
 
     resolved = resolve_event(platform, envelope_event_type, raw)
     local_type = resolved.local_type
@@ -416,6 +480,9 @@ def ingest_relay_event(
         metadata=metadata,
         event_at=received_at or None,
         sender=sender_norm,
+        conn=conn,
+        commit=False,
+        refresh_activity=False,
     )
 
     event_time = received_at or None
@@ -424,10 +491,11 @@ def ingest_relay_event(
         resolved_stage=resolved.target_stage,
     )
     if target_stage:
-        om.update_lead_stage(lead_id, target_stage, event_at=event_time)
+        om.update_lead_stage(
+            lead_id, target_stage, event_at=event_time, conn=conn, commit=False,
+        )
 
     ws_status = target_stage or "prospecting"
-    conn = get_conn()
     ws_lead_id = om.upsert_workspace_lead(
         conn, DEFAULT_ORG_ID, workspace_id, lead_id, status=ws_status
     )
@@ -517,14 +585,18 @@ def ingest_relay_event(
             relay_id=str(event.get("relay_id") or "") or None,
         )
 
-    om.refresh_lead_activity_from_events(conn, lead_id, workspace_id)
+    if defer_activity_refresh and activity_refresh_pairs is not None:
+        activity_refresh_pairs.add((lead_id, workspace_id))
+    else:
+        om.refresh_lead_activity_from_events(conn, lead_id, workspace_id)
     conn.execute(
         "UPDATE leads SET cloud_pending = 1, updated_at = datetime('now') WHERE id = ?",
         (lead_id,),
     )
 
-    conn.commit()
-    conn.close()
+    if own_conn:
+        conn.commit()
+        conn.close()
 
     if defer_mark and pending_marks is not None:
         pending_marks.append((dedupe_key, lead_id))

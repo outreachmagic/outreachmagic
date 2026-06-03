@@ -76,7 +76,7 @@ For tag `v1.21.0`:
 
 ```bash
 # 1. Bump version
-echo "1.20.9" > skills/outreachmagic/scripts/VERSION
+echo "1.24.3" > skills/outreachmagic/scripts/VERSION
 
 # 2. Sync SKILL.md frontmatter, then regenerate checksums (order matters for CI)
 python3 -c "
@@ -225,8 +225,8 @@ Before tagging releases that touch relay ingest or pull:
 
 **Deploy order when changing relay caps (worker + skill):**
 
-1. Deploy **wbhk-worker** to production first (`npx wrangler deploy` — 5k `/push`, `GET /pull?limit=` up to 5000).
-2. Tag and publish **outreachmagic-skill** (pipeline auto bulk threshold ≥ 2500).
+1. Deploy **wbhk-worker** to production first (`npx wrangler deploy` — 5k `/push`, event `GET /pull` capped at 1000/page, snapshot pull up to 5000).
+2. Tag and publish **outreachmagic-skill** (event pull 1000/page; snapshot bulk ≥ 2500 pending).
 3. Verify each platform install (`version`, `sync --status`, `pull --diagnose`).
 
 ```bash
@@ -240,7 +240,7 @@ Expected:
 - Diagnostics show mode, cursor start/end, pages, newest relay id, skip breakdown.
 - Full pull completes without cursor stall in healthy environments.
 - `sync --status` shows `recommended_mode: bulk` when snapshot pending ≥ 2500.
-- Large sync shows `↑` progress lines (`pN/M`, `5000/p`) per [relay-sync-progress.md](./relay-sync-progress.md).
+- Large **sync** shows `↑` progress (`5000/p` push); large **pull** shows `↓` events at `1000/p`, snapshots up to `5000/p` — [relay-sync-progress.md](./relay-sync-progress.md).
 
 ### Platform overlays vs `pipeline.py update`
 

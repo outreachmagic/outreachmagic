@@ -119,6 +119,8 @@ from constants import (
     MAX_EVENT_BODY_STORAGE_CHARS,
     PIPELINE_STAGES,
     RELAY_BULK_THRESHOLD,
+    RELAY_PULL_COMPANY_MAX,
+    RELAY_PULL_EVENT_MAX,
     RELAY_PULL_MAX,
     RELAY_PULL_PAGE_SIZE,
     RELAY_PUSH_BATCH_SIZE,
@@ -602,7 +604,7 @@ def _use_bulk_transport(pending_count: int) -> dict:
     return {
         "bulk": bulk,
         "push_batch_size": RELAY_PUSH_MAX_BULK if bulk else None,
-        "pull_limit": RELAY_PULL_MAX if bulk else RELAY_PULL_PAGE_SIZE,
+        "pull_limit": RELAY_PULL_PAGE_SIZE,
     }
 
 
@@ -6627,6 +6629,94 @@ def _estimate_relay_pages(pending: Optional[int], page_size: int = RELAY_PULL_PA
     return max(1, (pending + page_size - 1) // page_size)
 
 
+def _snapshot_pull_limit_for_kind(kind: str, base: int) -> int:
+    if str(kind).lower() == "company":
+        return min(int(base), RELAY_PULL_COMPANY_MAX)
+    return int(base)
+
+
+PULL_KINDS_ALL = frozenset({"events", "core", "workspace", "company"})
+
+
+def parse_pull_kinds(raw: Optional[str]) -> Optional[frozenset[str]]:
+    if not raw or not str(raw).strip():
+        return None
+    kinds = frozenset(k.strip().lower() for k in str(raw).split(",") if k.strip())
+    unknown = kinds - PULL_KINDS_ALL
+    if unknown:
+        raise ValueError(
+            f"unknown pull kind(s): {', '.join(sorted(unknown))} "
+            f"(allowed: {', '.join(sorted(PULL_KINDS_ALL))})"
+        )
+    return kinds
+
+
+def probe_relay_backlog(agent_key: str) -> dict:
+    """Read-only backlog check: limit=1 per stream, no ingest (low relay/memory cost)."""
+    report: dict = {"events": {}, "snapshots": {}}
+    after_id = int(get_last_max_id() or 0)
+    ev = pull_events_org(
+        agent_key,
+        after_id=after_id or None,
+        include_pending=True,
+        limit=1,
+    )
+    if ev.get("error"):
+        raise RuntimeError(ev.get("message", "relay probe failed"))
+    pending = ev.get("pending_event_count")
+    report["events"] = {
+        "cursor": after_id,
+        "pending": pending,
+        "page_size": RELAY_PULL_EVENT_MAX,
+        "est_pages": _estimate_relay_pages(pending, RELAY_PULL_EVENT_MAX),
+    }
+    for kind in ("core", "workspace", "company"):
+        cur = int(get_snapshot_cursor(kind) or 0)
+        page_size = _snapshot_pull_limit_for_kind(kind, RELAY_PULL_PAGE_SIZE)
+        snap = pull_events_org(
+            agent_key,
+            snapshot_after_id=cur or None,
+            snapshot_kind=kind,
+            snapshots_only=True,
+            include_pending=True,
+            limit=1,
+        )
+        if snap.get("error"):
+            raise RuntimeError(snap.get("message", f"relay probe failed ({kind})"))
+        pending_snap = snap.get("pending_snapshot_count")
+        report["snapshots"][kind] = {
+            "cursor": cur,
+            "pending": pending_snap,
+            "page_size": page_size,
+            "est_pages": _estimate_relay_pages(pending_snap, page_size),
+        }
+    return report
+
+
+def print_relay_probe(report: dict) -> None:
+    print("Relay backlog (probe — limit=1 row/stream, no ingest)")
+    print("---------------------------------------------------")
+    ev = report.get("events") or {}
+    pending = ev.get("pending")
+    pages = ev.get("est_pages")
+    pending_s = f"~{pending:,}" if pending is not None else "unknown"
+    pages_s = f"~{pages}p" if pages else "?"
+    print(
+        f"Events: cursor={ev.get('cursor', 0)} pending={pending_s} "
+        f"({pages_s} @ {ev.get('page_size', RELAY_PULL_EVENT_MAX)}/p)"
+    )
+    for kind in ("core", "workspace", "company"):
+        snap = (report.get("snapshots") or {}).get(kind) or {}
+        pending = snap.get("pending")
+        pages = snap.get("est_pages")
+        pending_s = f"~{pending:,}" if pending is not None else "unknown"
+        pages_s = f"~{pages}p" if pages else "?"
+        print(
+            f"{kind.capitalize():9} cursor={snap.get('cursor', 0)} pending={pending_s} "
+            f"({pages_s} @ {snap.get('page_size', '?')}/p)"
+        )
+
+
 _SNAPSHOT_KIND_STREAM = {"core": "Lead", "workspace": "Workspace", "company": "Company"}
 _RELAY_STREAM_EVENT = "Event"
 _ARROW_PULL = "↓"
@@ -6741,6 +6831,12 @@ def _pull_failure_message(exc: Exception) -> str:
             f"{msg}\n\nRouting sync failed. Retry without cloud routing sync:\n"
             "  pipeline.py pull --skip-routing-sync"
         )
+    if "sqlitenomem" in msg.lower() or "out of memory" in msg.lower():
+        return (
+            f"{msg}\n\nRelay D1 ran out of memory on a large event page. "
+            f"Update the skill (events pull capped at {RELAY_PULL_EVENT_MAX}/page) and re-run pull — "
+            "your cursor should resume from the last successful page."
+        )
     return msg
 
 
@@ -6786,7 +6882,10 @@ def pull_events_org(
     """Pull org events from relay (cursor-only: after_id / snapshot_after_id)."""
     params = []
     if limit and limit > 0:
-        params.append(f"limit={min(int(limit), RELAY_PULL_MAX)}")
+        cap = RELAY_PULL_MAX if snapshots_only else RELAY_PULL_EVENT_MAX
+        if snapshots_only and str(snapshot_kind).lower() == "company":
+            cap = min(cap, RELAY_PULL_COMPANY_MAX)
+        params.append(f"limit={min(int(limit), cap)}")
     pull_timeout = timeout if timeout is not None else RELAY_PULL_HTTP_TIMEOUT
     if after_id:
         params.append(f"after_id={after_id}")
@@ -7060,17 +7159,23 @@ def sync_from_relay_org(
     stats: Optional[dict] = None,
     *,
     skip_routing_sync: bool = False,
+    pull_kinds: Optional[frozenset[str]] = None,
 ) -> tuple[int, int]:
     """Import relay events for the org. Cursors: last_max_id (events), snapshot cursors (core/workspace/company)."""
-    if not skip_routing_sync:
+    kinds = pull_kinds or PULL_KINDS_ALL
+    do_events = "events" in kinds
+    if not skip_routing_sync and do_events:
         try:
             maybe_sync_routing_from_cloud(quiet=quiet)
         except RuntimeError as exc:
             raise RuntimeError(_pull_failure_message(exc)) from exc
-    elif not quiet:
+    elif not quiet and do_events:
         print("Skipped routing config sync (--skip-routing-sync).", flush=True)
     if not quiet:
-        print("Contacting relay to pull new events...", flush=True)
+        if do_events:
+            print("Contacting relay to pull new events...", flush=True)
+        elif kinds & {"core", "workspace", "company"}:
+            print(f"Contacting relay to pull snapshots ({', '.join(sorted(kinds))})...", flush=True)
 
     imported = skipped = 0
     skipped_duplicates = skipped_filtered = skipped_errors = 0
@@ -7095,12 +7200,22 @@ def sync_from_relay_org(
     slug_cache = qres.WorkspaceSlugCache()
     skipped_resolved = assigned_resolved = 0
 
-    pull_limit = RELAY_PULL_MAX if full else RELAY_PULL_PAGE_SIZE
-    pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS if pull_limit >= RELAY_PULL_MAX else RELAY_PULL_HTTP_TIMEOUT
+    event_pull_limit = RELAY_PULL_EVENT_MAX if full else RELAY_PULL_PAGE_SIZE
+    snap_pull_limit = RELAY_PULL_MAX if full else RELAY_PULL_PAGE_SIZE
+    pull_timeout = RELAY_PULL_HTTP_TIMEOUT
 
-    if not quiet:
-        mode = "large pages" if pull_limit >= RELAY_PULL_MAX else "routine pages"
-        print(f"Pulling from relay ({mode}: {pull_limit}/page)...", flush=True)
+    if not quiet and do_events:
+        snap_hint = (
+            f", snapshots up to {snap_pull_limit}/page"
+            if kinds & {"core", "workspace", "company"}
+            else ""
+        )
+        print(
+            f"Pulling from relay (events: {event_pull_limit}/page{snap_hint})...",
+            flush=True,
+        )
+    elif not quiet and kinds & {"core", "workspace", "company"}:
+        print("Pulling from relay (snapshots only)...", flush=True)
 
     pull_session: Optional[sqlite3.Connection] = None
     pull_routing_config: Optional[OrgRoutingConfig] = None
@@ -7108,9 +7223,9 @@ def sync_from_relay_org(
     pull_routing_cache: Optional[CampaignRoutingCache] = None
 
     try:
-        while True:
+        while do_events:
             event_pages += 1
-            request_limit = pull_limit
+            request_limit = event_pull_limit
             result = pull_events_org(
                 agent_key,
                 after_id=page_after_id or None,
@@ -7131,17 +7246,14 @@ def sync_from_relay_org(
 
             if event_pages == 1 and result.get("pending_event_count") is not None:
                 pending_events = int(result["pending_event_count"])
-                if pending_events >= RELAY_BULK_THRESHOLD:
-                    pull_limit = RELAY_PULL_MAX
-                    pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS
-                est_event_pages = _estimate_relay_pages(pending_events, pull_limit)
+                est_event_pages = _estimate_relay_pages(pending_events, event_pull_limit)
                 if not quiet and pending_events > 0:
                     print(
                         _format_pull_pending_banner(
                             _RELAY_STREAM_EVENT,
                             pending_events,
                             est_event_pages,
-                            pull_limit,
+                            event_pull_limit,
                         ),
                         flush=True,
                     )
@@ -7149,12 +7261,12 @@ def sync_from_relay_org(
                 event_pages == 1
                 and pending_events is None
                 and not quiet
-                and len(events) >= pull_limit
+                and len(events) >= event_pull_limit
             ):
                 print(
                     f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(_RELAY_STREAM_EVENT)}: "
                     f"first page has {len(events):,} records "
-                    f"(@ {pull_limit}/page — more pages follow)...",
+                    f"(@ {event_pull_limit}/page — more pages follow)...",
                     flush=True,
                 )
 
@@ -7214,7 +7326,16 @@ def sync_from_relay_org(
             page_after_id = next_after_id
             if page_after_id:
                 set_last_max_id(page_after_id)
-            if len(events) < request_limit or result.get("has_more_events") is False:
+            has_more = result.get("has_more_events")
+            effective_limit = int(result.get("pull_limit") or request_limit)
+            if (
+                has_more is False
+                and len(events) >= effective_limit
+                and effective_limit < request_limit
+            ):
+                # Old clients may request 5k; worker caps events at RELAY_PULL_EVENT_MAX.
+                has_more = True
+            if len(events) < effective_limit or has_more is False:
                 break
     finally:
         if pull_session is not None:
@@ -7224,11 +7345,14 @@ def sync_from_relay_org(
     pending_snapshots: Optional[int] = None
     est_snap_pages: Optional[int] = None
     for snap_kind in ("core", "workspace", "company"):
+        if snap_kind not in kinds:
+            continue
         kind_pages = 0
         kind_seen = 0
         stream = _snapshot_kind_stream(snap_kind)
         pending_snapshots = None
         est_snap_pages = None
+        kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
         while True:
             snap_pages += 1
             kind_pages += 1
@@ -7238,7 +7362,7 @@ def sync_from_relay_org(
                 snapshot_kind=snap_kind,
                 snapshots_only=True,
                 include_pending=kind_pages == 1,
-                limit=pull_limit,
+                limit=kind_limit,
                 timeout=pull_timeout,
             )
             if snap_result.get("error"):
@@ -7252,16 +7376,17 @@ def sync_from_relay_org(
             if kind_pages == 1 and snap_result.get("pending_snapshot_count") is not None:
                 pending_snapshots = int(snap_result["pending_snapshot_count"])
                 if pending_snapshots >= RELAY_BULK_THRESHOLD:
-                    pull_limit = RELAY_PULL_MAX
+                    snap_pull_limit = RELAY_PULL_MAX
+                    kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
                     pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS
-                est_snap_pages = _estimate_relay_pages(pending_snapshots, pull_limit)
+                est_snap_pages = _estimate_relay_pages(pending_snapshots, kind_limit)
                 if not quiet and pending_snapshots > 0:
                     print(
                         _format_pull_pending_banner(
                             stream,
                             pending_snapshots,
                             est_snap_pages,
-                            pull_limit,
+                            kind_limit,
                         ),
                         flush=True,
                     )
@@ -7278,7 +7403,7 @@ def sync_from_relay_org(
                             page_len=len(snap_events),
                             seen=kind_seen,
                             total=pending_snapshots,
-                            more_follow=len(snap_events) >= pull_limit and not est_snap_pages,
+                            more_follow=len(snap_events) >= kind_limit and not est_snap_pages,
                         ),
                         flush=True,
                     )
@@ -7289,7 +7414,7 @@ def sync_from_relay_org(
                             page_n=kind_pages,
                             page_len=len(snap_events),
                             seen=kind_seen,
-                            more_follow=len(snap_events) >= pull_limit,
+                            more_follow=len(snap_events) >= kind_limit,
                             total_only=True,
                         ),
                         flush=True,
@@ -7306,7 +7431,7 @@ def sync_from_relay_org(
             prev_snap_cursor = snapshot_cursors[snap_kind]
             next_snap_cursor = int(snap_result.get("max_snapshot_id") or 0)
             if (
-                len(snap_events) >= pull_limit
+                len(snap_events) >= kind_limit
                 and next_snap_cursor <= prev_snap_cursor
             ):
                 cursor_stalled = True
@@ -8627,6 +8752,16 @@ def main():
         action="store_true",
         help="Skip cloud routing config sync (events pull only; use if routing API times out)",
     )
+    pull_p.add_argument(
+        "--probe",
+        action="store_true",
+        help="Read-only backlog check (limit=1/relay stream, no ingest)",
+    )
+    pull_p.add_argument(
+        "--kind",
+        metavar="KINDS",
+        help="Comma-separated streams: events,core,workspace,company (default: all)",
+    )
 
     refresh_p = sub.add_parser(
         "refresh",
@@ -9171,6 +9306,19 @@ def main():
         agent_key = _require_agent_key()
         pull_stats = {}
 
+        if getattr(args, "probe", False):
+            try:
+                print_relay_probe(probe_relay_backlog(agent_key))
+            except (RuntimeError, ValueError) as e:
+                print(f"Probe failed: {e}")
+            return
+
+        try:
+            pull_kinds = parse_pull_kinds(getattr(args, "kind", None))
+        except ValueError as e:
+            print(f"Pull failed: {e}")
+            sys.exit(0)
+
         try:
             imported, skipped = sync_from_relay_org(
                 agent_key,
@@ -9180,6 +9328,7 @@ def main():
                 quiet=args.cron,
                 stats=pull_stats,
                 skip_routing_sync=getattr(args, "skip_routing_sync", False),
+                pull_kinds=pull_kinds,
             )
         except RuntimeError as e:
             if not args.cron:

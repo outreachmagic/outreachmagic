@@ -246,6 +246,20 @@ def mark_relay_ingested_many(
             conn.close()
 
 
+def _relay_event_timestamp(event: dict, normalize) -> Optional[str]:
+    """Prefer relay/webhook time over import time (datetime('now') fallback in log_event)."""
+    for key in ("received_at", "created_at", "timestamp"):
+        val = event.get(key)
+        if val:
+            return normalize(val)
+    raw = event.get("raw") if isinstance(event.get("raw"), dict) else {}
+    for key in ("timestamp", "created_at", "received_at", "event_time", "sent_at"):
+        val = raw.get(key)
+        if val:
+            return normalize(val)
+    return None
+
+
 def ingest_relay_event(
     event: dict,
     debug_sentiment: bool = False,
@@ -312,8 +326,8 @@ def ingest_relay_event(
     platform = event.get("platform", "unknown")
     sender_raw = event.get("sender", "")
     sender_norm = om.normalize_event_sender(platform, sender_raw)
-    received_at = event.get("received_at", "")
     raw = event.get("raw") or {}
+    received_at = _relay_event_timestamp(event, om.normalize_relay_timestamp) or ""
 
     extracted = extract_relay_fields(platform, raw)
     lead_fields = extracted["lead"]

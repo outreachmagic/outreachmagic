@@ -20,17 +20,18 @@
 
 ## Pull (`pipeline.py pull`)
 
-1. Optional preamble: `Pulling from relay (large pages: 5000/page)...`
+1. Optional preamble: `Pulling from relay (events: 1000/page, snapshots up to 5000/page)...`
 2. Pending banner (first page of each stream, `~` on counts/pages only here):
 
    ```text
-   [02:10] ↓ Event     : ~12,400 pending (~3p @ 5000/p) ...
+   [02:10] ↓ Event     : ~12,400 pending (~13p @ 1000/p) ...
+   [02:10] ↓ Lead      : ~117,431 pending (~24p @ 5000/p) ...
    ```
 
 3. One line per page (exact `pN/M`, no `ok`):
 
    ```text
-   [02:11] ↓ Event     : p1/3 — 5,000 this page, 5,000/12,400 (40%) ...
+   [02:11] ↓ Event     : p1/13 — 1,000 this page, 1,000/12,400 (8%) ...
    [02:29] ↓ Lead      : p24/24 — 2,431 this page, 117,431/117,431 (100%) ...
    [02:30] ↓ Workspace : p1/24 — 5,000 this page, 5,000/117,431 (4%) ...
    ```
@@ -73,7 +74,7 @@ Long lead uploads use two levels of “batch”:
 
 ## Page sizes
 
-- **Pull:** 1000 rows/page routine; 5000 when `pull --full` or relay pending ≥ 2500 on first page.
+- **Pull (events):** 1000 rows/page always (D1 memory). **Pull (snapshots):** 1000 routine; 5000 when pending ≥ 2500 on first page of that kind.
 - **Push:** 200/request routine; 5000 when pending snapshots/events ≥ 2500.
 
 See `SKILL.md` § “Relay sync limits” for env overrides.

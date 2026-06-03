@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.24.2
+version: 1.24.3
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -206,15 +206,17 @@ This fetches the latest events from the relay, so the user always sees current d
 
 - **↓ pull / ↑ push** — cloud → local vs local → cloud
 - **Event, Lead, Workspace, Company** — four streams (Lead = org lead core; Workspace = per-workspace lead overlay, not routing config)
-- **Pending banner:** `~` on counts/page estimate once per stream start, e.g. `[02:10] ↓ Event : ~12,400 pending (~3p @ 5000/p) ...`
-- **Per page:** `[02:11] ↓ Event : p1/3 — 5,000 this page, 5,000/12,400 (40%) ...` (pull, no `ok`)
+- **Pending banner:** `~` on counts/page estimate once per stream start, e.g. `[02:10] ↓ Event : ~12,400 pending (~13p @ 1000/p) ...`
+- **Per page:** `[02:11] ↓ Event : p13/62 — 1,000 this page, 13,000/62,400 (20%) ...` (pull, no `ok`)
+- **`pull --probe`:** backlog only (`limit=1`/stream, no ingest) — use before a large catch-up pull
+- **`pull --kind events`:** skip snapshot streams when you only need the event cursor advanced
 - **Push page:** `[03:56] ↑ Event : p2/13 — ok 7.9s, 5,000 this page (10,000/62,093 (16%))` then `done — N in Mp (Xs)`
 - **`batch_sync.log`:** outer `batch 1/46` = lead-id walk; inner `pN/M` = HTTP pages inside one `sync`. Do not confuse them.
 
 **Relay sync limits:** Same endpoints always — `POST /push` and `GET /pull`. No separate bulk URLs.
 
 - **`sync` (upload):** When local `cloud_pending` snapshots ≥ **2500**, uses **5000 entries per `/push`**; otherwise routine batch size (default 200, max 500 per request).
-- **`pull` (download):** Routine **1000 rows/page**; switches to **5000/page** on `pull --full` or when the relay reports ≥ **2500** pending events/snapshots on the first page (`include_pending=1`).
+- **`pull` (download):** **1000 rows/page** for webhook events and company snapshots (D1 / ingest limits). Core/workspace snapshots may use **5000/page** on large backlogs (`include_pending=1` on first page per stream).
 - Filter downloaded data locally (`show --since`, workspace queries) — the relay does not filter by date or workspace.
 
 ### Workspace inventory (local DB — pull optional)

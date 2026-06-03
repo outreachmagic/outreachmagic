@@ -262,8 +262,9 @@ def test_sync_progress_with_pending_counts(capsys, monkeypatch):
     assert "%" in out
 
 
-def test_event_pull_continues_after_bulk_limit_upgrade(monkeypatch):
-    """Page 1 must not exit early when pull_limit bumps 1000→5000 after first response."""
+def test_event_pull_continues_after_pending_count_on_page_one(monkeypatch):
+    """Large pending backlog must not bump event pages above RELAY_PULL_EVENT_MAX."""
+    limits = []
     pages = [
         {
             "events": [{"relay_id": i} for i in range(1, 1001)],
@@ -272,10 +273,49 @@ def test_event_pull_continues_after_bulk_limit_upgrade(monkeypatch):
             "has_more_events": True,
         },
         {
-            "events": [{"relay_id": i} for i in range(1001, 6001)],
-            "max_id": 6000,
+            "events": [{"relay_id": i} for i in range(1001, 2001)],
+            "max_id": 2000,
+            "has_more_events": True,
+        },
+        {
+            "events": [{"relay_id": i} for i in range(2001, 3001)],
+            "max_id": 3000,
             "has_more_events": False,
         },
+    ]
+
+    def fake_pull(*_args, **kwargs):
+        if kwargs.get("snapshots_only"):
+            return {"events": []}
+        limits.append(kwargs.get("limit"))
+        return pages.pop(0)
+
+    monkeypatch.setattr(om, "pull_events_org", fake_pull)
+    monkeypatch.setattr(om, "ingest_relay_event", lambda *_a, **_k: None)
+    _patch_pull_prefetch(monkeypatch, lambda keys, conn=None: set())
+    monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
+    monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
+
+    stats = {}
+    om.sync_from_relay_org("om_agent_test", after_id=0, full=False, quiet=True, stats=stats)
+
+    assert limits == [om.RELAY_PULL_PAGE_SIZE] * 3
+    assert stats["event_pages"] == 3
+    assert stats["pull_after_id_end"] == 3000
+    assert stats["relay_events_seen"] == 3000
+
+
+def test_event_pull_continues_when_worker_caps_below_request(monkeypatch):
+    """Pre-cap client requested 5k; worker returns 1k + pull_limit + has_more false → keep paging."""
+    monkeypatch.setattr(om, "RELAY_PULL_PAGE_SIZE", 5000)
+    pages = [
+        {
+            "events": [{"relay_id": i} for i in range(1, 1001)],
+            "max_id": 1000,
+            "has_more_events": False,
+            "pull_limit": 1000,
+        },
+        {"events": [{"relay_id": 1001}], "max_id": 1001, "has_more_events": False},
     ]
 
     def fake_pull(*_args, **kwargs):
@@ -291,10 +331,118 @@ def test_event_pull_continues_after_bulk_limit_upgrade(monkeypatch):
 
     stats = {}
     om.sync_from_relay_org("om_agent_test", after_id=0, full=False, quiet=True, stats=stats)
-
     assert stats["event_pages"] == 2
-    assert stats["pull_after_id_end"] == 6000
-    assert stats["relay_events_seen"] == 6000
+    assert stats["pull_after_id_end"] == 1001
+
+
+def test_parse_pull_kinds():
+    assert om.parse_pull_kinds(None) is None
+    assert om.parse_pull_kinds("events,company") == frozenset({"events", "company"})
+    try:
+        om.parse_pull_kinds("bogus")
+        assert False
+    except ValueError:
+        pass
+
+
+def test_sync_skips_event_pull_when_kind_company_only(monkeypatch):
+    calls = []
+
+    def fake_pull(*_args, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("snapshots_only"):
+            return {"events": [], "pending_snapshot_count": 0}
+        return {"events": [{"relay_id": 1}], "max_id": 1}
+
+    monkeypatch.setattr(om, "pull_events_org", fake_pull)
+    monkeypatch.setattr(om, "ingest_relay_event", lambda *_a, **_k: None)
+    _patch_pull_prefetch(monkeypatch)
+    monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
+    monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
+
+    om.sync_from_relay_org(
+        "om_agent_test",
+        after_id=0,
+        full=False,
+        quiet=True,
+        skip_routing_sync=True,
+        pull_kinds=frozenset({"company"}),
+    )
+    assert all(c.get("snapshots_only") for c in calls)
+    assert not any(c.get("snapshots_only") is False for c in calls)
+
+
+def test_probe_relay_backlog(monkeypatch):
+    def fake_pull(*_args, **kwargs):
+        if kwargs.get("snapshots_only"):
+            kind = kwargs["snapshot_kind"]
+            return {"pending_snapshot_count": 10 if kind == "core" else 0}
+        return {"pending_event_count": 62000}
+
+    monkeypatch.setattr(om, "pull_events_org", fake_pull)
+    monkeypatch.setattr(om, "get_last_max_id", lambda: 72263)
+    monkeypatch.setattr(om, "get_snapshot_cursor", lambda _k: 100)
+
+    report = om.probe_relay_backlog("om_agent_test")
+    assert report["events"]["pending"] == 62000
+    assert report["events"]["est_pages"] == 62
+    assert report["snapshots"]["core"]["pending"] == 10
+
+
+def test_snapshot_pull_limit_for_kind_caps_company():
+    assert om._snapshot_pull_limit_for_kind("company", 5000) == om.RELAY_PULL_COMPANY_MAX
+    assert om._snapshot_pull_limit_for_kind("core", 5000) == 5000
+
+
+def test_pull_events_org_caps_company_snapshot_limit(monkeypatch):
+    captured = []
+
+    class FakeResp:
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured.append(req.full_url)
+        return FakeResp()
+
+    monkeypatch.setattr(om.urllib.request, "urlopen", fake_urlopen)
+    om.pull_events_org(
+        "om_agent_test",
+        limit=5000,
+        snapshots_only=True,
+        snapshot_kind="company",
+    )
+    assert "limit=1000" in captured[0]
+
+
+def test_pull_events_org_caps_event_limit(monkeypatch):
+    captured = []
+
+    class FakeResp:
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured.append(req.full_url)
+        return FakeResp()
+
+    monkeypatch.setattr(om.urllib.request, "urlopen", fake_urlopen)
+    om.pull_events_org("om_agent_test", limit=5000)
+    assert "limit=1000" in captured[0]
+    om.pull_events_org("om_agent_test", limit=5000, snapshots_only=True)
+    assert "limit=5000" in captured[1]
 
 
 def test_pull_diagnostics_verdict_priority():

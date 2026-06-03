@@ -31,7 +31,7 @@ Operations split by data scope. In multi-workspace mode, workspace-scoped comman
 
 | Command | What it does |
 |---------|-------------|
-| `pull` | Fetch latest events from relay (always run first; 5000/page on large backlogs) |
+| `pull` | Fetch latest events from relay (always run first; events 1000/page, snapshots up to 5000/page) |
 | `sync` | Push local changes to relay (5000/request when cloud_pending ≥ 2500) |
 | `show` | Print pipeline table |
 | `show --workspace SLUG` | Print pipeline filtered by workspace |

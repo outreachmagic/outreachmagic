@@ -9546,6 +9546,7 @@ def main():
                 print(json.dumps(summary, indent=2) if getattr(args, "json", False) else summary["error"])
                 sys.exit(1)
             if getattr(args, "json", False):
+                summary["local_pending"] = get_local_pending_counts()
                 print(json.dumps(summary, indent=2))
             else:
                 print(format_workspace_summary(summary))
@@ -9701,7 +9702,10 @@ def main():
         print()
         print(format_stats(get_stats()))
 
-    if args.command in ("workspace", "campaign-map", "quarantine", "pull", "enrich", "stage", "import-profiles", None):
+    if (
+        args.command in ("workspace", "campaign-map", "quarantine", "pull", "enrich", "stage", "import-profiles", None)
+        and not getattr(args, "json", False)
+    ):
         try:
             hint = format_local_sync_hint(get_local_pending_counts())
             if hint:

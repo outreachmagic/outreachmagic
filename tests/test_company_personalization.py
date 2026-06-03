@@ -20,6 +20,10 @@ import pipeline as om  # noqa: E402
 
 class CompanyPersonalizationTests(unittest.TestCase):
     def setUp(self):
+        db_path = om.get_db_path()
+        for candidate in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+            if candidate.exists():
+                candidate.unlink()
         om.init_db()
         conn = om.get_conn()
         om.ensure_organization(conn)

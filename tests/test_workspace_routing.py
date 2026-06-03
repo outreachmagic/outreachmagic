@@ -42,10 +42,11 @@ from workspace_routing import (  # noqa: E402
 
 
 def _reset_db():
-    """Fresh SQLite per test (shared global data-root override across test modules)."""
+    """Fresh SQLite per test."""
     db_path = om.get_db_path()
-    if db_path.exists():
-        db_path.unlink()
+    for candidate in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        if candidate.exists():
+            candidate.unlink()
     om.init_db()
 
 

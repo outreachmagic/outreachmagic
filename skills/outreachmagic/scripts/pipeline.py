@@ -2488,27 +2488,17 @@ def resolve_lead(
         lead_id, name=name_for_enrich, title=title, industry=industry,
         company=company, headcount=headcount, overwrite=overwrite,
         mark_cloud_pending=mark_pending,
-        conn=conn if not own_conn else None,
+        conn=conn,
     )
     if email_norm:
-        ensure_lead_domain(lead_id, email_norm, conn=conn if not own_conn else None, commit=False)
-    if not own_conn:
-        link_lead_company(conn, lead_id, company=company, email=email_norm,
-                          industry=industry, headcount=headcount)
-        if domain_explicit:
-            ensure_company(conn, name=company, domain=domain_explicit,
-                           industry=industry, headcount=headcount,
-                           hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
-    else:
-        link_conn = get_conn()
-        link_lead_company(link_conn, lead_id, company=company, email=email_norm,
-                          industry=industry, headcount=headcount)
-        if domain_explicit:
-            ensure_company(link_conn, name=company, domain=domain_explicit,
-                           industry=industry, headcount=headcount,
-                           hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
-        link_conn.commit()
-        link_conn.close()
+        ensure_lead_domain(lead_id, email_norm, conn=conn, commit=False)
+    link_lead_company(conn, lead_id, company=company, email=email_norm,
+                      industry=industry, headcount=headcount)
+    if domain_explicit:
+        ensure_company(conn, name=company, domain=domain_explicit,
+                       industry=industry, headcount=headcount,
+                       hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
+    if own_conn:
         conn.commit()
         conn.close()
 
@@ -2689,7 +2679,8 @@ def enrich_lead(
         (lead_id,),
     ).fetchone()
     if not row:
-        conn.close()
+        if own_conn:
+            conn.close()
         return []
     updates, params, filled = [], [], []
     email = row["email"] or ""

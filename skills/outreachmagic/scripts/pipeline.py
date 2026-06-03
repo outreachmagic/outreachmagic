@@ -7487,6 +7487,17 @@ def sync_from_relay_org(
             snapshot_cursors[snap_kind] = next_snap_cursor
             if snapshot_cursors[snap_kind]:
                 set_snapshot_cursor(snapshot_cursors[snap_kind], snap_kind)
+            if (
+                not quiet
+                and batch["imported"] == 0
+                and batch["skipped_duplicates"] == len(snap_events)
+                and len(snap_events) > 0
+            ):
+                print(
+                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                    f"page all duplicates locally — cursor still advanced to {next_snap_cursor}",
+                    flush=True,
+                )
             if not quiet and ingest_elapsed >= 30:
                 print(
                     f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
@@ -8809,6 +8820,11 @@ def main():
         action="store_true",
         help="Only pull webhook events (skip lead/workspace/company snapshots)",
     )
+    pull_p.add_argument(
+        "--reset-snapshot-cursors",
+        action="store_true",
+        help="Zero core/workspace/company snapshot cursors before pull (fix desync after hung partial pulls)",
+    )
 
     refresh_p = sub.add_parser(
         "refresh",
@@ -9365,6 +9381,15 @@ def main():
         except ValueError as e:
             print(f"Pull failed: {e}")
             sys.exit(0)
+
+        if getattr(args, "reset_snapshot_cursors", False):
+            clear_snapshot_cursors()
+            if not args.cron:
+                print(
+                    "Reset snapshot cursors to 0 (core, workspace, company). "
+                    "Use after a hung pull left config ahead of the local DB.",
+                    flush=True,
+                )
 
         try:
             imported, skipped = sync_from_relay_org(

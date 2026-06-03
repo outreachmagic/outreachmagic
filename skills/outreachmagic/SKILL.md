@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.24.5
+version: 1.24.6
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -210,6 +210,7 @@ This fetches the latest events from the relay, so the user always sees current d
 - **Per page:** `[02:11] ↓ Event : p13/62 — 1,000 this page, 13,000/62,400 (20%) ...` (pull, no `ok`)
 - **`pull --probe`:** backlog only (`limit=1`/stream, no ingest) — use before a large catch-up pull
 - **`pull --skip-snapshots`:** webhook events only (recommended after events catch-up; avoids slow snapshot phase)
+- **`pull --reset-snapshot-cursors`:** zero snapshot cursors before pull (after DB delete or hung pull left config ahead of local leads)
 - **`pull --kind events`:** same as `--skip-snapshots` when you only need the event cursor advanced
 - **Push page:** `[03:56] ↑ Event : p2/13 — ok 7.9s, 5,000 this page (10,000/62,093 (16%))` then `done — N in Mp (Xs)`
 - **`batch_sync.log`:** outer `batch 1/46` = lead-id walk; inner `pN/M` = HTTP pages inside one `sync`. Do not confuse them.

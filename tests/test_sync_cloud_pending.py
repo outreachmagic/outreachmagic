@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -164,6 +165,39 @@ class CloudPendingLogicTests(unittest.TestCase):
         bulk_settings = om.get_relay_push_settings(bulk=True)
         self.assertEqual(bulk_settings["batch_size"], 5000)
         self.assertTrue(bulk_settings.get("bulk"))
+
+    def test_push_agent_events_marks_only_fully_successful_batches(self):
+        conn = om.get_conn()
+        conn.execute(
+            """INSERT INTO leads (name, email, channel, stage, original_source, original_source_platform)
+               VALUES ('E1', 'e1@example.com', 'email', 'prospecting', 'csv', 'csv')"""
+        )
+        lid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """INSERT INTO events (lead_id, event_type, direction, channel, created_at, metadata_json)
+               VALUES (?, 'email_sent', 'outbound', 'email', datetime('now'), '{}')""",
+            (lid,),
+        )
+        eid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+        conn.close()
+
+        def fake_batches(agent_key, entries, client_id, **kwargs):
+            on_batch = kwargs.get("on_batch_pushed")
+            if on_batch and entries:
+                on_batch(entries, 0)
+            return {"pushed": 0, "error": None, "throttled": False}
+
+        with mock.patch.object(om, "_relay_push_batches", side_effect=fake_batches):
+            result = om._push_agent_events_to_relay("om_agent_test")
+
+        self.assertEqual(result.get("events_marked_pushed"), 0)
+        conn = om.get_conn()
+        row = conn.execute(
+            "SELECT 1 FROM relay_ingested WHERE dedupe_key = ?", (f"event:{eid}",)
+        ).fetchone()
+        conn.close()
+        self.assertIsNone(row)
 
 
 if __name__ == "__main__":

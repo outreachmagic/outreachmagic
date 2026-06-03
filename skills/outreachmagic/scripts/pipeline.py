@@ -44,7 +44,7 @@ import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from relay_extractors import (
     build_display_name,
@@ -5128,6 +5128,7 @@ def _relay_push_batches(
     bulk: bool = False,
     mark_ids: Optional[list] = None,
     on_mark_cleared=None,
+    on_batch_pushed: Optional[Callable[[list, int], None]] = None,
 ) -> dict:
     """Push relay entries in batches and return diagnostics."""
     if not entries:
@@ -5185,6 +5186,8 @@ def _relay_push_batches(
                         f"{detail} ({total_pushed}/{len(entries)} pushed).",
                         flush=True,
                     )
+                    if on_batch_pushed and count > 0:
+                        on_batch_pushed(batch, count)
                     if batch_mark and on_mark_cleared and count >= len(batch):
                         on_mark_cleared(batch_mark)
                     elif batch_mark and on_mark_cleared and count > 0:
@@ -5281,30 +5284,43 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
     client_id = export.get("client_id", "unknown")
+    marked_event_ids: list[int] = []
+
+    def _on_batch_pushed(batch: list[dict], count: int) -> None:
+        if count >= len(batch):
+            for entry in batch:
+                eid = entry.get("event_id")
+                if eid is not None:
+                    marked_event_ids.append(int(eid))
+
     result = _relay_push_batches(
         agent_key,
         entries,
         client_id,
         stream_label="Agent events",
         bulk=len(entries) >= RELAY_BULK_THRESHOLD,
+        on_batch_pushed=_on_batch_pushed,
     )
-    if result.get("pushed", 0) > 0:
-        # Mark events as ingested locally so we don't push them again
+    if marked_event_ids:
         conn = get_conn()
         now_ts = datetime.now(timezone.utc).isoformat()
-        # For entries with an event_id, mark them as ingested
-        event_ids = [e["event_id"] for e in entries if e.get("event_id")]
-        if event_ids:
-            for i in range(0, len(event_ids), 100):
-                batch = event_ids[i : i + 100]
-                # Use event:{id} as dedupe_key for events
-                for eid in batch:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO relay_ingested (dedupe_key, ingested_at) VALUES (?, ?)",
-                        (f"event:{eid}", now_ts)
-                    )
-            conn.commit()
+        for i in range(0, len(marked_event_ids), 100):
+            for eid in marked_event_ids[i : i + 100]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO relay_ingested (dedupe_key, ingested_at) VALUES (?, ?)",
+                    (f"event:{eid}", now_ts),
+                )
+        conn.commit()
         conn.close()
+    result["events_marked_pushed"] = len(marked_event_ids)
+    result["events_exported"] = sum(1 for e in entries if e.get("event_id"))
+    if result.get("pushed", 0) > 0 and len(marked_event_ids) < result["events_exported"]:
+        print(
+            f"Agent events: marked {len(marked_event_ids)}/{result['events_exported']} "
+            f"as pushed locally ({result.get('pushed', 0)} relay units). "
+            "Re-run sync to retry events from failed batches.",
+            flush=True,
+        )
     return result
 
 

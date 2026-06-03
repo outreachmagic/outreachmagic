@@ -26,8 +26,6 @@ jobs:
 
           cp -r skills/outreachmagic/scripts "$STAGING/skills/outreachmagic/"
           cp -r skills/outreachmagic/references "$STAGING/skills/outreachmagic/"
-          cp skills/outreachmagic/SKILL.md "$STAGING/skills/outreachmagic/"
-          cp skills/outreachmagic/update-manifest.json "$STAGING/skills/outreachmagic/"
 
           cp install.sh "$STAGING/"
           chmod +x "$STAGING/install.sh"
@@ -47,6 +45,7 @@ jobs:
           om.sync_skill_md_version()
           "
           python3 scripts/generate-update-manifest.py
+          cp skills/outreachmagic/SKILL.md "$STAGING/skills/outreachmagic/"
           cp skills/outreachmagic/update-manifest.json "$STAGING/skills/outreachmagic/"
 
       - name: Push to public repo

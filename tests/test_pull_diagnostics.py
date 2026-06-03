@@ -188,15 +188,14 @@ def test_relay_progress_format_helpers():
     assert "(16%)" in push
 
 
-def test_pull_snapshot_pending_requested_per_kind(monkeypatch):
-    """Each snapshot kind should request include_pending on its first page."""
-    pending_calls = []
+def test_pull_snapshot_skips_include_pending(monkeypatch):
+    """Snapshot pulls must not request include_pending (relay COUNT on huge orgs stalls HTTP)."""
+    snapshot_calls = []
 
     def fake_pull(*_args, **kwargs):
         if kwargs.get("snapshots_only"):
+            snapshot_calls.append(kwargs)
             kind = kwargs.get("snapshot_kind")
-            if kwargs.get("include_pending"):
-                pending_calls.append(kind)
             if kind == "core":
                 return {
                     "events": [{"relay_id": 1_000_000_001}],
@@ -221,7 +220,9 @@ def test_pull_snapshot_pending_requested_per_kind(monkeypatch):
     monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
 
     om.sync_from_relay_org("om_agent_test", after_id=0, full=False, quiet=False)
-    assert pending_calls == ["core", "workspace", "company"]
+    assert len(snapshot_calls) >= 3
+    assert all(not c.get("include_pending") for c in snapshot_calls)
+    assert all(c.get("timeout") == om.RELAY_PULL_SNAPSHOT_HTTP_TIMEOUT for c in snapshot_calls)
 
 
 def test_sync_progress_with_pending_counts(capsys, monkeypatch):

@@ -35,6 +35,7 @@ import sys
 import csv
 import argparse
 import hashlib
+import concurrent.futures
 import re
 import shutil
 import time
@@ -123,6 +124,8 @@ from constants import (
     RELAY_PULL_EVENT_MAX,
     RELAY_PULL_MAX,
     RELAY_PULL_PAGE_SIZE,
+    RELAY_PULL_HARD_TIMEOUT_BUFFER,
+    RELAY_PULL_SNAPSHOT_HTTP_TIMEOUT,
     RELAY_PULL_SNAPSHOT_MAX,
     RELAY_PUSH_BATCH_SIZE,
     RELAY_PUSH_EVENTS_BULK,
@@ -6624,6 +6627,22 @@ RELAY_PULL_HTTP_TIMEOUT = 60
 RELAY_PULL_HTTP_RETRIES = 2
 
 
+def _relay_http_get_json(req: urllib.request.Request, timeout: int) -> dict:
+    """GET relay JSON with a hard wall-clock cap (urllib socket timeout alone can stall)."""
+    hard_limit = max(int(timeout) + RELAY_PULL_HARD_TIMEOUT_BUFFER, int(timeout))
+
+    def _fetch() -> dict:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_fetch)
+        try:
+            return fut.result(timeout=hard_limit)
+        except concurrent.futures.TimeoutError as exc:
+            raise TimeoutError(f"relay HTTP read exceeded {hard_limit}s") from exc
+
+
 def _estimate_relay_pages(pending: Optional[int], page_size: int = RELAY_PULL_PAGE_SIZE) -> Optional[int]:
     if pending is None or pending <= 0:
         return None
@@ -6837,6 +6856,13 @@ def _pull_failure_message(exc: Exception) -> str:
             f"Update the skill (events pull capped at {RELAY_PULL_EVENT_MAX}/page) and re-run pull — "
             "your cursor should resume from the last successful page."
         )
+    if "timed out" in msg.lower() or "timeout" in msg.lower():
+        return (
+            f"{msg}\n\nRelay pull HTTP timed out. Events are usually enough: "
+            "  pipeline.py pull --skip-snapshots\n"
+            "  pipeline.py pull --probe\n"
+            "If you need snapshots, retry with a smaller backlog or use --kind <kind>."
+        )
     return msg
 
 
@@ -6915,8 +6941,13 @@ def pull_events_org(
     last_error: Optional[dict] = None
     for attempt in range(RELAY_PULL_HTTP_RETRIES + 1):
         try:
-            with urllib.request.urlopen(req, timeout=pull_timeout) as resp:
-                return json.loads(resp.read())
+            return _relay_http_get_json(req, pull_timeout)
+        except TimeoutError as e:
+            last_error = {"error": True, "message": str(e)}
+            if attempt < RELAY_PULL_HTTP_RETRIES:
+                time.sleep(2 ** attempt)
+                continue
+            return last_error
         except urllib.error.HTTPError as e:
             body = e.read().decode() if e.fp else ""
             return {"error": True, "status": e.code, "message": body}
@@ -7161,9 +7192,12 @@ def sync_from_relay_org(
     *,
     skip_routing_sync: bool = False,
     pull_kinds: Optional[frozenset[str]] = None,
+    skip_snapshots: bool = False,
 ) -> tuple[int, int]:
     """Import relay events for the org. Cursors: last_max_id (events), snapshot cursors (core/workspace/company)."""
     kinds = pull_kinds or PULL_KINDS_ALL
+    if skip_snapshots:
+        kinds = frozenset(k for k in kinds if k == "events")
     do_events = "events" in kinds
     if not skip_routing_sync and do_events:
         try:
@@ -7204,6 +7238,7 @@ def sync_from_relay_org(
     event_pull_limit = RELAY_PULL_EVENT_MAX if full else RELAY_PULL_PAGE_SIZE
     snap_pull_limit = RELAY_PULL_SNAPSHOT_MAX if full else RELAY_PULL_PAGE_SIZE
     pull_timeout = RELAY_PULL_HTTP_TIMEOUT
+    snapshot_pull_timeout = RELAY_PULL_SNAPSHOT_HTTP_TIMEOUT
 
     if not quiet and do_events:
         snap_hint = (
@@ -7368,9 +7403,9 @@ def sync_from_relay_org(
                 snapshot_after_id=snapshot_cursors[snap_kind] or None,
                 snapshot_kind=snap_kind,
                 snapshots_only=True,
-                include_pending=kind_pages == 1,
+                include_pending=False,
                 limit=kind_limit,
-                timeout=pull_timeout,
+                timeout=snapshot_pull_timeout,
             )
             if snap_result.get("error"):
                 raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
@@ -8769,6 +8804,11 @@ def main():
         metavar="KINDS",
         help="Comma-separated streams: events,core,workspace,company (default: all)",
     )
+    pull_p.add_argument(
+        "--skip-snapshots",
+        action="store_true",
+        help="Only pull webhook events (skip lead/workspace/company snapshots)",
+    )
 
     refresh_p = sub.add_parser(
         "refresh",
@@ -9336,6 +9376,7 @@ def main():
                 stats=pull_stats,
                 skip_routing_sync=getattr(args, "skip_routing_sync", False),
                 pull_kinds=pull_kinds,
+                skip_snapshots=getattr(args, "skip_snapshots", False),
             )
         except RuntimeError as e:
             if not args.cron:

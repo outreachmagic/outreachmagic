@@ -149,7 +149,18 @@ CONNECTION_SENT_TYPES = frozenset({
 })
 CONNECTION_ACCEPTED_TYPES = frozenset({
     "linkedin_connection_accepted", "connection_request_accepted",
-    "connection_accepted", "linkedin_invite_accepted",
+    "connection_accepted", "linkedin_invite_accepted", "accept_invite",
+})
+
+# Vendor types that mean outbound LinkedIn DM/InMail (legacy rows + cross-platform stats)
+LINKEDIN_MESSAGE_SENT_VENDOR = frozenset({
+    "send_msg", "message_sent", "inmail_sent",
+})
+
+# Vendor types that mean inbound LinkedIn reply (Prosp may send wrong direction)
+LINKEDIN_MESSAGE_REPLY_VENDOR = frozenset({
+    "has_msg_replied", "has_msg_reply", "message_reply_received",
+    "every_message_reply_received", "inmail_reply_received",
 })
 
 # PlusVibe vendor event sets (also referenced by ingest hooks)
@@ -250,17 +261,37 @@ def _prosp_mappings() -> tuple[EventMapping, ...]:
         _em("has_msg_reply", "linkedin_message", "inbound", "replied", "linkedin_message_reply",
             "Alias for has_msg_replied"),
         _em("send_connection", "linkedin_connect", "outbound", "contacted", "linkedin_connection_sent"),
+        _em("send_msg", "linkedin_message", "outbound", "contacted", "linkedin_message_sent",
+            "Prosp outbound LinkedIn DM sent"),
         _em("linkedin_reply", "linkedin_message", "inbound", "replied", "linkedin_message_reply"),
         _em("linkedin_message", "linkedin_message", "outbound", None, "linkedin_message_sent"),
+        _em("accept_invite", "linkedin_connection_accepted", "inbound", None,
+            "linkedin_connection_accepted", "Prosp connection invite accepted"),
         _em("linkedin_connection_accepted", "linkedin_connection_accepted", "inbound", None,
             "linkedin_connection_accepted"),
     )
 
 
-def _heyreach_mappings() -> tuple[EventMapping, ...]:
-    return _generic_email_mappings() + (
+def _heyreach_linkedin_mappings() -> tuple[EventMapping, ...]:
+    """HeyReach webhook event types (snake_case) → canonical LinkedIn local types."""
+    return (
+        _em("connection_request_sent", "linkedin_connect", "outbound", "contacted",
+            "linkedin_connection_sent"),
+        _em("connection_request_accepted", "linkedin_connection_accepted", "inbound", None,
+            "linkedin_connection_accepted"),
         _em("send_connection", "linkedin_connect", "outbound", "contacted", "linkedin_connection_sent"),
+        _em("message_sent", "linkedin_message", "outbound", "contacted", "linkedin_message_sent"),
+        _em("inmail_sent", "linkedin_message", "outbound", "contacted", "linkedin_message_sent",
+            "InMail stored as linkedin_message; see metadata.linkedin_message_kind"),
+        _em("message_reply_received", "linkedin_message", "inbound", "replied", "linkedin_message_reply"),
+        _em("every_message_reply_received", "linkedin_message", "inbound", "replied",
+            "linkedin_message_reply", "Includes non-campaign replies when tracking enabled"),
+        _em("inmail_reply_received", "linkedin_message", "inbound", "replied", "linkedin_message_reply"),
     )
+
+
+def _heyreach_mappings() -> tuple[EventMapping, ...]:
+    return _generic_email_mappings() + _heyreach_linkedin_mappings()
 
 
 def _plusvibe_mappings() -> tuple[EventMapping, ...]:
@@ -521,13 +552,13 @@ def is_reply_event(event_type: str, direction: str = "", channel: str = "") -> b
     et = (event_type or "").strip().lower()
     flow = (direction or "").strip().lower()
     if et in reply_vendor_types():
-        if et in ("has_msg_replied", "has_msg_reply"):
+        if et in LINKEDIN_MESSAGE_REPLY_VENDOR:
             return True
         if et == "linkedin_message":
             return flow == "inbound"
         if et == "email":
-            return flow == "inbound"
-        return et.endswith("_reply") or et in PLUSVIBE_REPLY_EVENTS
+            return flow == "inbound" and (channel or "").lower() == "email"
+        return et.endswith("_reply") or et in PLUSVIBE_REPLY_EVENTS or "reply" in et
     if et == "linkedin_message" and flow == "inbound":
         return True
     if et == "email" and flow == "inbound" and (channel or "").lower() == "email":
@@ -577,8 +608,12 @@ def normalize_reporting_bucket(
             return "linkedin_message_sent"
         if et == "linkedin_message":
             return "linkedin_message_reply" if flow == "inbound" else "linkedin_message_sent"
-        if et in ("has_msg_replied", "has_msg_reply"):
+        if et in LINKEDIN_MESSAGE_REPLY_VENDOR:
             return "linkedin_message_reply"
+        if et in LINKEDIN_MESSAGE_SENT_VENDOR:
+            return "linkedin_message_sent"
+        if et in CONNECTION_ACCEPTED_TYPES:
+            return "linkedin_connection_accepted"
     return et or "unknown"
 
 
@@ -598,7 +633,10 @@ def classify_activity_flags(event_type: str, direction: str, channel: str) -> di
     if medium == "linkedin":
         if normalized in ("linkedin_message_sent", "linkedin_connection_sent"):
             return {"email_sent": False, "linkedin_sent": True, "reply": False}
-        if et in ("linkedin_message", "linkedin_connect", "send_connection", "linkedin_connection_sent"):
+        if et in (
+            "linkedin_message", "linkedin_connect", "send_connection",
+            "linkedin_connection_sent", "send_msg", *LINKEDIN_MESSAGE_SENT_VENDOR,
+        ):
             return {"email_sent": False, "linkedin_sent": True, "reply": False}
     return {"email_sent": False, "linkedin_sent": False, "reply": False}
 

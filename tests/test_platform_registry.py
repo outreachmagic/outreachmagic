@@ -35,6 +35,67 @@ class TestResolveEvent(unittest.TestCase):
         self.assertEqual(resolved.local_type, "linkedin_connect")
         self.assertEqual(resolved.target_stage, "contacted")
 
+    def test_prosp_send_msg(self):
+        resolved = pr.resolve_event("prosp", "send_msg", {})
+        self.assertEqual(resolved.local_type, "linkedin_message")
+        self.assertEqual(resolved.direction, "outbound")
+        self.assertEqual(resolved.target_stage, "contacted")
+        self.assertEqual(resolved.reporting_bucket, "linkedin_message_sent")
+
+    def test_prosp_send_msg_legacy_reporting(self):
+        bucket = pr.normalize_reporting_bucket("send_msg", "outbound", "linkedin", "prosp")
+        self.assertEqual(bucket, "linkedin_message_sent")
+        flags = pr.classify_activity_flags("send_msg", "outbound", "linkedin")
+        self.assertTrue(flags["linkedin_sent"])
+
+    def test_prosp_accept_invite(self):
+        resolved = pr.resolve_event("prosp", "accept_invite", {})
+        self.assertEqual(resolved.local_type, "linkedin_connection_accepted")
+        self.assertEqual(resolved.direction, "inbound")
+        self.assertEqual(resolved.reporting_bucket, "linkedin_connection_accepted")
+
+    def test_prosp_accept_invite_legacy_reporting_without_platform(self):
+        bucket = pr.normalize_reporting_bucket("accept_invite", "outbound", "linkedin")
+        self.assertEqual(bucket, "linkedin_connection_accepted")
+
+    def test_heyreach_connection_request_sent(self):
+        resolved = pr.resolve_event("heyreach", "connection_request_sent", {})
+        self.assertEqual(resolved.local_type, "linkedin_connect")
+        self.assertEqual(resolved.direction, "outbound")
+        self.assertEqual(resolved.reporting_bucket, "linkedin_connection_sent")
+
+    def test_heyreach_connection_request_accepted(self):
+        resolved = pr.resolve_event("heyreach", "connection_request_accepted", {})
+        self.assertEqual(resolved.local_type, "linkedin_connection_accepted")
+        self.assertEqual(resolved.direction, "inbound")
+
+    def test_heyreach_message_sent(self):
+        resolved = pr.resolve_event("heyreach", "message_sent", {})
+        self.assertEqual(resolved.local_type, "linkedin_message")
+        self.assertEqual(resolved.direction, "outbound")
+        self.assertEqual(resolved.target_stage, "contacted")
+        self.assertEqual(resolved.reporting_bucket, "linkedin_message_sent")
+
+    def test_heyreach_message_reply_received(self):
+        resolved = pr.resolve_event("heyreach", "message_reply_received", {})
+        self.assertEqual(resolved.local_type, "linkedin_message")
+        self.assertEqual(resolved.direction, "inbound")
+        self.assertEqual(resolved.target_stage, "replied")
+        self.assertEqual(resolved.reporting_bucket, "linkedin_message_reply")
+
+    def test_heyreach_every_message_reply_received(self):
+        resolved = pr.resolve_event("heyreach", "every_message_reply_received", {})
+        self.assertEqual(resolved.local_type, "linkedin_message")
+        self.assertEqual(resolved.direction, "inbound")
+
+    def test_heyreach_inmail_sent_and_reply(self):
+        sent = pr.resolve_event("heyreach", "inmail_sent", {})
+        self.assertEqual(sent.local_type, "linkedin_message")
+        self.assertEqual(sent.direction, "outbound")
+        reply = pr.resolve_event("heyreach", "inmail_reply_received", {})
+        self.assertEqual(reply.local_type, "linkedin_message")
+        self.assertEqual(reply.direction, "inbound")
+
     def test_smartlead_email_reply(self):
         resolved = pr.resolve_event("smartlead", "email_reply", {})
         self.assertEqual(resolved.local_type, "email_reply")
@@ -46,12 +107,16 @@ class TestReplyHelpers(unittest.TestCase):
     def test_is_reply_event_prosp_legacy(self):
         self.assertTrue(pr.is_reply_event("has_msg_replied", "outbound", "linkedin"))
 
+    def test_is_reply_event_heyreach_wrong_direction_still_reply(self):
+        self.assertTrue(pr.is_reply_event("message_reply_received", "outbound", "linkedin"))
+
     def test_is_reply_event_normalized(self):
         self.assertTrue(pr.is_reply_event("linkedin_message", "inbound", "linkedin"))
 
-    def test_reply_event_sql_contains_prosp_types(self):
+    def test_reply_event_sql_contains_prosp_and_heyreach_types(self):
         sql = pr.reply_event_sql_condition()
         self.assertIn("has_msg_replied", sql)
+        self.assertIn("message_reply_received", sql)
         self.assertIn("email_reply", sql)
 
 
@@ -63,6 +128,11 @@ class TestPlatformMapJson(unittest.TestCase):
         prosp = next(p for p in data["platforms"] if p["id"] == "prosp")
         vendor_types = {m["vendor_type"] for m in prosp["event_mappings"]}
         self.assertIn("has_msg_replied", vendor_types)
+        self.assertIn("accept_invite", vendor_types)
+        heyreach = next(p for p in data["platforms"] if p["id"] == "heyreach")
+        hr_types = {m["vendor_type"] for m in heyreach["event_mappings"]}
+        self.assertIn("message_sent", hr_types)
+        self.assertIn("message_reply_received", hr_types)
 
     def test_filter_unknown(self):
         data = pr.platform_map_json("not-a-platform")

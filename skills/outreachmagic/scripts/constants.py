@@ -9,6 +9,8 @@ from platform_registry import (
 MAX_EVENT_BODY_STORAGE_CHARS = 65536
 RELAY_PUSH_BATCH_SIZE = 200
 RELAY_PUSH_MAX_BULK = 5000
+RELAY_PUSH_EVENTS_BULK = 1500  # event_log backfill: smaller pages avoid D1 memory spikes
+RELAY_PUSH_SNAPSHOT_BULK = 1000  # lead_core / lead_workspace snapshot pages
 RELAY_PUSH_ROUTINE_MAX = 500
 RELAY_PULL_PAGE_SIZE = 1000
 RELAY_PULL_MAX = 5000

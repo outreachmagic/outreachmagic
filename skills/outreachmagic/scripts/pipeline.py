@@ -122,6 +122,8 @@ from constants import (
     RELAY_PULL_MAX,
     RELAY_PULL_PAGE_SIZE,
     RELAY_PUSH_BATCH_SIZE,
+    RELAY_PUSH_EVENTS_BULK,
+    RELAY_PUSH_SNAPSHOT_BULK,
     RELAY_PUSH_MAX_ATTEMPTS,
     RELAY_PUSH_MAX_BULK,
     RELAY_PUSH_RETRY_BASE_SECONDS,
@@ -613,11 +615,18 @@ def _sync_events_only() -> bool:
     return flag in ("1", "true", "yes")
 
 
-def get_relay_push_settings(*, bulk: bool = False) -> dict:
+def get_relay_push_settings(*, bulk: bool = False, snapshot_bulk: bool = False) -> dict:
     """Runtime-tunable relay push settings (env overrides config)."""
     cfg = load_config()
-    default_batch = RELAY_PUSH_MAX_BULK if bulk else RELAY_PUSH_BATCH_SIZE
-    batch_cap = RELAY_PUSH_MAX_BULK if bulk else RELAY_PUSH_ROUTINE_MAX
+    if bulk and _sync_events_only():
+        default_batch = RELAY_PUSH_EVENTS_BULK
+        batch_cap = RELAY_PUSH_MAX_BULK
+    elif bulk and snapshot_bulk:
+        default_batch = RELAY_PUSH_SNAPSHOT_BULK
+        batch_cap = RELAY_PUSH_MAX_BULK
+    else:
+        default_batch = RELAY_PUSH_MAX_BULK if bulk else RELAY_PUSH_BATCH_SIZE
+        batch_cap = RELAY_PUSH_MAX_BULK if bulk else RELAY_PUSH_ROUTINE_MAX
     batch_size = _read_positive_int(
         os.environ.get("OUTREACHMAGIC_SYNC_BATCH_SIZE", cfg.get("sync_batch_size", default_batch)),
         default_batch,
@@ -1556,6 +1565,15 @@ def migrate_db(conn=None):
              AND (
                original_source_platform = 'relay'
                OR original_source IN ('agent_sync', 'relay_sync')
+             )"""
+    )
+    conn.execute(
+        """UPDATE workspace_leads SET cloud_pending = 0
+           WHERE cloud_pending = 1
+             AND lead_id IN (
+               SELECT id FROM leads
+               WHERE original_source IN ('agent_sync', 'relay_sync')
+                  OR original_source_platform = 'relay'
              )"""
     )
     conn.commit()
@@ -3394,6 +3412,7 @@ def update_lead_stage(
     conn: Optional[sqlite3.Connection] = None,
     *,
     commit: bool = True,
+    mark_cloud_pending: bool = True,
 ):
     if stage not in PIPELINE_STAGES:
         raise ValueError(f"Invalid stage: {stage}. Valid: {PIPELINE_STAGES}")
@@ -3401,8 +3420,9 @@ def update_lead_stage(
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
+    pending_sql = ", cloud_pending = 1" if mark_cloud_pending else ""
     conn.execute(
-        f"""UPDATE leads SET stage = ?, cloud_pending = 1, updated_at = {ts_expr},
+        f"""UPDATE leads SET stage = ?{pending_sql}, updated_at = {ts_expr},
            next_action = CASE WHEN ? IS NOT NULL THEN ? ELSE next_action END WHERE id = ?""",
         (stage, event_at, next_action, next_action, lead_id) if event_at
         else (stage, next_action, next_action, lead_id),
@@ -4785,7 +4805,7 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
     conn = get_conn()
     config = get_org_routing_config(conn, org_id)
     local_ws = conn.execute(
-        "SELECT name, slug FROM workspaces WHERE org_id = ?", (org_id,)
+        "SELECT name, slug, cloud_synced FROM workspaces WHERE org_id = ?", (org_id,)
     ).fetchall()
     local_maps = conn.execute(
         """SELECT m.id, m.source_platform, m.campaign_name_normalized, m.campaign_id,
@@ -4802,11 +4822,16 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
         slug = row["slug"]
         if config.mode == WORKSPACE_ROUTING_MULTI and slug == "default":
             continue
+        # Only workspaces created/edited locally (cloud_synced=0) need a push.
+        if int(row["cloud_synced"] or 0) != 0:
+            continue
         if slug not in cloud_ws_slugs:
             pending_ws.append({"name": row["name"], "slug": slug})
 
     pending_maps = []
     for row in local_maps:
+        if int(row["cloud_synced"] or 0) != 0:
+            continue
         if row["id"] in cloud_map_ids:
             continue
         sig = routing_cloud.campaign_map_signature(
@@ -4945,7 +4970,12 @@ def get_local_pending_counts(org_id: str = DEFAULT_ORG_ID) -> dict:
     ).fetchone()["n"]
     local_events = conn.execute(
         """SELECT COUNT(*) AS n FROM events
-           WHERE metadata_json NOT LIKE '%"source": "relay"%'
+           WHERE id NOT IN (
+               SELECT CAST(SUBSTR(dedupe_key, 7) AS INTEGER)
+               FROM relay_ingested
+               WHERE dedupe_key LIKE 'event:%'
+           )
+             AND metadata_json NOT LIKE '%"source": "relay"%'
              AND metadata_json NOT LIKE '%"source":"relay"%'
              AND metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
@@ -4992,12 +5022,21 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
     Network push only runs when the user invokes `pipeline.py sync` (never on
     import, init, pull, or show). Requires a configured agent key.
     """
+    _init_relay_sync_log()
     tok = get_agent_key()
     if not routing_cloud.cloud_routing_enabled(load_config, tok):
         return {"status": "error", "error": "No cloud token configured."}
 
     api_base = routing_cloud.get_api_base(load_config)
     status = get_sync_status(org_id)
+    _relay_log(
+        "sync plan: "
+        f"events={status.get('local_agent_events', 0):,}, "
+        f"lead_core={status.get('cloud_pending_lead_core', 0):,}, "
+        f"workspace_snapshots={status.get('cloud_pending_lead_workspaces', 0):,}, "
+        f"pending_workspaces={len(status.get('pending_workspaces') or [])}, "
+        f"pending_rules={len(status.get('pending_rules') or [])}"
+    )
     if not status.get("can_sync"):
         return {"status": "error", "error": status.get("reason", "Cannot sync.")}
     results: dict = {"workspaces_synced": [], "rules_synced": [], "errors": []}
@@ -5020,10 +5059,9 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
         )
     elif _sync_events_only() and status.get("local_agent_events", 0) >= RELAY_BULK_THRESHOLD:
         pending_ev = status.get("local_agent_events", 0)
-        print(
-            f"Syncing to relay (events-only, large mode: {RELAY_PUSH_MAX_BULK}/request) — "
-            f"{pending_ev:,} event(s) pending...",
-            flush=True,
+        ev_batch = get_relay_push_settings(bulk=True)["batch_size"]
+        _relay_log(
+            f"Syncing to relay (events-only, {ev_batch}/request) — {pending_ev:,} event(s) pending ..."
         )
     else:
         print("Syncing to relay...", flush=True)
@@ -5179,6 +5217,33 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
     return results
 
 
+_SYNC_LOG_FILE: Optional[Path] = None
+
+
+def _init_relay_sync_log() -> None:
+    """Optional file mirror: OM_SYNC_LOG=/path/to/batch_sync.log"""
+    global _SYNC_LOG_FILE
+    raw = os.environ.get("OM_SYNC_LOG", "").strip()
+    if raw:
+        _SYNC_LOG_FILE = Path(raw).expanduser()
+        _SYNC_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _relay_log(msg: str) -> None:
+    """Stdout + optional log file, always flushed (safe for tail -f)."""
+    global _SYNC_LOG_FILE
+    if _SYNC_LOG_FILE is None and os.environ.get("OM_SYNC_LOG", "").strip():
+        _init_relay_sync_log()
+    line = f"[{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}] {msg}"
+    print(line, flush=True)
+    if _SYNC_LOG_FILE:
+        try:
+            with _SYNC_LOG_FILE.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError:
+            pass
+
+
 def _relay_push_batches(
     agent_key: str,
     entries: list[dict],
@@ -5186,6 +5251,7 @@ def _relay_push_batches(
     *,
     stream_label: str = "entries",
     bulk: bool = False,
+    snapshot_bulk: bool = False,
     mark_ids: Optional[list] = None,
     on_mark_cleared=None,
     on_batch_pushed: Optional[Callable[[list, int], None]] = None,
@@ -5194,7 +5260,7 @@ def _relay_push_batches(
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
 
-    settings = get_relay_push_settings(bulk=bulk)
+    settings = get_relay_push_settings(bulk=bulk, snapshot_bulk=snapshot_bulk)
     batch_size = settings["batch_size"]
     timeout_seconds = settings["timeout_seconds"]
     max_attempts = settings["max_attempts"]
@@ -5207,15 +5273,18 @@ def _relay_push_batches(
     total_batches = (len(entries) + batch_size - 1) // batch_size
 
     batch_started = time.monotonic()
-    print(
-        _format_push_pending_banner(stream_label, len(entries), total_batches, batch_size),
-        flush=True,
-    )
+    _relay_log(_format_push_pending_banner(stream_label, len(entries), total_batches, batch_size))
     for i in range(0, len(entries), batch_size):
         batch = entries[i : i + batch_size]
         batch_num = i // batch_size + 1
         batch_mark = mark_ids[i : i + batch_size] if mark_ids else None
         body = json.dumps({"client_id": client_id, "entries": batch}).encode()
+        body_kb = len(body) / 1024
+        _relay_log(
+            f"{_ARROW_PUSH} {_stream_pad(stream_label)}: "
+            f"sending {_page_label(batch_num, total_batches)} "
+            f"({len(batch):,} entries, {body_kb:.0f} KB) ..."
+        )
         batch_t0 = time.monotonic()
         for attempt in range(1, max_attempts + 1):
             req = urllib.request.Request(
@@ -5240,7 +5309,7 @@ def _relay_push_batches(
                     detail = ""
                     if written or unchanged:
                         detail = f", {written} written, {unchanged} unchanged"
-                    print(
+                    _relay_log(
                         _format_push_progress(
                             stream_label,
                             page_n=batch_num,
@@ -5250,8 +5319,7 @@ def _relay_push_batches(
                             total=len(entries),
                             elapsed=elapsed,
                             extra=detail,
-                        ),
-                        flush=True,
+                        )
                     )
                     if on_batch_pushed and count > 0:
                         on_batch_pushed(batch, count)
@@ -5331,16 +5399,11 @@ def _relay_push_batches(
         )
     elapsed_total = time.monotonic() - batch_started
     if not last_error and total_pushed > 0:
-        print(
-            _format_push_done(stream_label, total_pushed, total_batches, elapsed_total),
-            flush=True,
-        )
+        _relay_log(_format_push_done(stream_label, total_pushed, total_batches, elapsed_total))
     elif last_error:
         partial = f" ({total_pushed:,} pushed before failure)" if total_pushed else ""
-        print(
-            f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(stream_label)}: "
-            f"failed{partial} — {last_error}",
-            flush=True,
+        _relay_log(
+            f"{_ARROW_PUSH} {_stream_pad(stream_label)}: failed{partial} — {last_error}"
         )
     return {
         "pushed": total_pushed,
@@ -5355,18 +5418,16 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
     """Push locally-created events to the Cloudflare relay /push endpoint."""
     events_only = _sync_events_only()
     if events_only:
-        print(
-            f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(_RELAY_STREAM_EVENT)}: "
-            "building export (events only, skipping Lead/Workspace)...",
-            flush=True,
+        _relay_log(
+            f"{_ARROW_PUSH} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+            "building export (events only, skipping Lead/Workspace) ..."
         )
     t0 = time.monotonic()
     export = export_local_changes(events_only=events_only)
     entries = export.get("entries") or []
-    print(
-        f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(_RELAY_STREAM_EVENT)}: "
-        f"export ready — {len(entries):,} entries in {time.monotonic() - t0:.1f}s",
-        flush=True,
+    _relay_log(
+        f"{_ARROW_PUSH} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+        f"export ready — {len(entries):,} entries in {time.monotonic() - t0:.1f}s"
     )
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
@@ -5427,13 +5488,19 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
         conn.close()
         return {"pushed": 0, "error": None, "throttled": False}
 
+    _relay_log(
+        f"snapshots: {len(core_rows):,} lead core + {len(ws_rows):,} workspace rows pending cloud_pending"
+    )
     lead_ids = sorted({r["id"] for r in core_rows} | {r["lead_id"] for r in ws_rows})
+    t_prefetch = time.monotonic()
     prefetch = _load_lead_sync_prefetch(conn, DEFAULT_ORG_ID, lead_ids)
+    _relay_log(f"snapshots: prefetched {len(lead_ids):,} leads in {time.monotonic() - t_prefetch:.1f}s")
     client_id = get_or_create_client_id()
 
     core_entries: list[dict] = []
     core_mark_ids: list[int] = []
-    for row in core_rows:
+    t_core = time.monotonic()
+    for n, row in enumerate(core_rows, start=1):
         lead_id = row["id"]
         entity_key = entity_key_from_prefetch(prefetch, lead_id) or lead_entity_key(
             conn, DEFAULT_ORG_ID, lead_id,
@@ -5452,10 +5519,16 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
             "payload": payload,
         })
         core_mark_ids.append(lead_id)
+        if n % 2500 == 0:
+            _relay_log(f"snapshots: built {n:,}/{len(core_rows):,} lead_core payloads ...")
+    _relay_log(
+        f"snapshots: {len(core_entries):,} lead_core entries in {time.monotonic() - t_core:.1f}s"
+    )
 
     ws_entries: list[dict] = []
     ws_mark_keys: list[tuple[int, str]] = []
-    for row in ws_rows:
+    t_ws = time.monotonic()
+    for n, row in enumerate(ws_rows, start=1):
         lead_id = row["lead_id"]
         entity_key = entity_key_from_prefetch(prefetch, lead_id) or lead_entity_key(
             conn, DEFAULT_ORG_ID, lead_id,
@@ -5476,11 +5549,17 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
             "payload": payload,
         })
         ws_mark_keys.append((lead_id, row["workspace_id"]))
+        if n % 2500 == 0:
+            _relay_log(f"snapshots: built {n:,}/{len(ws_rows):,} workspace payloads ...")
+    _relay_log(
+        f"snapshots: {len(ws_entries):,} workspace entries in {time.monotonic() - t_ws:.1f}s"
+    )
 
     conn.close()
 
     pending_total = len(core_entries) + len(ws_entries)
     bulk = pending_total >= RELAY_BULK_THRESHOLD
+    _relay_log(f"snapshots: pushing {pending_total:,} entries to relay (bulk={bulk}) ...")
     total_pushed = 0
     last_result: dict = {"pushed": 0, "error": None, "throttled": False}
 
@@ -5517,6 +5596,7 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
             client_id,
             stream_label=_SNAPSHOT_KIND_STREAM["core"],
             bulk=bulk,
+            snapshot_bulk=True,
             mark_ids=core_mark_ids,
             on_mark_cleared=clear_core_ids,
         )
@@ -5532,6 +5612,7 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
             client_id,
             stream_label=_SNAPSHOT_KIND_STREAM["workspace"],
             bulk=bulk,
+            snapshot_bulk=True,
             mark_ids=ws_mark_keys,
             on_mark_cleared=clear_ws_keys,
         )
@@ -6095,10 +6176,13 @@ def export_local_changes(
             workspace_params=workspace_params,
         )
 
+    _relay_log("export: querying unpushed timeline events from SQLite ...")
+    t_export = time.monotonic()
     event_rows = conn.execute(
-        """SELECT e.*, l.email, l.linkedin_url
+        """SELECT e.*, l.email, l.linkedin_url, c.name AS campaign_name
            FROM events e
            JOIN leads l ON e.lead_id = l.id
+           LEFT JOIN campaigns c ON c.id = e.campaign_id
            WHERE 'event:' || CAST(e.id AS TEXT) NOT IN (
                  SELECT dedupe_key FROM relay_ingested
                  WHERE dedupe_key LIKE 'event:%'
@@ -6109,13 +6193,17 @@ def export_local_changes(
              AND e.metadata_json NOT LIKE '%"source":"agent_sync"%'
            ORDER BY e.created_at ASC""",
     ).fetchall()
+    _relay_log(
+        f"export: loaded {len(event_rows):,} event rows in {time.monotonic() - t_export:.1f}s — building payloads ..."
+    )
 
-    for row in event_rows:
+    for n, row in enumerate(event_rows, start=1):
         entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, row["lead_id"])
         if not entity_key:
             continue
         ws_slug = _lead_workspace_slug(conn, row["lead_id"])
         meta = _decode_event_metadata(row["metadata_json"])
+        campaign_name = (row["campaign_name"] or meta.get("campaign") or "").strip() or None
         event_entry: dict = {
             "action": "event_log",
             "entity_key": entity_key,
@@ -6129,6 +6217,8 @@ def export_local_changes(
         }
         if ws_slug:
             event_entry["workspace"] = ws_slug
+        if campaign_name:
+            event_entry["payload"]["campaign"] = campaign_name
         if row["subject"]:
             event_entry["payload"]["subject"] = row["subject"]
         if row["body_preview"]:
@@ -6136,6 +6226,13 @@ def export_local_changes(
         if meta.get("body"):
             event_entry["payload"]["body"] = str(meta.get("body"))
         entries.append(event_entry)
+        if n % 5000 == 0:
+            _relay_log(f"export: built {n:,}/{len(event_rows):,} event_log entries ...")
+
+    if event_rows:
+        _relay_log(
+            f"export: done — {len(entries):,} event_log entries in {time.monotonic() - t_export:.1f}s"
+        )
 
     conn.close()
     return {
@@ -6469,6 +6566,7 @@ def ingest_agent_entry(
                             payload.get("next_action"),
                             conn=pull_conn if not own_conn else None,
                             commit=not own_conn,
+                            mark_cloud_pending=False,
                         )
                     except ValueError:
                         pass
@@ -6487,6 +6585,9 @@ def ingest_agent_entry(
                     event_meta = {"source": "agent_sync", "origin_client": client_id}
                     if payload.get("body"):
                         event_meta["body"] = str(payload.get("body"))
+                    campaign = payload.get("campaign") or payload.get("campaign_name")
+                    if campaign and str(campaign).strip():
+                        event_meta["campaign"] = str(campaign).strip()
                     log_event(
                         lead_id,
                         event_type=payload.get("event_type", "email_sent"),
@@ -6495,6 +6596,7 @@ def ingest_agent_entry(
                         subject=payload.get("subject"),
                         body_preview=payload.get("body_preview"),
                         metadata=event_meta,
+                        campaign=campaign,
                     )
             elif own_conn:
                 conn.close()

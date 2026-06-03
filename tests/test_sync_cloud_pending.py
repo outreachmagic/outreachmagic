@@ -135,6 +135,48 @@ class CloudPendingLogicTests(unittest.TestCase):
         conn.close()
         self.assertEqual(row["cloud_pending"], 1)
 
+    def test_ingest_relay_event_does_not_mark_cloud_pending(self):
+        ws = om.create_workspace("Relay Co", slug="relay_co")
+        om.add_campaign_map_cli(
+            "plusvibe",
+            "relay_co",
+            campaign_name="Relay Campaign",
+            match_strategy="name_exact",
+        )
+        event = {
+            "platform": "plusvibe",
+            "event_type": "lead_marked_as_interested",
+            "lead": "newpull@example.com",
+            "sender": "sender@example.com",
+            "received_at": "2026-06-03T12:00:00Z",
+            "relay_id": 88001,
+            "raw": {
+                "webhook_event": "lead_marked_as_interested",
+                "lead_email": "newpull@example.com",
+                "sender_email": "sender@example.com",
+                "campaign_name": "Relay Campaign",
+                "label": "interested",
+                "sentiment": "positive",
+            },
+        }
+        lead_id = om.ingest_relay_event(event, force_workspace_id=ws["id"], quiet=True)
+        self.assertIsNotNone(lead_id)
+        conn = om.get_conn()
+        lead = conn.execute(
+            "SELECT cloud_pending, stage, original_source FROM leads WHERE id = ?",
+            (lead_id,),
+        ).fetchone()
+        ws_row = conn.execute(
+            "SELECT cloud_pending FROM workspace_leads WHERE lead_id = ?",
+            (lead_id,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(lead["original_source"], "relay_sync")
+        self.assertEqual(lead["cloud_pending"], 0)
+        self.assertEqual(lead["stage"], "interested")
+        self.assertIsNotNone(ws_row)
+        self.assertEqual(ws_row["cloud_pending"], 0)
+
     def test_migrate_clears_false_relay_backlog(self):
         conn = om.get_conn()
         conn.execute(

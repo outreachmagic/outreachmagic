@@ -492,7 +492,12 @@ def ingest_relay_event(
     )
     if target_stage:
         om.update_lead_stage(
-            lead_id, target_stage, event_at=event_time, conn=conn, commit=False,
+            lead_id,
+            target_stage,
+            event_at=event_time,
+            conn=conn,
+            commit=False,
+            mark_cloud_pending=False,
         )
 
     ws_status = target_stage or "prospecting"
@@ -589,10 +594,6 @@ def ingest_relay_event(
         activity_refresh_pairs.add((lead_id, workspace_id))
     else:
         om.refresh_lead_activity_from_events(conn, lead_id, workspace_id)
-    conn.execute(
-        "UPDATE leads SET cloud_pending = 1, updated_at = datetime('now') WHERE id = ?",
-        (lead_id,),
-    )
 
     if own_conn:
         conn.commit()

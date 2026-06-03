@@ -126,8 +126,11 @@ def log_progress(conn: sqlite3.Connection, last_id: int, batch_num: int, stage: 
 def run_sync(env: dict, *, label: str = "sync") -> tuple[int, dict | None, str]:
     """Run pipeline sync; stream stdout/stderr into batch_sync.log in real time."""
     log(f"{label}: starting pipeline.py sync → POST https://api.outreachmagic.io/push")
+    env = dict(env)
+    env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("OM_SYNC_LOG", str(LOG))
     proc = subprocess.Popen(
-        [sys.executable, str(PIPELINE), "sync", "--no-health-report"],
+        [sys.executable, "-u", str(PIPELINE), "sync", "--no-health-report"],
         cwd=str(SKILL_ROOT),
         env=env,
         stdout=subprocess.PIPE,

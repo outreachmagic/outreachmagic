@@ -431,12 +431,17 @@ def verify_email(
     free_email: Optional[bool] = None,
     mx_found: Optional[bool] = None,
     smtp_provider: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+    commit: Optional[bool] = None,
 ) -> dict:
     """Record an email verification result (from ZeroBounce, NeverBounce, etc.)."""
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     row = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
     if not row:
-        conn.close()
+        if own_conn:
+            conn.close()
         return {"status": "error", "error": f"Lead {lead_id} not found"}
     email = row["email"] or ""
     org_id = DEFAULT_ORG_ID
@@ -462,8 +467,12 @@ def verify_email(
          smtp_provider, now_ts),
     )
     _compute_verification_status(conn, lead_id)
-    conn.commit()
-    conn.close()
+    if commit is None:
+        commit = own_conn
+    if commit:
+        conn.commit()
+    if own_conn:
+        conn.close()
     return {"status": "recorded", "lead_id": lead_id, "verification_status": status, "source": source}
 
 

@@ -475,6 +475,7 @@ def resolve_lead_from_agent_sync(
     payload: dict,
     *,
     stage: str = "prospecting",
+    conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
     """Create or match a lead from a relay agent entry (uses entity_key + full payload)."""
     from pipeline import resolve_lead
@@ -517,6 +518,7 @@ def resolve_lead_from_agent_sync(
         source="agent_sync",
         source_platform="relay",
         overwrite=True,
+        conn=conn,
     )
 
 
@@ -615,6 +617,7 @@ def apply_agent_lead_core_payload(
             lead_id,
             str(payload["email_verification_status"]),
             "agent_sync",
+            conn=None if own_conn else conn,
         )
 
 

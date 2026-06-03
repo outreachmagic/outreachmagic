@@ -171,7 +171,7 @@ def test_relay_progress_format_helpers():
     assert "↓ Lead" in pull
     assert "p2/24" in pull
     assert "10,000/117,431" in pull
-    assert "(8%)" in pull
+    assert "(92% remaining)" in pull
 
     push = om._format_push_progress(
         "Event",
@@ -189,26 +189,29 @@ def test_relay_progress_format_helpers():
 
 
 def test_pull_snapshot_skips_include_pending(monkeypatch):
-    """Snapshot pulls must not request include_pending (relay COUNT on huge orgs stalls HTTP)."""
+    """Snapshot bulk pages must not COUNT; one limit=1 probe per kind may include_pending."""
     snapshot_calls = []
 
     def fake_pull(*_args, **kwargs):
         if kwargs.get("snapshots_only"):
             snapshot_calls.append(kwargs)
             kind = kwargs.get("snapshot_kind")
+            if kwargs.get("include_pending"):
+                return {
+                    "events": [],
+                    "pending_snapshot_count": {"core": 100, "workspace": 50}.get(kind, 0),
+                }
             if kind == "core":
                 return {
                     "events": [{"relay_id": 1_000_000_001}],
                     "max_snapshot_id": 1,
                     "has_more_snapshots": False,
-                    "pending_snapshot_count": 100,
                 }
             if kind == "workspace":
                 return {
                     "events": [{"relay_id": 1_000_000_002}],
                     "max_snapshot_id": 2,
                     "has_more_snapshots": False,
-                    "pending_snapshot_count": 50,
                 }
             return {"events": []}
         return {"events": [], "max_id": 0}
@@ -221,8 +224,12 @@ def test_pull_snapshot_skips_include_pending(monkeypatch):
 
     om.sync_from_relay_org("om_agent_test", after_id=0, full=False, quiet=False)
     assert len(snapshot_calls) >= 3
-    assert all(not c.get("include_pending") for c in snapshot_calls)
-    assert all(c.get("timeout") == om.RELAY_PULL_SNAPSHOT_HTTP_TIMEOUT for c in snapshot_calls)
+    for call in snapshot_calls:
+        if call.get("include_pending"):
+            assert call.get("limit") == 1
+        else:
+            assert not call.get("include_pending")
+            assert call.get("timeout") == om.RELAY_PULL_SNAPSHOT_HTTP_TIMEOUT
 
 
 def test_sync_progress_with_pending_counts(capsys, monkeypatch):
@@ -232,12 +239,16 @@ def test_sync_progress_with_pending_counts(capsys, monkeypatch):
     def fake_pull(*_args, **kwargs):
         if kwargs.get("snapshots_only"):
             snap_calls["n"] += 1
-            if snap_calls["n"] == 1:
+            if kwargs.get("include_pending"):
+                return {
+                    "events": [],
+                    "pending_snapshot_count": 5336,
+                }
+            if snap_calls["n"] <= 2:
                 return {
                     "events": [{"relay_id": 1_000_000_001}],
                     "max_snapshot_id": 1,
                     "has_more_snapshots": False,
-                    "pending_snapshot_count": 5336,
                 }
             return {"events": []}
         event_calls["n"] += 1

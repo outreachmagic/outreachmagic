@@ -6491,7 +6491,9 @@ def ingest_agent_entry(
                 if own_conn:
                     conn.close()
                     conn = None
-                result = resolve_lead_from_agent_sync(entity_key, payload)
+                result = resolve_lead_from_agent_sync(
+                    entity_key, payload, conn=None if own_conn else pull_conn,
+                )
                 if result.get("status") == "error":
                     _record_mark(dedupe_key, None)
                     return None
@@ -6527,7 +6529,9 @@ def ingest_agent_entry(
                 if own_conn:
                     conn.close()
                     conn = None
-                result = resolve_lead_from_agent_sync(entity_key, {})
+                result = resolve_lead_from_agent_sync(
+                    entity_key, {}, conn=None if own_conn else pull_conn,
+                )
                 if result.get("status") == "error":
                     _record_mark(dedupe_key, None)
                     return None
@@ -6670,6 +6674,29 @@ def parse_pull_kinds(raw: Optional[str]) -> Optional[frozenset[str]]:
     return kinds
 
 
+def _snapshot_pending_count(
+    agent_key: str,
+    snap_kind: str,
+    after_cursor: int,
+    *,
+    timeout: int = RELAY_PULL_SNAPSHOT_HTTP_TIMEOUT,
+) -> Optional[int]:
+    """One limit=1 relay read with include_pending (COUNT once per kind, not per page)."""
+    snap = pull_events_org(
+        agent_key,
+        snapshot_after_id=after_cursor or None,
+        snapshot_kind=snap_kind,
+        snapshots_only=True,
+        include_pending=True,
+        limit=1,
+        timeout=timeout,
+    )
+    if snap.get("error"):
+        return None
+    raw = snap.get("pending_snapshot_count")
+    return int(raw) if raw is not None else None
+
+
 def probe_relay_backlog(agent_key: str) -> dict:
     """Read-only backlog check: limit=1 per stream, no ingest (low relay/memory cost)."""
     report: dict = {"events": {}, "snapshots": {}}
@@ -6746,11 +6773,13 @@ def _progress_clock() -> str:
     return datetime.now().strftime("%H:%M")
 
 
-def _progress_pct(done: int, total: Optional[int]) -> str:
+def _progress_pct(done: int, total: Optional[int], *, remaining: bool = False) -> str:
     if total is None or total <= 0:
         return ""
-    pct = min(100, int(100 * done / total))
-    return f" ({pct}%)"
+    pct_done = min(100, int(100 * done / total))
+    if remaining:
+        return f" ({max(0, 100 - pct_done)}% remaining)"
+    return f" ({pct_done}%)"
 
 
 def _stream_pad(stream: str) -> str:
@@ -6792,7 +6821,7 @@ def _format_pull_progress(
     page = _page_label(page_n, total_pages, more_follow=more_follow)
     if total is not None and total > 0:
         counts = f"{seen:,}/{total:,}"
-        pct = _progress_pct(seen, total)
+        pct = _progress_pct(seen, total, remaining=True)
     elif total_only:
         counts = f"{seen:,} total"
         pct = ""
@@ -7389,6 +7418,27 @@ def sync_from_relay_org(
         pending_snapshots = None
         est_snap_pages = None
         kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
+        if not quiet:
+            pending_snapshots = _snapshot_pending_count(
+                agent_key,
+                snap_kind,
+                int(snapshot_cursors[snap_kind] or 0),
+                timeout=snapshot_pull_timeout,
+            )
+            if pending_snapshots is not None and pending_snapshots > 0:
+                if pending_snapshots >= RELAY_BULK_THRESHOLD:
+                    snap_pull_limit = RELAY_PULL_SNAPSHOT_MAX
+                    kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
+                est_snap_pages = _estimate_relay_pages(pending_snapshots, kind_limit)
+                print(
+                    _format_pull_pending_banner(
+                        stream,
+                        pending_snapshots,
+                        est_snap_pages,
+                        kind_limit,
+                    ),
+                    flush=True,
+                )
         while True:
             snap_pages += 1
             kind_pages += 1
@@ -7415,24 +7465,6 @@ def sync_from_relay_org(
                 kind_pages -= 1
                 break
 
-            if kind_pages == 1 and snap_result.get("pending_snapshot_count") is not None:
-                pending_snapshots = int(snap_result["pending_snapshot_count"])
-                if pending_snapshots >= RELAY_BULK_THRESHOLD:
-                    snap_pull_limit = RELAY_PULL_SNAPSHOT_MAX
-                    kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
-                    pull_timeout = RELAY_PULL_HTTP_TIMEOUT
-                est_snap_pages = _estimate_relay_pages(pending_snapshots, kind_limit)
-                if not quiet and pending_snapshots > 0:
-                    print(
-                        _format_pull_pending_banner(
-                            stream,
-                            pending_snapshots,
-                            est_snap_pages,
-                            kind_limit,
-                        ),
-                        flush=True,
-                    )
-
             kind_seen += len(snap_events)
             snap_total += len(snap_events)
             if not quiet:
@@ -7449,7 +7481,7 @@ def sync_from_relay_org(
                         ),
                         flush=True,
                     )
-                else:
+                elif kind_seen > 0:
                     print(
                         _format_pull_progress(
                             stream,
@@ -7462,7 +7494,9 @@ def sync_from_relay_org(
                         flush=True,
                     )
             ingest_started = time.monotonic()
-            batch = _ingest_relay_page(snap_events, debug_sentiment=debug_sentiment, quiet=True)
+            batch = _ingest_relay_page(
+                snap_events, debug_sentiment=debug_sentiment, quiet=quiet,
+            )
             ingest_elapsed = time.monotonic() - ingest_started
             imported += batch["imported"]
             skipped += batch["skipped"]
@@ -7498,12 +7532,12 @@ def sync_from_relay_org(
                     f"page all duplicates locally — cursor still advanced to {next_snap_cursor}",
                     flush=True,
                 )
-            if not quiet and ingest_elapsed >= 30:
+            if not quiet:
                 print(
                     f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
                     f"ingest {ingest_elapsed:.1f}s "
                     f"(+{batch['imported']} new, {batch['skipped_duplicates']} dupes, "
-                    f"{batch['skipped_errors']} errors)",
+                    f"{batch['skipped_filtered']} filtered, {batch['skipped_errors']} errors)",
                     flush=True,
                 )
             if not snap_result.get("has_more_snapshots"):

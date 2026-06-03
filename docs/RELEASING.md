@@ -240,7 +240,7 @@ Expected:
 - Diagnostics show mode, cursor start/end, pages, newest relay id, skip breakdown.
 - Full pull completes without cursor stall in healthy environments.
 - `sync --status` shows `recommended_mode: bulk` when snapshot pending ≥ 2500.
-- Large sync shows progress lines with `5000/request` (or env override below cap).
+- Large sync shows `↑` progress lines (`pN/M`, `5000/p`) per [relay-sync-progress.md](./relay-sync-progress.md).
 
 ### Platform overlays vs `pipeline.py update`
 

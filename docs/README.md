@@ -12,6 +12,7 @@
 | [hermes-skills-layout.md](./hermes-skills-layout.md) | Hermes symlinks and profile layout |
 | [skill-suite.md](./skill-suite.md) | Three-skill funnel and freemium rules |
 | [demos/pull-to-pipeline.md](./demos/pull-to-pipeline.md) | Loom / launch demo script |
+| [relay-sync-progress.md](./relay-sync-progress.md) | **Pull/sync log format** — ↓↑ arrows, Event/Lead/Workspace/Company, `pN/M` lines, `batch_sync.log` |
 
 ## Hermes Hub submission
 
@@ -25,6 +26,8 @@
 
 | Doc | Purpose |
 |-----|---------|
+| [positioning/outreach-magic-gtm-research-pack.md](./positioning/outreach-magic-gtm-research-pack.md) | **All-in-one research pack** — prompt + every GTM doc inlined (paste anywhere) |
+| [positioning/research-prompt-v4.md](./positioning/research-prompt-v4.md) | Deep-research prompt + links to supporting docs in-repo |
 | [positioning/pricing.md](./positioning/pricing.md) | **Source of truth** — plans, limits, what counts as relay events |
 | [positioning/hub-copy.md](./positioning/hub-copy.md) | Registry listings, taglines, website snippets |
 | [positioning/skill-path.md](./positioning/skill-path.md) | Install paths and Hub category |

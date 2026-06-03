@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.23.7
+version: 1.23.8
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -202,7 +202,14 @@ python3 scripts/pipeline.py pull --skip-routing-sync
 
 This fetches the latest events from the relay, so the user always sees current data. The local DB may be stale. Never skip pull for activity/timeline queries. This applies across sessions: a new session's first pipeline query must pull.
 
-**Pull progress:** The first page requests total pending count from the relay (`include_pending=1`). Routine pulls use **1000 rows/page**; large backlogs (or `pull --full`) use **5000 rows/page** automatically. Example: `~14000 pending (~3 pages @ 5000/page)`. Progress shows `records this page / total pending` until all pages import.
+**Relay sync progress (stdout):** When interpreting `pull` / `sync` output or `export/batch_sync.log`, use the log legend in [docs/relay-sync-progress.md](../../docs/relay-sync-progress.md). Short version:
+
+- **↓ pull / ↑ push** — cloud → local vs local → cloud
+- **Event, Lead, Workspace, Company** — four streams (Lead = org lead core; Workspace = per-workspace lead overlay, not routing config)
+- **Pending banner:** `~` on counts/page estimate once per stream start, e.g. `[02:10] ↓ Event : ~12,400 pending (~3p @ 5000/p) ...`
+- **Per page:** `[02:11] ↓ Event : p1/3 — 5,000 this page, 5,000/12,400 (40%) ...` (pull, no `ok`)
+- **Push page:** `[03:56] ↑ Event : p2/13 — ok 7.9s, 5,000 this page (10,000/62,093 (16%))` then `done — N in Mp (Xs)`
+- **`batch_sync.log`:** outer `batch 1/46` = lead-id walk; inner `pN/M` = HTTP pages inside one `sync`. Do not confuse them.
 
 **Relay sync limits:** Same endpoints always — `POST /push` and `GET /pull`. No separate bulk URLs.
 

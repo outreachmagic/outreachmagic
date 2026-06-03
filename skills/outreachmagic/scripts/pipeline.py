@@ -5165,15 +5165,14 @@ def _relay_push_batches(
     total_batches = (len(entries) + batch_size - 1) // batch_size
 
     batch_started = time.monotonic()
+    print(
+        _format_push_pending_banner(stream_label, len(entries), total_batches, batch_size),
+        flush=True,
+    )
     for i in range(0, len(entries), batch_size):
         batch = entries[i : i + batch_size]
         batch_num = i // batch_size + 1
         batch_mark = mark_ids[i : i + batch_size] if mark_ids else None
-        print(
-            f"{stream_label}: batch {batch_num}/{total_batches} "
-            f"({len(batch)} entries, {total_pushed}/{len(entries)} pushed so far)...",
-            flush=True,
-        )
         body = json.dumps({"client_id": client_id, "entries": batch}).encode()
         batch_t0 = time.monotonic()
         for attempt in range(1, max_attempts + 1):
@@ -5200,8 +5199,16 @@ def _relay_push_batches(
                     if written or unchanged:
                         detail = f", {written} written, {unchanged} unchanged"
                     print(
-                        f"{stream_label}: batch {batch_num}/{total_batches} — ok {elapsed:.1f}s"
-                        f"{detail} ({total_pushed}/{len(entries)} pushed).",
+                        _format_push_progress(
+                            stream_label,
+                            page_n=batch_num,
+                            total_pages=total_batches,
+                            page_len=len(batch),
+                            seen=total_pushed,
+                            total=len(entries),
+                            elapsed=elapsed,
+                            extra=detail,
+                        ),
                         flush=True,
                     )
                     if on_batch_pushed and count > 0:
@@ -5210,14 +5217,16 @@ def _relay_push_batches(
                         on_mark_cleared(batch_mark)
                     elif batch_mark and on_mark_cleared and count > 0:
                         print(
-                            f"{stream_label}: batch {batch_num}/{total_batches} — "
-                            f"partial ({count}/{len(batch)}); leaving cloud_pending set for retry",
+                            f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(stream_label)}: "
+                            f"{_page_label(batch_num, total_batches)} — "
+                            f"partial ({count}/{len(batch)}); cloud_pending kept for retry",
                             flush=True,
                         )
                     if result.get("truncated"):
                         print(
-                            f"{stream_label}: warning — relay capped request; "
-                            "retry sync for remaining entries",
+                            f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(stream_label)}: "
+                            f"{_page_label(batch_num, total_batches)} — "
+                            "warning: relay capped request; retry sync for remainder",
                             flush=True,
                         )
                     break
@@ -5280,10 +5289,15 @@ def _relay_push_batches(
         )
     elapsed_total = time.monotonic() - batch_started
     if not last_error and total_pushed > 0:
-        mode = "large" if bulk else "routine"
         print(
-            f"{stream_label}: done — {total_pushed} pushed in {total_batches} request(s) "
-            f"({mode} mode, {elapsed_total:.1f}s).",
+            _format_push_done(stream_label, total_pushed, total_batches, elapsed_total),
+            flush=True,
+        )
+    elif last_error:
+        partial = f" ({total_pushed:,} pushed before failure)" if total_pushed else ""
+        print(
+            f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(stream_label)}: "
+            f"failed{partial} — {last_error}",
             flush=True,
         )
     return {
@@ -5299,12 +5313,17 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
     """Push locally-created events to the Cloudflare relay /push endpoint."""
     events_only = _sync_events_only()
     if events_only:
-        print("Agent events: building export (events only, skipping lead snapshots)...", flush=True)
+        print(
+            f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+            "building export (events only, skipping Lead/Workspace)...",
+            flush=True,
+        )
     t0 = time.monotonic()
     export = export_local_changes(events_only=events_only)
     entries = export.get("entries") or []
     print(
-        f"Agent events: export ready — {len(entries):,} entries in {time.monotonic() - t0:.1f}s",
+        f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+        f"export ready — {len(entries):,} entries in {time.monotonic() - t0:.1f}s",
         flush=True,
     )
     if not entries:
@@ -5323,7 +5342,7 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
         agent_key,
         entries,
         client_id,
-        stream_label="Agent events",
+        stream_label=_RELAY_STREAM_EVENT,
         bulk=len(entries) >= RELAY_BULK_THRESHOLD,
         on_batch_pushed=_on_batch_pushed,
     )
@@ -5342,9 +5361,9 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
     result["events_exported"] = sum(1 for e in entries if e.get("event_id"))
     if result.get("pushed", 0) > 0 and len(marked_event_ids) < result["events_exported"]:
         print(
-            f"Agent events: marked {len(marked_event_ids)}/{result['events_exported']} "
-            f"as pushed locally ({result.get('pushed', 0)} relay units). "
-            "Re-run sync to retry events from failed batches.",
+            f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+            f"marked {len(marked_event_ids)}/{result['events_exported']} pushed locally "
+            f"({result.get('pushed', 0)} relay units); re-run sync to retry failed pages",
             flush=True,
         )
     return result
@@ -5450,12 +5469,11 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
         mark_conn.close()
 
     if core_entries:
-        print(f"Pushing {len(core_entries)} lead core snapshot(s)...", flush=True)
         last_result = _relay_push_batches(
             agent_key,
             core_entries,
             client_id,
-            stream_label="Lead core snapshots",
+            stream_label=_SNAPSHOT_KIND_STREAM["core"],
             bulk=bulk,
             mark_ids=core_mark_ids,
             on_mark_cleared=clear_core_ids,
@@ -5466,12 +5484,11 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
             return last_result
 
     if ws_entries:
-        print(f"Pushing {len(ws_entries)} lead workspace snapshot(s)...", flush=True)
         ws_result = _relay_push_batches(
             agent_key,
             ws_entries,
             client_id,
-            stream_label="Lead workspace snapshots",
+            stream_label=_SNAPSHOT_KIND_STREAM["workspace"],
             bulk=bulk,
             mark_ids=ws_mark_keys,
             on_mark_cleared=clear_ws_keys,
@@ -5531,7 +5548,7 @@ def _push_pending_company_updates(agent_key: str) -> dict:
         agent_key,
         entries,
         client_id,
-        stream_label="Company updates",
+        stream_label=_SNAPSHOT_KIND_STREAM["company"],
         bulk=bulk,
         mark_ids=pushed_ids,
         on_mark_cleared=clear_company_ids,
@@ -6388,6 +6405,113 @@ def _estimate_relay_pages(pending: Optional[int], page_size: int = RELAY_PULL_PA
     return max(1, (pending + page_size - 1) // page_size)
 
 
+_SNAPSHOT_KIND_STREAM = {"core": "Lead", "workspace": "Workspace", "company": "Company"}
+_RELAY_STREAM_EVENT = "Event"
+_ARROW_PULL = "↓"
+_ARROW_PUSH = "↑"
+
+
+def _progress_clock() -> str:
+    return datetime.now().strftime("%H:%M")
+
+
+def _progress_pct(done: int, total: Optional[int]) -> str:
+    if total is None or total <= 0:
+        return ""
+    pct = min(100, int(100 * done / total))
+    return f" ({pct}%)"
+
+
+def _stream_pad(stream: str) -> str:
+    return f"{stream:<9}"
+
+
+def _page_label(page_n: int, total_pages: Optional[int] = None, *, more_follow: bool = False) -> str:
+    if total_pages and total_pages > 0:
+        return f"p{page_n}/{total_pages}"
+    if more_follow:
+        return f"p{page_n}+"
+    return f"p{page_n}"
+
+
+def _format_pull_pending_banner(
+    stream: str,
+    pending: int,
+    est_pages: Optional[int],
+    page_size: int,
+) -> str:
+    pages_hint = f"~{est_pages}p" if est_pages else "mult"
+    return (
+        f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+        f"~{pending:,} pending ({pages_hint} @ {page_size}/p) ..."
+    )
+
+
+def _format_pull_progress(
+    stream: str,
+    *,
+    page_n: int,
+    total_pages: Optional[int] = None,
+    page_len: int,
+    seen: int,
+    total: Optional[int] = None,
+    more_follow: bool = False,
+    total_only: bool = False,
+) -> str:
+    page = _page_label(page_n, total_pages, more_follow=more_follow)
+    if total is not None and total > 0:
+        counts = f"{seen:,}/{total:,}"
+        pct = _progress_pct(seen, total)
+    elif total_only:
+        counts = f"{seen:,} total"
+        pct = ""
+    else:
+        counts = f"{seen:,}"
+        pct = ""
+    return (
+        f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: {page} — "
+        f"{page_len:,} this page, {counts}{pct} ..."
+    )
+
+
+def _format_push_pending_banner(stream: str, pending: int, total_pages: int, page_size: int) -> str:
+    return (
+        f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(stream)}: "
+        f"{pending:,} pending ({total_pages}p @ {page_size}/p) ..."
+    )
+
+
+def _format_push_progress(
+    stream: str,
+    *,
+    page_n: int,
+    total_pages: int,
+    page_len: int,
+    seen: int,
+    total: int,
+    elapsed: float,
+    extra: str = "",
+) -> str:
+    page = _page_label(page_n, total_pages)
+    extra_part = extra if extra else ""
+    return (
+        f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(stream)}: {page} — "
+        f"ok {elapsed:.1f}s{extra_part}, {page_len:,} this page "
+        f"({seen:,}/{total:,}{_progress_pct(seen, total)})"
+    )
+
+
+def _format_push_done(stream: str, total_pushed: int, total_pages: int, elapsed: float) -> str:
+    return (
+        f"[{_progress_clock()}] {_ARROW_PUSH} {_stream_pad(stream)}: "
+        f"done — {total_pushed:,} in {total_pages} pages ({elapsed:.1f}s)"
+    )
+
+
+def _snapshot_kind_stream(kind: str) -> str:
+    return _SNAPSHOT_KIND_STREAM.get(kind, kind)
+
+
 def _pull_failure_message(exc: Exception) -> str:
     msg = str(exc).strip()
     if "routing api" in msg.lower():
@@ -6723,9 +6847,13 @@ def sync_from_relay_org(
                 pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS
             est_event_pages = _estimate_relay_pages(pending_events, pull_limit)
             if not quiet and pending_events > 0:
-                pages_hint = f"~{est_event_pages}p" if est_event_pages else "mult"
                 print(
-                    f"Relay: ~{pending_events} pending ({pages_hint} @ {pull_limit}/p)...",
+                    _format_pull_pending_banner(
+                        _RELAY_STREAM_EVENT,
+                        pending_events,
+                        est_event_pages,
+                        pull_limit,
+                    ),
                     flush=True,
                 )
         elif (
@@ -6735,21 +6863,24 @@ def sync_from_relay_org(
             and len(events) >= pull_limit
         ):
             print(
-                f"Relay events: first page has {len(events)} records "
-                f"(@ {pull_limit}/page max — more pages follow)...",
+                f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+                f"first page has {len(events):,} records "
+                f"(@ {pull_limit}/page — more pages follow)...",
                 flush=True,
             )
 
         relay_events_seen += len(events)
         if not quiet:
-            page_label = f"p{event_pages}"
-            if est_event_pages:
-                page_label = f"p{event_pages}/~{est_event_pages}"
-            elif len(events) >= pull_limit:
-                page_label = f"p{event_pages}+"
-            progress = f"{relay_events_seen}/{pending_events}" if pending_events else str(relay_events_seen)
             print(
-                f"Relay: {page_label} — {len(events)} this page, {progress} ...",
+                _format_pull_progress(
+                    _RELAY_STREAM_EVENT,
+                    page_n=event_pages,
+                    total_pages=est_event_pages,
+                    page_len=len(events),
+                    seen=relay_events_seen,
+                    total=pending_events,
+                    more_follow=len(events) >= pull_limit and not est_event_pages,
+                ),
                 flush=True,
             )
 
@@ -6781,8 +6912,10 @@ def sync_from_relay_org(
     est_snap_pages: Optional[int] = None
     for snap_kind in ("core", "workspace", "company"):
         kind_pages = 0
-        if not quiet:
-            print(f"Pulling {snap_kind}...", flush=True)
+        kind_seen = 0
+        stream = _snapshot_kind_stream(snap_kind)
+        pending_snapshots = None
+        est_snap_pages = None
         while True:
             snap_pages += 1
             kind_pages += 1
@@ -6791,7 +6924,7 @@ def sync_from_relay_org(
                 snapshot_after_id=snapshot_cursors[snap_kind] or None,
                 snapshot_kind=snap_kind,
                 snapshots_only=True,
-                include_pending=snap_pages == 1 and kind_pages == 1,
+                include_pending=kind_pages == 1,
                 limit=pull_limit,
                 timeout=pull_timeout,
             )
@@ -6803,32 +6936,49 @@ def sync_from_relay_org(
                 kind_pages -= 1
                 break
 
-            if snap_pages == 1 and kind_pages == 1 and snap_result.get("pending_snapshot_count") is not None:
+            if kind_pages == 1 and snap_result.get("pending_snapshot_count") is not None:
                 pending_snapshots = int(snap_result["pending_snapshot_count"])
                 if pending_snapshots >= RELAY_BULK_THRESHOLD:
                     pull_limit = RELAY_PULL_MAX
                     pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS
                 est_snap_pages = _estimate_relay_pages(pending_snapshots, pull_limit)
                 if not quiet and pending_snapshots > 0:
-                    pages_hint = f"~{est_snap_pages}p" if est_snap_pages else "mult"
                     print(
-                        f"Snapshots: ~{pending_snapshots} pending ({pages_hint} @ {pull_limit}/p)...",
+                        _format_pull_pending_banner(
+                            stream,
+                            pending_snapshots,
+                            est_snap_pages,
+                            pull_limit,
+                        ),
                         flush=True,
                     )
 
+            kind_seen += len(snap_events)
             snap_total += len(snap_events)
             if not quiet:
                 if pending_snapshots and pending_snapshots > 0:
-                    pages_hint = f"~{est_snap_pages}" if est_snap_pages else "mult"
                     print(
-                        f"Snapshot ({snap_kind}): p{snap_pages}/{pages_hint} — "
-                        f"{len(snap_events)} this page, {snap_total}/{pending_snapshots} ...",
+                        _format_pull_progress(
+                            stream,
+                            page_n=kind_pages,
+                            total_pages=est_snap_pages,
+                            page_len=len(snap_events),
+                            seen=kind_seen,
+                            total=pending_snapshots,
+                            more_follow=len(snap_events) >= pull_limit and not est_snap_pages,
+                        ),
                         flush=True,
                     )
                 else:
                     print(
-                        f"Snapshot ({snap_kind}): p{snap_pages} — "
-                        f"{len(snap_events)} this page, {snap_total} total ...",
+                        _format_pull_progress(
+                            stream,
+                            page_n=kind_pages,
+                            page_len=len(snap_events),
+                            seen=kind_seen,
+                            more_follow=len(snap_events) >= pull_limit,
+                            total_only=True,
+                        ),
                         flush=True,
                     )
             batch = _ingest_relay_page(snap_events, debug_sentiment=debug_sentiment, quiet=True)

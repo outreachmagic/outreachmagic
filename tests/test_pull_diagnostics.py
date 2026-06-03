@@ -64,6 +64,7 @@ def test_sync_stats_cursor_stall_guard(monkeypatch):
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
     monkeypatch.setattr(om, "ingest_relay_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(om, "prefetch_relay_ingested", lambda keys: set())
     monkeypatch.setattr(om, "relay_already_ingested", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_kwargs: None)
 
@@ -106,9 +107,10 @@ def test_sync_pull_progress_when_not_quiet(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "Contacting relay to pull new events..." in out
     assert "Pulling from relay" in out
-    assert "Relay: p1" in out
-    assert "Pulling core" in out
-    assert "Snapshot (core)" in out
+    assert "↓ Event" in out
+    assert "↓ Lead" in out
+    assert "p1 —" in out or "p1/" in out
+    assert "[" in out
 
 
 def test_pull_uses_id_cursors_only(monkeypatch):
@@ -148,6 +150,71 @@ def test_estimate_relay_pages():
     assert om._estimate_relay_pages(None) is None
 
 
+def test_relay_progress_format_helpers():
+    pull = om._format_pull_progress(
+        "Lead",
+        page_n=2,
+        total_pages=24,
+        page_len=5000,
+        seen=10000,
+        total=117431,
+    )
+    assert "↓ Lead" in pull
+    assert "p2/24" in pull
+    assert "10,000/117,431" in pull
+    assert "(8%)" in pull
+
+    push = om._format_push_progress(
+        "Event",
+        page_n=2,
+        total_pages=13,
+        page_len=5000,
+        seen=10000,
+        total=62093,
+        elapsed=7.9,
+    )
+    assert "↑ Event" in push
+    assert "p2/13" in push
+    assert "ok 7.9s" in push
+    assert "(16%)" in push
+
+
+def test_pull_snapshot_pending_requested_per_kind(monkeypatch):
+    """Each snapshot kind should request include_pending on its first page."""
+    pending_calls = []
+
+    def fake_pull(*_args, **kwargs):
+        if kwargs.get("snapshots_only"):
+            kind = kwargs.get("snapshot_kind")
+            if kwargs.get("include_pending"):
+                pending_calls.append(kind)
+            if kind == "core":
+                return {
+                    "events": [{"relay_id": 1_000_000_001}],
+                    "max_snapshot_id": 1,
+                    "has_more_snapshots": False,
+                    "pending_snapshot_count": 100,
+                }
+            if kind == "workspace":
+                return {
+                    "events": [{"relay_id": 1_000_000_002}],
+                    "max_snapshot_id": 2,
+                    "has_more_snapshots": False,
+                    "pending_snapshot_count": 50,
+                }
+            return {"events": []}
+        return {"events": [], "max_id": 0}
+
+    monkeypatch.setattr(om, "pull_events_org", fake_pull)
+    monkeypatch.setattr(om, "ingest_relay_event", lambda *_a, **_k: None)
+    monkeypatch.setattr(om, "prefetch_relay_ingested", lambda keys: set(keys))
+    monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
+    monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
+
+    om.sync_from_relay_org("om_agent_test", after_id=0, full=False, quiet=False)
+    assert pending_calls == ["core", "workspace", "company"]
+
+
 def test_sync_progress_with_pending_counts(capsys, monkeypatch):
     event_calls = {"n": 0}
     snap_calls = {"n": 0}
@@ -180,9 +247,10 @@ def test_sync_progress_with_pending_counts(capsys, monkeypatch):
 
     om.sync_from_relay_org("om_agent_test", after_id=0, full=False, quiet=False)
     out = capsys.readouterr().out
-    assert "~1400 pending" in out
-    assert "p1/~2" in out
-    assert "~5336 pending" in out
+    assert "~1,400 pending" in out or "~1400 pending" in out
+    assert "p1/2" in out
+    assert "~5,336 pending" in out or "~5336 pending" in out
+    assert "%" in out
 
 
 def test_pull_diagnostics_verdict_priority():

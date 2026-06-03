@@ -3,12 +3,18 @@
 Push the local Popcam SQLite DB to api.outreachmagic.io in controlled batches.
 
 How it works (not Cloudflare cron batches — local script batches):
-  1. EVENTS phase (once): pipeline.py sync pushes ~62k legacy message events to POST /push.
+  1. EVENTS phase (once): pipeline.py sync pushes legacy message events to POST /push.
   2. LEADS phase (loop): walk every lead by id in chunks of BATCH_SIZE (default 2500):
        a. SET cloud_pending=1 on those leads (+ their workspace_leads rows)
        b. pipeline.py sync uploads snapshots (auto 5000/request when pending ≥ 2500)
-       c. Relay returns success → cloud_pending cleared per successful push batch
-  Each chunk is one "batch" in batch_sync.log. ~46 batches for 114k leads.
+       c. Relay returns success → cloud_pending cleared per successful push page
+  Each chunk is one "batch N" in batch_sync.log (~46 batches for 114k leads).
+
+Pipeline progress inside each sync (see docs/relay-sync-progress.md):
+  [HH:MM] ↑ Event     : p2/13 — ok 7.9s, 5,000 this page (10,000/62,093 (16%))
+  [HH:MM] ↑ Lead      : p1/1 — ok ...
+  [HH:MM] ↑ Workspace : p1/2 — ok ...
+  Log file lines are prefixed: [ISO] batch 3: [HH:MM] ↑ Lead : ...
 
 Resume: OM_SYNC_RESUME_AFTER_ID or auto-detect from last "batch N done" in the log.
 """

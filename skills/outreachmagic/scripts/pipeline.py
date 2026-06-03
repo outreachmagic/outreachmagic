@@ -6456,6 +6456,8 @@ def ingest_agent_entry(
     pull_conn: Optional[sqlite3.Connection] = None,
     routing_config: Optional[OrgRoutingConfig] = None,
     ws_slug_map: Optional[dict[str, str]] = None,
+    defer_activity_refresh: bool = False,
+    activity_refresh_pairs: Optional[set[tuple[int, str]]] = None,
 ) -> Optional[int]:
     """Replay an agent-originated mutation from another client during pull."""
     action = event.get("action", "")
@@ -6615,6 +6617,7 @@ def ingest_agent_entry(
                     campaign = payload.get("campaign") or payload.get("campaign_name")
                     if campaign and str(campaign).strip():
                         event_meta["campaign"] = str(campaign).strip()
+                    log_conn = conn if not own_conn else None
                     log_event(
                         lead_id,
                         event_type=payload.get("event_type", "email_sent"),
@@ -6624,7 +6627,16 @@ def ingest_agent_entry(
                         body_preview=payload.get("body_preview"),
                         metadata=event_meta,
                         campaign=campaign,
+                        conn=log_conn,
+                        commit=not own_conn and log_conn is None,
+                        refresh_activity=not defer_activity_refresh and log_conn is None,
                     )
+                    if (
+                        defer_activity_refresh
+                        and activity_refresh_pairs is not None
+                        and workspace_id
+                    ):
+                        activity_refresh_pairs.add((lead_id, workspace_id))
             elif own_conn:
                 conn.close()
                 conn = None

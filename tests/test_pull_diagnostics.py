@@ -347,6 +347,49 @@ def test_event_pull_continues_when_worker_caps_below_request(monkeypatch):
     assert stats["pull_after_id_end"] == 1001
 
 
+def test_agent_event_log_reuses_pull_conn(monkeypatch):
+    """Agent event_log during pull must not open a second SQLite connection (log_event)."""
+    om.init_db()
+    pull = om.get_conn()
+
+    class _Routing:
+        mode = om.WORKSPACE_ROUTING_SINGLE
+        default_workspace_id = "ws_test"
+
+    logged = []
+
+    def spy_log_event(*_args, **kwargs):
+        logged.append(kwargs)
+        return 99
+
+    monkeypatch.setattr(om, "log_event", spy_log_event)
+    monkeypatch.setattr(om, "get_or_create_client_id", lambda: "local-client")
+    monkeypatch.setattr(om, "find_lead_by_identifier", lambda *_a, **_k: 1)
+    monkeypatch.setattr(om, "get_org_routing_config", lambda *_a, **_k: _Routing())
+
+    event = {
+        "platform": "agent",
+        "client_id": "remote-client",
+        "action": "event_log",
+        "entity_key": "email:test@example.com",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "workspace": "default",
+        "payload": {"event_type": "email_sent", "direction": "outbound"},
+    }
+    om.ingest_agent_entry(
+        event,
+        pull_conn=pull,
+        defer_mark=True,
+        pending_marks=[],
+        defer_activity_refresh=True,
+    )
+    pull.close()
+    assert len(logged) == 1
+    assert logged[0]["conn"] is pull
+    assert logged[0]["commit"] is False
+    assert logged[0]["refresh_activity"] is False
+
+
 def test_parse_pull_kinds():
     assert om.parse_pull_kinds(None) is None
     assert om.parse_pull_kinds("events,company") == frozenset({"events", "company"})

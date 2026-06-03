@@ -289,6 +289,8 @@ def ingest_relay_event(
             pull_conn=pull_conn,
             routing_config=routing_config,
             ws_slug_map=ws_slug_map,
+            defer_activity_refresh=defer_activity_refresh,
+            activity_refresh_pairs=activity_refresh_pairs,
         )
 
     dedupe_key = relay_dedupe_key(event)

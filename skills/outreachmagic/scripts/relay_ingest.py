@@ -145,6 +145,9 @@ def relay_dedupe_key(event: dict) -> str:
     )
 
 
+RELAY_INGESTED_PREFETCH_CHUNK = 500
+
+
 def relay_already_ingested(dedupe_key: str) -> bool:
     conn = get_conn()
     row = conn.execute("SELECT 1 FROM relay_ingested WHERE dedupe_key = ?", (dedupe_key,)).fetchone()
@@ -152,7 +155,28 @@ def relay_already_ingested(dedupe_key: str) -> bool:
     return row is not None
 
 
-def mark_relay_ingested(dedupe_key: str, lead_id: int):
+def prefetch_relay_ingested(dedupe_keys: list[str]) -> set[str]:
+    """Return which dedupe keys already exist (batched IN lookup for pull pages)."""
+    if not dedupe_keys:
+        return set()
+    unique = list(dict.fromkeys(dedupe_keys))
+    found: set[str] = set()
+    conn = get_conn()
+    try:
+        for i in range(0, len(unique), RELAY_INGESTED_PREFETCH_CHUNK):
+            chunk = unique[i : i + RELAY_INGESTED_PREFETCH_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"SELECT dedupe_key FROM relay_ingested WHERE dedupe_key IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            found.update(row[0] for row in rows)
+    finally:
+        conn.close()
+    return found
+
+
+def mark_relay_ingested(dedupe_key: str, lead_id: Optional[int]) -> None:
     conn = get_conn()
     conn.execute(
         "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
@@ -162,17 +186,47 @@ def mark_relay_ingested(dedupe_key: str, lead_id: int):
     conn.close()
 
 
+def mark_relay_ingested_many(entries: list[tuple[str, Optional[int]]]) -> None:
+    """Batch-insert dedupe keys after a pull page (single commit)."""
+    if not entries:
+        return
+    unique: list[tuple[str, Optional[int]]] = []
+    seen: set[str] = set()
+    for key, lead_id in entries:
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((key, lead_id))
+    conn = get_conn()
+    try:
+        conn.executemany(
+            "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
+            unique,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def ingest_relay_event(
     event: dict,
     debug_sentiment: bool = False,
     force_workspace_id: Optional[str] = None,
     quiet: bool = False,
+    *,
+    defer_mark: bool = False,
+    pending_marks: Optional[list] = None,
 ) -> Optional[int]:
     """Take a relay event and write it to the local SQLite database. Returns None if duplicate."""
     import pipeline as om  # noqa: PLC0415 — avoid circular import at module load
 
     if event.get("platform") == "agent":
-        return om.ingest_agent_entry(event, quiet=quiet)
+        return om.ingest_agent_entry(
+            event,
+            quiet=quiet,
+            defer_mark=defer_mark,
+            pending_marks=pending_marks,
+        )
 
     dedupe_key = relay_dedupe_key(event)
     ws_idempotency = f"ws:{dedupe_key}"
@@ -472,5 +526,8 @@ def ingest_relay_event(
     conn.commit()
     conn.close()
 
-    mark_relay_ingested(dedupe_key, lead_id)
+    if defer_mark and pending_marks is not None:
+        pending_marks.append((dedupe_key, lead_id))
+    else:
+        mark_relay_ingested(dedupe_key, lead_id)
     return lead_id

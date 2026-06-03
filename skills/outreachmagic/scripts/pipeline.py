@@ -172,6 +172,8 @@ from platform_registry import (
 from relay_ingest import (
     ingest_relay_event,
     mark_relay_ingested,
+    mark_relay_ingested_many,
+    prefetch_relay_ingested,
     normalize_lead_status_display,
     relay_already_ingested,
     relay_dedupe_key,
@@ -597,6 +599,15 @@ def _use_bulk_transport(pending_count: int) -> dict:
         "push_batch_size": RELAY_PUSH_MAX_BULK if bulk else None,
         "pull_limit": RELAY_PULL_MAX if bulk else RELAY_PULL_PAGE_SIZE,
     }
+
+
+def _sync_events_only() -> bool:
+    """True when batch sync / repush should push timeline events only (not lead snapshots)."""
+    phase = os.environ.get("OM_SYNC_PHASE", "").strip().lower()
+    if phase == "events":
+        return True
+    flag = os.environ.get("OM_SYNC_EVENTS_ONLY", "").strip().lower()
+    return flag in ("1", "true", "yes")
 
 
 def get_relay_push_settings(*, bulk: bool = False) -> dict:
@@ -4965,6 +4976,13 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
             f"{status.get('local_agent_events', 0)} event(s) pending...",
             flush=True,
         )
+    elif _sync_events_only() and status.get("local_agent_events", 0) >= RELAY_BULK_THRESHOLD:
+        pending_ev = status.get("local_agent_events", 0)
+        print(
+            f"Syncing to relay (events-only, large mode: {RELAY_PUSH_MAX_BULK}/request) — "
+            f"{pending_ev:,} event(s) pending...",
+            flush=True,
+        )
     else:
         print("Syncing to relay...", flush=True)
 
@@ -5279,8 +5297,16 @@ def _relay_push_batches(
 
 def _push_agent_events_to_relay(agent_key: str) -> dict:
     """Push locally-created events to the Cloudflare relay /push endpoint."""
-    export = export_local_changes()
+    events_only = _sync_events_only()
+    if events_only:
+        print("Agent events: building export (events only, skipping lead snapshots)...", flush=True)
+    t0 = time.monotonic()
+    export = export_local_changes(events_only=events_only)
     entries = export.get("entries") or []
+    print(
+        f"Agent events: export ready — {len(entries):,} entries in {time.monotonic() - t0:.1f}s",
+        flush=True,
+    )
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
     client_id = export.get("client_id", "unknown")
@@ -5983,6 +6009,7 @@ def export_local_changes(
     *,
     all_leads: bool = False,
     workspace: Optional[str] = None,
+    events_only: bool = False,
 ) -> dict:
     """Export locally-created leads and events as a JSON structure
     suitable for pushing to the relay or importing on another machine."""
@@ -6000,6 +6027,74 @@ def export_local_changes(
                 )"""
             workspace_params.append(ws_row["id"])
 
+    entries: list[dict] = []
+    if not events_only:
+        entries = _export_local_lead_entries(
+            conn,
+            all_leads=all_leads,
+            workspace_filter=workspace_filter,
+            workspace_params=workspace_params,
+        )
+
+    event_rows = conn.execute(
+        """SELECT e.*, l.email, l.linkedin_url
+           FROM events e
+           JOIN leads l ON e.lead_id = l.id
+           WHERE 'event:' || CAST(e.id AS TEXT) NOT IN (
+                 SELECT dedupe_key FROM relay_ingested
+                 WHERE dedupe_key LIKE 'event:%'
+             )
+             AND e.metadata_json NOT LIKE '%"source": "relay"%'
+             AND e.metadata_json NOT LIKE '%"source":"relay"%'
+             AND e.metadata_json NOT LIKE '%"source": "agent_sync"%'
+             AND e.metadata_json NOT LIKE '%"source":"agent_sync"%'
+           ORDER BY e.created_at ASC""",
+    ).fetchall()
+
+    for row in event_rows:
+        entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, row["lead_id"])
+        if not entity_key:
+            continue
+        ws_slug = _lead_workspace_slug(conn, row["lead_id"])
+        meta = _decode_event_metadata(row["metadata_json"])
+        event_entry: dict = {
+            "action": "event_log",
+            "entity_key": entity_key,
+            "timestamp": normalize_relay_timestamp(row["created_at"]),
+            "event_id": row["id"],
+            "payload": {
+                "event_type": row["event_type"],
+                "direction": row["direction"],
+                "channel": row["channel"],
+            },
+        }
+        if ws_slug:
+            event_entry["workspace"] = ws_slug
+        if row["subject"]:
+            event_entry["payload"]["subject"] = row["subject"]
+        if row["body_preview"]:
+            event_entry["payload"]["body_preview"] = row["body_preview"]
+        if meta.get("body"):
+            event_entry["payload"]["body"] = str(meta.get("body"))
+        entries.append(event_entry)
+
+    conn.close()
+    return {
+        "version": 1,
+        "client_id": client_id,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "entries": entries,
+    }
+
+
+def _export_local_lead_entries(
+    conn,
+    *,
+    all_leads: bool,
+    workspace_filter: str,
+    workspace_params: list,
+) -> list[dict]:
+    """Lead snapshot entries for export_local_changes (skipped when events_only)."""
     if all_leads:
         lead_rows = conn.execute(
             f"""SELECT l.*, COALESCE(co.name, l.company) AS company_display
@@ -6078,55 +6173,7 @@ def export_local_changes(
                 stage_entry["payload"]["next_action"] = row["next_action"]
             entries.append(stage_entry)
 
-    event_rows = conn.execute(
-        """SELECT e.*, l.email, l.linkedin_url
-           FROM events e
-           JOIN leads l ON e.lead_id = l.id
-           WHERE 'event:' || CAST(e.id AS TEXT) NOT IN (
-                 SELECT dedupe_key FROM relay_ingested
-                 WHERE dedupe_key LIKE 'event:%'
-             )
-             AND e.metadata_json NOT LIKE '%"source": "relay"%'
-             AND e.metadata_json NOT LIKE '%"source":"relay"%'
-             AND e.metadata_json NOT LIKE '%"source": "agent_sync"%'
-             AND e.metadata_json NOT LIKE '%"source":"agent_sync"%'
-           ORDER BY e.created_at ASC""",
-    ).fetchall()
-
-    for row in event_rows:
-        entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, row["lead_id"])
-        if not entity_key:
-            continue
-        ws_slug = _lead_workspace_slug(conn, row["lead_id"])
-        meta = _decode_event_metadata(row["metadata_json"])
-        event_entry: dict = {
-            "action": "event_log",
-            "entity_key": entity_key,
-            "timestamp": normalize_relay_timestamp(row["created_at"]),
-            "event_id": row["id"],
-            "payload": {
-                "event_type": row["event_type"],
-                "direction": row["direction"],
-                "channel": row["channel"],
-            },
-        }
-        if ws_slug:
-            event_entry["workspace"] = ws_slug
-        if row["subject"]:
-            event_entry["payload"]["subject"] = row["subject"]
-        if row["body_preview"]:
-            event_entry["payload"]["body_preview"] = row["body_preview"]
-        if meta.get("body"):
-            event_entry["payload"]["body"] = str(meta.get("body"))
-        entries.append(event_entry)
-
-    conn.close()
-    return {
-        "version": 1,
-        "client_id": client_id,
-        "exported_at": datetime.now(timezone.utc).isoformat(),
-        "entries": entries,
-    }
+    return entries
 
 
 def write_export_csv(result: dict, path: str):
@@ -6148,9 +6195,66 @@ def write_export_csv(result: dict, path: str):
     print(json.dumps({"status": "exported", "file": str(out_path), "leads": len(lead_entries)}))
 
 
+def agent_entry_dedupe_key(event: dict, local_client_id: Optional[str] = None) -> Optional[str]:
+    """Dedupe key for agent pull entries (distinct from relay:{id} for snapshots)."""
+    if event.get("platform") != "agent":
+        return None
+    client_id = event.get("client_id", "")
+    entity_key = event.get("entity_key", "")
+    action = event.get("action", "")
+    timestamp = event.get("timestamp", "")
+    if not client_id or not action:
+        return None
+    local = local_client_id if local_client_id is not None else get_or_create_client_id()
+    if client_id == local:
+        return None
+    return f"agent:{client_id}:{entity_key}:{action}:{timestamp}"
+
+
+def pull_page_dedupe_keys(events: list, local_client_id: str) -> list[str]:
+    """All dedupe keys to prefetch for one relay pull page."""
+    from relay_ingest import relay_dedupe_key
+
+    keys: list[str] = []
+    for event in events:
+        keys.append(relay_dedupe_key(event))
+        agent_key = agent_entry_dedupe_key(event, local_client_id)
+        if agent_key:
+            keys.append(agent_key)
+    return keys
+
+
+def _append_pull_ingest_marks(
+    pending_marks: list,
+    event: dict,
+    lead_id: Optional[int],
+    local_client_id: str,
+) -> None:
+    """Record sequencer/webhook dedupe keys (agent entries mark in ingest_agent_entry)."""
+    from relay_ingest import relay_dedupe_key
+
+    pending_marks.append((relay_dedupe_key(event), lead_id))
+
+
+def _pull_page_already_ingested(
+    event: dict,
+    ingested_set: set[str],
+    local_client_id: str,
+) -> bool:
+    from relay_ingest import relay_dedupe_key
+
+    if relay_dedupe_key(event) in ingested_set:
+        return True
+    agent_key = agent_entry_dedupe_key(event, local_client_id)
+    return bool(agent_key and agent_key in ingested_set)
+
+
 def ingest_agent_entry(
     event: dict,
     quiet: bool = False,
+    *,
+    defer_mark: bool = False,
+    pending_marks: Optional[list] = None,
 ) -> Optional[int]:
     """Replay an agent-originated mutation from another client during pull."""
     action = event.get("action", "")
@@ -6167,6 +6271,12 @@ def ingest_agent_entry(
     dedupe_key = f"agent:{client_id}:{entity_key}:{action}:{timestamp}"
     if relay_already_ingested(dedupe_key):
         return None
+
+    def _record_mark(key: str, lid: Optional[int]) -> None:
+        if defer_mark and pending_marks is not None:
+            pending_marks.append((key, lid))
+        else:
+            mark_relay_ingested(key, lid)
 
     conn = get_conn()
     lead_id = None
@@ -6189,7 +6299,7 @@ def ingest_agent_entry(
             if not lead_id:
                 result = resolve_lead_from_agent_sync(entity_key, payload)
                 if result.get("status") == "error":
-                    mark_relay_ingested(dedupe_key, None)
+                    _record_mark(dedupe_key, None)
                     return None
                 lead_id = result.get("id")
             if lead_id:
@@ -6199,14 +6309,14 @@ def ingest_agent_entry(
         elif action == "lead_workspace_update":
             if not workspace_id:
                 conn.close()
-                mark_relay_ingested(dedupe_key, None)
+                _record_mark(dedupe_key, None)
                 return None
             lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
             conn.close()
             if not lead_id:
                 result = resolve_lead_from_agent_sync(entity_key, {})
                 if result.get("status") == "error":
-                    mark_relay_ingested(dedupe_key, None)
+                    _record_mark(dedupe_key, None)
                     return None
                 lead_id = result.get("id")
             if lead_id:
@@ -6222,7 +6332,7 @@ def ingest_agent_entry(
         elif action == "stage_change":
             if not workspace_id:
                 conn.close()
-                mark_relay_ingested(dedupe_key, None)
+                _record_mark(dedupe_key, None)
                 return None
             lead_id = find_lead_by_identifier(conn, entity_key)
             conn.close()
@@ -6234,7 +6344,7 @@ def ingest_agent_entry(
         elif action == "event_log":
             if not workspace_id:
                 conn.close()
-                mark_relay_ingested(dedupe_key, None)
+                _record_mark(dedupe_key, None)
                 return None
             lead_id = find_lead_by_identifier(conn, entity_key)
             conn.close()
@@ -6261,7 +6371,10 @@ def ingest_agent_entry(
         raise
 
     if lead_id is not None or action in ("company_update", "lead_core_update", "lead_workspace_update"):
-        mark_relay_ingested(dedupe_key, lead_id)
+        _record_mark(dedupe_key, lead_id)
+        relay_rid = event.get("relay_id")
+        if relay_rid is not None:
+            _record_mark(f"relay:{relay_rid}", lead_id)
     return lead_id
 
 
@@ -6423,6 +6536,28 @@ def _ingest_relay_page(
     resolutions = resolution_map or {}
     ws_cache = slug_cache or qres.WorkspaceSlugCache()
 
+    if not events:
+        return {
+            "imported": 0,
+            "skipped": 0,
+            "skipped_duplicates": 0,
+            "skipped_filtered": 0,
+            "skipped_errors": 0,
+            "skipped_resolved": 0,
+            "assigned_resolved": 0,
+            "newest_relay_id_seen": 0,
+        }
+
+    local_client_id = get_or_create_client_id()
+    ingested_prefetch = prefetch_relay_ingested(pull_page_dedupe_keys(events, local_client_id))
+    pending_marks: list[tuple[str, Optional[int]]] = []
+    ingest_kw = {
+        "debug_sentiment": debug_sentiment,
+        "quiet": quiet,
+        "defer_mark": True,
+        "pending_marks": pending_marks,
+    }
+
     for event in events:
         relay_id = event.get("relay_id")
         if isinstance(relay_id, int) and relay_id > newest_relay_id_seen:
@@ -6447,12 +6582,15 @@ def _ingest_relay_page(
                             file=sys.stderr,
                         )
                     continue
+                if _pull_page_already_ingested(event, ingested_prefetch, local_client_id):
+                    skipped += 1
+                    skipped_duplicates += 1
+                    continue
                 try:
                     ingested = ingest_relay_event(
                         event,
                         force_workspace_id=ws_id,
-                        debug_sentiment=debug_sentiment,
-                        quiet=quiet,
+                        **ingest_kw,
                     )
                 except Exception as exc:
                     if not quiet:
@@ -6466,12 +6604,19 @@ def _ingest_relay_page(
                 else:
                     imported += 1
                     assigned_resolved += 1
+                    if event.get("platform") != "agent":
+                        _append_pull_ingest_marks(
+                            pending_marks, event, ingested, local_client_id
+                        )
                 continue
 
-        dedupe_key = relay_dedupe_key(event)
-        was_duplicate = relay_already_ingested(dedupe_key)
+        if _pull_page_already_ingested(event, ingested_prefetch, local_client_id):
+            skipped += 1
+            skipped_duplicates += 1
+            continue
+
         try:
-            ingested = ingest_relay_event(event, debug_sentiment=debug_sentiment, quiet=quiet)
+            ingested = ingest_relay_event(event, **ingest_kw)
         except Exception as exc:
             if not quiet:
                 print(f"Warning: skipped relay event {event.get('relay_id') or '?'}: {exc}")
@@ -6480,12 +6625,14 @@ def _ingest_relay_page(
             continue
         if ingested is None:
             skipped += 1
-            if was_duplicate:
-                skipped_duplicates += 1
-            else:
-                skipped_filtered += 1
+            skipped_filtered += 1
         else:
             imported += 1
+            if event.get("platform") != "agent":
+                _append_pull_ingest_marks(pending_marks, event, ingested, local_client_id)
+
+    mark_relay_ingested_many(pending_marks)
+
     return {
         "imported": imported,
         "skipped": skipped,

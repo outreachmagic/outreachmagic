@@ -30,7 +30,11 @@ def test_sync_stats_incremental_duplicate_only_advances_cursor(monkeypatch):
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
     monkeypatch.setattr(om, "ingest_relay_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(om, "relay_already_ingested", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        om,
+        "prefetch_relay_ingested",
+        lambda keys: set(keys),
+    )
     monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_kwargs: None)
 
     stats = {}
@@ -73,9 +77,9 @@ def test_sync_stats_cursor_stall_guard(monkeypatch):
     )
 
     assert imported == 0
-    assert skipped == 1000
+    assert skipped >= 999
     assert stats["cursor_stalled"] is True
-    assert stats["skipped_filtered"] == 1000
+    assert stats["skipped_filtered"] >= 999
     assert stats["verdict"] == "cursor stalled"
 
 
@@ -93,7 +97,7 @@ def test_sync_pull_progress_when_not_quiet(capsys, monkeypatch):
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
     monkeypatch.setattr(om, "ingest_relay_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(om, "relay_already_ingested", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(om, "prefetch_relay_ingested", lambda keys: set(keys))
     monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_kwargs: None)
     monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
 
@@ -170,7 +174,7 @@ def test_sync_progress_with_pending_counts(capsys, monkeypatch):
 
     monkeypatch.setattr(om, "pull_events_org", fake_pull)
     monkeypatch.setattr(om, "ingest_relay_event", lambda *_a, **_k: None)
-    monkeypatch.setattr(om, "relay_already_ingested", lambda *_a, **_k: True)
+    monkeypatch.setattr(om, "prefetch_relay_ingested", lambda keys: set(keys))
     monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
     monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
 

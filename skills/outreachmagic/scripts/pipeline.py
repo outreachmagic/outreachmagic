@@ -6628,8 +6628,8 @@ def ingest_agent_entry(
                         metadata=event_meta,
                         campaign=campaign,
                         conn=log_conn,
-                        commit=not own_conn and log_conn is None,
-                        refresh_activity=not defer_activity_refresh and log_conn is None,
+                        commit=log_conn is None,
+                        refresh_activity=log_conn is None and not defer_activity_refresh,
                     )
                     if (
                         defer_activity_refresh
@@ -7238,6 +7238,35 @@ def _ingest_relay_page(
     }
 
 
+def _begin_pull_ingest_session(
+    session: Optional[sqlite3.Connection],
+    routing_config: Optional[OrgRoutingConfig],
+    ws_slug_map: dict[str, str],
+    routing_cache: Optional[CampaignRoutingCache],
+) -> tuple[
+    sqlite3.Connection,
+    OrgRoutingConfig,
+    dict[str, str],
+    Optional[CampaignRoutingCache],
+]:
+    """One bulk-pull SQLite session for events and snapshot pages (avoids database is locked)."""
+    if session is not None and routing_config is not None:
+        return session, routing_config, ws_slug_map, routing_cache
+    if not db_exists():
+        init_db()
+    session = get_conn()
+    apply_bulk_pull_pragmas(session)
+    routing_config = get_org_routing_config(session, DEFAULT_ORG_ID)
+    ws_slug_map = {}
+    routing_cache = None
+    if routing_config.mode == WORKSPACE_ROUTING_MULTI:
+        ws_slug_map = _pull_workspace_slug_map(session, DEFAULT_ORG_ID)
+        routing_cache = CampaignRoutingCache.load(
+            session, DEFAULT_ORG_ID, routing_config,
+        )
+    return session, routing_config, ws_slug_map, routing_cache
+
+
 def sync_from_relay_org(
     agent_key: str,
     after_id: Optional[int] = None,
@@ -7378,17 +7407,14 @@ def sync_from_relay_org(
                     flush=True,
                 )
 
-            if pull_session is None:
-                if not db_exists():
-                    init_db()
-                pull_session = get_conn()
-                apply_bulk_pull_pragmas(pull_session)
-                pull_routing_config = get_org_routing_config(pull_session, DEFAULT_ORG_ID)
-                if pull_routing_config.mode == WORKSPACE_ROUTING_MULTI:
-                    pull_ws_slug_map = _pull_workspace_slug_map(pull_session, DEFAULT_ORG_ID)
-                    pull_routing_cache = CampaignRoutingCache.load(
-                        pull_session, DEFAULT_ORG_ID, pull_routing_config,
-                    )
+            pull_session, pull_routing_config, pull_ws_slug_map, pull_routing_cache = (
+                _begin_pull_ingest_session(
+                    pull_session,
+                    pull_routing_config,
+                    pull_ws_slug_map,
+                    pull_routing_cache,
+                )
+            )
 
             ingest_started = time.monotonic()
             batch = _ingest_relay_page(
@@ -7438,146 +7464,160 @@ def sync_from_relay_org(
                 has_more = True
             if len(events) < effective_limit or has_more is False:
                 break
+
+        pending_snapshots: Optional[int] = None
+        est_snap_pages: Optional[int] = None
+        for snap_kind in ("core", "workspace", "company"):
+            if snap_kind not in kinds:
+                continue
+            kind_pages = 0
+            kind_seen = 0
+            stream = _snapshot_kind_stream(snap_kind)
+            pending_snapshots = None
+            est_snap_pages = None
+            kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
+            if not quiet:
+                pending_snapshots = _snapshot_pending_count(
+                    agent_key,
+                    snap_kind,
+                    int(snapshot_cursors[snap_kind] or 0),
+                    timeout=snapshot_pull_timeout,
+                )
+                if pending_snapshots is not None and pending_snapshots > 0:
+                    if pending_snapshots >= RELAY_BULK_THRESHOLD:
+                        snap_pull_limit = RELAY_PULL_SNAPSHOT_MAX
+                        kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
+                    est_snap_pages = _estimate_relay_pages(pending_snapshots, kind_limit)
+                    print(
+                        _format_pull_pending_banner(
+                            stream,
+                            pending_snapshots,
+                            est_snap_pages,
+                            kind_limit,
+                        ),
+                        flush=True,
+                    )
+            while True:
+                snap_pages += 1
+                kind_pages += 1
+                if not quiet:
+                    print(
+                        f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                        f"fetching p{kind_pages} (@ {kind_limit}/p)...",
+                        flush=True,
+                    )
+                snap_result = pull_events_org(
+                    agent_key,
+                    snapshot_after_id=snapshot_cursors[snap_kind] or None,
+                    snapshot_kind=snap_kind,
+                    snapshots_only=True,
+                    include_pending=False,
+                    limit=kind_limit,
+                    timeout=snapshot_pull_timeout,
+                )
+                if snap_result.get("error"):
+                    raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
+                snap_events = snap_result.get("events") or []
+                if not snap_events:
+                    snap_pages -= 1
+                    kind_pages -= 1
+                    break
+
+                kind_seen += len(snap_events)
+                snap_total += len(snap_events)
+                if not quiet:
+                    if pending_snapshots and pending_snapshots > 0:
+                        print(
+                            _format_pull_progress(
+                                stream,
+                                page_n=kind_pages,
+                                total_pages=est_snap_pages,
+                                page_len=len(snap_events),
+                                seen=kind_seen,
+                                total=pending_snapshots,
+                                more_follow=len(snap_events) >= kind_limit and not est_snap_pages,
+                            ),
+                            flush=True,
+                        )
+                    elif kind_seen > 0:
+                        print(
+                            _format_pull_progress(
+                                stream,
+                                page_n=kind_pages,
+                                page_len=len(snap_events),
+                                seen=kind_seen,
+                                more_follow=len(snap_events) >= kind_limit,
+                                total_only=True,
+                            ),
+                            flush=True,
+                        )
+                pull_session, pull_routing_config, pull_ws_slug_map, pull_routing_cache = (
+                    _begin_pull_ingest_session(
+                        pull_session,
+                        pull_routing_config,
+                        pull_ws_slug_map,
+                        pull_routing_cache,
+                    )
+                )
+                ingest_started = time.monotonic()
+                batch = _ingest_relay_page(
+                    snap_events,
+                    debug_sentiment=debug_sentiment,
+                    quiet=quiet,
+                    pull_conn=pull_session,
+                    routing_config=pull_routing_config,
+                    ws_slug_map=pull_ws_slug_map,
+                    routing_cache=pull_routing_cache,
+                )
+                ingest_elapsed = time.monotonic() - ingest_started
+                imported += batch["imported"]
+                skipped += batch["skipped"]
+                skipped_duplicates += batch["skipped_duplicates"]
+                skipped_filtered += batch["skipped_filtered"]
+                skipped_errors += batch["skipped_errors"]
+                newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
+                prev_snap_cursor = snapshot_cursors[snap_kind]
+                next_snap_cursor = int(snap_result.get("max_snapshot_id") or 0)
+                if (
+                    len(snap_events) >= kind_limit
+                    and next_snap_cursor <= prev_snap_cursor
+                ):
+                    cursor_stalled = True
+                    if not quiet:
+                        print(
+                            f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                            f"cursor stalled at snapshot_id={prev_snap_cursor} — stopping",
+                            flush=True,
+                        )
+                    break
+                snapshot_cursors[snap_kind] = next_snap_cursor
+                if snapshot_cursors[snap_kind]:
+                    set_snapshot_cursor(snapshot_cursors[snap_kind], snap_kind)
+                if (
+                    not quiet
+                    and batch["imported"] == 0
+                    and batch["skipped_duplicates"] == len(snap_events)
+                    and len(snap_events) > 0
+                ):
+                    print(
+                        f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                        f"page all duplicates locally — cursor still advanced to {next_snap_cursor}",
+                        flush=True,
+                    )
+                if not quiet:
+                    print(
+                        f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                        f"ingest {ingest_elapsed:.1f}s "
+                        f"(+{batch['imported']} new, {batch['skipped_duplicates']} dupes, "
+                        f"{batch['skipped_filtered']} filtered, {batch['skipped_errors']} errors)",
+                        flush=True,
+                    )
+                if not snap_result.get("has_more_snapshots"):
+                    break
     finally:
         if pull_session is not None:
             end_bulk_pull_session(pull_session)
             pull_session.close()
-
-    pending_snapshots: Optional[int] = None
-    est_snap_pages: Optional[int] = None
-    for snap_kind in ("core", "workspace", "company"):
-        if snap_kind not in kinds:
-            continue
-        kind_pages = 0
-        kind_seen = 0
-        stream = _snapshot_kind_stream(snap_kind)
-        pending_snapshots = None
-        est_snap_pages = None
-        kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
-        if not quiet:
-            pending_snapshots = _snapshot_pending_count(
-                agent_key,
-                snap_kind,
-                int(snapshot_cursors[snap_kind] or 0),
-                timeout=snapshot_pull_timeout,
-            )
-            if pending_snapshots is not None and pending_snapshots > 0:
-                if pending_snapshots >= RELAY_BULK_THRESHOLD:
-                    snap_pull_limit = RELAY_PULL_SNAPSHOT_MAX
-                    kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
-                est_snap_pages = _estimate_relay_pages(pending_snapshots, kind_limit)
-                print(
-                    _format_pull_pending_banner(
-                        stream,
-                        pending_snapshots,
-                        est_snap_pages,
-                        kind_limit,
-                    ),
-                    flush=True,
-                )
-        while True:
-            snap_pages += 1
-            kind_pages += 1
-            if not quiet:
-                print(
-                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
-                    f"fetching p{kind_pages} (@ {kind_limit}/p)...",
-                    flush=True,
-                )
-            snap_result = pull_events_org(
-                agent_key,
-                snapshot_after_id=snapshot_cursors[snap_kind] or None,
-                snapshot_kind=snap_kind,
-                snapshots_only=True,
-                include_pending=False,
-                limit=kind_limit,
-                timeout=snapshot_pull_timeout,
-            )
-            if snap_result.get("error"):
-                raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
-            snap_events = snap_result.get("events") or []
-            if not snap_events:
-                snap_pages -= 1
-                kind_pages -= 1
-                break
-
-            kind_seen += len(snap_events)
-            snap_total += len(snap_events)
-            if not quiet:
-                if pending_snapshots and pending_snapshots > 0:
-                    print(
-                        _format_pull_progress(
-                            stream,
-                            page_n=kind_pages,
-                            total_pages=est_snap_pages,
-                            page_len=len(snap_events),
-                            seen=kind_seen,
-                            total=pending_snapshots,
-                            more_follow=len(snap_events) >= kind_limit and not est_snap_pages,
-                        ),
-                        flush=True,
-                    )
-                elif kind_seen > 0:
-                    print(
-                        _format_pull_progress(
-                            stream,
-                            page_n=kind_pages,
-                            page_len=len(snap_events),
-                            seen=kind_seen,
-                            more_follow=len(snap_events) >= kind_limit,
-                            total_only=True,
-                        ),
-                        flush=True,
-                    )
-            ingest_started = time.monotonic()
-            batch = _ingest_relay_page(
-                snap_events, debug_sentiment=debug_sentiment, quiet=quiet,
-            )
-            ingest_elapsed = time.monotonic() - ingest_started
-            imported += batch["imported"]
-            skipped += batch["skipped"]
-            skipped_duplicates += batch["skipped_duplicates"]
-            skipped_filtered += batch["skipped_filtered"]
-            skipped_errors += batch["skipped_errors"]
-            newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
-            prev_snap_cursor = snapshot_cursors[snap_kind]
-            next_snap_cursor = int(snap_result.get("max_snapshot_id") or 0)
-            if (
-                len(snap_events) >= kind_limit
-                and next_snap_cursor <= prev_snap_cursor
-            ):
-                cursor_stalled = True
-                if not quiet:
-                    print(
-                        f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
-                        f"cursor stalled at snapshot_id={prev_snap_cursor} — stopping",
-                        flush=True,
-                    )
-                break
-            snapshot_cursors[snap_kind] = next_snap_cursor
-            if snapshot_cursors[snap_kind]:
-                set_snapshot_cursor(snapshot_cursors[snap_kind], snap_kind)
-            if (
-                not quiet
-                and batch["imported"] == 0
-                and batch["skipped_duplicates"] == len(snap_events)
-                and len(snap_events) > 0
-            ):
-                print(
-                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
-                    f"page all duplicates locally — cursor still advanced to {next_snap_cursor}",
-                    flush=True,
-                )
-            if not quiet:
-                print(
-                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
-                    f"ingest {ingest_elapsed:.1f}s "
-                    f"(+{batch['imported']} new, {batch['skipped_duplicates']} dupes, "
-                    f"{batch['skipped_filtered']} filtered, {batch['skipped_errors']} errors)",
-                    flush=True,
-                )
-            if not snap_result.get("has_more_snapshots"):
-                break
 
     if page_after_id:
         set_last_max_id(page_after_id)

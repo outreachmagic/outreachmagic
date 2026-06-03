@@ -390,6 +390,53 @@ def test_agent_event_log_reuses_pull_conn(monkeypatch):
     assert logged[0]["refresh_activity"] is False
 
 
+def test_snapshot_pull_passes_shared_pull_conn(monkeypatch):
+    """Snapshot pages must reuse the bulk pull session (no per-page get_conn)."""
+    captured = []
+
+    def fake_ingest(events, **kwargs):
+        captured.append(kwargs.get("pull_conn"))
+        return {
+            "imported": 0,
+            "skipped": len(events),
+            "skipped_duplicates": len(events),
+            "skipped_filtered": 0,
+            "skipped_errors": 0,
+            "skipped_resolved": 0,
+            "assigned_resolved": 0,
+            "newest_relay_id_seen": 0,
+        }
+
+    def fake_pull(*_args, **kwargs):
+        if kwargs.get("snapshots_only"):
+            kind = kwargs["snapshot_kind"]
+            if kind == "core":
+                return {
+                    "events": [{"relay_id": 2_000_000_001, "platform": "agent"}],
+                    "max_snapshot_id": 1,
+                    "has_more_snapshots": False,
+                }
+            return {"events": []}
+        return {"events": []}
+
+    monkeypatch.setattr(om, "pull_events_org", fake_pull)
+    monkeypatch.setattr(om, "_ingest_relay_page", fake_ingest)
+    monkeypatch.setattr(om, "_snapshot_pending_count", lambda *_a, **_k: 1)
+    monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_k: None)
+    monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
+
+    om.sync_from_relay_org(
+        "om_agent_test",
+        after_id=0,
+        full=False,
+        quiet=True,
+        skip_routing_sync=True,
+        pull_kinds=frozenset({"core"}),
+    )
+    assert len(captured) == 1
+    assert captured[0] is not None
+
+
 def test_parse_pull_kinds():
     assert om.parse_pull_kinds(None) is None
     assert om.parse_pull_kinds("events,company") == frozenset({"events", "company"})

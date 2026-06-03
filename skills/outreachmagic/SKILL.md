@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.23.5
+version: 1.23.6
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -202,7 +202,13 @@ python3 scripts/pipeline.py pull --skip-routing-sync
 
 This fetches the latest events from the relay, so the user always sees current data. The local DB may be stale. Never skip pull for activity/timeline queries. This applies across sessions: a new session's first pipeline query must pull.
 
-**Pull progress:** The first page requests total pending count from the relay (`include_pending=1`). You may see `~1400 pending (2 pages @ 1000/page)` — the 1000 is the page size, not the total. Progress shows `records this page / total pending` until all pages import.
+**Pull progress:** The first page requests total pending count from the relay (`include_pending=1`). Routine pulls use **1000 rows/page**; large backlogs (or `pull --full`) use **5000 rows/page** automatically. Example: `~14000 pending (~3 pages @ 5000/page)`. Progress shows `records this page / total pending` until all pages import.
+
+**Relay sync limits:** Same endpoints always — `POST /push` and `GET /pull`. No separate bulk URLs.
+
+- **`sync` (upload):** When local `cloud_pending` snapshots ≥ **2500**, uses **5000 entries per `/push`**; otherwise routine batch size (default 200, max 500 per request).
+- **`pull` (download):** Routine **1000 rows/page**; switches to **5000/page** on `pull --full` or when the relay reports ≥ **2500** pending events/snapshots on the first page (`include_pending=1`).
+- Filter downloaded data locally (`show --since`, workspace queries) — the relay does not filter by date or workspace.
 
 ### Workspace inventory (local DB — pull optional)
 
@@ -294,7 +300,7 @@ python3 scripts/pipeline.py agent-changes --all
 python3 scripts/pipeline.py sync
 ```
 
-`sync` pushes pending lead snapshots (profile, `external_id`, `company_domain`, HQ/location, tags, mailmerge, workspace status, LinkedIn connection flags) plus local events, and **quarantine resolutions** (`skip` / `assign`) to the relay. At the end of the same command it may POST aggregate local DB health to the portal (file size, row counts, top tables — throttled ~6h). Skip with `sync --no-health-report`. Other machines run `pull --full` after a DB reset to restore everything that was synced.
+`sync` pushes pending lead snapshots (profile, `external_id`, `company_domain`, HQ/location, tags, mailmerge, workspace status, LinkedIn connection flags) plus local events, and **quarantine resolutions** (`skip` / `assign`) to the relay. Large backlogs use **5000 entries per `/push`** automatically (see relay sync limits above). At the end of the same command it may POST aggregate local DB health to the portal (file size, row counts, top tables — throttled ~6h). Skip with `sync --no-health-report`. Other machines run `pull --full` after a DB reset to restore everything that was synced.
 
 ### Quarantine (multi-workspace)
 
@@ -315,7 +321,7 @@ python3 scripts/pipeline.py pull
 
 Relay stores resolutions in D1 (`queue_resolutions`). The first event page of each `pull` requests them (`include_queue_resolutions=1`); later pages reuse the in-memory map.
 
-**`sync --status` counters:** `relay_untracked_leads` = imported/local leads with no relay pull history (normal after CSV; data is still in the shared DB). `cloud_pending_leads` = rows waiting to push — run `sync`. `local_agent_events` = agent-originated events not yet on relay.
+**`sync --status` counters:** `recommended_mode` is `bulk` when `cloud_pending_leads` ≥ 2500 (else `push`). `relay_untracked_leads` = imported/local leads with no relay pull history (normal after CSV; data is still in the shared DB). `cloud_pending_leads` = rows waiting to push — run `sync`. `local_agent_events` = agent-originated events not yet on relay.
 
 ### Local database health
 

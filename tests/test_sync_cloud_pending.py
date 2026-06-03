@@ -157,8 +157,13 @@ class CloudPendingLogicTests(unittest.TestCase):
         ):
             os.environ.pop(key, None)
         settings = om.get_relay_push_settings()
-        self.assertEqual(settings["batch_size"], 50)
+        self.assertEqual(settings["batch_size"], 200)
         self.assertEqual(settings["timeout_seconds"], 120)
+        self.assertFalse(settings.get("bulk"))
+
+        bulk_settings = om.get_relay_push_settings(bulk=True)
+        self.assertEqual(bulk_settings["batch_size"], 5000)
+        self.assertTrue(bulk_settings.get("bulk"))
 
 
 if __name__ == "__main__":

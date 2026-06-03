@@ -59,6 +59,49 @@ def fetch_routing_bundle(api_base: str, token: str) -> dict[str, Any]:
     return _request_json("GET", f"{api_base}/api/routing-config", token)
 
 
+def campaign_map_signature(
+    *,
+    source_platform: str,
+    match_strategy: str,
+    campaign_id: Optional[str],
+    campaign_name_normalized: Optional[str],
+    workspace_slug: str,
+) -> tuple[str, str, Optional[str], Optional[str], str]:
+    """Stable key for comparing local and cloud routing rules."""
+    platform = (source_platform or "*").strip().lower()
+    strategy = (match_strategy or "id_exact").strip().lower()
+    cid = (campaign_id or "").strip() or None
+    cname = (campaign_name_normalized or "").strip().lower() or None
+    slug = (workspace_slug or "").strip().lower()
+    return (platform, strategy, cid, cname, slug)
+
+
+def cloud_campaign_map_signatures(bundle: dict[str, Any]) -> set[tuple[str, str, Optional[str], Optional[str], str]]:
+    sigs: set[tuple[str, str, Optional[str], Optional[str], str]] = set()
+    for item in bundle.get("campaignMaps") or []:
+        slug = item.get("workspaceSlug") or ""
+        if not slug:
+            continue
+        sigs.add(
+            campaign_map_signature(
+                source_platform=item.get("sourcePlatform") or "*",
+                match_strategy=item.get("matchStrategy") or "id_exact",
+                campaign_id=item.get("campaignId"),
+                campaign_name_normalized=item.get("campaignNameNormalized"),
+                workspace_slug=slug,
+            )
+        )
+    return sigs
+
+
+def delete_campaign_map(api_base: str, token: str, map_id: str) -> dict[str, Any]:
+    return _request_json(
+        "DELETE",
+        f"{api_base}/api/routing-config/campaign-maps/{map_id}",
+        token,
+    )
+
+
 def apply_routing_bundle_to_sqlite(
     conn: sqlite3.Connection,
     bundle: dict[str, Any],
@@ -94,7 +137,12 @@ def apply_routing_bundle_to_sqlite(
         ).fetchone()
         if row:
             old_id = row[0]
-            for child_table in ("workspace_leads", "campaign_workspace_map"):
+            for child_table in (
+                "workspace_leads",
+                "campaign_workspace_map",
+                "workspace_lead_tags",
+                "workspace_lead_linkedin_status",
+            ):
                 conn.execute(
                     f"UPDATE {child_table} SET workspace_id = ? WHERE workspace_id = ?",
                     (ws_id, old_id),

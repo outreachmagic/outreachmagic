@@ -116,9 +116,14 @@ from constants import (
     BILLING_UPGRADE_URL,
     MAX_EVENT_BODY_STORAGE_CHARS,
     PIPELINE_STAGES,
+    RELAY_BULK_THRESHOLD,
+    RELAY_PULL_MAX,
+    RELAY_PULL_PAGE_SIZE,
     RELAY_PUSH_BATCH_SIZE,
     RELAY_PUSH_MAX_ATTEMPTS,
+    RELAY_PUSH_MAX_BULK,
     RELAY_PUSH_RETRY_BASE_SECONDS,
+    RELAY_PUSH_ROUTINE_MAX,
     RELAY_PUSH_TIMEOUT_SECONDS,
     SHARED_EMAIL_DOMAINS,
     STAGE_EMOJI,
@@ -567,12 +572,41 @@ def _read_positive_int(raw: object, fallback: int) -> int:
         return fallback
 
 
-def get_relay_push_settings() -> dict:
+def _cloud_snapshot_pending_count() -> int:
+    conn = get_conn()
+    try:
+        core = conn.execute(
+            "SELECT COUNT(*) AS n FROM leads WHERE cloud_pending = 1"
+        ).fetchone()["n"]
+        ws = conn.execute(
+            "SELECT COUNT(*) AS n FROM workspace_leads WHERE cloud_pending = 1"
+        ).fetchone()["n"]
+        companies = conn.execute(
+            "SELECT COUNT(*) AS n FROM companies WHERE cloud_pending = 1"
+        ).fetchone()["n"]
+    finally:
+        conn.close()
+    return int(core) + int(ws) + int(companies)
+
+
+def _use_bulk_transport(pending_count: int) -> dict:
+    """Large backlog → 5k push batches and pull pages."""
+    bulk = pending_count >= RELAY_BULK_THRESHOLD
+    return {
+        "bulk": bulk,
+        "push_batch_size": RELAY_PUSH_MAX_BULK if bulk else None,
+        "pull_limit": RELAY_PULL_MAX if bulk else RELAY_PULL_PAGE_SIZE,
+    }
+
+
+def get_relay_push_settings(*, bulk: bool = False) -> dict:
     """Runtime-tunable relay push settings (env overrides config)."""
     cfg = load_config()
+    default_batch = RELAY_PUSH_MAX_BULK if bulk else RELAY_PUSH_BATCH_SIZE
+    batch_cap = RELAY_PUSH_MAX_BULK if bulk else RELAY_PUSH_ROUTINE_MAX
     batch_size = _read_positive_int(
-        os.environ.get("OUTREACHMAGIC_SYNC_BATCH_SIZE", cfg.get("sync_batch_size", RELAY_PUSH_BATCH_SIZE)),
-        RELAY_PUSH_BATCH_SIZE,
+        os.environ.get("OUTREACHMAGIC_SYNC_BATCH_SIZE", cfg.get("sync_batch_size", default_batch)),
+        default_batch,
     )
     timeout_seconds = _read_positive_int(
         os.environ.get("OUTREACHMAGIC_SYNC_TIMEOUT_SECONDS", cfg.get("sync_timeout_seconds", RELAY_PUSH_TIMEOUT_SECONDS)),
@@ -589,8 +623,7 @@ def get_relay_push_settings() -> dict:
         ),
         RELAY_PUSH_RETRY_BASE_SECONDS,
     )
-    # Keep runtime bounds sane on small VPS boxes.
-    batch_size = max(10, min(batch_size, 500))
+    batch_size = max(10, min(batch_size, batch_cap))
     timeout_seconds = max(10, min(timeout_seconds, 300))
     max_attempts = max(1, min(max_attempts, 10))
     retry_base_seconds = max(1, min(retry_base_seconds, 60))
@@ -599,6 +632,7 @@ def get_relay_push_settings() -> dict:
         "timeout_seconds": timeout_seconds,
         "max_attempts": max_attempts,
         "retry_base_seconds": retry_base_seconds,
+        "bulk": bulk,
     }
 
 def _chmod_best_effort(path: Path, mode: int):
@@ -4693,6 +4727,7 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
 
     cloud_ws_slugs = {w["slug"] for w in bundle.get("workspaces") or []}
     cloud_map_ids = {m["id"] for m in bundle.get("campaignMaps") or []}
+    cloud_map_sigs = routing_cloud.cloud_campaign_map_signatures(bundle)
 
     conn = get_conn()
     config = get_org_routing_config(conn, org_id)
@@ -4700,7 +4735,11 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
         "SELECT name, slug FROM workspaces WHERE org_id = ?", (org_id,)
     ).fetchall()
     local_maps = conn.execute(
-        "SELECT id, campaign_name_normalized, campaign_id, match_strategy FROM campaign_workspace_map WHERE org_id = ? AND is_active = 1",
+        """SELECT m.id, m.source_platform, m.campaign_name_normalized, m.campaign_id,
+                  m.match_strategy, m.cloud_synced, w.slug AS workspace_slug
+           FROM campaign_workspace_map m
+           JOIN workspaces w ON w.id = m.workspace_id
+           WHERE m.org_id = ? AND m.is_active = 1""",
         (org_id,),
     ).fetchall()
     conn.close()
@@ -4715,12 +4754,22 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
 
     pending_maps = []
     for row in local_maps:
-        if row["id"] not in cloud_map_ids:
-            pending_maps.append({
-                "id": row["id"],
-                "label": row["campaign_name_normalized"] or row["campaign_id"] or "rule",
-                "match_strategy": row["match_strategy"],
-            })
+        if row["id"] in cloud_map_ids:
+            continue
+        sig = routing_cloud.campaign_map_signature(
+            source_platform=row["source_platform"],
+            match_strategy=row["match_strategy"],
+            campaign_id=row["campaign_id"],
+            campaign_name_normalized=row["campaign_name_normalized"],
+            workspace_slug=row["workspace_slug"],
+        )
+        if sig in cloud_map_sigs:
+            continue
+        pending_maps.append({
+            "id": row["id"],
+            "label": row["campaign_name_normalized"] or row["campaign_id"] or "rule",
+            "match_strategy": row["match_strategy"],
+        })
 
     conn2 = get_conn()
     local_lead_count = conn2.execute(
@@ -4772,6 +4821,11 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
         "pending_quarantine_resolutions": pending_quarantine_count,
         "pending_total": pending_total + cloud_pending,
         "synced": pending_total == 0 and cloud_pending == 0,
+        "recommended_mode": (
+            "bulk"
+            if (pending_lead_core_count + pending_workspace_count) >= RELAY_BULK_THRESHOLD
+            else "push"
+        ),
     }
 
 
@@ -4899,7 +4953,20 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
         results["message"] = "Workspaces and rules already synced."
         # Still fall through — lead snapshots may need push (cloud_pending).
 
-    print("Syncing to relay...", flush=True)
+    snapshot_pending = (
+        status.get("cloud_pending_lead_core", 0)
+        + status.get("cloud_pending_lead_workspaces", 0)
+    )
+    transport = _use_bulk_transport(snapshot_pending)
+    if transport["bulk"]:
+        print(
+            f"Syncing to relay (large mode: {transport['push_batch_size']}/request) — "
+            f"{snapshot_pending} snapshot(s) pending, "
+            f"{status.get('local_agent_events', 0)} event(s) pending...",
+            flush=True,
+        )
+    else:
+        print("Syncing to relay...", flush=True)
 
     for ws in status.get("pending_workspaces") or []:
         try:
@@ -4944,6 +5011,22 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
     conn.commit()
     conn.close()
 
+    routing_pushed = bool(results["workspaces_synced"] or results["rules_synced"])
+    if routing_pushed:
+        conn = get_conn()
+        try:
+            routing_cloud.sync_routing_from_cloud(
+                conn,
+                api_base=api_base,
+                token=tok,
+                org_id=org_id,
+                load_config_fn=load_config,
+                save_config_fn=save_config,
+                quiet=True,
+            )
+        finally:
+            conn.close()
+
     total = len(results["workspaces_synced"]) + len(results["rules_synced"])
     results["status"] = "ok"
 
@@ -4952,7 +5035,8 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
     parts = []
     if total:
         parts.append(f"Synced {total} item{'s' if total != 1 else ''} to cloud.")
-    results["relay_push_settings"] = get_relay_push_settings()
+    results["relay_push_settings"] = get_relay_push_settings(bulk=transport["bulk"])
+    results["recommended_mode"] = status.get("recommended_mode", "push")
     agent_key = get_agent_key()
     if local_events and agent_key:
         agent_push = _push_agent_events_to_relay(agent_key)
@@ -5041,12 +5125,15 @@ def _relay_push_batches(
     client_id: str,
     *,
     stream_label: str = "entries",
+    bulk: bool = False,
+    mark_ids: Optional[list] = None,
+    on_mark_cleared=None,
 ) -> dict:
     """Push relay entries in batches and return diagnostics."""
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
 
-    settings = get_relay_push_settings()
+    settings = get_relay_push_settings(bulk=bulk)
     batch_size = settings["batch_size"]
     timeout_seconds = settings["timeout_seconds"]
     max_attempts = settings["max_attempts"]
@@ -5058,15 +5145,18 @@ def _relay_push_batches(
     timeout_failures = 0
     total_batches = (len(entries) + batch_size - 1) // batch_size
 
+    batch_started = time.monotonic()
     for i in range(0, len(entries), batch_size):
         batch = entries[i : i + batch_size]
         batch_num = i // batch_size + 1
+        batch_mark = mark_ids[i : i + batch_size] if mark_ids else None
         print(
             f"{stream_label}: batch {batch_num}/{total_batches} "
-            f"({len(batch)} this batch, {total_pushed}/{len(entries)} pushed so far)...",
+            f"({len(batch)} entries, {total_pushed}/{len(entries)} pushed so far)...",
             flush=True,
         )
         body = json.dumps({"client_id": client_id, "entries": batch}).encode()
+        batch_t0 = time.monotonic()
         for attempt in range(1, max_attempts + 1):
             req = urllib.request.Request(
                 f"{RELAY_URL}/push",
@@ -5084,11 +5174,31 @@ def _relay_push_batches(
                     count = int(result.get("pushed", 0) or 0)
                     total_pushed += count
                     last_error = None
+                    written = int(result.get("snapshot_upserts", 0) or 0)
+                    unchanged = int(result.get("snapshot_skipped_unchanged", 0) or 0)
+                    elapsed = time.monotonic() - batch_t0
+                    detail = ""
+                    if written or unchanged:
+                        detail = f", {written} written, {unchanged} unchanged"
                     print(
-                        f"{stream_label}: batch {batch_num}/{total_batches} complete "
-                        f"({total_pushed}/{len(entries)} pushed).",
+                        f"{stream_label}: batch {batch_num}/{total_batches} — ok {elapsed:.1f}s"
+                        f"{detail} ({total_pushed}/{len(entries)} pushed).",
                         flush=True,
                     )
+                    if batch_mark and on_mark_cleared and count >= len(batch):
+                        on_mark_cleared(batch_mark)
+                    elif batch_mark and on_mark_cleared and count > 0:
+                        print(
+                            f"{stream_label}: batch {batch_num}/{total_batches} — "
+                            f"partial ({count}/{len(batch)}); leaving cloud_pending set for retry",
+                            flush=True,
+                        )
+                    if result.get("truncated"):
+                        print(
+                            f"{stream_label}: warning — relay capped request; "
+                            "retry sync for remaining entries",
+                            flush=True,
+                        )
                     break
             except urllib.error.HTTPError as exc:
                 body_text = ""
@@ -5141,11 +5251,19 @@ def _relay_push_batches(
 
     recommendation: Optional[str] = None
     if last_error and ("timed out" in last_error.lower() or throttled):
-        suggestion = max(10, min(batch_size // 2, 500))
+        suggestion = max(10, min(batch_size // 2, RELAY_PUSH_ROUTINE_MAX))
         recommendation = (
             "Try smaller sync batches and/or longer timeout: "
             f"OUTREACHMAGIC_SYNC_BATCH_SIZE={suggestion} "
             f"OUTREACHMAGIC_SYNC_TIMEOUT_SECONDS={min(timeout_seconds + 30, 300)}"
+        )
+    elapsed_total = time.monotonic() - batch_started
+    if not last_error and total_pushed > 0:
+        mode = "large" if bulk else "routine"
+        print(
+            f"{stream_label}: done — {total_pushed} pushed in {total_batches} request(s) "
+            f"({mode} mode, {elapsed_total:.1f}s).",
+            flush=True,
         )
     return {
         "pushed": total_pushed,
@@ -5168,6 +5286,7 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
         entries,
         client_id,
         stream_label="Agent events",
+        bulk=len(entries) >= RELAY_BULK_THRESHOLD,
     )
     if result.get("pushed", 0) > 0:
         # Mark events as ingested locally so we don't push them again
@@ -5256,8 +5375,37 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
         ws_mark_keys.append((lead_id, row["workspace_id"]))
 
     conn.close()
+
+    pending_total = len(core_entries) + len(ws_entries)
+    bulk = pending_total >= RELAY_BULK_THRESHOLD
     total_pushed = 0
     last_result: dict = {"pushed": 0, "error": None, "throttled": False}
+
+    def clear_core_ids(ids: list) -> None:
+        if not ids:
+            return
+        mark_conn = get_conn()
+        ph = ",".join("?" for _ in ids)
+        mark_conn.execute(f"UPDATE leads SET cloud_pending = 0 WHERE id IN ({ph})", ids)
+        mark_conn.execute(
+            f"UPDATE lead_personalization SET cloud_pending = 0 WHERE lead_id IN ({ph})",
+            ids,
+        )
+        mark_conn.commit()
+        mark_conn.close()
+
+    def clear_ws_keys(keys: list) -> None:
+        if not keys:
+            return
+        mark_conn = get_conn()
+        for lead_id, workspace_id in keys:
+            mark_conn.execute(
+                """UPDATE workspace_leads SET cloud_pending = 0
+                   WHERE lead_id = ? AND workspace_id = ?""",
+                (lead_id, workspace_id),
+            )
+        mark_conn.commit()
+        mark_conn.close()
 
     if core_entries:
         print(f"Pushing {len(core_entries)} lead core snapshot(s)...", flush=True)
@@ -5266,21 +5414,14 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
             core_entries,
             client_id,
             stream_label="Lead core snapshots",
+            bulk=bulk,
+            mark_ids=core_mark_ids,
+            on_mark_cleared=clear_core_ids,
         )
         total_pushed += int(last_result.get("pushed", 0) or 0)
         if last_result.get("error"):
             last_result["pushed"] = total_pushed
             return last_result
-        if int(last_result.get("pushed", 0) or 0) >= len(core_entries) and core_mark_ids:
-            mark_conn = get_conn()
-            ph = ",".join("?" for _ in core_mark_ids)
-            mark_conn.execute(f"UPDATE leads SET cloud_pending = 0 WHERE id IN ({ph})", core_mark_ids)
-            mark_conn.execute(
-                f"UPDATE lead_personalization SET cloud_pending = 0 WHERE lead_id IN ({ph})",
-                core_mark_ids,
-            )
-            mark_conn.commit()
-            mark_conn.close()
 
     if ws_entries:
         print(f"Pushing {len(ws_entries)} lead workspace snapshot(s)...", flush=True)
@@ -5289,22 +5430,15 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
             ws_entries,
             client_id,
             stream_label="Lead workspace snapshots",
+            bulk=bulk,
+            mark_ids=ws_mark_keys,
+            on_mark_cleared=clear_ws_keys,
         )
         total_pushed += int(ws_result.get("pushed", 0) or 0)
         last_result = ws_result
         if ws_result.get("error"):
             last_result["pushed"] = total_pushed
             return last_result
-        if int(ws_result.get("pushed", 0) or 0) >= len(ws_entries) and ws_mark_keys:
-            mark_conn = get_conn()
-            for lead_id, workspace_id in ws_mark_keys:
-                mark_conn.execute(
-                    """UPDATE workspace_leads SET cloud_pending = 0
-                       WHERE lead_id = ? AND workspace_id = ?""",
-                    (lead_id, workspace_id),
-                )
-            mark_conn.commit()
-            mark_conn.close()
 
     last_result["pushed"] = total_pushed
     return last_result
@@ -5336,28 +5470,30 @@ def _push_pending_company_updates(agent_key: str) -> dict:
     if not entries:
         return {"pushed": 0, "error": None, "throttled": False}
 
+    bulk = len(entries) >= RELAY_BULK_THRESHOLD
+
+    def clear_company_ids(ids: list) -> None:
+        if not ids:
+            return
+        mark_conn = get_conn()
+        ph = ",".join("?" for _ in ids)
+        mark_conn.execute(f"UPDATE companies SET cloud_pending = 0 WHERE id IN ({ph})", ids)
+        mark_conn.execute(
+            f"UPDATE company_personalization SET cloud_pending = 0 WHERE company_id IN ({ph})",
+            ids,
+        )
+        mark_conn.commit()
+        mark_conn.close()
+
     push_result = _relay_push_batches(
         agent_key,
         entries,
         client_id,
         stream_label="Company updates",
+        bulk=bulk,
+        mark_ids=pushed_ids,
+        on_mark_cleared=clear_company_ids,
     )
-    if int(push_result.get("pushed", 0) or 0) <= 0:
-        return push_result
-
-    mark_count = min(int(push_result.get("pushed", 0) or 0), len(pushed_ids))
-    mark_conn = get_conn()
-    placeholders = ",".join("?" for _ in pushed_ids[:mark_count])
-    mark_conn.execute(
-        f"UPDATE companies SET cloud_pending = 0 WHERE id IN ({placeholders})",
-        pushed_ids[:mark_count],
-    )
-    mark_conn.execute(
-        f"UPDATE company_personalization SET cloud_pending = 0 WHERE company_id IN ({placeholders})",
-        pushed_ids[:mark_count],
-    )
-    mark_conn.commit()
-    mark_conn.close()
     return push_result
 
 
@@ -6113,15 +6249,14 @@ def ingest_agent_entry(
     return lead_id
 
 
-RELAY_PULL_PAGE_SIZE = 1000
 RELAY_PULL_HTTP_TIMEOUT = 60
 RELAY_PULL_HTTP_RETRIES = 2
 
 
-def _estimate_relay_pages(pending: Optional[int]) -> Optional[int]:
+def _estimate_relay_pages(pending: Optional[int], page_size: int = RELAY_PULL_PAGE_SIZE) -> Optional[int]:
     if pending is None or pending <= 0:
         return None
-    return max(1, (pending + RELAY_PULL_PAGE_SIZE - 1) // RELAY_PULL_PAGE_SIZE)
+    return max(1, (pending + page_size - 1) // page_size)
 
 
 def _pull_failure_message(exc: Exception) -> str:
@@ -6170,9 +6305,14 @@ def pull_events_org(
     snapshots_only: bool = False,
     include_pending: bool = False,
     include_queue_resolutions: bool = False,
+    limit: Optional[int] = None,
+    timeout: Optional[int] = None,
 ) -> dict:
     """Pull org events from relay (cursor-only: after_id / snapshot_after_id)."""
     params = []
+    if limit and limit > 0:
+        params.append(f"limit={min(int(limit), RELAY_PULL_MAX)}")
+    pull_timeout = timeout if timeout is not None else RELAY_PULL_HTTP_TIMEOUT
     if after_id:
         params.append(f"after_id={after_id}")
     if platform:
@@ -6200,7 +6340,7 @@ def pull_events_org(
     last_error: Optional[dict] = None
     for attempt in range(RELAY_PULL_HTTP_RETRIES + 1):
         try:
-            with urllib.request.urlopen(req, timeout=RELAY_PULL_HTTP_TIMEOUT) as resp:
+            with urllib.request.urlopen(req, timeout=pull_timeout) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
             body = e.read().decode() if e.fp else ""
@@ -6386,6 +6526,13 @@ def sync_from_relay_org(
     slug_cache = qres.WorkspaceSlugCache()
     skipped_resolved = assigned_resolved = 0
 
+    pull_limit = RELAY_PULL_MAX if full else RELAY_PULL_PAGE_SIZE
+    pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS if pull_limit >= RELAY_PULL_MAX else RELAY_PULL_HTTP_TIMEOUT
+
+    if not quiet:
+        mode = "large pages" if pull_limit >= RELAY_PULL_MAX else "routine pages"
+        print(f"Pulling from relay ({mode}: {pull_limit}/page)...", flush=True)
+
     while True:
         event_pages += 1
         result = pull_events_org(
@@ -6393,6 +6540,8 @@ def sync_from_relay_org(
             after_id=page_after_id or None,
             include_pending=event_pages == 1,
             include_queue_resolutions=event_pages == 1,
+            limit=pull_limit,
+            timeout=pull_timeout,
         )
         if result.get("error"):
             raise RuntimeError(result.get("message", "pull failed"))
@@ -6406,22 +6555,25 @@ def sync_from_relay_org(
 
         if event_pages == 1 and result.get("pending_event_count") is not None:
             pending_events = int(result["pending_event_count"])
-            est_event_pages = _estimate_relay_pages(pending_events)
+            if pending_events >= RELAY_BULK_THRESHOLD:
+                pull_limit = RELAY_PULL_MAX
+                pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS
+            est_event_pages = _estimate_relay_pages(pending_events, pull_limit)
             if not quiet and pending_events > 0:
                 pages_hint = f"~{est_event_pages}p" if est_event_pages else "mult"
                 print(
-                    f"Relay: ~{pending_events} pending ({pages_hint} @ {RELAY_PULL_PAGE_SIZE}/p)...",
+                    f"Relay: ~{pending_events} pending ({pages_hint} @ {pull_limit}/p)...",
                     flush=True,
                 )
         elif (
             event_pages == 1
             and pending_events is None
             and not quiet
-            and len(events) >= RELAY_PULL_PAGE_SIZE
+            and len(events) >= pull_limit
         ):
             print(
                 f"Relay events: first page has {len(events)} records "
-                f"(@ {RELAY_PULL_PAGE_SIZE}/page max — more pages follow)...",
+                f"(@ {pull_limit}/page max — more pages follow)...",
                 flush=True,
             )
 
@@ -6430,7 +6582,7 @@ def sync_from_relay_org(
             page_label = f"p{event_pages}"
             if est_event_pages:
                 page_label = f"p{event_pages}/~{est_event_pages}"
-            elif len(events) >= RELAY_PULL_PAGE_SIZE:
+            elif len(events) >= pull_limit:
                 page_label = f"p{event_pages}+"
             progress = f"{relay_events_seen}/{pending_events}" if pending_events else str(relay_events_seen)
             print(
@@ -6455,11 +6607,11 @@ def sync_from_relay_org(
         newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
 
         next_after_id = int(result.get("max_id") or page_after_id)
-        if len(events) >= RELAY_PULL_PAGE_SIZE and next_after_id <= page_after_id:
+        if len(events) >= pull_limit and next_after_id <= page_after_id:
             cursor_stalled = True
             break
         page_after_id = next_after_id
-        if len(events) < RELAY_PULL_PAGE_SIZE:
+        if len(events) < pull_limit:
             break
 
     pending_snapshots: Optional[int] = None
@@ -6477,6 +6629,8 @@ def sync_from_relay_org(
                 snapshot_kind=snap_kind,
                 snapshots_only=True,
                 include_pending=snap_pages == 1 and kind_pages == 1,
+                limit=pull_limit,
+                timeout=pull_timeout,
             )
             if snap_result.get("error"):
                 raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
@@ -6488,11 +6642,14 @@ def sync_from_relay_org(
 
             if snap_pages == 1 and kind_pages == 1 and snap_result.get("pending_snapshot_count") is not None:
                 pending_snapshots = int(snap_result["pending_snapshot_count"])
-                est_snap_pages = _estimate_relay_pages(pending_snapshots)
+                if pending_snapshots >= RELAY_BULK_THRESHOLD:
+                    pull_limit = RELAY_PULL_MAX
+                    pull_timeout = RELAY_PUSH_TIMEOUT_SECONDS
+                est_snap_pages = _estimate_relay_pages(pending_snapshots, pull_limit)
                 if not quiet and pending_snapshots > 0:
                     pages_hint = f"~{est_snap_pages}p" if est_snap_pages else "mult"
                     print(
-                        f"Snapshots: ~{pending_snapshots} pending ({pages_hint} @ {RELAY_PULL_PAGE_SIZE}/p)...",
+                        f"Snapshots: ~{pending_snapshots} pending ({pages_hint} @ {pull_limit}/p)...",
                         flush=True,
                     )
 
@@ -8143,7 +8300,16 @@ def main():
             print(json.dumps(result, indent=2))
             return
         if getattr(args, "status", False):
-            print(json.dumps(get_sync_status(), indent=2))
+            status = get_sync_status()
+            mode = status.get("recommended_mode", "push")
+            pending = status.get("cloud_pending_leads", 0)
+            if pending:
+                print(
+                    f"Sync status: {mode} mode recommended — "
+                    f"{pending} snapshot(s) pending cloud push",
+                    flush=True,
+                )
+            print(json.dumps(status, indent=2))
         else:
             if getattr(args, "full_snapshot_v2", False):
                 mark_all_lead_snapshots_pending()

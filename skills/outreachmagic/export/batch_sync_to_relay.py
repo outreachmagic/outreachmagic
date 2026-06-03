@@ -6,8 +6,8 @@ How it works (not Cloudflare cron batches — local script batches):
   1. EVENTS phase (once): pipeline.py sync pushes ~62k legacy message events to POST /push.
   2. LEADS phase (loop): walk every lead by id in chunks of BATCH_SIZE (default 2500):
        a. SET cloud_pending=1 on those leads (+ their workspace_leads rows)
-       b. pipeline.py sync uploads lead_core_update + lead_workspace_update snapshots
-       c. Relay returns success → cloud_pending cleared back to 0 for that chunk
+       b. pipeline.py sync uploads snapshots (auto 5000/request when pending ≥ 2500)
+       c. Relay returns success → cloud_pending cleared per successful push batch
   Each chunk is one "batch" in batch_sync.log. ~46 batches for 114k leads.
 
 Resume: OM_SYNC_RESUME_AFTER_ID or auto-detect from last "batch N done" in the log.
@@ -30,7 +30,7 @@ PIPELINE = SKILL_ROOT / "scripts" / "pipeline.py"
 LOG = SKILL_ROOT / "export" / "batch_sync.log"
 CURSOR_CFG = Path.home() / ".cursor/skills/outreachmagic/config/outreachmagic_config.json"
 BATCH_SIZE = int(os.environ.get("OM_SYNC_LEAD_BATCH", "2500"))
-PUSH_BATCH_SIZE = int(os.environ.get("OUTREACHMAGIC_SYNC_BATCH_SIZE", "400"))
+# pipeline.py picks push batch size automatically (5000 when pending ≥ 2500).
 SLEEP_S = float(os.environ.get("OM_SYNC_SLEEP", "2"))
 
 
@@ -178,11 +178,10 @@ def main() -> None:
     key = agent_key()
     env = os.environ.copy()
     env["OUTREACHMAGIC_AGENT_KEY"] = key
-    env["OUTREACHMAGIC_SYNC_BATCH_SIZE"] = str(PUSH_BATCH_SIZE)
     env.setdefault("OUTREACHMAGIC_SYNC_TIMEOUT_SECONDS", "180")
 
     log(
-        f"settings: lead_batch={BATCH_SIZE} push_batch={PUSH_BATCH_SIZE} "
+        f"settings: lead_batch={BATCH_SIZE} push_batch=auto (5000 when pending≥2500) "
         f"sync_timeout={env['OUTREACHMAGIC_SYNC_TIMEOUT_SECONDS']}s"
     )
 

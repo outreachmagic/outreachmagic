@@ -223,15 +223,33 @@ If `update` fails on an **old** install, use `--tag` with a version you confirme
 
 Before tagging releases that touch relay ingest or pull:
 
+**Deploy order when changing relay caps (worker + skill):**
+
+1. Deploy **wbhk-worker** to production first (`npx wrangler deploy` — 5k `/push`, `GET /pull?limit=` up to 5000).
+2. Tag and publish **outreachmagic-skill** (pipeline auto bulk threshold ≥ 2500).
+3. Verify each platform install (`version`, `sync --status`, `pull --diagnose`).
+
 ```bash
 python3 skills/outreachmagic/scripts/pipeline.py pull --diagnose
 python3 skills/outreachmagic/scripts/pipeline.py pull --full --diagnose
+python3 skills/outreachmagic/scripts/pipeline.py sync --status
 ```
 
 Expected:
 
 - Diagnostics show mode, cursor start/end, pages, newest relay id, skip breakdown.
 - Full pull completes without cursor stall in healthy environments.
+- `sync --status` shows `recommended_mode: bulk` when snapshot pending ≥ 2500.
+- Large sync shows progress lines with `5000/request` (or env override below cap).
+
+### Platform overlays vs `pipeline.py update`
+
+`update` downloads only files listed in `update-manifest.json` (`scripts/*` + `SKILL.md`). It does **not** refresh:
+
+- `platforms/overlays/cursor/outreachmagic.mdc`
+- `platforms/overlays/claude/CLAUDE_SNIPPET.md`
+
+Those ship on **fresh install** via `install.sh`. After a release that changes overlay wording, tell Cursor/Claude users to re-run install from the new tag or copy the overlay files from the public repo release tree.
 
 ---
 

@@ -26,7 +26,8 @@ In multi-workspace mode, workspace-scoped commands require `--workspace SLUG`.
 
 ### Commands
 
-- `pull` — Fetch latest events from relay (always run first)
+- `pull` — Fetch latest events from relay (always run first; 5000/page on large backlogs)
+- `sync` — Push local changes (5000/request when pending ≥ 2500)
 - `show` / `show --workspace SLUG` — Print pipeline table
 - `stats` — Quick stats summary
 - `campaigns` — Counts by campaign name

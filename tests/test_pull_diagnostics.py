@@ -101,9 +101,10 @@ def test_sync_pull_progress_when_not_quiet(capsys, monkeypatch):
 
     out = capsys.readouterr().out
     assert "Contacting relay to pull new events..." in out
-    assert "Relay events: page 1" in out
-    assert "Pulling core snapshot records" in out
-    assert "Snapshot core: page 1" in out
+    assert "Pulling from relay" in out
+    assert "Relay: p1" in out
+    assert "Pulling core" in out
+    assert "Snapshot (core)" in out
 
 
 def test_pull_uses_id_cursors_only(monkeypatch):
@@ -128,8 +129,8 @@ def test_pull_uses_id_cursors_only(monkeypatch):
 def test_format_pull_summary_includes_lead_count():
     om.init_db()
     summary = om.format_pull_summary(2, 5, {"skipped_duplicates": 3, "skipped_filtered": 2})
-    assert "2 new events" in summary
-    assert "duplicate relay events skipped" in summary
+    assert "Imported: 2 events" in summary
+    assert "3 dupes" in summary
 
 
 def test_pull_failure_message_routing_hint():
@@ -176,7 +177,7 @@ def test_sync_progress_with_pending_counts(capsys, monkeypatch):
     om.sync_from_relay_org("om_agent_test", after_id=0, full=False, quiet=False)
     out = capsys.readouterr().out
     assert "~1400 pending" in out
-    assert "page 1 of ~2" in out
+    assert "p1/~2" in out
     assert "~5336 pending" in out
 
 

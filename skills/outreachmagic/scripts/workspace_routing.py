@@ -1075,7 +1075,9 @@ def assign_campaign_map(
 ) -> str:
     if not campaign_id and not campaign_name:
         raise ValueError("At least one of campaign_id or campaign_name is required for a mapping rule")
-    map_id = f"map_{source_platform}_{campaign_id or campaign_name or 'rule'}"
+    key = campaign_id or normalize_campaign_name(campaign_name) or "rule"
+    safe_key = re.sub(r"[^\w.-]+", "_", str(key))
+    map_id = f"map_{source_platform}_{match_strategy}_{safe_key}"
     conn.execute(
         """INSERT OR REPLACE INTO campaign_workspace_map (
                id, org_id, source_platform, campaign_id, campaign_name_normalized,

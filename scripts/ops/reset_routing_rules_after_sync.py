@@ -8,9 +8,9 @@ Does not stop or interfere with batch sync — polls until the job is done, then
   3. Clear local campaign_workspace_map and pull cloud bundle into SQLite
 
 Usage:
-  python3 scripts/reset_routing_rules_after_sync.py           # wait for batch sync, then reset
-  python3 scripts/reset_routing_rules_after_sync.py --no-wait # reset immediately
-  python3 scripts/reset_routing_rules_after_sync.py --dry-run
+  python3 scripts/ops/reset_routing_rules_after_sync.py           # wait for batch sync, then reset
+  python3 scripts/ops/reset_routing_rules_after_sync.py --no-wait # reset immediately
+  python3 scripts/ops/reset_routing_rules_after_sync.py --dry-run
 """
 from __future__ import annotations
 
@@ -22,14 +22,14 @@ import sys
 import time
 from pathlib import Path
 
-SKILL_SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "outreachmagic" / "scripts"
+SKILL_SCRIPTS = Path(__file__).resolve().parents[2] / "skills" / "outreachmagic" / "scripts"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 
 import pipeline as om  # noqa: E402
 import routing_cloud  # noqa: E402
 from workspace_routing import DEFAULT_ORG_ID  # noqa: E402
 
-BATCH_LOG = Path(__file__).resolve().parents[1] / "skills" / "outreachmagic" / "export" / "batch_sync.log"
+BATCH_LOG = Path(__file__).resolve().parents[2] / "skills" / "outreachmagic" / "export" / "batch_sync.log"
 CURSOR_CFG = Path.home() / ".cursor/skills/outreachmagic/config/outreachmagic_config.json"
 POLL_SECONDS = int(os.environ.get("OM_ROUTING_RESET_POLL", "30"))
 

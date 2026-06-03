@@ -25,6 +25,28 @@ from typing import Any, Optional
 DEFAULT_ORG_ID = "default"
 DEFAULT_WORKSPACE_SLUG = "default"
 
+
+def resolve_workspace_identity(
+    conn: sqlite3.Connection,
+    workspace: Optional[str],
+    *,
+    org_id: str = DEFAULT_ORG_ID,
+) -> Optional[dict]:
+    """Resolve workspace slug or display name to {id, name, slug}."""
+    token = (workspace or "").strip()
+    if not token:
+        return None
+    row = conn.execute(
+        """SELECT id, name, slug
+           FROM workspaces
+           WHERE org_id = ?
+             AND (lower(slug) = lower(?) OR lower(name) = lower(?))
+           ORDER BY CASE WHEN lower(slug) = lower(?) THEN 0 ELSE 1 END
+           LIMIT 1""",
+        (org_id, token, token, token),
+    ).fetchone()
+    return dict(row) if row else None
+
 WORKSPACE_ROUTING_SINGLE = "single"
 WORKSPACE_ROUTING_MULTI = "multi"
 VALID_WORKSPACE_ROUTING_MODES = (WORKSPACE_ROUTING_SINGLE, WORKSPACE_ROUTING_MULTI)

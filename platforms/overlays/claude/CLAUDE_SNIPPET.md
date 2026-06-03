@@ -4,67 +4,28 @@
 
 All pipeline commands use: `python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py`
 
-Database: `~/.claude/skills/outreachmagic/databases/outreachmagic.db`
-Config: `~/.claude/skills/outreachmagic/config/outreachmagic_config.json`
+### Reads vs refresh
 
-### Mandatory: always pull before showing data
-
-Before showing any pipeline data (show, stats, campaigns, history), ALWAYS run:
-
-```bash
-python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py pull
-```
-
-### Org-wide vs workspace-scoped
-
-In multi-workspace mode, workspace-scoped commands require `--workspace SLUG`.
-
-**Org-wide (no workspace needed):** `add-lead` (creating/looking up a lead).
-**Workspace-scoped (workspace required):** `log-event`, `update-stage`.
-
-`add-lead` accepts an optional `--workspace` to also associate the lead with a workspace at creation time.
+- **Analytics (by campaign, time windows):** `query engagement --workspace SLUG --since 48h --json` — no pull required.
+- **Latest activity / timelines:** run `pull` first.
 
 ### Commands
 
-- `pull` — Fetch latest events from relay (always run first; events 1000/page, snapshots up to 5000/page)
-- `sync` — Push local changes (5000/request when pending ≥ 2500)
-- `show` / `show --workspace SLUG` — Print pipeline table
-- `stats` — Quick stats summary
-- `campaigns` — Counts by campaign name
-- `history --id N` — Full timeline for a lead
-- `history --email j@acme.com` — Look up by email
-- `add-lead --name "Jane" --email j@acme.com --company "Acme"` — Add a lead (org-wide)
-- `add-lead ... --workspace SLUG` — Add a lead and associate with workspace
-- `import-profiles --file leads.csv` — Bulk import from CSV/JSON
-- `log-event --lead-id 1 --type email_sent --workspace SLUG` — Log outreach event (workspace required)
-- `update-stage --id 1 --stage replied --workspace SLUG` — Update pipeline stage (workspace required)
-- `copy-insights --lead-status interested` — Message copy analysis
-- `show --sentiment positive` — Filter by sentiment
-- `show --lead-status interested --json` — JSON output
-- `show --since today` — Filter by date (YYYY-MM-DD or 'today')
-- `lead-table --workspace acme_corp --since today --json` — Today's leads for a workspace
-- `workspace list` — List available workspaces
-- `personalize-pending --json` — List leads needing personalization (default: first_name, company_name)
-- `personalize-set --lead-id N --field F --value V` — Write a personalization value
-- `personalize-set --batch --json '[...]'` — Bulk write personalization values
-- `personalize-get --lead-id N --json` — Read personalization for a lead
-- `personalize-status` — Personalization summary counts
-- `cleanup-rules` — Remove invalid campaign mapping rules
+- `query engagement|replies|interested` — read-only analytics (preferred for counts)
+- `pull` — refresh from relay when needed
+- `show`, `history`, `stats`, `campaigns`, `import-profiles`, `log-event`, `update-stage`
+- `workspace summary --workspace SLUG --json` — tags / LinkedIn sender stats
 
 ### Rules
 
-- NEVER use `python3 -c`, `sqlite3`, or raw SQL directly on the database. All operations go through `pipeline.py`.
-- Always run `pull` before showing any pipeline data.
-- Use `import-profiles` for bulk enrichment (CSV, JSON), not repeated `add-lead`.
-- Always pass `--workspace SLUG` on `log-event` and `update-stage` in multi-workspace mode.
-- Never guess email addresses — ask the user or check source material.
-- Stages: prospecting -> contacted -> replied -> interested -> proposal -> won | lost
+- **Reads:** `pipeline.py query` or read-only `query --sql` (SELECT only). Not `python3 -c` / raw `sqlite3`.
+- **Writes:** only `pipeline.py` mutation commands.
+- Use **`events`** for volume analytics, not `workspace_lead_events`.
+- `sync` only when the user asked.
+
+Reference: `~/.claude/skills/outreachmagic/references/query-guide.md`
 
 ### Setup
 
-If not yet connected, get an Agent Key at https://app.outreachmagic.io/setup/agent then run:
-
-```bash
-python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py login
-```
+If not connected: `pipeline.py login` — https://app.outreachmagic.io/setup/agent
 <!-- /Outreach Magic -->

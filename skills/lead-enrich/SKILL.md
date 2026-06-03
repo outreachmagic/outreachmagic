@@ -127,7 +127,7 @@ python3 scripts/enrich.py backfill --fields title,industry --workspace your_work
 4. **Complete research before saving.** Run the full search ladder first, then save once.
 5. **Save via outreachmagic.** Use `import-profiles` for leads with LinkedIn.
    For leads without LinkedIn, use `add-lead` with notes (absolute last resort) or report unsaved.
-   Never write raw SQL. Never run both save paths for the same person.
+   For read-only dedup checks use `pipeline.py query` or `enrich.py check` — never raw `INSERT`/`UPDATE`. Never run both save paths for the same person.
 6. **Transparency.** Show which Serper queries ran, confidence, and what was
    saved. The user should see exactly where their credits went.
 7. **Batch wisely.** Cap at 50 people per run. For CSV/award lists run **`batch-check` once** on the whole file (JSON or CSV) before any Serper. Process Serper only for statuses that need LinkedIn/domain. Skip `team_award` and `exists_linkedin_email` rows.
@@ -449,7 +449,7 @@ Max 50 people per run.
 - ❌ Use external LLM APIs (Gemini, OpenAI, etc.) for extraction
 - ❌ Scrape HTML pages or LinkedIn directly
 - ❌ Guess email addresses (use **email-finder** skill)
-- ❌ Write raw SQL to the outreachmagic database
+- ❌ Write raw SQL or ad-hoc DB mutations (use `import-profiles` / `add-lead`; reads via `pipeline.py query`)
 - ❌ Upload to remote servers (local-only by default)
 
 ---

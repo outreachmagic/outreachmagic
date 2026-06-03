@@ -8,13 +8,13 @@ Activity uses merge=True: latest last_contacted_at and max counts vs existing
 workspace summary (never rolls back newer platform data).
 
 Usage:
-  python3 scripts/legacy_import_may2026.py \\
+  python3 scripts/ops/legacy_import_may2026.py \\
     --file "/path/to/export.csv" \\
     --workspace popcam \\
     --sender-profile "https://linkedin.com/in/YOUR_PROFILE" \\
     --dry-run
 
-  python3 scripts/legacy_import_may2026.py --file export.csv --workspace popcam --sender-profile "..." 
+  python3 scripts/ops/legacy_import_may2026.py --file export.csv --workspace popcam --sender-profile "..." 
   python3 skills/outreachmagic/scripts/pipeline.py sync
 """
 
@@ -26,7 +26,7 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 #
 # Important: this script must run against the *installed* Outreach Magic skill
 # (e.g. ~/.cursor/skills/outreachmagic/...), not against the repo copy. Otherwise

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -137,6 +138,14 @@ def ensure_project_layout() -> Path:
         gitkeep = root / sub / ".gitkeep"
         if not gitkeep.exists():
             gitkeep.touch()
+    guide_src = get_install_dir() / "references" / "query-guide.md"
+    guide_dest = get_agent_resources_dir() / "query-guide.md"
+    if guide_src.is_file():
+        try:
+            if not guide_dest.exists() or guide_src.stat().st_mtime > guide_dest.stat().st_mtime:
+                shutil.copy2(guide_src, guide_dest)
+        except OSError:
+            pass
     return root
 
 

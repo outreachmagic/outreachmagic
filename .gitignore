@@ -3,3 +3,5 @@ relay/
 dist/
 skills/outreachmagic/config/
 skills/outreachmagic/databases/
+skills/outreachmagic/export/batch_sync.log
+skills/outreachmagic/export/*.log

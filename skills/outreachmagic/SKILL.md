@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.24.12
+version: 1.25.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -170,25 +170,49 @@ Install commands for each platform are in **Platform install** above. After inst
 ## Agent Behavior Rules (Important)
 
 - For bulk enrichment (CSV, spreadsheet export, Apollo/Clay dump): use **`import-profiles`**, not repeated `add-lead`.
-- Always run `pull` first before showing pipeline data, history, stats, or campaigns.
-- After any pull, explicitly report the exact number of new records imported.
-- When the user asks about version, read the frontmatter of SKILL.md (version line).
-- When the user asks for message content, use the `history` command on the specific lead.
+- **Reads (analytics, counts, time windows):** use **`pipeline.py query`** presets first — **one query, max two attempts**. See [references/query-guide.md](references/query-guide.md). Do not tour `workspace_lead_events` when the question is relay volume (use **`events`**).
+- **Writes:** only `pipeline.py` mutation commands (`add-lead`, `import-profiles`, `log-event`, `sync`, personalize, tags, etc.). Never `INSERT`/`UPDATE`/`DELETE` via ad-hoc scripts.
+- After any `pull`, explicitly report the exact number of new records imported.
+- When the user asks about version, run **`pipeline.py version`** (authoritative).
+- When the user asks for message content, use `history` on the specific lead.
 - For copy-performance analysis (full subject/body on positive leads + winner), use `copy-insights`.
-- For campaign counts, use `pipeline.py campaigns` (or `stats`, which includes a campaign section). Do not write raw SQL.
-- For **tag counts** or **LinkedIn connection counts by sender** in a workspace, use **`workspace summary --workspace <slug> --json`**. Do not use `export` or custom Python to aggregate.
-- **Tags** (`workspace_lead_tags`) and **LinkedIn connection state** (`workspace_lead_linkedin_status`, `is_connected` per sender) are different. A tag like `*_connected` is not the same as `is_connected` on a sender profile.
+- For **all-time** campaign totals (no time window), use `campaigns` or `stats`. For **last N hours/days by campaign**, use **`query engagement`** or **`query replies`** — not `campaigns`.
+- For **tag counts** or **LinkedIn connection counts by sender**, use **`workspace summary --workspace <slug> --json`**. Do not use `export` or custom Python to aggregate.
+- **Tags** (`workspace_lead_tags`) and **LinkedIn connection state** (`workspace_lead_linkedin_status`, `is_connected` per sender) are different.
 - When the user asks about connections, webhook URLs, or platform health, use `status` or `connections`.
 - When the user wants to connect a new platform, use `connect-platform --platform <id>`.
-- If the user reports slowness, disk use, or pipeline oddities: run **`db-health`** first (local, no network). Explain `rulesTriggered` hints; suggest `archive --workspace <slug> --dry-run` when size rules fire.
-- **Never run `sync` unless the user asked** to push to the cloud. `sync` also sends aggregate DB health (~1 KB, no lead content) unless `--no-health-report`.
-- **Never run `archive --purge` without explicit user confirmation** after reviewing `--dry-run` counts.
-- **NEVER use `python3 -c`, `sqlite3` directly, raw SQL, or any inline script to inspect or modify the database.** All database operations must go through `pipeline.py` commands. If a command errors, report the error verbatim and stop — do not attempt to debug by accessing the database directly.
-- Before adding platforms or debugging vendor event types, run `python3 scripts/pipeline.py platform-map --json`.
+- If the user reports slowness, disk use, or pipeline oddities: run **`db-health`** first (local, no network).
+- **Never run `sync` unless the user asked.** **Never run `archive --purge`** without explicit confirmation after `--dry-run`.
+- Before adding platforms or debugging vendor event types, run `pipeline.py platform-map --json`.
+- **Answer format for analytics:** (1) human table, (2) preset name or SQL used, (3) freshness note (local DB; offer `pull` if they need latest relay data).
 
-## MANDATORY: Always Pull First
+### Which table? (read path)
 
-**Before showing pipeline activity (show, stats, campaigns, history), run `pull` first** — unless the user only wants **local inventory** (see below).
+| User intent | Use |
+|-------------|-----|
+| Replies / engagement / campaign breakdowns (time window) | **`query engagement`** or **`events` + `campaigns`** |
+| Lead list with stage/sentiment | `show` / `lead-table` |
+| Tag counts, LinkedIn connected-by-sender | `workspace summary --json` |
+| Message bodies / copy winners | `history`, `copy-insights` |
+| Workspace ingest audit (rare) | `workspace_lead_events` — **not** for volume analytics |
+
+`workspace_lead_events` is a subset; full relay timelines are in **`events`**.
+
+### Fast analytics (preferred)
+
+```bash
+python3 scripts/pipeline.py query engagement --workspace <slug> --since 48h --json
+python3 scripts/pipeline.py query replies --workspace <slug> --since 7d --json
+python3 scripts/pipeline.py query interested --workspace <slug> --since 48h --json
+```
+
+Advanced: `pipeline.py query --sql 'SELECT …' --params '["popcam |%"]' --json` (read-only).
+
+## Pull policy (when to refresh)
+
+**Do not run `pull` before local time-window analytics** (`last 48h`, `since today`, engagement by campaign) unless the user asks for latest/refresh or you need relay catch-up.
+
+**Run `pull` first** when showing live pipeline activity the user expects to be current (`show`, `history` for “what just happened”), or when they say sync/refresh/latest.
 
 ```bash
 python3 scripts/pipeline.py pull
@@ -200,7 +224,7 @@ If routing sync times out but you only need relay events, use:
 python3 scripts/pipeline.py pull --skip-routing-sync
 ```
 
-This fetches the latest events from the relay, so the user always sees current data. The local DB may be stale. Never skip pull for activity/timeline queries. This applies across sessions: a new session's first pipeline query must pull.
+This fetches the latest events from the relay. Skip for offline/local analytics; use for fresh activity timelines.
 
 **Relay sync progress (stdout):** When interpreting `pull` / `sync` output or `export/batch_sync.log`, use the log legend in [docs/relay-sync-progress.md](../../docs/relay-sync-progress.md). Short version:
 
@@ -254,6 +278,7 @@ Sign up at https://outreachmagic.io
 
 ```bash
 python3 scripts/pipeline.py version
+python3 scripts/pipeline.py query engagement --workspace <slug> --since 48h --json
 python3 scripts/pipeline.py show
 python3 scripts/pipeline.py history --id 1
 python3 scripts/pipeline.py history --email j@acme.com
@@ -718,7 +743,7 @@ python3 scripts/pipeline.py update
 
 ## Common Pitfalls
 
-1. **Always pull before show when checking "latest activity."**
+1. **Time-window analytics:** use `query engagement` (no pull). **Latest activity:** pull before `show` / `history`.
 2. Forgetting add-lead before log-event
 3. Not updating stage after reply
 4. Setup/auth errors (including 401 Unauthorized) should run `python3 scripts/pipeline.py login` in terminal.

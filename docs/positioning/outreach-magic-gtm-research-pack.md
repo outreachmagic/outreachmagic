@@ -1283,26 +1283,20 @@ Install commands for each platform are in **Platform install** above. After inst
 
 ## Agent Behavior Rules (Important)
 
-- For bulk enrichment (CSV, spreadsheet export, Apollo/Clay dump): use **`import-profiles`**, not repeated `add-lead`.
-- Always run `pull` first before showing pipeline data, history, stats, or campaigns.
-- After any pull, explicitly report the exact number of new records imported.
-- When the user asks about version, read the frontmatter of SKILL.md (version line).
-- When the user asks for message content, use the `history` command on the specific lead.
-- For copy-performance analysis (full subject/body on positive leads + winner), use `copy-insights`.
-- For campaign counts, use `pipeline.py campaigns` (or `stats`, which includes a campaign section). Do not write raw SQL.
-- For **tag counts** or **LinkedIn connection counts by sender** in a workspace, use **`workspace summary --workspace <slug> --json`**. Do not use `export` or custom Python to aggregate.
-- **Tags** (`workspace_lead_tags`) and **LinkedIn connection state** (`workspace_lead_linkedin_status`, `is_connected` per sender) are different. A tag like `*_connected` is not the same as `is_connected` on a sender profile.
-- When the user asks about connections, webhook URLs, or platform health, use `status` or `connections`.
-- When the user wants to connect a new platform, use `connect-platform --platform <id>`.
-- If the user reports slowness, disk use, or pipeline oddities: run **`db-health`** first (local, no network). Explain `rulesTriggered` hints; suggest `archive --workspace <slug> --dry-run` when size rules fire.
-- **Never run `sync` unless the user asked** to push to the cloud. `sync` also sends aggregate DB health (~1 KB, no lead content) unless `--no-health-report`.
-- **Never run `archive --purge` without explicit user confirmation** after reviewing `--dry-run` counts.
-- **NEVER use `python3 -c`, `sqlite3` directly, raw SQL, or any inline script to inspect or modify the database.** All database operations must go through `pipeline.py` commands. If a command errors, report the error verbatim and stop — do not attempt to debug by accessing the database directly.
-- Before adding platforms or debugging vendor event types, run `python3 scripts/pipeline.py platform-map --json`.
+> **Note:** Agent rules below are a snapshot for GTM research. Install truth: `skills/outreachmagic/SKILL.md` (v1.25+ uses `pipeline.py query` for reads; pull only when freshness matters).
 
-## MANDATORY: Always Pull First
+- For bulk enrichment: **`import-profiles`**, not repeated `add-lead`.
+- **Reads:** `pipeline.py query engagement|replies|interested` for time-window analytics; read-only `query --sql` if needed.
+- **Pull:** only when the user needs latest relay data or live timelines — not before local “last 48h” analytics.
+- **Writes:** only `pipeline.py` mutation commands.
+- Version: `pipeline.py version`. Message bodies: `history`. Copy: `copy-insights`.
+- All-time campaign totals: `campaigns` / `stats`. Time windows: `query engagement`.
+- Tags / LinkedIn by sender: `workspace summary --json`.
+- Before debugging vendor events: `platform-map --json`.
 
-**Before showing pipeline activity (show, stats, campaigns, history), run `pull` first** — unless the user only wants **local inventory** (see below).
+## Pull policy (summary)
+
+Run `pull` when the user wants fresh relay data. Skip pull for local time-window `query` analytics.
 
 ```bash
 python3 scripts/pipeline.py pull

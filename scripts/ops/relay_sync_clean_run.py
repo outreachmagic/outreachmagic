@@ -6,8 +6,8 @@ Watch progress:
   tail -f ~/Developer/outreachmagic-skill/skills/outreachmagic/export/batch_sync.log
 
 Usage:
-  python3 scripts/relay_sync_clean_run.py
-  python3 scripts/relay_sync_clean_run.py --dry-run
+  python3 scripts/ops/relay_sync_clean_run.py
+  python3 scripts/ops/relay_sync_clean_run.py --dry-run
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 SKILL = REPO / "skills" / "outreachmagic"
 DB = SKILL / "databases" / "outreachmagic.db"
 LOG = SKILL / "export" / "batch_sync.log"

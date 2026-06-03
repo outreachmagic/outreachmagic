@@ -30,6 +30,10 @@ MANIFEST_FILES = (
     "db_health.py",
     "om_paths.py",
     "device_login.py",
+    "read_queries.py",
+    "query_cli.py",
+    "schema.py",
+    "schema_views.py",
     "VERSION",
     "SKILL.md",
 )

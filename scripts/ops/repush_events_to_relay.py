@@ -12,12 +12,12 @@ Worker must be deployed from wbhk-worker (relay-db event_id replace + envelope).
 
 Usage:
   export OUTREACHMAGIC_AGENT_KEY=om_agent_...
-  python3 scripts/repush_events_to_relay.py --dry-run
-  python3 scripts/repush_events_to_relay.py --purge-d1
-  python3 scripts/repush_events_to_relay.py --purge-d1 --organization-id org_xxx
+  python3 scripts/ops/repush_events_to_relay.py --dry-run
+  python3 scripts/ops/repush_events_to_relay.py --purge-d1
+  python3 scripts/ops/repush_events_to_relay.py --purge-d1 --organization-id org_xxx
 
 Optional D1 purge without admin API (uses wrangler from wbhk-worker repo):
-  python3 scripts/repush_events_to_relay.py --purge-d1 --wrangler
+  python3 scripts/ops/repush_events_to_relay.py --purge-d1 --wrangler
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_ROOT = REPO_ROOT / "skills" / "outreachmagic"
 WORKER_ROOT = REPO_ROOT.parent / "wbhk-worker"
 PIPELINE = SKILL_ROOT / "scripts" / "pipeline.py"

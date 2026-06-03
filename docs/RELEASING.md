@@ -65,6 +65,13 @@ For tag `v1.21.0`:
 
 ---
 
+## v1.25.0 highlights (query layer)
+
+- **`pipeline.py query`** — read-only analytics presets: `engagement`, `replies`, `interested` (`--workspace`, `--since 48h`, `--json`).
+- **`references/query-guide.md`** — canonical SQL; copied to `project/agent_resources/` on `init`.
+- **`read_queries.py`**, **`schema.py`**, **`schema_views.py`** — faster agent reads; view `v_inbound_events_by_campaign`.
+- SKILL.md: SQL-first reads, pull only when freshness needed.
+
 ## How to release (maintainers)
 
 ### Prerequisites

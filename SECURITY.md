@@ -58,6 +58,7 @@ We do **not** use our servers as the long-term store for webhook payload content
 - **`pull`** — downloads from relay only (plus optional routing config **pull** from portal).
 - **`sync`** — the **only** command that POSTs lead data to `api.outreachmagic.io/push`. The agent or user must run it explicitly. At the end of the same `sync`, the CLI may POST aggregate DB health to the portal (throttled ~6h); use `sync --no-health-report` to skip.
 - **`db-health`** — local inspection only unless `--push` is passed explicitly.
+- **`query`** — read-only SQLite analytics (presets or `SELECT`/`WITH` only). Local DB only; no network. Mutations remain on other commands only.
 - **`archive`** — local export/purge only; never calls the network.
 - Hermes cron examples in docs use `pull --cron` (inbound only), not `sync`.
 

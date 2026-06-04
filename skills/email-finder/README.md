@@ -37,7 +37,7 @@ python3 scripts/email_finder.py batch-find --provider icypeas --workspace YOUR_W
 
 Every batch row needs **`lead_id`**; pass **`--workspace`** so OM save runs via `apply-email-find-results` (fast path). Without `lead_id`, save uses tiered `import-profiles`. See `config.example.json` for poll/rate-limit tuning.
 
-If OM save fails, results stay in `{output-base}.csv` / `.json` — re-sync with `import-to-om --file … --workspace YOUR_WS`.
+If OM save fails, re-sync with `import-to-om --file {output-base}.csv --workspace YOUR_WS` (reads the batch checkpoint directly).
 
 ## License
 

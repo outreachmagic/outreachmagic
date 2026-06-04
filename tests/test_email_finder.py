@@ -404,6 +404,49 @@ class TestBatchRun(unittest.TestCase):
                 self.assertEqual(result["stats"]["found"], 1)
 
 
+class TestCheckpointImport(unittest.TestCase):
+    def test_profiles_from_checkpoint_csv_row(self):
+        from batch_runner import profiles_from_checkpoint_rows
+
+        profiles = profiles_from_checkpoint_rows(
+            [{
+                "lead_id": "42",
+                "name": "Jane",
+                "domain": "acme.com",
+                "email": "jane@acme.com",
+                "validity": "valid",
+                "provider": "trykitt",
+                "status": "found",
+            }],
+            lemail.normalize_linkedin,
+        )
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0]["id"], 42)
+        self.assertEqual(profiles[0]["email"], "jane@acme.com")
+        self.assertIn("email_found", profiles[0]["tags"])
+
+    def test_load_profiles_from_checkpoint_json(self):
+        from batch_runner import load_profiles_for_om_import
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "out.json"
+            path.write_text(json.dumps([
+                {
+                    "lead_id": 7,
+                    "name": "Bob",
+                    "domain": "beta.com",
+                    "email": "bob@beta.com",
+                    "validity": "valid",
+                    "provider": "icypeas",
+                    "status": "found",
+                },
+            ]))
+            profiles, ws = load_profiles_for_om_import(str(path), normalize_linkedin_fn=lemail.normalize_linkedin)
+            self.assertIsNone(ws)
+            self.assertEqual(len(profiles), 1)
+            self.assertEqual(profiles[0]["list_source"], "icypeas")
+
+
 class TestMillionVerifier(unittest.TestCase):
     @patch("urllib.request.urlopen")
     def test_verify_single_uses_get_with_api_param(self, mock_urlopen):

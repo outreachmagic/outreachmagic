@@ -160,6 +160,103 @@ def collect_import_profiles(
     return profiles
 
 
+def _is_import_profile_row(row: dict[str, Any]) -> bool:
+    if row.get("company_domain"):
+        return True
+    return isinstance(row.get("tags"), list)
+
+
+def _parse_lead_id(row: dict[str, Any]) -> Optional[int]:
+    raw = row.get("lead_id") or row.get("id")
+    if raw is not None and str(raw).strip().isdigit():
+        return int(str(raw).strip())
+    return None
+
+
+def _checkpoint_row_to_find_result(row: dict[str, Any]) -> dict[str, Any]:
+    email = str(row.get("email") or row.get("found_email") or "").strip()
+    status = str(row.get("status") or row.get("batch_status") or "").strip().lower()
+    provider = str(row.get("provider") or "trykitt").strip() or "trykitt"
+    if not status:
+        status = "found" if email else "not_found"
+    out: dict[str, Any] = {
+        "validity": str(row.get("validity") or ""),
+        "provider": provider,
+        "status": status,
+    }
+    if email:
+        out["email"] = email
+    return out
+
+
+def profiles_from_checkpoint_rows(
+    rows: list[dict[str, Any]],
+    normalize_linkedin_fn: Callable[[str], str],
+) -> list[dict[str, Any]]:
+    """Build OM import profiles from batch-find checkpoint CSV/JSON rows."""
+    profiles: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or row.get("batch_status") or "").strip().lower()
+        if status == "skipped":
+            continue
+        name = str(row.get("name") or "").strip()
+        domain = str(row.get("domain") or row.get("company_domain") or "").strip().lower().lstrip("@")
+        if not name or not domain:
+            continue
+        find_result = _checkpoint_row_to_find_result(row)
+        if not find_result.get("email") and status not in ("found", "not_found"):
+            continue
+        company = str(row.get("company") or domain).strip()
+        linkedin = str(row.get("linkedin") or row.get("linkedin_url") or "").strip()
+        ext = str(row.get("external_id") or row.get("sales_nav_id") or "").strip() or None
+        profiles.append(
+            build_import_profile(
+                full_name=name,
+                company=company,
+                domain=domain,
+                linkedin=linkedin,
+                find_result=find_result,
+                normalize_linkedin_fn=normalize_linkedin_fn,
+                lead_id=_parse_lead_id(row),
+                external_id=ext,
+            )
+        )
+    return profiles
+
+
+def load_profiles_for_om_import(
+    path: str,
+    *,
+    normalize_linkedin_fn: Callable[[str], str],
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """Load profiles from batch checkpoint (.csv/.json) or import JSON payload."""
+    file_path = Path(path)
+    if not file_path.is_file():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    if file_path.suffix.lower() == ".csv":
+        with file_path.open(encoding="utf-8", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        return profiles_from_checkpoint_rows(rows, normalize_linkedin_fn), None
+
+    data = json.loads(file_path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        profiles = data.get("profiles")
+        if isinstance(profiles, list):
+            ws = str(data.get("workspace") or "").strip() or None
+            return profiles, ws
+        raise ValueError("JSON object must contain a profiles array")
+
+    if isinstance(data, list):
+        if data and isinstance(data[0], dict) and _is_import_profile_row(data[0]):
+            return data, None
+        return profiles_from_checkpoint_rows(data, normalize_linkedin_fn), None
+
+    raise ValueError("JSON must be an array of rows or {profiles: [...]}")
+
+
 def bulk_dedup_map(
     om_dir: Path,
     people: list[dict[str, Any]],
@@ -646,8 +743,8 @@ def run_batch(
                         f"   {e}\n"
                         f"   CSV: {csv_hint}\n"
                         f"   JSON: {json_hint}\n"
-                        "   Re-sync to OM:\n"
-                        f"     python3 scripts/email_finder.py import-to-om --file {json_hint}"
+                        "   Re-sync to OM (CSV or JSON checkpoint):\n"
+                        f"     python3 scripts/email_finder.py import-to-om --file {csv_hint}"
                         f" --workspace {opts.workspace}\n"
                         "   Or re-run batch-find (resume skips completed API rows).\n",
                         file=sys.stderr,

@@ -10,8 +10,7 @@ Usage:
     email_finder.py check [--workspace W] "Name" "Company"
     email_finder.py find --name X --domain Y [--linkedin URL] [--save] [--workspace W]
     email_finder.py batch-find [options] input.json
-    email_finder.py prepare-import --csv PATH [--workspace W] [--output PATH]
-    email_finder.py import-to-om --file PATH [--workspace W]
+    email_finder.py import-to-om --file PATH --workspace W [--source trykitt|icypeas]
     email_finder.py update [--check] [--tag vX.Y.Z]
 
 batch-find options:
@@ -43,6 +42,7 @@ from batch_runner import (
     BatchOptions,
     build_import_profile,
     collect_import_profiles,
+    load_profiles_for_om_import,
     run_batch,
     should_tag_provider_attempt,
 )
@@ -262,7 +262,8 @@ def save_find_result(
     )
     provider = str(find_result.get("provider") or "trykitt")
     imported = batch_import_results(
-        om_dir, [{k: v for k, v in profile.items() if not str(k).startswith("_verify")}],
+        om_dir,
+        [profile],
         workspace=workspace,
         source=provider,
         source_detail=f"email-finder/{provider}",
@@ -481,110 +482,34 @@ def cmd_batch_find(path: str, opts: BatchOptions) -> None:
     print(json.dumps(out, indent=2))
 
 
-CSV_COLUMNS = (
-    "name", "company", "title", "company_domain", "linkedin",
-    "found_email", "validity", "validSMTP", "job_id", "status", "error",
-)
-
-
-def _result_to_csv_row(
-    name: str,
-    company: str,
-    domain: str,
-    linkedin: str,
-    result: dict[str, Any],
-    row: dict[str, Any],
-) -> dict[str, str]:
-    return {
-        "name": name,
-        "company": company,
-        "title": (row.get("title") or row.get("job_title") or "").strip(),
-        "company_domain": domain,
-        "linkedin": linkedin,
-        "found_email": str(result.get("email") or ""),
-        "validity": str(result.get("validity") or ""),
-        "validSMTP": str(result.get("validSMTP") or ""),
-        "job_id": str(result.get("jobId") or ""),
-        "status": str(result.get("status") or ""),
-        "error": str(result.get("error") or ""),
-    }
-
-
-def write_results_csv(path: str, rows: list[dict[str, str]]) -> None:
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def cmd_prepare_import(csv_path: str, workspace: str = "", output_path: str = "") -> None:
-    path = Path(csv_path)
-    if not path.is_file():
-        print(json.dumps({"error": f"File not found: {csv_path}"}))
-        sys.exit(1)
-    profiles: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8", newline="") as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            name = (row.get("name") or "").strip()
-            domain = (row.get("company_domain") or row.get("domain") or "").strip()
-            company = (row.get("company") or domain).strip()
-            linkedin = (row.get("linkedin") or row.get("linkedin_url") or "").strip()
-            email = (row.get("found_email") or row.get("email") or "").strip()
-            validity = (row.get("validity") or "").strip()
-            find_result: dict[str, Any] = {"validity": validity}
-            if email:
-                find_result["email"] = email
-            if not name or not domain:
-                continue
-            lead_id_raw = row.get("lead_id") or row.get("id")
-            lead_id_val: Optional[int] = None
-            if lead_id_raw is not None and str(lead_id_raw).strip().isdigit():
-                lead_id_val = int(str(lead_id_raw).strip())
-            profile = build_import_profile(
-                full_name=name,
-                company=company,
-                domain=domain,
-                linkedin=linkedin,
-                find_result=find_result,
-                normalize_linkedin_fn=normalize_linkedin,
-                lead_id=lead_id_val,
-                external_id=str(row.get("external_id") or "").strip() or None,
-            )
-            if workspace:
-                profile["workspace"] = workspace
-            profiles.append(profile)
-    payload = {"profiles": profiles, "workspace": workspace or None}
-    if output_path:
-        Path(output_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        print(json.dumps({"status": "ok", "count": len(profiles), "output": output_path}))
-    else:
-        print(json.dumps(payload, indent=2))
-
-
-def cmd_import_to_om(file_path: str, workspace: str = "") -> None:
+def cmd_import_to_om(file_path: str, workspace: str = "", source: str = "") -> None:
     cfg = load_config()
     om_dir = find_outreachmagic(cfg)
     if not om_dir:
         print_om_setup_box()
         print(json.dumps({"error": "outreachmagic not found"}))
         sys.exit(1)
-    raw = Path(file_path).read_text(encoding="utf-8")
-    data = json.loads(raw)
-    profiles = data.get("profiles") if isinstance(data, dict) else data
-    if not isinstance(profiles, list):
-        print(json.dumps({"error": "JSON must be {profiles: [...]} or an array"}))
+    try:
+        profiles, embedded_ws = load_profiles_for_om_import(
+            file_path,
+            normalize_linkedin_fn=normalize_linkedin,
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        print(json.dumps({"error": str(e)}))
         sys.exit(1)
-    ws = workspace or (data.get("workspace") if isinstance(data, dict) else "") or ""
+    ws = (workspace or embedded_ws or "").strip()
     if not ws:
         print(json.dumps({"error": "--workspace required for import-to-om"}))
         sys.exit(1)
+    if not profiles:
+        print(json.dumps({"error": "no importable rows in file"}))
+        sys.exit(1)
+    batch_source = (source or "").strip()
     result = batch_import_results(
         om_dir,
         profiles,
         workspace=ws,
+        source=batch_source,
         source_detail="email-finder/import-to-om",
     )
     print(json.dumps({"status": "ok", **result}, indent=2))
@@ -913,37 +838,8 @@ def main() -> None:
                 print("Usage: email_finder.py batch-find [options] input.json")
                 sys.exit(1)
             cmd_batch_find(path, opts)
-        elif cmd == "prepare-import":
-            csv_path = workspace = output_path = ""
-            args = sys.argv[2:]
-            i = 0
-            while i < len(args):
-                if args[i] == "--csv" and i + 1 < len(args):
-                    csv_path = args[i + 1]
-                    i += 2
-                elif args[i].startswith("--csv="):
-                    csv_path = args[i].split("=", 1)[1]
-                    i += 1
-                elif args[i] == "--workspace" and i + 1 < len(args):
-                    workspace = args[i + 1]
-                    i += 2
-                elif args[i].startswith("--workspace="):
-                    workspace = args[i].split("=", 1)[1]
-                    i += 1
-                elif args[i] == "--output" and i + 1 < len(args):
-                    output_path = args[i + 1]
-                    i += 2
-                elif args[i].startswith("--output="):
-                    output_path = args[i].split("=", 1)[1]
-                    i += 1
-                else:
-                    i += 1
-            if not csv_path:
-                print("Usage: email_finder.py prepare-import --csv PATH [--workspace W]")
-                sys.exit(1)
-            cmd_prepare_import(csv_path, workspace, output_path)
         elif cmd == "import-to-om":
-            file_path = workspace = ""
+            file_path = workspace = source = ""
             args = sys.argv[2:]
             i = 0
             while i < len(args):
@@ -959,15 +855,24 @@ def main() -> None:
                 elif args[i].startswith("--workspace="):
                     workspace = args[i].split("=", 1)[1]
                     i += 1
+                elif args[i] == "--source" and i + 1 < len(args):
+                    source = args[i + 1]
+                    i += 2
+                elif args[i].startswith("--source="):
+                    source = args[i].split("=", 1)[1]
+                    i += 1
                 elif not file_path and not args[i].startswith("-"):
                     file_path = args[i]
                     i += 1
                 else:
                     i += 1
             if not file_path:
-                print("Usage: email_finder.py import-to-om --file PATH [--workspace W]")
+                print(
+                    "Usage: email_finder.py import-to-om --file PATH --workspace W "
+                    "[--source trykitt|icypeas]"
+                )
                 sys.exit(1)
-            cmd_import_to_om(file_path, workspace)
+            cmd_import_to_om(file_path, workspace, source)
         elif cmd == "verify":
             email = workspace = ""
             args = sys.argv[2:]

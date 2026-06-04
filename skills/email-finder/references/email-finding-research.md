@@ -94,20 +94,18 @@ was saved. Keep provider-specific validity/certainty details in `notes`.
 
 ## Saving found emails
 
-**`batch-find` with `lead_id` + `--workspace`:** finds emails, writes CSV/JSON incrementally, saves via `apply-email-find-results` (tags + verification inline).
+**`batch-find --workspace W`** — find, checkpoint files, OM save in one command:
 
 ```bash
 python3 scripts/email_finder.py batch-find --workspace your_workspace --yes \
   --output-base ./export/emails --workers 3 --delay 3 leads.json
 ```
 
-**OM save only** (after `--no-save` or a failed import):
+**OM save only** — `import-to-om` reads the batch checkpoint `.csv` or `.json`:
 
 ```bash
-python3 scripts/email_finder.py import-to-om --file ./export/emails.json --workspace your_workspace
+python3 scripts/email_finder.py import-to-om --file ./export/emails.csv --workspace your_workspace
 ```
-
-`save_email_find_profiles` (companion) calls `apply-email-find-results` when every profile has `lead_id`; otherwise `import-profiles`.
 
 **Single lead** — email-finder CLI (tags + notes on `--save`):
 

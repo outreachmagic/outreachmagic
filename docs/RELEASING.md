@@ -65,6 +65,13 @@ For tag `v1.21.0`:
 
 ---
 
+## email-finder v2.2.6 (simplified OM import)
+
+- Removed `prepare-import`; `import-to-om` accepts batch checkpoint `.csv` or `.json` directly.
+- Recovery: `import-to-om --file {output-base}.csv --workspace W`.
+
+---
+
 ## v1.25.11 / email-finder v2.2.5 / lead-enrich v2.0.9 (cleanup)
 
 - **Fast path only in email-finder** — `save_email_find_profiles()`; shared `run_import_profiles()` no longer routes lead-enrich through `apply-email-find-results`.

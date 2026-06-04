@@ -1,5 +1,5 @@
 {
-  "version": "1.25.4",
+  "version": "1.25.5",
   "files": {
     "pipeline.py": "6267f6e50eaa4f2027f4ff11bf7097f114b5611ff315eaaf63e91dd26a59499a",
     "constants.py": "33c79b260a3f4070d96a466799620d23d8f80fdae516ccde94c1f3a316a28af8",
@@ -24,7 +24,7 @@
     "query_cli.py": "30f799670e26102b312a6115788bd03ce03a972ce1f5c9552da6b6225b1e42d8",
     "schema.py": "3b4544aaa32f60532de2e0a153620ee1a4b8d590e2b45229d8018eacf2b26679",
     "schema_views.py": "0307f3d44c157742dc1092c9914bd9bed2a1684180a73a9afc9dd6f41260ee08",
-    "VERSION": "50e7153c5a6a0b92d206cbcfb7a7e97f7ad179c898fecfd9d9aa72965eff8c76",
-    "SKILL.md": "76a3d325b6c67da88057dd6d2099cb0875538cdce0b062952156a953a8591e4b"
+    "VERSION": "a5c08ee5ccac2bffa9209f15e45b96f96413424ca56764172b4379d1ceedef91",
+    "SKILL.md": "77994b601e0cd61c9f32208b5061cf774824efead976c94dad4d56c3f616b903"
   }
 }

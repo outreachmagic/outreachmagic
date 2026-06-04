@@ -43,7 +43,23 @@ def parse_dotenv_line(line: str) -> Optional[tuple[str, str]]:
     return key, value
 
 
-def load_dotenv_file(path: Path) -> None:
+_API_KEY_VARS = frozenset({
+    "TRYKITT_API_KEY",
+    "ICYPEAS_API_KEY",
+    "OUTREACHMAGIC_AGENT_KEY",
+})
+
+
+def _env_value_empty(key: str) -> bool:
+    val = os.environ.get(key, "")
+    if not val or not str(val).strip():
+        return True
+    if str(val).strip() in ("***", "changeme", "your_key_here"):
+        return True
+    return False
+
+
+def load_dotenv_file(path: Path, *, force_api_keys: bool = False) -> None:
     if not path.is_file():
         return
     try:
@@ -58,6 +74,10 @@ def load_dotenv_file(path: Path) -> None:
         if not parsed:
             continue
         key, value = parsed
+        if force_api_keys and key in _API_KEY_VARS:
+            if value and value.strip() not in ("***", "changeme", "your_key_here"):
+                os.environ[key] = value
+            continue
         if key not in os.environ:
             os.environ[key] = value
 
@@ -67,18 +87,18 @@ def active_profile() -> Optional[str]:
     return (os.environ.get("HERMES_PROFILE") or "").strip() or None
 
 
-def ensure_agent_env_loaded(skill_dir: Optional[Path] = None) -> None:
+def ensure_agent_env_loaded(skill_dir: Optional[Path] = None, *, reload: bool = False) -> None:
     global _AGENT_ENV_LOADED
-    if _AGENT_ENV_LOADED:
+    if _AGENT_ENV_LOADED and not reload:
         return
     home = agent_home()
     for name in (".env", "default.env"):
-        load_dotenv_file(home / name)
+        load_dotenv_file(home / name, force_api_keys=True)
     profile = active_profile()
     if profile:
-        load_dotenv_file(home / "profiles" / profile / ".env")
+        load_dotenv_file(home / "profiles" / profile / ".env", force_api_keys=True)
     if skill_dir:
-        load_dotenv_file(skill_dir / "default.env")
+        load_dotenv_file(skill_dir / "default.env", force_api_keys=True)
     _AGENT_ENV_LOADED = True
 
 
@@ -186,6 +206,69 @@ def run_import_profiles(
         cmd.extend(["--workspace", workspace])
     if overwrite:
         cmd.append("--overwrite")
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=subprocess_env(skill_dir),
+    )
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        raise RuntimeError(err)
+    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+
+
+def run_batch_lead_lookup(
+    om_dir: Path,
+    items: list[dict[str, Any]],
+    *,
+    workspace: str = "",
+    timeout: int = 120,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Single subprocess: pipeline.py batch-lead-lookup."""
+    if not items:
+        return {"status": "ok", "results": []}
+    cmd = [
+        sys.executable,
+        str(get_pipeline_path(om_dir)),
+        "batch-lead-lookup",
+        "--json",
+        json.dumps(items),
+    ]
+    if workspace:
+        cmd.extend(["--workspace", workspace])
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=subprocess_env(skill_dir),
+    )
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        raise RuntimeError(err)
+    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+
+
+def run_verify_email_batch(
+    om_dir: Path,
+    items: list[dict[str, Any]],
+    *,
+    timeout: int = 120,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    if not items:
+        return {"status": "batch_recorded", "recorded": 0, "errors": []}
+    cmd = [
+        sys.executable,
+        str(get_pipeline_path(om_dir)),
+        "verify-email",
+        "--batch",
+        "--json",
+        json.dumps(items),
+    ]
     proc = subprocess.run(
         cmd,
         capture_output=True,

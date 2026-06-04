@@ -48,8 +48,7 @@ jobs:
           cp skills/email-finder/.gitignore staging/
           cp skills/email-finder/update-manifest.json staging/
           cp skills/email-finder/references/email-finding-research.md staging/references/
-          cp skills/email-finder/scripts/email_finder.py staging/scripts/
-          cp skills/email-finder/scripts/companion_common.py staging/scripts/
+          cp skills/email-finder/scripts/*.py staging/scripts/
           cp LICENSE staging/
 
       - name: Push to outreachmagic/email-finder

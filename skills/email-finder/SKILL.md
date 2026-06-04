@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas. Checks Outreach
   Magic first to avoid duplicate API spend. Saves email and verification status
   via the outreachmagic skill.
-version: 1.0.3
+version: 2.0.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -53,6 +53,8 @@ Required for dedup and save. Install under `~/.hermes/skills/outreachmagic/` and
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 ```
 
+Batch dedup uses `pipeline.py batch-lead-lookup` (one DB pass). Update outreachmagic to a recent release if that command is missing.
+
 ### 2. Provider API keys
 
 Add to `~/.hermes/.env` or your Hermes profile env (`~/.hermes/profiles/<name>/.env`).
@@ -84,10 +86,11 @@ Phase 2–4. Minimum required: `fullName` + `domain`.
 2. **Never fabricate emails** — only save provider API results.
 3. **Provider order:** when both are enabled, run trykitt first, then Icypeas on miss.
 4. **Tag attempts** — `trykitt_attempted` and/or `icypeas_attempted`; add **`email_found`** when an email is saved.
-5. **Record provider notes** — keep provider-specific validity/certainty notes (do not call `verify-email` during batch import).
-6. **Batch saves once** — `batch-find` / `parallel-find` collect results then one `import-profiles` call (avoids SQLite lock).
-7. **Batch delays** — `batch-find --delay 8` on free tier; large runs: `parallel-find --workers 3 --output-csv results.csv`.
-8. **Setup in terminal** — `pipeline.py login`, not chat secrets.
+5. **Verify found emails** — after batch import, `verify-email --batch` records validity (trykitt / Icypeas).
+6. **Batch saves once** — one `import-profiles` + one `verify-email --batch` at end (incremental CSV/JSON during run).
+7. **Input keys** — JSON accepts `fullName`, `full_name`, or `name`; optional `linkedin` / `lead_id`.
+8. **Large batches** — `batch-find --workers 3 --yes --output-base results --max 500` (default cap 500).
+9. **Setup in terminal** — `pipeline.py login`, not chat secrets.
 
 ## Commands
 
@@ -95,20 +98,28 @@ Phase 2–4. Minimum required: `fullName` + `domain`.
 python3 scripts/email_finder.py config
 python3 scripts/email_finder.py check "Jane Doe" "Acme Corp"
 python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com \
-  --linkedin "https://linkedin.com/in/janedoe" --company "Acme Corp" --save
-python3 scripts/email_finder.py batch-find --delay 8 --workspace client_slug leads.json
-python3 scripts/email_finder.py batch-find --output-csv results.csv --no-save leads.json
-python3 scripts/email_finder.py parallel-find --workers 3 --output-csv results.csv leads.json
+  --linkedin "https://linkedin.com/in/janedoe" --company "Acme Corp" --save --workspace client_slug
+python3 scripts/email_finder.py batch-find --workspace client_slug --yes --output-base results leads.json
+python3 scripts/email_finder.py batch-find --dry-run --workspace client_slug leads.json
+python3 scripts/email_finder.py batch-find --workers 3 --delay 3 --provider trykitt --yes leads.json
+python3 scripts/email_finder.py batch-find --skip-om --output-base results leads.json
+python3 scripts/email_finder.py parallel-find --workers 3 --yes leads.json   # alias for batch-find
 python3 scripts/email_finder.py prepare-import --csv results.csv --output import.json
 python3 scripts/email_finder.py import-to-om --file import.json --workspace client_slug
 python3 scripts/email_finder.py update --check
 ```
 
-### Recommended large-batch workflow
+### Recommended large-batch workflow (Hermes style)
 
-1. `parallel-find --workers 3 --output-csv results.csv --no-save leads.json` (API only)
-2. `prepare-import --csv results.csv --output import.json`
-3. `import-to-om --file import.json --workspace client_slug` (single SQLite write)
+Use **one command** — `batch-find` with incremental saves and resume:
+
+```bash
+python3 scripts/email_finder.py batch-find \
+  --workspace your_workspace --yes --output-base ./export/headshot-emails \
+  --workers 3 --delay 3 input/leads.json
+```
+
+Re-run the same command after a crash; it resumes from `{output-base}.csv`.
 
 ## Workflow with lead-enrich
 

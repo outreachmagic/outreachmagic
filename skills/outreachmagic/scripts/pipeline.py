@@ -1718,12 +1718,16 @@ def find_lead(
     linkedin: Optional[str] = None,
     name: Optional[str] = None,
     workspace: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> Optional[dict]:
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     row = None
     workspace_row = resolve_workspace_identity(conn, workspace)
     if workspace and not workspace_row:
-        conn.close()
+        if own_conn:
+            conn.close()
         raise ValueError(f"workspace not found: {workspace}")
     workspace_join = ""
     workspace_params: list = []
@@ -1805,8 +1809,97 @@ def find_lead(
                WHERE l.name LIKE ? LIMIT 1""",
             tuple(params),
         ).fetchone()
-    conn.close()
+    if own_conn:
+        conn.close()
     return dict(row) if row else None
+
+
+def batch_lead_lookup(
+    items: list[dict],
+    *,
+    workspace: Optional[str] = None,
+) -> dict:
+    """Lookup many leads in one DB connection (email-finder / companion dedup)."""
+    conn = get_conn()
+    try:
+        ws_row = resolve_workspace_identity(conn, workspace)
+        if workspace and not ws_row:
+            raise ValueError(f"workspace not found: {workspace}")
+        ws_id = ws_row["id"] if ws_row else None
+        results: list[dict] = []
+        lead_ids: list[int] = []
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                results.append({"index": i, "status": "error", "error": "invalid item"})
+                continue
+            idx = item.get("index", i)
+            lead = None
+            try:
+                if item.get("lead_id"):
+                    lead = find_lead(
+                        lead_id=int(item["lead_id"]),
+                        workspace=workspace,
+                        conn=conn,
+                    )
+                elif item.get("linkedin"):
+                    lead = find_lead(
+                        linkedin=str(item["linkedin"]),
+                        workspace=workspace,
+                        conn=conn,
+                    )
+                elif item.get("email"):
+                    lead = find_lead(
+                        email=str(item["email"]),
+                        workspace=workspace,
+                        conn=conn,
+                    )
+                elif item.get("name"):
+                    lead = find_lead(
+                        name=str(item["name"]),
+                        workspace=workspace,
+                        conn=conn,
+                    )
+            except ValueError as exc:
+                results.append({"index": idx, "status": "error", "error": str(exc)})
+                continue
+            entry: dict = {"index": idx, "status": "not_found"}
+            if lead:
+                lid = int(lead["id"])
+                lead_ids.append(lid)
+                entry = {
+                    "index": idx,
+                    "status": "found",
+                    "lead_id": lid,
+                    "email": (lead.get("email") or "").strip() or None,
+                    "name": lead.get("name"),
+                    "company": lead.get("company_display") or lead.get("company"),
+                    "linkedin_url": lead.get("linkedin_url"),
+                }
+            results.append(entry)
+
+        tags_by_lead: dict[int, list[str]] = {}
+        if ws_id and lead_ids:
+            placeholders = ",".join("?" * len(lead_ids))
+            tag_rows = conn.execute(
+                f"""SELECT lead_id, tag FROM workspace_lead_tags
+                    WHERE workspace_id = ? AND lead_id IN ({placeholders})
+                    ORDER BY created_at""",
+                (ws_id, *lead_ids),
+            ).fetchall()
+            for tr in tag_rows:
+                tags_by_lead.setdefault(int(tr["lead_id"]), []).append(str(tr["tag"]))
+        for entry in results:
+            lid = entry.get("lead_id")
+            if lid:
+                entry["tags"] = tags_by_lead.get(int(lid), [])
+        return {
+            "status": "ok",
+            "workspace": workspace,
+            "count": len(results),
+            "results": results,
+        }
+    finally:
+        conn.close()
 
 
 def _pick_merge_keep_id(conn: sqlite3.Connection, id_a: int, id_b: int) -> tuple[int, int]:
@@ -8623,6 +8716,13 @@ def main():
 
     query_cli.register_query_parser(sub)
 
+    bulk_lookup_p = sub.add_parser(
+        "batch-lead-lookup",
+        help="Lookup many leads in one DB pass (companion dedup)",
+    )
+    bulk_lookup_p.add_argument("--json", dest="json_input", required=True, help="JSON array of lookup keys")
+    bulk_lookup_p.add_argument("--workspace", help="Workspace slug or name")
+
     hist_p = sub.add_parser("history", help="Show event history for a lead")
     hist_p.add_argument("--id", type=int, help="Lead ID")
     hist_p.add_argument("--email", help="Find lead by email")
@@ -9492,6 +9592,18 @@ def main():
             print(json.dumps({"error": "Provide --keep and --merge, or --email and --linkedin"}))
             sys.exit(1)
         print(json.dumps(result, indent=2))
+    elif args.command == "batch-lead-lookup":
+        try:
+            items = json.loads(getattr(args, "json_input", None) or "[]")
+            if not isinstance(items, list):
+                raise ValueError("JSON must be an array")
+            print(json.dumps(
+                batch_lead_lookup(items, workspace=getattr(args, "workspace", None)),
+                indent=2,
+            ))
+        except (json.JSONDecodeError, ValueError) as e:
+            print(json.dumps({"error": str(e)}))
+            sys.exit(1)
     elif args.command == "history":
         try:
             lead = find_lead(

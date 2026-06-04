@@ -20,6 +20,11 @@ MANIFEST_FILES = (
     "references/email-finding-research.md",
     "scripts/companion_common.py",
     "scripts/email_finder.py",
+    "scripts/normalize.py",
+    "scripts/progress.py",
+    "scripts/health.py",
+    "scripts/providers.py",
+    "scripts/batch_runner.py",
 )
 
 

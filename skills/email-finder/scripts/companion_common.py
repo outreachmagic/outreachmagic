@@ -6,8 +6,14 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
+
+# Avoid OS ARG_MAX when passing large JSON to pipeline.py subprocesses.
+JSON_ARG_THRESHOLD = 100_000
+PIPELINE_CHUNK_SIZE = 200
+LOOKUP_CHUNK_SIZE = 1000
 
 OUTREACHMAGIC_NAME = "outreachmagic"
 
@@ -202,7 +208,95 @@ def history_lookup(
     return None
 
 
-def run_import_profiles(
+def _chunk_timeout(item_count: int, *, per_item: float = 0.3, min_s: int = 30, max_s: int = 180) -> int:
+    return max(min_s, min(max_s, int(item_count * per_item)))
+
+
+def _append_json_or_file(
+    cmd: list[str],
+    payload: Any,
+    *,
+    json_flag: str = "--json",
+    file_flag: str = "--file",
+) -> tuple[list[str], Optional[str]]:
+    json_str = json.dumps(payload)
+    if len(json_str) <= JSON_ARG_THRESHOLD:
+        return [*cmd, json_flag, json_str], None
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+    try:
+        tmp.write(json_str)
+        tmp.close()
+        return [*cmd, file_flag, tmp.name], tmp.name
+    except Exception:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+
+
+def _run_subprocess_json(
+    cmd: list[str],
+    *,
+    temp_path: Optional[str],
+    timeout: int,
+    skill_dir: Optional[Path],
+) -> dict[str, Any]:
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=subprocess_env(skill_dir),
+        )
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        raise RuntimeError(err)
+    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+
+
+def _merge_pipeline_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    if not summaries:
+        return {}
+    if len(summaries) == 1:
+        return summaries[0]
+    merged: dict[str, Any] = {}
+    sum_keys = (
+        "processed",
+        "created",
+        "matched",
+        "enriched",
+        "updated",
+        "skipped",
+        "recorded",
+        "personalized",
+        "tagged",
+        "weak_identity_count",
+        "import_key_only_count",
+        "skipped_no_identity",
+    )
+    for key in sum_keys:
+        if any(key in s for s in summaries):
+            merged[key] = sum(int(s.get(key) or 0) for s in summaries)
+    for list_key in ("results", "errors", "identity_conflicts", "skipped_features"):
+        merged[list_key] = []
+        for s in summaries:
+            part = s.get(list_key)
+            if isinstance(part, list):
+                merged[list_key].extend(part)
+    for s in reversed(summaries):
+        if s.get("status"):
+            merged["status"] = s["status"]
+            break
+    merged["chunks"] = len(summaries)
+    return merged
+
+
+def _run_import_profiles_once(
     om_dir: Path,
     profiles: list[dict],
     *,
@@ -216,8 +310,6 @@ def run_import_profiles(
         sys.executable,
         str(get_pipeline_path(om_dir)),
         "import-profiles",
-        "--json",
-        json.dumps(profiles),
         "--source-detail",
         source_detail,
     ]
@@ -225,17 +317,80 @@ def run_import_profiles(
         cmd.extend(["--workspace", workspace])
     if overwrite:
         cmd.append("--overwrite")
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=subprocess_env(skill_dir),
-    )
-    if proc.returncode != 0:
-        err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
-        raise RuntimeError(err)
-    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+    cmd, temp_path = _append_json_or_file(cmd, profiles)
+    return _run_subprocess_json(cmd, temp_path=temp_path, timeout=timeout, skill_dir=skill_dir)
+
+
+def run_import_profiles(
+    om_dir: Path,
+    profiles: list[dict],
+    *,
+    workspace: str = "",
+    overwrite: bool = False,
+    source_detail: str = "companion",
+    timeout: int = 120,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    if not profiles:
+        return {}
+    if len(profiles) <= PIPELINE_CHUNK_SIZE:
+        chunk_timeout = timeout if timeout != 120 else _chunk_timeout(len(profiles))
+        return _run_import_profiles_once(
+            om_dir,
+            profiles,
+            workspace=workspace,
+            overwrite=overwrite,
+            source_detail=source_detail,
+            timeout=chunk_timeout,
+            skill_dir=skill_dir,
+        )
+    summaries: list[dict[str, Any]] = []
+    total_chunks = (len(profiles) + PIPELINE_CHUNK_SIZE - 1) // PIPELINE_CHUNK_SIZE
+    for i in range(0, len(profiles), PIPELINE_CHUNK_SIZE):
+        chunk = profiles[i : i + PIPELINE_CHUNK_SIZE]
+        chunk_num = i // PIPELINE_CHUNK_SIZE + 1
+        chunk_timeout = _chunk_timeout(len(chunk))
+        print(
+            f"  import-profiles chunk {chunk_num}/{total_chunks} ({len(chunk)} leads)...",
+            flush=True,
+        )
+        summaries.append(
+            _run_import_profiles_once(
+                om_dir,
+                chunk,
+                workspace=workspace,
+                overwrite=overwrite,
+                source_detail=source_detail,
+                timeout=chunk_timeout,
+                skill_dir=skill_dir,
+            )
+        )
+        last = summaries[-1]
+        print(
+            f"    matched={last.get('matched', 0)} enriched={last.get('enriched', 0)} "
+            f"created={last.get('created', 0)}",
+            flush=True,
+        )
+    return _merge_pipeline_summaries(summaries)
+
+
+def _run_batch_lead_lookup_once(
+    om_dir: Path,
+    items: list[dict[str, Any]],
+    *,
+    workspace: str = "",
+    timeout: int = 120,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    cmd = [
+        sys.executable,
+        str(get_pipeline_path(om_dir)),
+        "batch-lead-lookup",
+    ]
+    if workspace:
+        cmd.extend(["--workspace", workspace])
+    cmd, temp_path = _append_json_or_file(cmd, items)
+    return _run_subprocess_json(cmd, temp_path=temp_path, timeout=timeout, skill_dir=skill_dir)
 
 
 def run_batch_lead_lookup(
@@ -246,29 +401,36 @@ def run_batch_lead_lookup(
     timeout: int = 120,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Single subprocess: pipeline.py batch-lead-lookup."""
+    """pipeline.py batch-lead-lookup (file payload + chunking for large batches)."""
     if not items:
         return {"status": "ok", "results": []}
-    cmd = [
-        sys.executable,
-        str(get_pipeline_path(om_dir)),
-        "batch-lead-lookup",
-        "--json",
-        json.dumps(items),
-    ]
-    if workspace:
-        cmd.extend(["--workspace", workspace])
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=subprocess_env(skill_dir),
-    )
-    if proc.returncode != 0:
-        err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
-        raise RuntimeError(err)
-    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+    if len(items) <= LOOKUP_CHUNK_SIZE:
+        lookup_timeout = timeout if timeout != 120 else _chunk_timeout(len(items), per_item=0.15)
+        return _run_batch_lead_lookup_once(
+            om_dir,
+            items,
+            workspace=workspace,
+            timeout=lookup_timeout,
+            skill_dir=skill_dir,
+        )
+    merged_results: list[dict[str, Any]] = []
+    total_chunks = (len(items) + LOOKUP_CHUNK_SIZE - 1) // LOOKUP_CHUNK_SIZE
+    for i in range(0, len(items), LOOKUP_CHUNK_SIZE):
+        chunk = items[i : i + LOOKUP_CHUNK_SIZE]
+        chunk_num = i // LOOKUP_CHUNK_SIZE + 1
+        print(
+            f"  batch-lead-lookup chunk {chunk_num}/{total_chunks} ({len(chunk)} keys)...",
+            flush=True,
+        )
+        part = _run_batch_lead_lookup_once(
+            om_dir,
+            chunk,
+            workspace=workspace,
+            timeout=_chunk_timeout(len(chunk), per_item=0.15),
+            skill_dir=skill_dir,
+        )
+        merged_results.extend(part.get("results") or [])
+    return {"status": "ok", "results": merged_results, "chunks": total_chunks}
 
 
 def run_verification_candidates(
@@ -307,6 +469,23 @@ def run_verification_candidates(
     return json.loads(proc.stdout) if proc.stdout.strip() else {}
 
 
+def _run_verify_email_batch_once(
+    om_dir: Path,
+    items: list[dict[str, Any]],
+    *,
+    timeout: int = 120,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    cmd = [
+        sys.executable,
+        str(get_pipeline_path(om_dir)),
+        "verify-email",
+        "--batch",
+    ]
+    cmd, temp_path = _append_json_or_file(cmd, items)
+    return _run_subprocess_json(cmd, temp_path=temp_path, timeout=timeout, skill_dir=skill_dir)
+
+
 def run_verify_email_batch(
     om_dir: Path,
     items: list[dict[str, Any]],
@@ -316,22 +495,26 @@ def run_verify_email_batch(
 ) -> dict[str, Any]:
     if not items:
         return {"status": "batch_recorded", "recorded": 0, "errors": []}
-    cmd = [
-        sys.executable,
-        str(get_pipeline_path(om_dir)),
-        "verify-email",
-        "--batch",
-        "--json",
-        json.dumps(items),
-    ]
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=subprocess_env(skill_dir),
-    )
-    if proc.returncode != 0:
-        err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
-        raise RuntimeError(err)
-    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+    if len(items) <= PIPELINE_CHUNK_SIZE:
+        chunk_timeout = timeout if timeout != 120 else _chunk_timeout(len(items))
+        return _run_verify_email_batch_once(
+            om_dir, items, timeout=chunk_timeout, skill_dir=skill_dir,
+        )
+    summaries: list[dict[str, Any]] = []
+    total_chunks = (len(items) + PIPELINE_CHUNK_SIZE - 1) // PIPELINE_CHUNK_SIZE
+    for i in range(0, len(items), PIPELINE_CHUNK_SIZE):
+        chunk = items[i : i + PIPELINE_CHUNK_SIZE]
+        chunk_num = i // PIPELINE_CHUNK_SIZE + 1
+        print(
+            f"  verify-email chunk {chunk_num}/{total_chunks} ({len(chunk)} rows)...",
+            flush=True,
+        )
+        summaries.append(
+            _run_verify_email_batch_once(
+                om_dir,
+                chunk,
+                timeout=_chunk_timeout(len(chunk)),
+                skill_dir=skill_dir,
+            )
+        )
+    return _merge_pipeline_summaries(summaries)

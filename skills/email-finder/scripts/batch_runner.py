@@ -630,6 +630,15 @@ def run_batch(
                     save_out["verify"] = vout
             except RuntimeError as e:
                 save_out = {"error": str(e)}
+                print(
+                    "\n❌ Outreach Magic save failed (email finding may have completed).\n"
+                    f"   {e}\n"
+                    "   CSV/JSON output is on disk. Re-sync with:\n"
+                    f"     python3 scripts/email_finder.py import-to-om --file <profiles.json>"
+                    f" --workspace {opts.workspace or 'WORKSPACE'}\n"
+                    "   Or re-run the same batch-find to resume API work and retry OM import.\n",
+                    file=sys.stderr,
+                )
 
     elapsed = time.time() - start
     print_final_summary(

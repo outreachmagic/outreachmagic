@@ -425,6 +425,93 @@ class TestMillionVerifier(unittest.TestCase):
         self.assertNotIn("/verify", called_url)
 
 
+class TestCompanionCommonPipelinePayload(unittest.TestCase):
+    def setUp(self):
+        lemail.cc._AGENT_ENV_LOADED = False
+
+    def test_append_json_inline_under_threshold(self):
+        cmd, temp = lemail.cc._append_json_or_file(["pipeline"], [{"id": 1}])
+        self.assertIsNone(temp)
+        self.assertEqual(cmd[0], "pipeline")
+        self.assertEqual(cmd[1], "--json")
+
+    def test_append_json_uses_file_over_threshold(self):
+        big = [{"id": i, "notes": "x" * 500} for i in range(300)]
+        cmd, temp = lemail.cc._append_json_or_file(["pipeline"], big)
+        self.assertIsNotNone(temp)
+        self.assertEqual(cmd[-2], "--file")
+        self.assertTrue(Path(temp).is_file())
+        Path(temp).unlink(missing_ok=True)
+
+    def test_merge_import_summaries(self):
+        merged = lemail.cc._merge_pipeline_summaries([
+            {"processed": 100, "matched": 80, "enriched": 50, "created": 0, "results": [{"lead_id": 1}]},
+            {"processed": 100, "matched": 70, "enriched": 40, "created": 1, "results": [{"lead_id": 2}]},
+        ])
+        self.assertEqual(merged["processed"], 200)
+        self.assertEqual(merged["matched"], 150)
+        self.assertEqual(merged["enriched"], 90)
+        self.assertEqual(merged["created"], 1)
+        self.assertEqual(len(merged["results"]), 2)
+        self.assertEqual(merged["chunks"], 2)
+
+    @patch.object(lemail.cc, "_run_subprocess_json")
+    @patch.object(lemail.cc, "_append_json_or_file")
+    def test_import_profiles_chunks_over_200(self, mock_append, mock_run):
+        mock_append.side_effect = lambda cmd, payload, **kw: (cmd + ["--json", "[]"], None)
+        mock_run.return_value = {"processed": 10, "matched": 8, "enriched": 5, "created": 0, "results": []}
+        profiles = [{"name": f"P{i}", "company_domain": "acme.com"} for i in range(450)]
+        om = Path("/tmp/om-test")
+        out = lemail.cc.run_import_profiles(om, profiles, workspace="ws", skill_dir=lemail._find_skill_dir())
+        self.assertEqual(mock_run.call_count, 3)
+        self.assertEqual(out["processed"], 30)
+        self.assertEqual(out["chunks"], 3)
+
+    @patch.object(lemail.cc, "_run_subprocess_json")
+    @patch.object(lemail.cc, "_append_json_or_file")
+    def test_verify_batch_chunks(self, mock_append, mock_run):
+        mock_append.side_effect = lambda cmd, payload, **kw: (cmd + ["--json", "[]"], None)
+        mock_run.return_value = {"recorded": 50, "errors": []}
+        items = [{"lead_id": i, "status": "valid", "source": "trykitt"} for i in range(250)]
+        out = lemail.cc.run_verify_email_batch(Path("/tmp/om"), items)
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(out["recorded"], 100)
+
+    @patch.object(lemail.cc, "_run_subprocess_json")
+    def test_import_argv_stays_under_arg_max(self, mock_run):
+        mock_run.return_value = {"processed": 1, "matched": 0, "enriched": 0, "created": 0, "results": []}
+        profiles = [
+            {
+                "id": i,
+                "name": f"User {i}",
+                "company_domain": "acme.com",
+                "tags": ["trykitt_attempted", "email_found"],
+                "notes": "x" * 400,
+            }
+            for i in range(600)
+        ]
+        lemail.cc.run_import_profiles(Path("/tmp/om"), profiles, workspace="ws")
+        for call in mock_run.call_args_list:
+            cmd = call[0][0]
+            json_arg_len = 0
+            if "--json" in cmd:
+                json_arg_len = len(cmd[cmd.index("--json") + 1])
+            self.assertLess(json_arg_len, lemail.cc.JSON_ARG_THRESHOLD + 1)
+            self.assertTrue("--file" in cmd or json_arg_len <= lemail.cc.JSON_ARG_THRESHOLD)
+            total_argv = sum(len(str(a)) for a in cmd)
+            self.assertLess(total_argv, 500_000)
+
+    @patch.object(lemail.cc, "_run_subprocess_json")
+    @patch.object(lemail.cc, "_append_json_or_file")
+    def test_batch_lead_lookup_single_call_small(self, mock_append, mock_run):
+        mock_append.side_effect = lambda cmd, payload, **kw: (cmd + ["--json", "[]"], None)
+        mock_run.return_value = {"status": "ok", "results": [{"index": 0}]}
+        items = [{"index": 0, "lead_id": 1}]
+        out = lemail.cc.run_batch_lead_lookup(Path("/tmp/om"), items)
+        self.assertEqual(mock_run.call_count, 1)
+        self.assertEqual(len(out["results"]), 1)
+
+
 class TestTagOnMiss(unittest.TestCase):
     @patch.object(lemail.cc, "run_import_profiles")
     def test_tag_trykitt_attempted_on_miss(self, mock_import):

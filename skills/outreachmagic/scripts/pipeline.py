@@ -3183,6 +3183,24 @@ def tag_bulk(workspace_id: str, lead_ids: list[int], tags: list[str], *, remove:
 
 
 
+def load_json_array_from_cli(*, json_input: Optional[str] = None, file_path: Optional[str] = None) -> list:
+    """Load a JSON array for companion subprocesses (--json or --file)."""
+    if file_path and json_input:
+        raise ValueError("Use --file or --json, not both")
+    if file_path:
+        path = resolve_project_path(file_path, kind="input")
+        if not path.is_file():
+            raise ValueError(f"File not found: {path}")
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    elif json_input:
+        data = json.loads(json_input)
+    else:
+        raise ValueError("Provide --file or --json")
+    if not isinstance(data, list):
+        raise ValueError("JSON must be an array")
+    return data
+
+
 def load_profile_rows_from_file(path: Path) -> list[dict]:
     """Load rows from a .csv file or a .json / .jsonl file."""
     suffix = path.suffix.lower()
@@ -8576,8 +8594,9 @@ def main():
     ver_p.add_argument("--sub-status", dest="sub_status", help="Sub-status detail")
     ver_p.add_argument("--source-detail", dest="source_detail")
     ver_p.add_argument("--smtp-provider", dest="smtp_provider")
-    ver_p.add_argument("--batch", action="store_true", help="Read JSON array from --json")
+    ver_p.add_argument("--batch", action="store_true", help="Read JSON array from --json or --file")
     ver_p.add_argument("--json", dest="json_input", help="JSON array for batch mode")
+    ver_p.add_argument("--file", help="JSON file path for batch mode")
 
     vers_p = sub.add_parser("verify-status", help="Check verification status for a lead")
     vers_p.add_argument("--lead-id", type=int)
@@ -8776,7 +8795,8 @@ def main():
         "batch-lead-lookup",
         help="Lookup many leads in one DB pass (companion dedup)",
     )
-    bulk_lookup_p.add_argument("--json", dest="json_input", required=True, help="JSON array of lookup keys")
+    bulk_lookup_p.add_argument("--json", dest="json_input", help="JSON array of lookup keys")
+    bulk_lookup_p.add_argument("--file", help="JSON file path (array of lookup keys)")
     bulk_lookup_p.add_argument("--workspace", help="Workspace slug or name")
 
     hist_p = sub.add_parser("history", help="Show event history for a lead")
@@ -9471,7 +9491,14 @@ def main():
             print(json.dumps({"error": "tag subcommand required: add, remove, set, list, bulk, repair"}))
     elif args.command == "verify-email":
         if getattr(args, "batch", False):
-            items = json.loads(getattr(args, "json_input", None) or "[]")
+            try:
+                items = load_json_array_from_cli(
+                    json_input=getattr(args, "json_input", None),
+                    file_path=getattr(args, "file", None),
+                )
+            except (json.JSONDecodeError, ValueError) as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
             print(json.dumps(verify_email_batch(items), indent=2))
         else:
             lid = getattr(args, "lead_id", None)
@@ -9660,9 +9687,10 @@ def main():
         print(json.dumps(result, indent=2))
     elif args.command == "batch-lead-lookup":
         try:
-            items = json.loads(getattr(args, "json_input", None) or "[]")
-            if not isinstance(items, list):
-                raise ValueError("JSON must be an array")
+            items = load_json_array_from_cli(
+                json_input=getattr(args, "json_input", None),
+                file_path=getattr(args, "file", None),
+            )
             print(json.dumps(
                 batch_lead_lookup(items, workspace=getattr(args, "workspace", None)),
                 indent=2,

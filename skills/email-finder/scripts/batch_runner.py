@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import companion_common as cc
-from health import count_usable_find_providers, format_health_lines, run_health_check
+from health import (
+    count_usable_find_providers,
+    format_health_lines,
+    icypeas_batch_warnings,
+    run_health_check,
+)
 from normalize import lead_resume_key, load_people_json, row_fields, sanitize_input_path, validate_domain
 from progress import (
     print_dry_run_box,
@@ -27,6 +32,7 @@ from progress import (
 from providers import (
     CreditsExhaustedError,
     provider_note_text,
+    provider_request_delay_seconds,
     resolve_provider_names,
     run_find_with_fallback,
     validity_to_verify_status,
@@ -34,7 +40,7 @@ from providers import (
 
 BATCH_CSV_COLUMNS = (
     "resume_key", "lead_id", "name", "domain", "email", "validity",
-    "error", "provider", "api_calls", "status", "timestamp",
+    "error", "provider", "api_calls", "status", "icypeas_status", "timestamp",
 )
 CREDIT_RECHECK_EVERY = 100
 
@@ -186,6 +192,16 @@ def bulk_dedup_map(
             continue
         out[int(idx)] = entry
     return out
+
+
+def count_rows_missing_om_match(people: list[dict[str, Any]]) -> int:
+    """Rows without lead_id or linkedin may create duplicate OM leads on import."""
+    missing = 0
+    for row in people:
+        _name, _domain, _company, linkedin, lead_id = row_fields(row)
+        if lead_id is None and not (linkedin or "").strip():
+            missing += 1
+    return missing
 
 
 def skip_reason_from_lookup(
@@ -436,6 +452,11 @@ def run_batch(
         key = cfg.get(f"{pname}_api_key") or cfg.get("trykitt_api_key" if pname == "trykitt" else "icypeas_api_key")
         api_providers.append((pname, str(key or "").strip()))
 
+    workers_planned = min(max(opts.workers, 1), 5)
+    rate_warnings = icypeas_batch_warnings(
+        provider_names, workers=workers_planned, delay=opts.delay, cfg=cfg,
+    )
+
     health_lines: list[str] = []
     if opts.dry_run:
         _ok, issues, ok_msgs = run_health_check(
@@ -446,17 +467,20 @@ def run_batch(
             batch_size=len(to_process),
             skip_om=opts.skip_om,
         )
+        issues = [*issues, *rate_warnings]
         health_lines = format_health_lines(
             issues, ok_msgs, skip_om=opts.skip_om, om_connected=om_dir is not None,
         )
+        missing_match = count_rows_missing_om_match(people) if not opts.skip_om else 0
         print_dry_run_box(
             to_process=len(to_process),
             skipped_email=skipped_email,
             skipped_tagged=skipped_tagged,
             provider=provider_label,
-            workers=min(max(opts.workers, 1), 5),
+            workers=workers_planned,
             health_lines=health_lines,
             resume_done=resume_done,
+            missing_om_match=missing_match,
         )
         return {
             "dry_run": True,
@@ -475,6 +499,7 @@ def run_batch(
     )
     for msg in ok_msgs:
         print(f"  ✅ {msg}")
+    issues = [*issues, *rate_warnings]
     if issues:
         print("\n⚠️  Health check issues:")
         for issue in issues:
@@ -490,11 +515,14 @@ def run_batch(
         "found": 0,
         "not_found": 0,
         "errors": 0,
+        "rate_limited": 0,
+        "timeout": 0,
         "api_calls": {p: 0 for p in provider_names},
         "verify": {"valid": 0, "catch_all": 0, "invalid": 0, "unknown": 0},
         "waterfall": {p: {"calls": 0, "found": 0, "not_found": 0, "errors": 0} for p in provider_names},
         "skipped": skipped_email + skipped_tagged,
     }
+    request_delay = provider_request_delay_seconds(cfg, provider_names, cli_delay=opts.delay)
     results: list[dict[str, Any]] = [
         pre_skipped.get(i, {"batch_status": "pending"}) for i in range(len(people))
     ]
@@ -508,8 +536,8 @@ def run_batch(
 
     def _work(item: tuple[int, dict[str, Any]]) -> tuple[int, dict[str, Any]]:
         idx, row = item
-        if opts.delay > 0 and workers == 1:
-            time.sleep(opts.delay)
+        if request_delay > 0:
+            time.sleep(request_delay)
         name, domain, _company, linkedin, _lead_id = row_fields(row)
         try:
             result = run_find_with_fallback(
@@ -581,9 +609,17 @@ def run_batch(
                 )
                 import_created = int(imported.get("created") or 0)
                 if import_created:
+                    new_ids = [
+                        str(r.get("lead_id") or r.get("id"))
+                        for r in (imported.get("results") or [])
+                        if isinstance(r, dict) and r.get("created")
+                    ]
+                    id_hint = f" ids: {', '.join(new_ids[:5])}" if new_ids else ""
+                    if len(new_ids) > 5:
+                        id_hint += f" (+{len(new_ids) - 5} more)"
                     print(
                         f"\n⚠️  Warning: import-profiles created {import_created} new lead(s) "
-                        f"(expected 0 — pass lead_id/linkedin in input).\n",
+                        f"(expected 0 — pass lead_id/linkedin in input).{id_hint}\n",
                         file=sys.stderr,
                     )
                 save_out = {"imported": len(import_profiles), "import": imported, "created": import_created}
@@ -646,10 +682,17 @@ def _record_result(
     writer: Optional[IncrementalWriter],
     stats: dict[str, Any],
 ) -> None:
-    if result.get("status") == "credits_exhausted":
+    st = str(result.get("status") or "")
+    if st == "credits_exhausted":
         stats["errors"] += 1
         stats["credits_exhausted"] = int(stats.get("credits_exhausted", 0)) + 1
-    elif result.get("error") and result.get("status") == "error":
+    elif st == "rate_limited":
+        stats["rate_limited"] = int(stats.get("rate_limited", 0)) + 1
+        stats["errors"] += 1
+    elif st == "error" and str(result.get("error") or "") == "icypeas_timeout":
+        stats["timeout"] = int(stats.get("timeout", 0)) + 1
+        stats["errors"] += 1
+    elif st in ("error", "http_error", "auth_error") or result.get("error"):
         stats["errors"] += 1
     elif result.get("email"):
         stats["found"] += 1
@@ -685,7 +728,7 @@ def _record_result(
         st = str(att.get("status") or "")
         if p == winning_provider and result.get("email"):
             wf[p]["found"] = int(wf[p].get("found", 0)) + 1
-        elif st in ("error", "http_error") or (
+        elif st in ("error", "http_error", "rate_limited") or (
             st == "error" and "credit" in str(att.get("error") or "").lower()
         ):
             wf[p]["errors"] = int(wf[p].get("errors", 0)) + 1
@@ -712,6 +755,7 @@ def _record_result(
         "provider": result.get("provider") or "",
         "api_calls": api_n,
         "status": result.get("status") or "",
+        "icypeas_status": result.get("icypeas_status") or "",
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     writer.append(row_dict, resume_key)

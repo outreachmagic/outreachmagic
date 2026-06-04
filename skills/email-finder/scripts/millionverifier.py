@@ -147,17 +147,35 @@ class MillionVerifierProvider:
         *,
         interval: float = 30.0,
         max_wait: float = 3600.0,
+        poll_interval: Optional[float] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> dict[str, Any]:
+        wait_interval = poll_interval if poll_interval is not None else interval
+        wait_max = timeout_seconds if timeout_seconds is not None else max_wait
         start = time.time()
-        while time.time() - start < max_wait:
+        while time.time() - start < wait_max:
             status_payload = self.check_status(file_id)
             status = str(status_payload.get("status") or "").lower()
             if status in ("finished", "completed"):
                 return status_payload
             if status in ("failed", "error", "canceled"):
                 return status_payload
-            time.sleep(max(5.0, interval))
+            time.sleep(max(5.0, wait_interval))
         return {"status": "timeout", "error": "bulk verification timed out", "file_id": file_id}
+
+    def wait_for_completion(
+        self,
+        file_id: str,
+        *,
+        poll_interval: float = 10.0,
+        timeout_seconds: float = 600.0,
+    ) -> dict[str, Any]:
+        """Alias for poll_until_complete (discoverable name for agents)."""
+        return self.poll_until_complete(
+            file_id,
+            poll_interval=poll_interval,
+            timeout_seconds=timeout_seconds,
+        )
 
     def _normalize(self, raw: dict[str, Any]) -> dict[str, Any]:
         mv_status = str(raw.get("result") or raw.get("status") or "")

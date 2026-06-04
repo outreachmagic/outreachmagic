@@ -114,8 +114,10 @@ def load_config() -> dict[str, Any]:
         cfg["outreachmagic_home"] = os.environ["OUTREACHMAGIC_HOME"]
     cfg.setdefault("trykitt_enabled", True)
     cfg.setdefault("icypeas_enabled", True)
-    cfg.setdefault("icypeas_poll_attempts", 8)
-    cfg.setdefault("icypeas_poll_delay_seconds", 2)
+    cfg.setdefault("icypeas_poll_attempts", 30)
+    cfg.setdefault("icypeas_poll_delay_seconds", 3)
+    cfg.setdefault("icypeas_request_delay_seconds", 1.5)
+    cfg.setdefault("trykitt_request_delay_seconds", 0.2)
     cfg.setdefault("batch_delay_seconds", 8)
     cfg.setdefault("max_people_per_run", 500)
     return cfg

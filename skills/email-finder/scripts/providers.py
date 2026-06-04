@@ -14,6 +14,48 @@ TRYKITT_FIND_URL = "https://api.trykitt.ai/job/find_email"
 ICYPEAS_FIND_URL = "https://app.icypeas.com/api/email-search"
 ICYPEAS_READ_URL = "https://app.icypeas.com/api/bulk-single-searchs/read"
 HTTP_TIMEOUT = 30
+ICYPEAS_CREDIT_COST = 0.003
+ICYPEAS_PROCESSING_STATUSES = frozenset(("", "NONE", "SCHEDULED", "IN_PROGRESS"))
+ICYPEAS_DEBITED_STATUSES = frozenset(("FOUND", "DEBITED", "DEBITED_NOT_FOUND"))
+
+
+def is_icypeas_rate_limited(message: str) -> bool:
+    m = (message or "").lower()
+    return "exceeded the max number of requests" in m or "rate limit" in m
+
+
+def icypeas_credits_for_status(status: str, *, cfg: Optional[dict[str, Any]] = None) -> float:
+    cost = float((cfg or {}).get("icypeas_credit_cost", ICYPEAS_CREDIT_COST))
+    return cost if (status or "").upper() in ICYPEAS_DEBITED_STATUSES else 0.0
+
+
+def icypeas_poll_wait_seconds(attempt: int, base_delay: float) -> float:
+    wait = base_delay * (1.5 ** attempt)
+    return min(max(0.0, wait), 30.0)
+
+
+def _icypeas_auth_error_result(*, domain: str, full_name: str, error: str) -> dict[str, Any]:
+    return {
+        "status": "auth_error",
+        "error": error,
+        "email": None,
+        "provider": "icypeas",
+        "domain": domain,
+        "full_name": full_name,
+        "credits_used": 0.0,
+    }
+
+
+def _icypeas_rate_limited_result(*, domain: str, full_name: str, error: str) -> dict[str, Any]:
+    return {
+        "status": "rate_limited",
+        "error": error,
+        "email": None,
+        "provider": "icypeas",
+        "domain": domain,
+        "full_name": full_name,
+        "credits_used": 0.0,
+    }
 
 
 class CreditsExhaustedError(RuntimeError):
@@ -180,29 +222,44 @@ def icypeas_find(
     if not firstname and not lastname:
         return {"error": "valid name required", "status": "bad_input", "provider": "icypeas"}
     body = build_icypeas_payload(full_name, domain, linkedin)
-    req = urllib.request.Request(
-        cfg.get("icypeas_endpoint", ICYPEAS_FIND_URL),
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": api_key,
-            "User-Agent": "email-finder/2.0",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        return {"status": "http_error", "http_status": e.code, "error": err_body[:500], "provider": "icypeas"}
-    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
-        return {"status": "error", "error": str(e), "provider": "icypeas"}
+    payload: dict[str, Any] = {}
+    for post_attempt in range(2):
+        req = urllib.request.Request(
+            cfg.get("icypeas_endpoint", ICYPEAS_FIND_URL),
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": api_key,
+                "User-Agent": "email-finder/2.2",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            if e.code in (401, 403) or "UserNotFoundError" in err_body:
+                return _icypeas_auth_error_result(domain=domain, full_name=full_name, error=err_body[:500])
+            if is_icypeas_rate_limited(err_body) and post_attempt == 0:
+                time.sleep(float(cfg.get("icypeas_rate_limit_retry_seconds", 3)))
+                continue
+            if is_icypeas_rate_limited(err_body):
+                return _icypeas_rate_limited_result(domain=domain, full_name=full_name, error=err_body[:500])
+            return {"status": "http_error", "http_status": e.code, "error": err_body[:500], "provider": "icypeas"}
+        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+            return {"status": "error", "error": str(e), "provider": "icypeas"}
+    else:
+        return {"status": "rate_limited", "error": "icypeas rate limited", "provider": "icypeas"}
 
     if payload.get("success") is False:
+        err = str(payload.get("error") or payload.get("message") or "icypeas request failed")
+        if is_icypeas_rate_limited(err):
+            return _icypeas_rate_limited_result(domain=domain, full_name=full_name, error=err)
         return {
             "status": "error",
-            "error": str(payload.get("error") or payload.get("message") or "icypeas request failed"),
+            "error": err,
             "provider": "icypeas",
         }
     item = payload.get("item") or {}
@@ -219,9 +276,10 @@ def icypeas_poll_result(
     domain: str,
     full_name: str,
 ) -> dict[str, Any]:
-    poll_attempts = max(1, int(cfg.get("icypeas_poll_attempts", 8)))
-    poll_delay = float(cfg.get("icypeas_poll_delay_seconds", 2))
+    poll_attempts = max(1, int(cfg.get("icypeas_poll_attempts", 30)))
+    poll_delay = float(cfg.get("icypeas_poll_delay_seconds", 3))
     read_url = cfg.get("icypeas_read_endpoint", ICYPEAS_READ_URL)
+    last_status = ""
     for attempt in range(poll_attempts):
         req = urllib.request.Request(
             read_url,
@@ -238,29 +296,52 @@ def icypeas_poll_result(
                 payload = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="replace")
+            if e.code in (401, 403) or "UserNotFoundError" in err_body:
+                return _icypeas_auth_error_result(domain=domain, full_name=full_name, error=err_body[:500])
+            if is_icypeas_rate_limited(err_body):
+                return _icypeas_rate_limited_result(domain=domain, full_name=full_name, error=err_body[:500])
             return {"status": "http_error", "http_status": e.code, "error": err_body[:500], "provider": "icypeas"}
         except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
             return {"status": "error", "error": str(e), "provider": "icypeas"}
 
         if payload.get("success") is False:
+            err = str(payload.get("error") or payload.get("message") or "icypeas read failed")
+            if "UserNotFoundError" in err or "user_not_found" in err.lower():
+                return _icypeas_auth_error_result(domain=domain, full_name=full_name, error=err)
+            if is_icypeas_rate_limited(err):
+                return _icypeas_rate_limited_result(domain=domain, full_name=full_name, error=err)
             return {
                 "status": "error",
-                "error": str(payload.get("error") or payload.get("message") or "icypeas read failed"),
+                "error": err,
                 "provider": "icypeas",
             }
         items = payload.get("items") if isinstance(payload.get("items"), list) else []
         item = items[0] if items else {}
         status = str(item.get("status") or "").upper()
-        processing = status in ("", "NONE", "SCHEDULED", "IN_PROGRESS")
+        last_status = status
+        processing = status in ICYPEAS_PROCESSING_STATUSES
         if processing and attempt + 1 < poll_attempts:
-            time.sleep(max(0.0, poll_delay))
+            time.sleep(icypeas_poll_wait_seconds(attempt, poll_delay))
             continue
+        if processing:
+            return {
+                "status": "error",
+                "error": "icypeas_timeout",
+                "email": None,
+                "jobId": search_id,
+                "provider": "icypeas",
+                "icypeas_status": status or None,
+                "domain": domain,
+                "full_name": full_name,
+                "credits_used": 0.0,
+            }
 
         results = item.get("results") if isinstance(item.get("results"), dict) else {}
         emails = results.get("emails") if isinstance(results.get("emails"), list) else []
         first_email = emails[0] if emails and isinstance(emails[0], dict) else {}
         email = str(first_email.get("email") or "").strip()
         certainty = str(first_email.get("certainty") or "").strip()
+        credits = icypeas_credits_for_status(status, cfg=cfg)
         return {
             "status": "found" if email else "not_found",
             "email": email or None,
@@ -271,16 +352,40 @@ def icypeas_poll_result(
             "icypeas_status": status or None,
             "domain": domain,
             "full_name": full_name,
-            "credits_used": 0.003,
+            "credits_used": credits,
         }
     return {
         "status": "error",
-        "error": "icypeas polling exhausted",
+        "error": "icypeas_timeout",
         "jobId": search_id,
         "provider": "icypeas",
+        "icypeas_status": last_status or None,
         "domain": domain,
         "full_name": full_name,
+        "credits_used": 0.0,
     }
+
+
+def provider_request_delay_seconds(
+    cfg: dict[str, Any],
+    provider_names: list[str],
+    *,
+    cli_delay: float = 0.0,
+) -> float:
+    """Per-lead throttle before API calls (applied for all worker counts)."""
+    icypeas_delay = float(cfg.get("icypeas_request_delay_seconds", 1.5))
+    trykitt_delay = float(cfg.get("trykitt_request_delay_seconds", 0.2))
+    if len(provider_names) == 1 and provider_names[0] == "icypeas":
+        base = icypeas_delay
+    elif len(provider_names) == 1 and provider_names[0] == "trykitt":
+        base = trykitt_delay
+    elif "icypeas" in provider_names:
+        base = icypeas_delay
+    else:
+        base = trykitt_delay
+    if cli_delay > 0:
+        return max(base, cli_delay)
+    return base
 
 
 def resolve_provider_names(cfg: dict[str, Any], cli_provider: Optional[str] = None) -> list[str]:
@@ -309,6 +414,7 @@ def run_find_with_fallback(
     if not providers:
         return {"status": "skipped", "reason": "no providers enabled", "provider_attempts": []}
     attempts: list[dict[str, Any]] = []
+    last_res: dict[str, Any] = {}
     for provider in providers:
         try:
             if provider == "trykitt":
@@ -325,6 +431,7 @@ def run_find_with_fallback(
                 "attempted": True,
             })
             continue
+        last_res = res
         attempt = {
             "provider": provider,
             "status": res.get("status"),
@@ -350,11 +457,13 @@ def run_find_with_fallback(
                 "validity": None,
                 "provider_attempts": attempts,
             }
-        final = dict(attempts[-1]) if attempts else {}
-        if final.get("status") == "error" and not final.get("email"):
-            pass
-        else:
+        final = dict(last_res) if last_res else {}
+        st = final.get("status")
+        if st not in ("error", "rate_limited", "http_error", "auth_error", "not_found", "found"):
             final.setdefault("status", "not_found")
+        elif st == "error" and str(final.get("error") or "") != "icypeas_timeout":
+            if not final.get("email"):
+                final.setdefault("status", "not_found")
         final.setdefault("email", None)
         final.setdefault("validity", None)
         final["provider_attempts"] = attempts

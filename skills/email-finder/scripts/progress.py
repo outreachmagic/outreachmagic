@@ -33,10 +33,23 @@ def _init_stats(stats: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     base.setdefault("found", 0)
     base.setdefault("not_found", 0)
     base.setdefault("errors", 0)
+    base.setdefault("rate_limited", 0)
+    base.setdefault("timeout", 0)
     base.setdefault("api_calls", {})
     base.setdefault("verify", {"valid": 0, "catch_all": 0, "invalid": 0, "unknown": 0})
     base.setdefault("waterfall", {})
     return base
+
+
+def _provider_api_lines(stats: dict[str, Any]) -> list[str]:
+    calls = stats.get("api_calls") or {}
+    if not isinstance(calls, dict):
+        return []
+    lines: list[str] = []
+    for pname in sorted(calls.keys()):
+        n = int(calls.get(pname, 0))
+        lines.append(f"{pname} API calls:  {n}")
+    return lines
 
 
 def record_api_calls(stats: dict[str, Any], result: dict[str, Any]) -> None:
@@ -94,6 +107,10 @@ def print_progress(
     print(f" Found:      {stats.get('found', 0):>5}  ({hit_rate:.1f}% hit rate)  {bar}", file=file)
     print(f" Not found:  {stats.get('not_found', 0):>5}", file=file)
     print(f" Errors:     {stats.get('errors', 0):>5}", file=file)
+    if stats.get("rate_limited"):
+        print(f" Rate limit: {stats.get('rate_limited', 0):>5}", file=file)
+    if stats.get("timeout"):
+        print(f" Timeouts:   {stats.get('timeout', 0):>5}", file=file)
     print("─" * 60, file=file)
     print(f" {_api_calls_line(stats)}", file=file)
     print(f" Rate:       {rate:.2f}/s  ETA: {eta_str}", file=file)
@@ -128,25 +145,34 @@ def print_final_summary(
     print(f"║{'EMAIL FINDER — COMPLETE':^62}║", file=file)
     print("╠" + "═" * 62 + "╣", file=file)
     print(f"║  Total processed:  {total:<44}║", file=file)
-    print(f"║  Found:            {stats.get('found', 0):<5} ({hit_rate:.1f}% hit rate){'':>30}║", file=file)
-    print(f"║  Not found:        {stats.get('not_found', 0):<44}║", file=file)
-    print(f"║  Errors:           {stats.get('errors', 0):<44}║", file=file)
     print(f"║{'':62}║", file=file)
-    print(f"║  {_api_calls_line(stats):<60}║", file=file)
+    print(f"║  FIND RESULTS{'':49}║", file=file)
+    print(f"║    Found:          {stats.get('found', 0):<5} ({hit_rate:.1f}%){'':>30}║", file=file)
+    print(f"║    Not found:      {stats.get('not_found', 0):<44}║", file=file)
+    print(f"║    Errors:         {stats.get('errors', 0):<44}║", file=file)
+    if stats.get("rate_limited"):
+        print(f"║    Rate limited:   {stats.get('rate_limited', 0):<44}║", file=file)
+    if stats.get("timeout"):
+        print(f"║    Timeouts:       {stats.get('timeout', 0):<44}║", file=file)
+    provider_lines = _provider_api_lines(stats)
+    if provider_lines:
+        print(f"║{'':62}║", file=file)
+        print(f"║  PROVIDER{'':53}║", file=file)
+        for line in provider_lines:
+            print(f"║    {line:<58}║", file=file)
     if provider:
-        print(f"║  Provider:         {provider:<47}║", file=file)
+        print(f"║    mode:            {provider:<44}║", file=file)
     if found_n:
         print(f"║{'':62}║", file=file)
-        print(f"║  Verification (of found):{'':36}║", file=file)
+        print(f"║  VERIFICATION (of found){'':37}║", file=file)
         for key in ("valid", "catch_all", "invalid", "unknown"):
             n = int(verify.get(key, 0))
-            if n:
-                pct = n / found_n * 100
-                print(f"║    {key:<12} {n:>5}  ({pct:.1f}%){'':>28}║", file=file)
+            pct = n / found_n * 100 if found_n else 0
+            print(f"║    {key:<12} {n:>5}  ({pct:.1f}%){'':>28}║", file=file)
     wf = stats.get("waterfall") or {}
-    if wf and "+" in (provider or ""):
+    if wf and len(wf) > 1:
         print(f"║{'':62}║", file=file)
-        print(f"║  Waterfall:{'':50}║", file=file)
+        print(f"║  WATERFALL{'':52}║", file=file)
         for line in _waterfall_lines(wf):
             print(f"║    {line:<58}║", file=file)
     print(f"║  Time elapsed:     {elapsed_str:<47}║", file=file)
@@ -210,6 +236,7 @@ def print_dry_run_box(
     workers: int,
     health_lines: Optional[list[str]] = None,
     resume_done: int = 0,
+    missing_om_match: int = 0,
     file=sys.stderr,
 ) -> None:
     print(file=file)
@@ -223,6 +250,11 @@ def print_dry_run_box(
     print(f"║  Skipped (tagged):   {skipped_tagged:<44}║", file=file)
     print(f"║  Provider:          {provider:<44}║", file=file)
     print(f"║  Workers:           {workers:<44}║", file=file)
+    if missing_om_match:
+        print(
+            f"║  ⚠ No lead_id/linkedin: {missing_om_match} rows (may create dupes){'':>8}║",
+            file=file,
+        )
     if health_lines:
         print(f"║{'':62}║", file=file)
         print(f"║  Health:{'':54}║", file=file)

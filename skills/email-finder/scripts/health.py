@@ -150,6 +150,30 @@ def run_health_check(
     return (len(issues) == 0, issues, ok_msgs)
 
 
+def icypeas_batch_warnings(
+    provider_names: list[str],
+    *,
+    workers: int,
+    delay: float,
+    cfg: dict[str, Any],
+) -> list[str]:
+    """Warn when batch settings are likely to hit IcyPeas rate limits."""
+    if "icypeas" not in provider_names:
+        return []
+    min_delay = float(cfg.get("icypeas_request_delay_seconds", 1.5))
+    effective_delay = max(delay, min_delay) if delay > 0 else min_delay
+    warnings: list[str] = []
+    if workers > 2 and effective_delay < 2:
+        warnings.append(
+            "icypeas: use --workers 2 --delay 3 (or higher) to avoid rate limits"
+        )
+    elif workers > 1 and effective_delay < 1.5:
+        warnings.append(
+            f"icypeas: delay {effective_delay:.1f}s may be too low for {workers} workers"
+        )
+    return warnings
+
+
 def format_health_lines(
     issues: list[str],
     ok_msgs: list[str],

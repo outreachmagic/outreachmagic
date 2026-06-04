@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas (waterfall). Checks Outreach Magic
   first to avoid duplicate API spend. Saves email and verification via outreachmagic.
   Optional MillionVerifier for bulk re-check.
-version: 2.1.5
+version: 2.2.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -50,7 +50,15 @@ Find work emails when you have **name + company domain** (from **lead-enrich**, 
 2. **API keys** in `~/.hermes/.env` (or profile `.env`): `TRYKITT_API_KEY`, `ICYPEAS_API_KEY` (at least one).
 3. **Batch imports from CRM:** include `lead_id` or `linkedin` so finds **enrich** existing leads, not create duplicates.
 
-Large batches: `--workers 3 --delay 3` (or `--delay 8` on free trykitt tiers).
+## Production batch defaults
+
+| Mode | Suggested command flags |
+|------|-------------------------|
+| Waterfall (trykitt → IcyPeas) | `--workers 3 --delay 3` (or `--delay 8` on free trykitt tiers) |
+| IcyPeas only | `--workers 2 --delay 3` |
+| TryKitt only | `--workers 3` (optional `--delay 0.2`) |
+
+Config overrides in `config.json`: `icypeas_poll_attempts` (default 30), `icypeas_poll_delay_seconds` (3), `icypeas_request_delay_seconds` (1.5).
 
 ## When to use
 
@@ -64,9 +72,26 @@ Large batches: `--workers 3 --delay 3` (or `--delay 8` on free trykitt tiers).
 2. **Never fabricate emails** — provider API results only.
 3. **Waterfall** — trykitt then Icypeas when both keys are set.
 4. **Tags** — `trykitt_attempted` / `icypeas_attempted`; `email_found` when saved.
-5. **Batch input** — pass `lead_id` (or `linkedin` + `company_domain`) for OM-matched leads.
+5. **Batch input** — pass `lead_id` (preferred) or `linkedin` + `company_domain` for OM-matched leads.
 6. **Batch find** — one `import-profiles` + `verify-email --batch` at end; CSV/JSON saved incrementally (resumable).
 7. **Secrets** — `pipeline.py login` in terminal, not chat.
+8. **IcyPeas batches** — never use 3 workers with zero delay; low hit rate (~10%) often means poll timeout, not list quality.
+9. **Result semantics** — `not_found` = no email; `error` + `icypeas_timeout` = still processing; `rate_limited` = retry with higher `--delay`; `DEBITED_NOT_FOUND` = charged, no email (`icypeas_status` in CSV).
+
+## Batch input (enrich existing leads)
+
+```json
+[
+  {
+    "lead_id": 12345,
+    "name": "Jane Doe",
+    "company_domain": "acme.com",
+    "linkedin": "https://linkedin.com/in/jane"
+  }
+]
+```
+
+`lead_id` maps to `id` on `import-profiles`. Without `lead_id` or `linkedin`, dry-run warns that new OM leads may be created.
 
 ## Commands
 
@@ -75,13 +100,16 @@ Large batches: `--workers 3 --delay 3` (or `--delay 8` on free trykitt tiers).
 python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com \
   --linkedin "https://linkedin.com/in/jane" --save --workspace CLIENT
 python3 scripts/email_finder.py batch-find --workspace CLIENT --yes \
-  --output-base ./export/emails --workers 3 leads.json
+  --output-base ./export/emails --workers 3 --delay 3 leads.json
+python3 scripts/email_finder.py batch-find --provider icypeas --workspace CLIENT --yes \
+  --workers 2 --delay 3 --output-base ./export/icypeas leads.json
 python3 scripts/email_finder.py batch-find --dry-run --workspace CLIENT leads.json
 
 # Optional MillionVerifier (needs MILLIONVERIFIER_API_KEY)
 python3 scripts/email_finder.py verify --email jane@acme.com --workspace CLIENT
 python3 scripts/email_finder.py verify-bulk --workspace CLIENT --output /tmp/mv_job.txt
 python3 scripts/email_finder.py verify-status --file-id JOB_ID
+# poll_until_complete and wait_for_completion are equivalent on the MV client
 python3 scripts/email_finder.py verify-download --file-id JOB_ID --workspace CLIENT
 
 python3 scripts/email_finder.py update --check
@@ -89,9 +117,15 @@ python3 scripts/email_finder.py update --check
 
 Re-run the same `batch-find` after a crash to resume from `{output-base}.csv`.
 
+## Troubleshooting
+
+- **IcyPeas hit rate ~10%** — likely poll timeout (v2.2+ waits up to ~90s with backoff); re-run or raise `icypeas_poll_attempts`.
+- **Mass “rate limit” errors** — use `--workers 2 --delay 3` for IcyPeas-only batches.
+- **New leads created in OM** — add `lead_id` from OM export; check stderr for created lead ids.
+
 ## Funnel
 
-`lead-enrich` → save to OM → `email_finder.py batch-find` → emails on existing leads.
+`lead-enrich` → save to OM (keep `lead_id`) → `email_finder.py batch-find` → emails on existing leads.
 
 Hub copy: [docs/positioning/hub-copy.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/positioning/hub-copy.md). API notes: `references/email-finding-research.md`.
 

@@ -142,4 +142,6 @@ Presets accept: `48h`, `7d`, `2w`, `today`, or `YYYY-MM-DD`.
 
 ## Freshness
 
-Local analytics do **not** require `pull` first. Run `pull` when the user needs the latest relay events or says “refresh.”
+Local analytics do **not** require `pull` first. Read commands print `Data as of … (N minutes ago)` on stderr and include `last_pull` / `stale_minutes` in `--json`.
+
+Run `pull` when the user needs the latest relay events or says “refresh.” Use `pull --if-stale 5m` to skip redundant network round-trips in the same session.

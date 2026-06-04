@@ -72,11 +72,17 @@ class QueryCliInProcessTests(unittest.TestCase):
 
     def test_engagement_preset_json(self):
         buf = StringIO()
-        with patch("sys.stdout", buf):
+        err = StringIO()
+        with patch("sys.stdout", buf), patch("sys.stderr", err):
             query_cli.cmd_query(self._args(preset="engagement", workspace="pop", since="48h"))
         data = json.loads(buf.getvalue())
         self.assertEqual(data["preset"], "engagement")
         self.assertGreaterEqual(data["row_count"], 1)
+        self.assertIn("freshness", data)
+        self.assertTrue(
+            "Data as of" in err.getvalue() or "never been pulled" in err.getvalue(),
+            err.getvalue(),
+        )
 
     def test_sql_rejects_mutation(self):
         with self.assertRaises(SystemExit):

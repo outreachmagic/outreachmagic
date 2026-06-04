@@ -65,6 +65,14 @@ For tag `v1.21.0`:
 
 ---
 
+## v1.25.8 highlights (CLI ergonomics)
+
+- **Data freshness** — read commands print `last_pull` age on stderr and in `--json` (`stale_minutes`, `freshness_message`).
+- **`pull --if-stale 5m`** / **`pull --force`** — skip redundant relay round-trips when data is fresh.
+- **Quarantine** — default list shows sample queue IDs; `quarantine skip --campaign-id` / `--all`.
+- **`workspace list --json`** — consistent with other commands.
+- **Fix** — `query --help` no longer crashes on `%` in example text.
+
 ## v1.25.0 highlights (query layer)
 
 - **`pipeline.py query`** — read-only analytics presets: `engagement`, `replies`, `interested` (`--workspace`, `--since 48h`, `--json`).

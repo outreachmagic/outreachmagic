@@ -34,6 +34,7 @@ MANIFEST_SCRIPT_FILES = {
     "device_login.py",
     "read_queries.py",
     "query_cli.py",
+    "data_freshness.py",
     "schema.py",
     "schema_views.py",
 }

@@ -100,6 +100,13 @@ import db_health
 import quarantine_resolutions as qres
 import workspace_archive
 import query_cli
+from data_freshness import (
+    attach_freshness,
+    freshness_from_last_pull,
+    is_pull_fresh_enough,
+    parse_duration,
+    print_freshness_stderr,
+)
 from read_queries import LATEST_STATUS_CTE
 from schema import SCHEMA_SQL
 
@@ -243,6 +250,7 @@ UPDATE_SCRIPT_FILES = (
     "device_login.py",
     "read_queries.py",
     "query_cli.py",
+    "data_freshness.py",
     "schema.py",
     "schema_views.py",
 )
@@ -694,6 +702,28 @@ def get_agent_key() -> Optional[str]:
 
 def get_last_pull() -> Optional[str]:
     return load_config().get("last_pull")
+
+
+def pull_if_stale_skip_result(if_stale: Optional[str], *, force: bool = False) -> Optional[dict]:
+    """Return skip payload when --if-stale window not exceeded; None to proceed with pull."""
+    if force or not if_stale:
+        return None
+    max_sec = parse_duration(if_stale)
+    if max_sec is None:
+        raise ValueError(
+            f"Invalid --if-stale duration {if_stale!r}; use forms like 5m, 1h, 2d"
+        )
+    last = get_last_pull()
+    if is_pull_fresh_enough(last, max_sec):
+        meta = freshness_from_last_pull(last)
+        return {
+            "skipped": True,
+            "reason": "fresh",
+            "if_stale": if_stale,
+            **meta,
+        }
+    return None
+
 
 def set_last_pull(ts: str):
     cfg = load_config()
@@ -5610,7 +5640,8 @@ def get_quarantine_campaign_summary(
                campaign_id,
                COUNT(*) AS event_count,
                MIN(received_at) AS oldest_received_at,
-               MAX(received_at) AS newest_received_at
+               MAX(received_at) AS newest_received_at,
+               GROUP_CONCAT(id) AS queue_ids_raw
            FROM unmapped_campaign_queue
            WHERE org_id = ? AND status = ?
            GROUP BY source_platform, campaign
@@ -5618,7 +5649,24 @@ def get_quarantine_campaign_summary(
         (org_id, status),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for row in rows:
+        item = dict(row)
+        raw_ids = (item.pop("queue_ids_raw") or "").split(",")
+        item["queue_ids"] = [x for x in raw_ids if x]
+        out.append(item)
+    return out
+
+
+def _format_queue_id_sample(queue_ids: list[str], max_show: int = 3) -> str:
+    if not queue_ids:
+        return "—"
+    shown = queue_ids[:max_show]
+    text = ", ".join(shown)
+    extra = len(queue_ids) - len(shown)
+    if extra > 0:
+        text += f" (+{extra} more)"
+    return text
 
 
 def format_quarantine_campaign_summary(
@@ -5632,19 +5680,23 @@ def format_quarantine_campaign_summary(
     platform_w = max(len("Platform"), *(len(str(r.get("source_platform") or "")) for r in campaigns))
     campaign_w = max(len("Campaign"), *(len(str(r.get("campaign") or "")) for r in campaigns))
     count_w = max(len("Events"), *(len(str(r.get("event_count") or 0)) for r in campaigns))
+    id_samples = [_format_queue_id_sample(r.get("queue_ids") or []) for r in campaigns]
+    ids_w = max(len("Queue IDs (sample)"), *(len(s) for s in id_samples))
 
     total_events = sum(int(r.get("event_count") or 0) for r in campaigns)
     lines = [
         f"Pending quarantine: {total_events} event(s) across {len(campaigns)} campaign(s).",
+        "Use quarantine list --json for all queue IDs.",
         "",
-        f"{'Platform':<{platform_w}}  {'Campaign':<{campaign_w}}  {'Events':>{count_w}}",
-        "-" * (platform_w + campaign_w + count_w + 4),
+        f"{'Platform':<{platform_w}}  {'Campaign':<{campaign_w}}  {'Events':>{count_w}}  {'Queue IDs (sample)':<{ids_w}}",
+        "-" * (platform_w + campaign_w + count_w + ids_w + 6),
     ]
-    for row in campaigns:
+    for row, id_sample in zip(campaigns, id_samples):
         lines.append(
             f"{(row.get('source_platform') or ''):<{platform_w}}  "
             f"{(row.get('campaign') or 'unknown'):<{campaign_w}}  "
-            f"{int(row.get('event_count') or 0):>{count_w}}"
+            f"{int(row.get('event_count') or 0):>{count_w}}  "
+            f"{id_sample:<{ids_w}}"
         )
 
     if include_steps:
@@ -5680,6 +5732,7 @@ def format_quarantine_campaign_summary(
             [
                 "4. Replay quarantined events:  pipeline.py quarantine replay",
                 "   (or skip junk: pipeline.py quarantine skip --id QUEUE_ID)",
+                "   (or skip campaign: pipeline.py quarantine skip --campaign-id ID)",
                 "   (or assign one: pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG; then sync + pull)",
             ]
         )
@@ -5729,6 +5782,60 @@ def skip_quarantine(queue_id: str) -> dict:
     conn.commit()
     conn.close()
     return {"status": "ok", "id": queue_id, "relay_id": relay_id}
+
+
+def skip_quarantine_bulk(
+    *,
+    campaign_id: Optional[str] = None,
+    platform: Optional[str] = None,
+    all_pending: bool = False,
+    org_id: str = DEFAULT_ORG_ID,
+) -> dict:
+    """Skip multiple pending quarantine rows (by campaign or all pending)."""
+    if not all_pending and not campaign_id:
+        return {"status": "error", "error": "specify --campaign-id or --all"}
+    conn = get_conn()
+    sql = (
+        "SELECT id, external_event_id FROM unmapped_campaign_queue "
+        "WHERE org_id = ? AND status = 'pending'"
+    )
+    params: list = [org_id]
+    if campaign_id:
+        sql += " AND campaign_id = ?"
+        params.append(campaign_id)
+    if platform:
+        sql += " AND source_platform = ?"
+        params.append(platform)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        conn.close()
+        return {"status": "ok", "skipped": 0, "ids": []}
+    now = datetime.now(timezone.utc).isoformat()
+    skipped_ids = []
+    errors = []
+    for row in rows:
+        qid = row["id"]
+        relay_id = _quarantine_relay_id(dict(row))
+        if not relay_id:
+            errors.append({"id": qid, "error": "missing relay id"})
+            continue
+        conn.execute(
+            """UPDATE unmapped_campaign_queue
+               SET status = 'skipped', resolved_at = ?, cloud_pending = 1
+               WHERE id = ? AND status = 'pending'""",
+            (now, qid),
+        )
+        skipped_ids.append(qid)
+    conn.commit()
+    conn.close()
+    out: dict = {"status": "ok", "skipped": len(skipped_ids), "ids": skipped_ids}
+    if campaign_id:
+        out["campaign_id"] = campaign_id
+    if platform:
+        out["platform"] = platform
+    if errors:
+        out["errors"] = errors
+    return out
 
 
 def assign_quarantine(queue_id: str, workspace_slug: str) -> dict:
@@ -8715,6 +8822,16 @@ def main():
         action="store_true",
         help="Zero core/workspace/company snapshot cursors before pull (fix desync after hung partial pulls)",
     )
+    pull_p.add_argument(
+        "--if-stale",
+        metavar="DURATION",
+        help="Skip pull when last_pull is within DURATION (e.g. 5m, 1h)",
+    )
+    pull_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Always pull from relay (ignore --if-stale)",
+    )
 
     refresh_p = sub.add_parser(
         "refresh",
@@ -8858,7 +8975,8 @@ def main():
 
     ws_p = sub.add_parser("workspace", help="List or create workspaces")
     ws_sub = ws_p.add_subparsers(dest="workspace_cmd")
-    ws_sub.add_parser("list", help="List workspaces")
+    ws_list = ws_sub.add_parser("list", help="List workspaces")
+    ws_list.add_argument("--json", action="store_true", help="JSON output for agents")
     ws_create = ws_sub.add_parser("create", help="Create a workspace")
     ws_create.add_argument("--name", required=True)
     ws_create.add_argument("--slug")
@@ -8910,8 +9028,15 @@ def main():
     )
     q_list.add_argument("--limit", type=int, default=0, help="Limit rows in JSON mode (0 = all)")
     q_list.add_argument("--json", action="store_true", help="Output raw queue rows as JSON")
-    q_skip = q_sub.add_parser("skip", help="Skip quarantined event (syncs to relay)")
-    q_skip.add_argument("--id", required=True, help="Queue item id")
+    q_skip = q_sub.add_parser("skip", help="Skip quarantined event(s) (syncs to relay on next sync)")
+    q_skip.add_argument("--id", help="Single queue item id")
+    q_skip.add_argument("--campaign-id", help="Skip all pending rows for this campaign id")
+    q_skip.add_argument("--platform", help="With --campaign-id, filter by source platform")
+    q_skip.add_argument(
+        "--all",
+        action="store_true",
+        help="Skip all pending quarantine rows",
+    )
     q_assign = q_sub.add_parser("assign", help="Assign workspace (syncs to relay; ingested on next pull)")
     q_assign.add_argument("--id", required=True, help="Queue item id")
     q_assign.add_argument("--workspace", required=True, help="Workspace slug")
@@ -9269,6 +9394,20 @@ def main():
         agent_key = _require_agent_key()
         pull_stats = {}
 
+        if_stale = getattr(args, "if_stale", None)
+        if getattr(args, "force", False):
+            if_stale = None
+        if if_stale:
+            try:
+                skip_payload = pull_if_stale_skip_result(if_stale, force=False)
+            except ValueError as e:
+                print(f"Pull failed: {e}")
+                sys.exit(1)
+            if skip_payload:
+                if not args.cron:
+                    print(json.dumps(skip_payload, indent=2))
+                sys.exit(0)
+
         if getattr(args, "probe", False):
             try:
                 print_relay_probe(probe_relay_backlog(agent_key))
@@ -9336,14 +9475,21 @@ def main():
         agent_key = get_agent_key()
         if agent_key:
             try:
-                imported, _ = sync_from_relay_org(
-                    agent_key, after_id=get_last_max_id(), quiet=True,
-                )
-                if imported:
-                    print(f"Pulled from relay: {imported} new events imported.")
+                skip_payload = pull_if_stale_skip_result("5m", force=False)
+                if skip_payload:
+                    print(skip_payload.get("freshness_message", "Pull skipped (fresh)."))
                 else:
-                    print("Pulled from relay: 0 new events imported.")
-            except RuntimeError:
+                    imported, _ = sync_from_relay_org(
+                        agent_key,
+                        after_id=get_last_max_id(),
+                        quiet=True,
+                        skip_snapshots=True,
+                    )
+                    if imported:
+                        print(f"Pulled from relay: {imported} new events imported.")
+                    else:
+                        print("Pulled from relay: 0 new events imported.")
+            except (RuntimeError, ValueError):
                 pass
         print()
 
@@ -9377,10 +9523,12 @@ def main():
         else:
             print(json.dumps(result))
     elif args.command == "stats":
-        stats = get_stats()
+        print_freshness_stderr(get_last_pull())
+        stats = attach_freshness(get_stats(), last_pull=get_last_pull())
         print(json.dumps(stats, indent=0) if getattr(args, "json", False) else format_stats(stats))
     elif args.command == "campaigns":
-        stats = get_campaign_stats()
+        print_freshness_stderr(get_last_pull())
+        stats = attach_freshness(get_campaign_stats(), last_pull=get_last_pull())
         if getattr(args, "json", False):
             print(json.dumps(stats, indent=2))
         else:
@@ -9774,6 +9922,17 @@ def main():
                 ))
             else:
                 print(json.dumps(get_workspace_routing(), indent=2))
+        elif args.workspace_cmd == "list":
+            workspaces = list_workspaces()
+            if getattr(args, "json", False):
+                print(json.dumps(
+                    attach_freshness({"workspaces": workspaces}, last_pull=get_last_pull()),
+                    indent=2,
+                ))
+            else:
+                print_freshness_stderr(get_last_pull())
+                for ws in workspaces:
+                    print(f"  {ws.get('slug') or ws.get('name')}: {ws.get('name')}")
         else:
             print(json.dumps(list_workspaces(), indent=2))
     elif args.command == "campaign-map":
@@ -9793,17 +9952,36 @@ def main():
             print(json.dumps(list_campaign_maps(), indent=2))
     elif args.command == "quarantine":
         if args.quarantine_cmd == "skip":
-            print(json.dumps(skip_quarantine(args.id), indent=2))
+            if getattr(args, "all", False):
+                print(json.dumps(skip_quarantine_bulk(all_pending=True), indent=2))
+            elif getattr(args, "campaign_id", None):
+                print(json.dumps(
+                    skip_quarantine_bulk(
+                        campaign_id=args.campaign_id,
+                        platform=getattr(args, "platform", None),
+                    ),
+                    indent=2,
+                ))
+            elif getattr(args, "id", None):
+                print(json.dumps(skip_quarantine(args.id), indent=2))
+            else:
+                print("Error: quarantine skip requires --id, --campaign-id, or --all")
+                sys.exit(1)
         elif args.quarantine_cmd == "assign":
             print(json.dumps(assign_quarantine(args.id, args.workspace), indent=2))
         elif args.quarantine_cmd == "replay":
             print(json.dumps(replay_pending_quarantine(args.workspace, args.limit), indent=2))
         else:
             status = getattr(args, "status", "pending") or "pending"
+            print_freshness_stderr(get_last_pull())
             if getattr(args, "json", False):
                 raw_limit = getattr(args, "limit", 0) or 0
                 limit = raw_limit if raw_limit > 0 else 1000000
-                print(json.dumps(list_quarantine(status=status, limit=limit), indent=2))
+                rows = list_quarantine(status=status, limit=limit)
+                print(json.dumps(
+                    attach_freshness({"items": rows}, last_pull=get_last_pull()),
+                    indent=2,
+                ))
             elif status == "pending":
                 print(format_quarantine_campaign_summary(get_quarantine_campaign_summary()))
             else:

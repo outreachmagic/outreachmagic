@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.25.7
+version: 1.25.8
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -208,6 +208,15 @@ python3 scripts/pipeline.py query interested --workspace <slug> --since 48h --js
 
 Advanced: `pipeline.py query --sql 'SELECT …' --params '["popcam |%"]' --json` (read-only).
 
+Read commands print **data freshness** on stderr (and `last_pull` / `stale_minutes` in `--json`). If data is a few minutes old, tell the user before running `pull` unless they asked for up-to-the-minute.
+
+| User intent | Command |
+|-------------|---------|
+| Reply/engagement counts in a time window | `query replies` / `query engagement --since … --json` |
+| Lead rows / pipeline detail | `show` (use `--limit`; avoid `--json` unless needed) |
+| All-time totals | `stats` / `campaigns --json` |
+| Fresh webhook events | `pull` or `pull --kind events` |
+
 ## Pull policy (when to refresh)
 
 **Do not run `pull` before local time-window analytics** (`last 48h`, `since today`, engagement by campaign) unless the user asks for latest/refresh or you need relay catch-up.
@@ -216,6 +225,8 @@ Advanced: `pipeline.py query --sql 'SELECT …' --params '["popcam |%"]' --json`
 
 ```bash
 python3 scripts/pipeline.py pull
+python3 scripts/pipeline.py pull --if-stale 5m   # skip when last_pull is within 5 minutes
+python3 scripts/pipeline.py pull --force         # always network (ignore --if-stale)
 ```
 
 If routing sync times out but you only need relay events, use:
@@ -344,9 +355,13 @@ Unmapped relay events land in `unmapped_campaign_queue`. Resolve them locally, t
 
 ```bash
 python3 scripts/pipeline.py quarantine list
+python3 scripts/pipeline.py quarantine list --json
 python3 scripts/pipeline.py quarantine list --status all --json
 python3 scripts/pipeline.py quarantine skip --id QUEUE_ID
+python3 scripts/pipeline.py quarantine skip --campaign-id CAMPAIGN_ID
+python3 scripts/pipeline.py quarantine skip --all
 python3 scripts/pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG
+python3 scripts/pipeline.py workspace list --json
 python3 scripts/pipeline.py sync
 python3 scripts/pipeline.py pull
 ```

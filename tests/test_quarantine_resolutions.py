@@ -49,6 +49,15 @@ class QuarantineResolutionTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         return pending[0]["id"], event
 
+    def test_skip_by_campaign_id_bulk(self):
+        qid1, _ = self._quarantine_event(relay_id=601)
+        qid2, _ = self._quarantine_event(relay_id=602)
+        result = om.skip_quarantine_bulk(campaign_id="missing")
+        self.assertEqual(result["status"], "ok")
+        self.assertGreaterEqual(result["skipped"], 2)
+        self.assertIn(qid1, result["ids"])
+        self.assertIn(qid2, result["ids"])
+
     def test_skip_sets_cloud_pending(self):
         qid, _ = self._quarantine_event()
         result = om.skip_quarantine(qid)

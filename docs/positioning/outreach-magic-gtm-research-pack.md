@@ -1308,7 +1308,7 @@ If routing sync times out but you only need relay events, use:
 python3 scripts/pipeline.py pull --skip-routing-sync
 ```
 
-This fetches the latest events from the relay, so the user always sees current data. The local DB may be stale. Never skip pull for activity/timeline queries. This applies across sessions: a new session's first pipeline query must pull.
+This fetches the latest events from the relay when the user needs current data. Local reads (`query`, `stats`, `campaigns`) work offline; stderr/JSON include `last_pull` freshness. Run `pull` for live timelines or when the user asks to refresh; use `pull --if-stale 5m` to avoid redundant pulls in the same session.
 
 **Pull progress:** The first page requests total pending count from the relay (`include_pending=1`). Webhook **events** use **1000 rows/page** (D1 memory limit). **Snapshots** may use **5000/page** on large backlogs. Example: `~14000 events pending (~14 pages @ 1000/page)`. Progress shows `records this page / total pending` until all pages import.
 

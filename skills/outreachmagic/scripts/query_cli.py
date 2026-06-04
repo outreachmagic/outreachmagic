@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 import read_queries
+from data_freshness import attach_freshness, print_freshness_stderr
 from om_paths import resolve_project_path
+
+try:
+    import pipeline as _pipeline
+except ImportError:
+    _pipeline = None  # type: ignore
 
 
 def register_query_parser(sub) -> None:
@@ -43,7 +49,7 @@ def register_query_parser(sub) -> None:
     q.add_argument("--sql", help="Single SELECT/WITH statement (advanced)")
     q.add_argument(
         "--params",
-        help='JSON array of SQL bind parameters, e.g. \'["popcam |%"]\'',
+        help='JSON array of SQL bind parameters, e.g. \'["popcam |%%"]\'',
     )
     q.add_argument("--file", help="Read SQL from a file under project/")
     q.add_argument("--limit", type=int, default=read_queries.DEFAULT_ROW_LIMIT)
@@ -121,8 +127,10 @@ def cmd_query(args) -> None:
         sys.exit(1)
         return
 
+    last_pull = _pipeline.get_last_pull() if _pipeline else None
+    print_freshness_stderr(last_pull)
     if getattr(args, "json", False):
-        print(json.dumps(result, indent=2))
+        print(json.dumps(attach_freshness(result, last_pull=last_pull), indent=2))
     else:
         print(read_queries.format_query_result_text(result))
         if result.get("sql"):
@@ -153,9 +161,10 @@ def cmd_pipeline_view(args, *, table_formatter, json_enricher=None) -> None:
     except ValueError as e:
         print(str(e))
         sys.exit(1)
+    print_freshness_stderr(om.get_last_pull())
     if getattr(args, "json", False):
         enrich = json_enricher or om.enrich_lead_rows
         leads = enrich(leads, workspace=getattr(args, "workspace", None))
-        print(json.dumps(leads, indent=2))
+        print(json.dumps(attach_freshness(leads, last_pull=om.get_last_pull()), indent=2))
     else:
         print(table_formatter(leads))

@@ -11,11 +11,12 @@ All pipeline commands use: `python3 ~/.cursor/skills/outreachmagic/scripts/pipel
 ## Reads vs refresh
 
 - **Analytics (counts, last 48h, by campaign):** `query` presets — no `pull` unless the user wants latest relay data.
-- **Live activity / timelines:** run `pull` first (or `pull --skip-routing-sync` if routing is slow).
+- **Live activity / timelines:** run `pull` when the user wants latest data (or `pull --if-stale 5m` in a busy session).
+- **Reads show freshness** on stderr; ask before pulling if data is only minutes old.
 
 ```bash
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py query engagement --workspace SLUG --since 48h --json
-python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py pull
+python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py pull --if-stale 5m
 ```
 
 ## Commands (high signal)

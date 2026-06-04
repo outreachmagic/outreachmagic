@@ -23,7 +23,7 @@ Omit `--tag`, `--lead-enrich-tag`, and `--email-finder-tag` on the install comma
 | Skill | What it does | Requires |
 |-------|----------------|----------|
 | **lead-enrich** | Researches a person via Serper (Google Search): company domain, website, LinkedIn URL, job title, etc. Checks your local Outreach Magic DB first so you do not burn Serper credits on leads you already have. Saves enriched fields back into the pipeline. | `SERPER_API_KEY` ([serper.dev](https://serper.dev)) |
-| **email-finder** | Finds work emails via trykitt.ai. Checks Outreach Magic first to skip duplicates. Saves the email and verification status into the pipeline. | `TRYKITT_API_KEY` ([trykitt.ai](https://trykitt.ai)) |
+| **email-finder** | Finds work emails (trykitt → Icypeas). Checks Outreach Magic first. Saves email + verification to the pipeline. Optional MillionVerifier bulk verify. | `TRYKITT_API_KEY` and/or `ICYPEAS_API_KEY` ([trykitt.ai](https://trykitt.ai), [Icypeas](https://app.icypeas.com)) |
 
 Add `--with-lead-enrich` and/or `--with-email-finder` to the install command when you want them. `--with-email-finder` implies `--with-lead-enrich`.
 

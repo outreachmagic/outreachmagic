@@ -34,13 +34,13 @@ Pricing aligned with [pricing.md](./pricing.md): **1,000 free relay events/mo**,
 
 ## email-finder — short blurb
 
-> Find work emails with trykitt.ai after you have name + company domain (from lead-enrich or your CRM). Checks Outreach Magic first so you never pay twice. Saves email + verification status via outreachmagic. Requires outreachmagic + `TRYKITT_API_KEY`.
+> Find work emails with trykitt.ai and Icypeas (waterfall) when you have name + company domain from lead-enrich or your CRM. Checks Outreach Magic first — skips leads that already have email or were already tried. Saves email + verification via outreachmagic. Optional MillionVerifier for bulk re-check. Requires outreachmagic + at least one finder API key.
 
-**Tags:** `sales` `email` `enrichment` `trykitt` `leads` `pipeline`
+**Tags:** `sales` `email` `enrichment` `trykitt` `icypeas` `leads` `pipeline`
 
 **Related skills:** `outreachmagic`, `lead-enrich`
 
-**External domains:** `api.trykitt.ai` (required for find)
+**External domains:** `api.trykitt.ai`, `app.icypeas.com` (finder); `api.millionverifier.com` (optional verify)
 
 ---
 
@@ -102,4 +102,3 @@ Each listing: one link to [outreachmagic.io](https://outreachmagic.io) + setup U
 **Is it really free?** Yes for local tracking and 1,000 relay events/mo. Pro ($9/mo) unlocks full sequencer sync.
 
 **Install:** [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — `install.sh --platform hermes|cursor|claude`
-

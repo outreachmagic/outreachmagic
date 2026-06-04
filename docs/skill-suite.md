@@ -20,13 +20,13 @@ flowchart LR
 |-------|------|-------------|-------------|
 | **outreachmagic** | Data layer — pipeline, relay, SQLite | `outreachmagic/outreachmagic` | `v*` |
 | **lead-enrich** | Discovery — Serper, LinkedIn, domain | `outreachmagic/lead-enrich` | `lead-enrich-v*` |
-| **email-finder** | Email find (trykitt v1) | `outreachmagic/email-finder` | `email-finder-v*` |
+| **email-finder** | Email find (trykitt → Icypeas) + optional MV verify | `outreachmagic/email-finder` | `email-finder-v*` |
 
 ## Install order
 
 1. **outreachmagic** — `pipeline.py init` then `pipeline.py login` in terminal  
 2. **lead-enrich** — add `SERPER_API_KEY` to `~/.hermes/.env`  
-3. **email-finder** (optional) — add `TRYKITT_API_KEY`; needs domain from enrich or CRM  
+3. **email-finder** (optional) — `TRYKITT_API_KEY` and/or `ICYPEAS_API_KEY`; needs domain (+ `lead_id` for OM imports)  
 
 **Canonical install commands (Hermes, Cursor, Claude):** [install-companions.md](./install-companions.md)
 
@@ -47,10 +47,11 @@ flowchart LR
 
 Launch limits: **1,000 relay events/mo free**, **Pro $9/mo** (50k cap). See [positioning/pricing.md](./positioning/pricing.md).
 
-## Naming: email-finder vs verify-email
+## Naming: find vs verify
 
-- **`email-finder`** skill — finds emails (trykitt API).
-- **`pipeline.py verify-email`** — records verification result in SQLite (no external API).
+- **`email_finder.py`** — find (`find`, `batch-find`) via trykitt / Icypeas; optional **`verify*`** via MillionVerifier.
+- **`pipeline.py verify-email`** — writes verification status to SQLite (provider-agnostic).
+- **`pipeline.py verification-candidates`** — lists workspace emails due for re-verify (used by `verify-bulk`).
 
 ## related_skills (Hermes frontmatter)
 

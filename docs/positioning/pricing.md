@@ -31,6 +31,8 @@ Only **relay-synced webhook events** from connected sequencers count toward the 
 |---------|-------|-----------|
 | Serper.dev | lead-enrich | User's Serper key |
 | trykitt.ai | email-finder | User's trykitt key |
+| Icypeas | email-finder | User's Icypeas key |
+| MillionVerifier | email-finder (optional) | User's MV key |
 
 Skills are MIT / free to install. Pro is for OM relay infrastructure at [outreachmagic.io](https://outreachmagic.io).
 

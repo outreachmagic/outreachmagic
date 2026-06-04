@@ -25,7 +25,7 @@ Separate listings per skill. Skills are free (MIT); Pro is OM account only at [o
 |-------|---------|
 | outreachmagic | `api.outreachmagic.io`, `app.outreachmagic.io` |
 | lead-enrich | `google.serper.dev` |
-| email-finder | `api.trykitt.ai` |
+| email-finder | `api.trykitt.ai`, `app.icypeas.com`, `api.millionverifier.com` (optional) |
 
 Issue templates: `docs/hermeshub-reviewed-domains-*.md`
 

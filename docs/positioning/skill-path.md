@@ -6,7 +6,7 @@
 ~/.hermes/skills/
 ├── outreachmagic/     # data layer — SQLite, pipeline.py
 ├── lead-enrich/       # Serper research + dedup
-└── email-finder/      # trykitt find + save
+└── email-finder/      # trykitt + Icypeas find; optional MV verify
 ```
 
 Profiles symlink: `~/.hermes/profiles/<name>/skills/<skill>` → `../../../skills/<skill>/`

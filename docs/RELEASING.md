@@ -65,7 +65,7 @@ For tag `v1.21.0`:
 
 ---
 
-## v1.25.12 / email-finder v2.2.6 / lead-enrich v2.0.10 (batch import reliability)
+## v1.25.12 / email-finder v2.2.7 / lead-enrich v2.0.10 (batch import reliability)
 
 - **Fix:** Ship `data_freshness.py` in update manifest (v1.25.11 installs could crash every `pipeline.py` command).
 - **Import timeouts:** `companion_common._chunk_timeout` uses `per_item=0.8` (200 leads → 160s, cap 300s).

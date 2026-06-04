@@ -64,10 +64,10 @@ Launch limits: **1,000 relay events/mo free**, **Pro $9/mo** (50k cap). See [pos
 | Skill | Tag | Notes |
 |-------|-----|-------|
 | outreachmagic | `v1.25.12+` | Includes `data_freshness.py` in update manifest |
-| email-finder | `email-finder-v2.2.6+` | Longer import timeouts; graceful batch save failures |
+| email-finder | `email-finder-v2.2.7+` | Longer import timeouts; graceful batch save failures |
 | lead-enrich | `lead-enrich-v2.0.10+` | Synced `companion_common.py`; backfill import recovery |
 
-Pin all three on fresh installs: `install.sh --tag v1.25.12 --email-finder-tag email-finder-v2.2.6 --lead-enrich-tag lead-enrich-v2.0.10`
+Pin all three on fresh installs: `install.sh --tag v1.25.12 --email-finder-tag email-finder-v2.2.7 --lead-enrich-tag lead-enrich-v2.0.10`
 
 ## Release docs
 

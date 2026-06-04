@@ -33,6 +33,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+# Prefer this skill's scripts/ over Hermes /opt/hermes (may contain other batch_runner.py).
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
 import companion_common as cc
 from batch_runner import (
     BatchOptions,

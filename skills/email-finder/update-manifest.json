@@ -1,7 +1,7 @@
 {
-  "version": "2.0.0",
+  "version": "2.0.1",
   "files": {
-    "SKILL.md": "b572d08bf46a0098942ed1ca258fe0d4edebb450cacc4c4a37538103eccead64",
+    "SKILL.md": "7d12523a5c2beb3ee426d2d5073aa421cb4d4aa39e3b37eff6442f853e56f624",
     "README.md": "ccd87f0d92b5ae17479fb900fa0025e1c73b9e4fe44281fcc16e9875c4cc140c",
     "SECURITY.md": "44c13f5288f16807c20820015678588bcea3d69f2a4cd81a2a18398190a070db",
     "config.example.json": "e89e77a42e45ecb372f2e38735b9258eabfc52e5f3ab171d01268cfbbc80b854",
@@ -9,7 +9,7 @@
     ".gitignore": "341c76ab4124d205ea796850984d042aefae420226f5017983fab00e435d746e",
     "references/email-finding-research.md": "120e0638c2b11b8ff36a2e61b40baa706bc4223f0754f09db7e8ae5d15ed618a",
     "scripts/companion_common.py": "56b5c3d578e662d187b28b183db0ba9bccdf02bc979bf247b6fcf15842d3efa1",
-    "scripts/email_finder.py": "bf3d00bbd64520aa7dc9194721a822e4c199bd25f043e7a0df1adbb0571072ed",
+    "scripts/email_finder.py": "1e90d123bf14b1110ac2cc2aa42ba4880425c87325f03dbe72d0503a242502ec",
     "scripts/normalize.py": "ef45b6198181f009ffd8a32e1767d0d13a2cadb20da6f1677221fac8fd6a7a84",
     "scripts/progress.py": "ef985f5aad2816c1c7792a5980e5b4b00447459e719ac00115d0b769fade3458",
     "scripts/health.py": "b0cf146bc89b3828e9a85d67a658f43e6539f6168f52fb3cd2abc54c3773070c",

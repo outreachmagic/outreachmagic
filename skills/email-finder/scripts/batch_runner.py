@@ -387,12 +387,23 @@ def run_batch(
         )
 
     to_process: list[tuple[int, dict[str, Any]]] = []
+    pre_skipped: dict[int, dict[str, Any]] = {}
     skipped_email = skipped_tagged = 0
     for i, row in enumerate(people):
         name, domain, _c, _li, _lid = row_fields(row)
         if not name or not domain:
+            pre_skipped[i] = {
+                "batch_status": "skipped",
+                "status": "skipped",
+                "skip_reason": "missing_name_or_domain",
+            }
             continue
         if not validate_domain(domain):
+            pre_skipped[i] = {
+                "batch_status": "skipped",
+                "status": "skipped",
+                "skip_reason": "invalid_domain",
+            }
             continue
         reason = skip_reason_from_lookup(lookup_by_index.get(i), provider_names)
         if reason:
@@ -400,9 +411,19 @@ def run_batch(
                 skipped_email += 1
             else:
                 skipped_tagged += 1
+            pre_skipped[i] = {
+                "batch_status": "skipped",
+                "status": "skipped",
+                "skip_reason": reason,
+            }
             continue
         if writer and lead_resume_key(row, index=i) in writer.done_keys:
             skipped_tagged += 1
+            pre_skipped[i] = {
+                "batch_status": "skipped",
+                "status": "skipped",
+                "skip_reason": "resume_done",
+            }
             continue
         to_process.append((i, row))
 
@@ -474,7 +495,9 @@ def run_batch(
         "waterfall": {p: {"calls": 0, "found": 0, "not_found": 0, "errors": 0} for p in provider_names},
         "skipped": skipped_email + skipped_tagged,
     }
-    results: list[dict[str, Any]] = [{"batch_status": "pending"} for _ in people]
+    results: list[dict[str, Any]] = [
+        pre_skipped.get(i, {"batch_status": "pending"}) for i in range(len(people))
+    ]
     start = time.time()
     workers = max(1, min(opts.workers, 5))
     done_count = 0

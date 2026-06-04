@@ -11,7 +11,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
-MV_BASE = "https://api.millionverifier.com/api/v3"
+MV_SINGLE_BASE = "https://api.millionverifier.com/api/v3"
+MV_BULK_BASE = "https://bulkapi.millionverifier.com"
 HTTP_TIMEOUT = 60
 
 
@@ -23,6 +24,7 @@ def mv_to_om_status(mv_status: str) -> str:
         "risky": "catch_all",
         "disposable": "invalid",
         "invalid": "invalid",
+        "error": "unknown",
     }
     return mapping.get((mv_status or "").strip().lower(), "unknown")
 
@@ -31,74 +33,63 @@ class MillionVerifierProvider:
     def __init__(self, api_key: str) -> None:
         self.api_key = (api_key or "").strip()
 
-    def _params(self) -> dict[str, str]:
-        return {"apikey": self.api_key}
+    def _single_params(self, extra: Optional[dict[str, str]] = None) -> dict[str, str]:
+        params = {"api": self.api_key}
+        if extra:
+            params.update(extra)
+        return params
 
-    def _request(
+    def _bulk_params(self, extra: Optional[dict[str, str]] = None) -> dict[str, str]:
+        params = {"key": self.api_key}
+        if extra:
+            params.update(extra)
+        return params
+
+    def _http_json(
         self,
         method: str,
-        path: str,
+        url: str,
         *,
-        json_body: Optional[dict] = None,
-        files: Optional[dict] = None,
+        data: Optional[bytes] = None,
+        headers: Optional[dict[str, str]] = None,
         timeout: int = HTTP_TIMEOUT,
     ) -> dict[str, Any]:
         if not self.api_key:
             return {"error": "MILLIONVERIFIER_API_KEY not set", "status": "no_key"}
-        url = f"{MV_BASE}{path}"
-        if method == "GET" and not files:
-            qs = urllib.parse.urlencode(self._params())
-            url = f"{url}?{qs}"
-            req = urllib.request.Request(url, method="GET", headers={"User-Agent": "email-finder/2.1"})
-        elif files:
-            boundary = "----EmailFinderMV"
-            body_parts: list[bytes] = []
-            for field_name, (fname, content, mime) in files.items():
-                body_parts.append(f"--{boundary}\r\n".encode())
-                body_parts.append(
-                    f'Content-Disposition: form-data; name="{field_name}"; filename="{fname}"\r\n'.encode()
-                )
-                body_parts.append(f"Content-Type: {mime}\r\n\r\n".encode())
-                body_parts.append(content if isinstance(content, bytes) else content.encode("utf-8"))
-                body_parts.append(b"\r\n")
-            body_parts.append(f"--{boundary}--\r\n".encode())
-            body = b"".join(body_parts)
-            req = urllib.request.Request(
-                f"{url}?{urllib.parse.urlencode(self._params())}",
-                data=body,
-                method="POST",
-                headers={
-                    "Content-Type": f"multipart/form-data; boundary={boundary}",
-                    "User-Agent": "email-finder/2.1",
-                },
-            )
-        else:
-            data = json.dumps(json_body or {}).encode("utf-8")
-            req = urllib.request.Request(
-                f"{url}?{urllib.parse.urlencode(self._params())}",
-                data=data,
-                method=method,
-                headers={"Content-Type": "application/json", "User-Agent": "email-finder/2.1"},
-            )
+        hdrs = {"User-Agent": "email-finder/2.1", **(headers or {})}
+        req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8")
-                return json.loads(raw) if raw.strip() else {}
+                if not raw.strip():
+                    return {}
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError:
+                    return {"raw": raw}
         except urllib.error.HTTPError as e:
             err = e.read().decode("utf-8", errors="replace")
             return {"status": "http_error", "http_status": e.code, "error": err[:500]}
-        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+        except (urllib.error.URLError, TimeoutError) as e:
             return {"status": "error", "error": str(e)}
 
     def verify_single(self, email: str, timeout: int = 10) -> dict[str, Any]:
-        payload = self._request("POST", "/verify", json_body={"email": email, "timeout": timeout})
-        if payload.get("error") or payload.get("status") in ("error", "http_error", "no_key"):
+        qs = urllib.parse.urlencode(
+            self._single_params({"email": email, "timeout": str(max(2, min(60, timeout)))})
+        )
+        payload = self._http_json("GET", f"{MV_SINGLE_BASE}/?{qs}", timeout=timeout + 5)
+        if payload.get("status") in ("http_error", "error", "no_key"):
             return payload
+        if str(payload.get("error") or "").strip():
+            return {"status": "error", "error": payload.get("error"), "provider": "millionverifier"}
         return self._normalize(payload)
 
     def check_credits(self) -> tuple[float, Optional[str]]:
-        payload = self._request("GET", "/credits")
-        if payload.get("error"):
+        qs = urllib.parse.urlencode(self._single_params())
+        payload = self._http_json("GET", f"{MV_SINGLE_BASE}/credits?{qs}")
+        if payload.get("status") in ("http_error", "error", "no_key"):
+            return 0.0, str(payload.get("error") or payload.get("status"))
+        if str(payload.get("error") or "").strip():
             return 0.0, str(payload.get("error"))
         return float(payload.get("credits") or 0), None
 
@@ -106,19 +97,34 @@ class MillionVerifierProvider:
         if not emails:
             return {"error": "no emails", "status": "bad_input"}
         csv_content = "email\n" + "\n".join(emails)
-        return self._request(
+        boundary = "----EmailFinderMV"
+        body_parts: list[bytes] = []
+        body_parts.append(f"--{boundary}\r\n".encode())
+        body_parts.append(b'Content-Disposition: form-data; name="file_contents"; filename="emails.csv"\r\n')
+        body_parts.append(b"Content-Type: text/csv\r\n\r\n")
+        body_parts.append(csv_content.encode("utf-8"))
+        body_parts.append(b"\r\n")
+        body_parts.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(body_parts)
+        qs = urllib.parse.urlencode(self._bulk_params())
+        return self._http_json(
             "POST",
-            "/bulk",
-            files={"file": ("emails.csv", csv_content, "text/csv")},
+            f"{MV_BULK_BASE}/bulkapi/v2/upload?{qs}",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
 
     def check_status(self, file_id: str) -> dict[str, Any]:
-        return self._request("GET", f"/bulk/{file_id}")
+        qs = urllib.parse.urlencode(self._bulk_params({"file_id": str(file_id)}))
+        return self._http_json("GET", f"{MV_BULK_BASE}/bulkapi/v2/fileinfo?{qs}")
 
     def download_results(self, file_id: str) -> list[dict[str, str]]:
         if not self.api_key:
             return []
-        url = f"{MV_BASE}/bulk/{file_id}/report?{urllib.parse.urlencode(self._params())}"
+        qs = urllib.parse.urlencode(
+            self._bulk_params({"file_id": str(file_id), "filter": "all"})
+        )
+        url = f"{MV_BULK_BASE}/bulkapi/v2/download?{qs}"
         req = urllib.request.Request(url, headers={"User-Agent": "email-finder/2.1"})
         try:
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
@@ -129,7 +135,8 @@ class MillionVerifierProvider:
         return [dict(row) for row in reader]
 
     def list_files(self) -> list[dict[str, Any]]:
-        payload = self._request("GET", "/bulk/list")
+        qs = urllib.parse.urlencode(self._bulk_params({"limit": "25"}))
+        payload = self._http_json("GET", f"{MV_BULK_BASE}/bulkapi/v2/filelist?{qs}")
         if isinstance(payload.get("files"), list):
             return payload["files"]
         return []
@@ -145,20 +152,21 @@ class MillionVerifierProvider:
         while time.time() - start < max_wait:
             status_payload = self.check_status(file_id)
             status = str(status_payload.get("status") or "").lower()
-            if status == "completed":
+            if status in ("finished", "completed"):
                 return status_payload
-            if status in ("failed", "error"):
+            if status in ("failed", "error", "canceled"):
                 return status_payload
             time.sleep(max(5.0, interval))
         return {"status": "timeout", "error": "bulk verification timed out", "file_id": file_id}
 
     def _normalize(self, raw: dict[str, Any]) -> dict[str, Any]:
-        mv_status = str(raw.get("status") or "")
+        mv_status = str(raw.get("result") or raw.get("status") or "")
         return {
             "email": raw.get("email"),
             "status": mv_to_om_status(mv_status),
             "mv_status": mv_status,
-            "substatus": raw.get("substatus"),
+            "substatus": raw.get("subresult") or raw.get("substatus"),
+            "credits_remaining": raw.get("credits"),
             "provider": "millionverifier",
         }
 
@@ -169,5 +177,7 @@ class MillionVerifierProvider:
             email = (row.get("email") or "").strip()
             if not email:
                 continue
-            out.append(self._normalize({"email": email, "status": row.get("status") or row.get("result")}))
+            out.append(
+                self._normalize({"email": email, "result": row.get("result") or row.get("status")})
+            )
         return out

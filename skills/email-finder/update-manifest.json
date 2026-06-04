@@ -1,20 +1,20 @@
 {
-  "version": "2.1.3",
+  "version": "2.1.4",
   "files": {
-    "SKILL.md": "859e660e333e249b656cd98aa659dc4907d962a7e9ac670cc03ce98f123fce54",
+    "SKILL.md": "e151e838c02bf2a21ed4faa79fd37e66f07e0429ed44a1251c12113067f93d0e",
     "README.md": "c4fda7cfb736f73e8cd11ec3b49f0ffaa684ffd03a5c4088250afe5af027fc0f",
     "SECURITY.md": "44c13f5288f16807c20820015678588bcea3d69f2a4cd81a2a18398190a070db",
     "config.example.json": "e89e77a42e45ecb372f2e38735b9258eabfc52e5f3ab171d01268cfbbc80b854",
     "default.env": "6b47dd4f42fa3d422a88845b6c6064b8de3d53e05dd829b515f897199968e706",
     ".gitignore": "341c76ab4124d205ea796850984d042aefae420226f5017983fab00e435d746e",
     "references/email-finding-research.md": "120e0638c2b11b8ff36a2e61b40baa706bc4223f0754f09db7e8ae5d15ed618a",
-    "scripts/companion_common.py": "7bbcbcf6b5f4808ce01eb69ca3e754a9403219758708acdfaea41a90ab8eda35",
+    "scripts/companion_common.py": "7f58f95b33fb4e49309cecbd99850f7106ada0c13cebac07866e73b5568eb657",
     "scripts/email_finder.py": "27ab72c9ddd48c59aabb06a3da06d7b8ea6570710d508135c6a9b6f131d350c9",
     "scripts/normalize.py": "ef45b6198181f009ffd8a32e1767d0d13a2cadb20da6f1677221fac8fd6a7a84",
     "scripts/progress.py": "0a5bcb9ceba98989e51cfab86e5688722626fc1906efbc9c7c772daf9a771f63",
     "scripts/health.py": "1f592687c8990ea3d61d03dfa468524fdb7ce43770850849feda29ef6232a64d",
-    "scripts/providers.py": "a7b87c0f753ab5ba99656952f606589e71807f4f7823fc49e4ca4a431506b680",
-    "scripts/batch_runner.py": "34e916cd099f8a6f64ae361e48e2d1e21e9628eb9c98c5259c159feecba1f0f4",
-    "scripts/millionverifier.py": "0e603cb1fc72fa2ea6ea5964416d1df0273efbf6a0fac3d4dc36ee2e6c42c183"
+    "scripts/providers.py": "f0206a5d7d569203a11fbb5ed7ebded60b897af589bd937c828965ea77dfaacd",
+    "scripts/batch_runner.py": "8db553f40fda6b7433ac3d756e96f1d772736c429ee55c7b64df368d0f984771",
+    "scripts/millionverifier.py": "bc25efbe70eaad3e68adaf0e1a55cca801ea170b15d63abf93e2a459b277a292"
   }
 }

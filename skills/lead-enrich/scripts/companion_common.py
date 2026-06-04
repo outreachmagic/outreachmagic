@@ -43,7 +43,13 @@ def parse_dotenv_line(line: str) -> Optional[tuple[str, str]]:
     return key, value
 
 
-def load_dotenv_file(path: Path) -> None:
+_API_KEY_VARS = frozenset({
+    "SERPER_API_KEY",
+    "OUTREACHMAGIC_AGENT_KEY",
+})
+
+
+def load_dotenv_file(path: Path, *, force_api_keys: bool = False) -> None:
     if not path.is_file():
         return
     try:
@@ -58,6 +64,10 @@ def load_dotenv_file(path: Path) -> None:
         if not parsed:
             continue
         key, value = parsed
+        if force_api_keys and key in _API_KEY_VARS:
+            if value and value.strip() not in ("***", "changeme", "your_key_here"):
+                os.environ[key] = value
+            continue
         if key not in os.environ:
             os.environ[key] = value
 
@@ -67,18 +77,31 @@ def active_profile() -> Optional[str]:
     return (os.environ.get("HERMES_PROFILE") or "").strip() or None
 
 
-def ensure_agent_env_loaded(skill_dir: Optional[Path] = None) -> None:
+def _monorepo_dotenv(skill_dir: Optional[Path]) -> Optional[Path]:
+    if not skill_dir:
+        return None
+    root = skill_dir.resolve().parent.parent
+    env_file = root / ".env"
+    if env_file.is_file() and (root / "install.sh").is_file():
+        return env_file
+    return None
+
+
+def ensure_agent_env_loaded(skill_dir: Optional[Path] = None, *, reload: bool = False) -> None:
     global _AGENT_ENV_LOADED
-    if _AGENT_ENV_LOADED:
+    if _AGENT_ENV_LOADED and not reload:
         return
     home = agent_home()
     for name in (".env", "default.env"):
-        load_dotenv_file(home / name)
+        load_dotenv_file(home / name, force_api_keys=True)
     profile = active_profile()
     if profile:
-        load_dotenv_file(home / "profiles" / profile / ".env")
+        load_dotenv_file(home / "profiles" / profile / ".env", force_api_keys=True)
+    repo_env = _monorepo_dotenv(skill_dir)
+    if repo_env:
+        load_dotenv_file(repo_env, force_api_keys=True)
     if skill_dir:
-        load_dotenv_file(skill_dir / "default.env")
+        load_dotenv_file(skill_dir / "default.env", force_api_keys=True)
     _AGENT_ENV_LOADED = True
 
 

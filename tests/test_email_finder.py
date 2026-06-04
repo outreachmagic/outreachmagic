@@ -127,7 +127,9 @@ class TestTrykittFind(unittest.TestCase):
     def test_missing_key(self):
         with patch.dict("os.environ", {}, clear=True):
             lemail.cc._AGENT_ENV_LOADED = False
-            cfg = lemail.load_config()
+            with patch.object(lemail.cc, "load_dotenv_file"):
+                cfg = lemail.load_config()
+        cfg.pop("trykitt_api_key", None)
         result = prov.trykitt_find(cfg, full_name="Jane", domain="acme.com")
         self.assertEqual(result["status"], "no_key")
 
@@ -182,6 +184,9 @@ class TestValidityMapping(unittest.TestCase):
 
     def test_trykitt_valid_risky_is_catch_all(self):
         self.assertEqual(prov.validity_to_verify_status("valid-risky", provider="trykitt"), "catch_all")
+
+    def test_icypeas_valid_risky_is_catch_all(self):
+        self.assertEqual(prov.validity_to_verify_status("valid-risky", provider="icypeas"), "catch_all")
 
 
 class TestImportProfileLeadId(unittest.TestCase):
@@ -280,6 +285,47 @@ class TestFallbackOrder(unittest.TestCase):
         mock_icypeas.assert_not_called()
 
 
+class TestBatchPreSkipped(unittest.TestCase):
+    @patch.object(lemail.cc, "run_batch_lead_lookup")
+    def test_dedup_skipped_rows_not_pending(self, mock_lookup):
+        import batch_runner as br
+
+        mock_lookup.return_value = {
+            "results": [
+                {
+                    "index": 0,
+                    "status": "found",
+                    "lead_id": 99,
+                    "email": "exists@acme.com",
+                    "tags": [],
+                }
+            ]
+        }
+        opts = lemail.BatchOptions(yes=True, skip_om=False, no_save=True)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tmp:
+            json.dump([{"name": "Jane", "domain": "acme.com", "lead_id": 99}], tmp)
+            tmp.flush()
+            lemail.cc._AGENT_ENV_LOADED = False
+            with patch.object(lemail.cc, "load_dotenv_file"):
+                cfg = lemail.load_config()
+            cfg["trykitt_api_key"] = "k"
+            cfg["icypeas_api_key"] = "k"
+            with patch.object(br, "run_health_check", return_value=(True, [], [])):
+                result = br.run_batch(
+                    tmp.name,
+                    cfg,
+                    Path("/tmp/om"),
+                    opts,
+                    skill_dir=lemail._find_skill_dir(),
+                    normalize_linkedin_fn=lemail._normalize_linkedin,
+                    key_status_fn=lemail.cc.outreachmagic_agent_key_status,
+                )
+        self.assertEqual(result["stats"]["skipped"], 1)
+        self.assertEqual(result["results"][0]["batch_status"], "skipped")
+        self.assertEqual(result["results"][0]["skip_reason"], "has_email")
+        self.assertEqual(result["processed"], 0)
+
+
 class TestBatchRun(unittest.TestCase):
     @patch.object(lemail.cc, "run_verify_email_batch")
     @patch.object(lemail.cc, "run_import_profiles")
@@ -353,6 +399,30 @@ class TestBatchRun(unittest.TestCase):
                 mock_import.assert_called_once()
                 self.assertTrue((Path(td) / "out.csv").exists())
                 self.assertEqual(result["stats"]["found"], 1)
+
+
+class TestMillionVerifier(unittest.TestCase):
+    @patch("urllib.request.urlopen")
+    def test_verify_single_uses_get_with_api_param(self, mock_urlopen):
+        import millionverifier as mv_mod
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(
+            {"email": "a@b.com", "result": "ok", "subresult": "", "credits": 100}
+        ).encode()
+        mock_resp.__enter__ = lambda s: mock_resp
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+        lemail.cc._AGENT_ENV_LOADED = False
+        with patch.object(lemail.cc, "load_dotenv_file"):
+            cfg = lemail.load_config()
+        cfg["millionverifier_api_key"] = "test_mv"
+        out = mv_mod.MillionVerifierProvider(cfg["millionverifier_api_key"]).verify_single("a@b.com")
+        self.assertEqual(out["status"], "valid")
+        called_url = mock_urlopen.call_args[0][0].full_url
+        self.assertIn("api=test_mv", called_url)
+        self.assertIn("email=a%40b.com", called_url)
+        self.assertNotIn("/verify", called_url)
 
 
 class TestTagOnMiss(unittest.TestCase):

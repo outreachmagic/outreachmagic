@@ -1,4 +1,5 @@
 .DS_Store
+.env
 relay/
 dist/
 skills/outreachmagic/config/

@@ -48,7 +48,7 @@ def validity_to_verify_status(validity: str, *, provider: str) -> str:
     if provider == "icypeas":
         if v in ("ultra_sure", "sure", "valid"):
             return "valid"
-        if v in ("probable", "risky"):
+        if v in ("probable", "risky", "valid-risky"):
             return "catch_all"
         return "unknown"
     if v == "valid":

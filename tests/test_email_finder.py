@@ -526,6 +526,7 @@ class TestTagOnMiss(unittest.TestCase):
             provider="trykitt",
         )
         self.assertTrue(out["tagged"])
+        self.assertEqual(mock_import.call_args.kwargs.get("source"), "trykitt")
         profiles = mock_import.call_args[0][1]
         self.assertEqual(profiles[0]["tags"], ["trykitt_attempted"])
 

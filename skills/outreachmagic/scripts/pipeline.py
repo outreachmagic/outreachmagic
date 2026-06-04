@@ -8552,6 +8552,11 @@ def main():
     imp_p.add_argument("--notes")
     imp_p.add_argument("--workspace", help="Workspace slug/ID to associate imported leads with")
     imp_p.add_argument("--sender-profile", dest="sender_profile", help="LinkedIn sender profile URL for connection status tracking")
+    imp_p.add_argument(
+        "--source",
+        dest="source",
+        help="Attribution source (e.g. sales_navigator, csv_import, trykitt, icypeas, lead_enrich)",
+    )
     imp_p.add_argument("--source-detail", dest="source_detail", help="Attribution source detail (e.g. list name)")
     imp_p.add_argument(
         "--import-batch-id",
@@ -9446,6 +9451,7 @@ def main():
             notes=args.notes,
             workspace=getattr(args, "workspace", None),
             sender_profile=getattr(args, "sender_profile", None),
+            source=getattr(args, "source", None),
             source_detail=getattr(args, "source_detail", None),
             import_batch_id=getattr(args, "import_batch_id", None),
         )

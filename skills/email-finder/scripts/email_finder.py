@@ -213,6 +213,7 @@ def batch_import_results(
     profiles: list[dict[str, Any]],
     *,
     workspace: str = "",
+    source: str = "",
     source_detail: str = "email-finder/batch",
 ) -> dict[str, Any]:
     if not profiles:
@@ -221,6 +222,7 @@ def batch_import_results(
         om_dir,
         profiles,
         workspace=workspace,
+        source=source,
         source_detail=source_detail,
         skill_dir=_find_skill_dir(),
     )
@@ -254,6 +256,7 @@ def save_find_result(
     imported = batch_import_results(
         om_dir, [{k: v for k, v in profile.items() if not str(k).startswith("_verify")}],
         workspace=workspace,
+        source=provider,
         source_detail=f"email-finder/{provider}",
     )
     imp = imported.get("import") or {}
@@ -302,6 +305,7 @@ def tag_provider_attempt(
         om_dir,
         [{k: v for k, v in profile.items() if not str(k).startswith("_verify")}],
         workspace=workspace,
+        source=provider,
         source_detail=f"email-finder/{provider}-miss",
     )
     out: dict[str, Any] = {"tagged": True, "import": imported.get("import", {})}
@@ -366,6 +370,7 @@ def cmd_find(
                     om_dir,
                     [{k: v for k, v in profile.items() if not str(k).startswith("_verify")}],
                     workspace=workspace,
+                    source=str(taggable[-1].get("provider") or "trykitt"),
                     source_detail="email-finder/fallback-miss",
                 )
                 result["tag_attempt"] = {"tagged": True, "import": tag_result.get("import", {})}

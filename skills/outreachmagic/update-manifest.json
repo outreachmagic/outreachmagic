@@ -1,7 +1,7 @@
 {
-  "version": "1.25.6",
+  "version": "1.25.7",
   "files": {
-    "pipeline.py": "6267f6e50eaa4f2027f4ff11bf7097f114b5611ff315eaaf63e91dd26a59499a",
+    "pipeline.py": "51354486fb5394748f130799fe470274daa9c9d5ee06d7bfd14ed1c2d4934354",
     "constants.py": "33c79b260a3f4070d96a466799620d23d8f80fdae516ccde94c1f3a316a28af8",
     "db_conn.py": "9b1fac47e3f07dfeb5f314ffb432ee3a80930af18781e36d5d09864e0ebdf995",
     "formatters.py": "16c07eb4fc75eff106e81f5d6096a7842dad7f1cfcb70d56d8ba81f998038541",
@@ -24,7 +24,7 @@
     "query_cli.py": "30f799670e26102b312a6115788bd03ce03a972ce1f5c9552da6b6225b1e42d8",
     "schema.py": "3b4544aaa32f60532de2e0a153620ee1a4b8d590e2b45229d8018eacf2b26679",
     "schema_views.py": "0307f3d44c157742dc1092c9914bd9bed2a1684180a73a9afc9dd6f41260ee08",
-    "VERSION": "1ace7218031f4b2cdbe618d9ead9408a618448a982b9c7f7a08e9deaa68cfc4c",
-    "SKILL.md": "0b20dd2d9146e8dce0c5db65091ae2280975c5f27ec2ddab29ce43856e53dab1"
+    "VERSION": "2beb5cc8c3ee44c563ee5db610056331f7ddf81b1484426738b1d0df476bde61",
+    "SKILL.md": "f6f0385d49ea28fb87f113923f4b1cc7bf68502ce6a9a3467a0bdb52893bcfa6"
   }
 }

@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.25.6
+version: 1.25.7
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -551,7 +551,10 @@ python3 scripts/pipeline.py import-profiles \
 # With workspace association, tags, and LinkedIn status tracking
 python3 scripts/pipeline.py import-profiles \
   --file contacts.csv --workspace default --sender-profile "https://linkedin.com/in/myprofile" \
-  --source-detail "Q2 Apollo list" --import-batch-id "nace-2026-05"
+  --source csv_import --source-detail "Q2 Apollo list" --import-batch-id "nace-2026-05"
+
+python3 scripts/pipeline.py import-profiles \
+  --file sales_nav_export.csv --source sales_navigator --source-detail "Q2 Sales Nav list"
 
 # Rows with only name + company_domain + unified_lead_id (no email/LinkedIn)
 python3 scripts/pipeline.py import-profiles \
@@ -600,7 +603,7 @@ python3 scripts/pipeline.py import-profiles \
 - **Headcount:** range string preserved + numeric midpoint computed (`"11-50"` → 30)
 - **Location:** stored as-is (city/state/country text)
 
-**Attribution** is automatic: every import sets `original_source` (immutable first touch) and `latest_source` (updates each time) on the lead, following the Salesforce/HubSpot model. The `--source-detail` flag or `import_name`/`list_source` columns provide the detail.
+**Attribution** is automatic: every import sets `original_source` (immutable first touch) and `latest_source` (updates each time) on the lead, following the Salesforce/HubSpot model. Use **`--source`** for the machine-readable channel (`sales_navigator`, `trykitt`, `lead_enrich`, `csv_import`, …). Use **`--source-detail`** or `import_name`/`list_source` columns for list/campaign labels. Per-row `list_source` overrides the CLI `--source` default when present.
 
 ### Personalization (mail-merge)
 

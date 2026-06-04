@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill. For email finding, use the email-finder companion skill.
-version: 2.0.5
+version: 2.0.6
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -329,19 +329,19 @@ Map extracted fields to outreachmagic:
 
 **If LinkedIn found:**
 
-Every import from this skill is stamped with `--source-detail "lead-enrich"` by default.
-If an `import_name` is provided, it appends as `"lead-enrich/{import_name}"`.
+Every import from this skill sets `--source lead_enrich` and `--source-detail "lead-enrich"` by default.
+If an `import_name` is provided, detail appends as `"lead-enrich/{import_name}"`.
 
 ```bash
 # Org-wide (no workspace)
 python3 {outreachmagic_home}/scripts/pipeline.py import-profiles \
-  --source-detail "lead-enrich" \
+  --source lead_enrich --source-detail "lead-enrich" \
   --json '[{"name":"Jane Doe","company":"Acme Corp","job_title":"VP Marketing","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["nace"]}]'
 
 # Scoped to a workspace
 python3 {outreachmagic_home}/scripts/pipeline.py import-profiles \
   --workspace your_workspace \
-  --source-detail "lead-enrich" \
+  --source lead_enrich --source-detail "lead-enrich" \
   --json '[{"name":"Jane Doe","company":"Acme Corp","job_title":"VP Marketing","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["nace"]}]'
 ```
 

@@ -102,6 +102,7 @@ def build_import_profile(
         profile["email"] = email
         profile["tags"] = [*attempted_tags, "email_found"]
     provider = str(find_result.get("provider") or "trykitt")
+    profile["list_source"] = provider
     validity = str(find_result.get("validity") or "")
     profile["notes"] = provider_note_text(provider, validity, found=bool(email))
     if email:
@@ -600,10 +601,12 @@ def run_batch(
         if profiles:
             try:
                 import_profiles = strip_profiles_for_import(profiles)
+                batch_source = (opts.provider or "").strip() if opts.provider else ""
                 imported = cc.run_import_profiles(
                     om_dir,
                     [{k: v for k, v in p.items() if not str(k).startswith("_verify")} for p in import_profiles],
                     workspace=opts.workspace,
+                    source=batch_source,
                     source_detail="email-finder/batch",
                     skill_dir=skill_dir,
                 )

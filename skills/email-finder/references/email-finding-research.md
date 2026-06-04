@@ -116,7 +116,7 @@ Or via outreachmagic directly:
 ```bash
 python3 {outreachmagic_home}/scripts/pipeline.py import-profiles \
   --workspace your_workspace \
-  --source-detail "email-finder/trykitt" \
+  --source trykitt --source-detail "email-finder/trykitt" \
   --json '[{"name":"Jane Doe","company":"Acme Corp","email":"jane@acme.com","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["trykitt_attempted","email_found"],"notes":"trykitt verify: valid"}]'
 ```
 

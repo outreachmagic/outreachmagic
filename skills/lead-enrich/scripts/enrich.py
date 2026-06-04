@@ -405,6 +405,7 @@ def run_import_profiles(
     *,
     workspace: str = "",
     overwrite: bool = False,
+    source: str = "lead_enrich",
     source_detail: str = "lead-enrich/backfill",
     timeout: int = 120,
 ) -> dict[str, Any]:
@@ -413,6 +414,7 @@ def run_import_profiles(
         profiles,
         workspace=workspace,
         overwrite=overwrite,
+        source=source,
         source_detail=source_detail,
         timeout=timeout,
         skill_dir=_find_skill_dir(),
@@ -811,10 +813,11 @@ def _build_import_command(profile: dict[str, Any], workspace: str, import_name: 
     json_str = json.dumps([profile])
     cmd = f"python3 {{outreachmagic_home}}/scripts/pipeline.py import-profiles --json '{json_str}'"
 
-    # Default source-detail stamps every import from this skill
+    # Default attribution stamps every import from this skill
     source_detail = "lead-enrich"
     if import_name:
         source_detail += f"/{import_name}"
+    cmd += " --source lead_enrich"
     cmd += f" --source-detail \"{source_detail}\""
 
     if workspace:

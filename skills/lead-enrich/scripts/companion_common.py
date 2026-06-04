@@ -302,6 +302,7 @@ def _run_import_profiles_once(
     *,
     workspace: str = "",
     overwrite: bool = False,
+    source: str = "",
     source_detail: str = "companion",
     timeout: int = 120,
     skill_dir: Optional[Path] = None,
@@ -310,9 +311,10 @@ def _run_import_profiles_once(
         sys.executable,
         str(get_pipeline_path(om_dir)),
         "import-profiles",
-        "--source-detail",
-        source_detail,
     ]
+    if source:
+        cmd.extend(["--source", source])
+    cmd.extend(["--source-detail", source_detail])
     if workspace:
         cmd.extend(["--workspace", workspace])
     if overwrite:
@@ -327,6 +329,7 @@ def run_import_profiles(
     *,
     workspace: str = "",
     overwrite: bool = False,
+    source: str = "",
     source_detail: str = "companion",
     timeout: int = 120,
     skill_dir: Optional[Path] = None,
@@ -340,6 +343,7 @@ def run_import_profiles(
             profiles,
             workspace=workspace,
             overwrite=overwrite,
+            source=source,
             source_detail=source_detail,
             timeout=chunk_timeout,
             skill_dir=skill_dir,
@@ -360,6 +364,7 @@ def run_import_profiles(
                 chunk,
                 workspace=workspace,
                 overwrite=overwrite,
+                source=source,
                 source_detail=source_detail,
                 timeout=chunk_timeout,
                 skill_dir=skill_dir,

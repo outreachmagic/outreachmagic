@@ -2,20 +2,26 @@
 
 Find work emails with **trykitt.ai** and **Icypeas** (waterfall). Checks **outreachmagic** before spending credits; saves to your local pipeline.
 
-Part of the [Outreach Magic skill suite](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/skill-suite.md).
+Part of the [Outreach Magic skill suite](https://github.com/outreachmagic/outreachmagic).
 
 ## Install
 
-[outreachmagic/email-finder](https://github.com/outreachmagic/email-finder) — see [install-companions.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/install-companions.md).
+Install via the main repo agent guide:
 
-## Keys
+https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md
 
-| Key | Required |
-|-----|----------|
-| `TRYKITT_API_KEY` | One of trykitt / Icypeas for find |
+Suite one-liner: [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — `install.sh --platform <name> --with-email-finder` (implies lead-enrich).
+
+## API keys
+
+| Key | Required? |
+|-----|-----------|
+| `TRYKITT_API_KEY` | One of trykitt / Icypeas for find — [trykitt.ai](https://trykitt.ai) |
 | `ICYPEAS_API_KEY` | |
-| outreachmagic + agent key | Dedup + save |
+| Outreach Magic (`pipeline.py login`) | Yes — dedup + save |
 | `MILLIONVERIFIER_API_KEY` | Optional (`verify*` commands) |
+
+Full key table: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md#third-party-api-keys-companions).
 
 ## Quick start
 

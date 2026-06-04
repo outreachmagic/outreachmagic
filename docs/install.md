@@ -1,5 +1,9 @@
 # Install Outreach Magic
 
+**Agent install (canonical):** [AGENTS-INSTALL.md](../AGENTS-INSTALL.md) — published to
+[raw.githubusercontent.com/.../main/AGENTS-INSTALL.md](https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md)
+on the public repo.
+
 Get install commands for your platform at [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent).
 
 All platforms install from one repo: [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic).

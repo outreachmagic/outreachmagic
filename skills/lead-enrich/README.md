@@ -2,7 +2,7 @@
 
 Research people and enrich lead profiles using **Serper.dev** Google Search.
 Works with **Hermes**, **Cursor**, and **Claude Code**. Pairs with
-[Outreach Magic](https://github.com/outreachmagic/hermes-outreachmagic) for local SQLite
+[Outreach Magic](https://github.com/outreachmagic/outreachmagic) for local SQLite
 dedup and save. Use **[email-finder](https://github.com/outreachmagic/email-finder)** for trykitt find.
 
 > **Credit-saving:** checks your local outreachmagic database first. Skips Serper
@@ -20,25 +20,20 @@ Given a name + company, the agent:
 
 ## Install
 
-**Hermes** (with outreachmagic, profile symlinks):
+Install the full suite (or outreachmagic + this skill) via the main repo agent guide:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.20/install.sh | bash -s -- \
-  --with-lead-enrich --with-email-finder --migrate --tag v1.20.20 --lead-enrich-tag v2.0.2 --email-finder-tag v1.0.2
-```
+https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md
 
-See [install-companions.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/install-companions.md) for Cursor and Claude.
+Suite one-liner: [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — `install.sh --platform <name> --with-lead-enrich` (add `--with-email-finder` for email find).
 
-See [skill suite](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/skill-suite.md).
+## API keys
 
-## Requirements
+| Key | Required? |
+|-----|-----------|
+| `SERPER_API_KEY` | Yes — [serper.dev](https://serper.dev) |
+| Outreach Magic (`pipeline.py login`) | Yes — dedup + save |
 
-| Key | Purpose |
-|-----|---------|
-| `SERPER_API_KEY` | Google Search |
-| outreachmagic + agent key | Dedup + save |
-
-Email find: install **email-finder** + `TRYKITT_API_KEY` (not in lead-enrich v2+).
+Email find: install **email-finder** + `TRYKITT_API_KEY` or `ICYPEAS_API_KEY`. Full key table: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md#third-party-api-keys-companions).
 
 ## License
 

@@ -36,6 +36,7 @@ jobs:
 
           cp LICENSE "$STAGING/"
           cp SECURITY.md "$STAGING/"
+          cp AGENTS-INSTALL.md "$STAGING/"
           cp platforms/outreachmagic-README.md "$STAGING/README.md"
 
           python3 -c "

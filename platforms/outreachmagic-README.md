@@ -4,31 +4,51 @@ Cross-platform AI agent skill for outbound pipeline tracking. Works with **Herme
 
 ## Install
 
-Get platform-specific commands at [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent).
+**For AI agents (Claude Code, Cursor, Hermes):**
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.21.0/install.sh | bash -s -- \
-  --platform hermes \
-  --with-lead-enrich --with-email-finder --migrate \
-  --tag v1.21.0 \
-  --lead-enrich-tag v2.0.2 \
-  --email-finder-tag v1.0.2
+```
+Fetch https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md
+and follow its instructions exactly to install the Outreach Magic skill suite on this machine.
+
+Ask me which platform (Claude Code / Cursor / Hermes) and OS (Mac / Windows / Linux)
+before starting. Stop and show me any errors.
 ```
 
-Use `--platform cursor` or `--platform claude` for other agents.
+**Manual / one-liner (full suite):**
 
-Connect after install:
+```bash
+curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
+  --platform hermes --with-lead-enrich --with-email-finder --migrate
+```
+
+Use `--platform cursor` or `--platform claude` for other agents. Outreach Magic only: omit `--with-lead-enrich` and `--with-email-finder`.
+
+Full agent install guide: [AGENTS-INSTALL.md](./AGENTS-INSTALL.md) · Portal: [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent)
+
+Connect after install (run in terminal, not chat):
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 # or ~/.cursor/skills/... / ~/.claude/skills/... depending on platform
 ```
 
+## API keys
+
+| Key | Skill | Required? |
+|-----|-------|-----------|
+| Outreach Magic (via `pipeline.py login`) | outreachmagic | Yes |
+| `SERPER_API_KEY` | lead-enrich | If using lead-enrich |
+| `TRYKITT_API_KEY` / `ICYPEAS_API_KEY` | email-finder | One required for find |
+| `MILLIONVERIFIER_API_KEY` | email-finder | Optional |
+
+Details and signup links: [AGENTS-INSTALL.md](./AGENTS-INSTALL.md#third-party-api-keys-companions). CI may use `OUTREACHMAGIC_AGENT_KEY` instead of login.
+
 ## Layout
 
 ```
 skills/outreachmagic/     # SKILL.md, scripts/, references/, update-manifest.json
 install.sh                # --platform hermes|cursor|claude
+AGENTS-INSTALL.md         # Agent-readable full install guide
 platforms/overlays/       # Cursor .mdc, Claude snippet (optional)
 ```
 

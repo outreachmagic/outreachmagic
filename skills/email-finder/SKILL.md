@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas. Checks Outreach
   Magic first to avoid duplicate API spend. Saves email and verification status
   via the outreachmagic skill.
-version: 2.1.0
+version: 2.1.1
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]

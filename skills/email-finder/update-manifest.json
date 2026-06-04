@@ -1,7 +1,7 @@
 {
-  "version": "2.1.0",
+  "version": "2.1.1",
   "files": {
-    "SKILL.md": "35f501ef1e0fb19134b942d69a72f53d50ad91450af22e1eabbc5d050eb6614a",
+    "SKILL.md": "279e048ec27311f4b50671c2a1b2b01366dbdcbe86f131e74797ddb02dd4bc7d",
     "README.md": "ccd87f0d92b5ae17479fb900fa0025e1c73b9e4fe44281fcc16e9875c4cc140c",
     "SECURITY.md": "44c13f5288f16807c20820015678588bcea3d69f2a4cd81a2a18398190a070db",
     "config.example.json": "e89e77a42e45ecb372f2e38735b9258eabfc52e5f3ab171d01268cfbbc80b854",
@@ -14,6 +14,7 @@
     "scripts/progress.py": "0a5bcb9ceba98989e51cfab86e5688722626fc1906efbc9c7c772daf9a771f63",
     "scripts/health.py": "b04659202655f380d1ebee18e4a2dec5d568ef44b38ca8710e0b7898469c768c",
     "scripts/providers.py": "a8aedda3476c3ee834070ddcb249ce16f318f98ed783616006c565042cd267df",
-    "scripts/batch_runner.py": "2003e363da00ecb9cd1709242e4d11c01d7859547175cfed3f6f2b2f03f7ed26"
+    "scripts/batch_runner.py": "2003e363da00ecb9cd1709242e4d11c01d7859547175cfed3f6f2b2f03f7ed26",
+    "scripts/millionverifier.py": "0e603cb1fc72fa2ea6ea5964416d1df0273efbf6a0fac3d4dc36ee2e6c42c183"
   }
 }

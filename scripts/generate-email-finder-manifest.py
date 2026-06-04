@@ -25,6 +25,7 @@ MANIFEST_FILES = (
     "scripts/health.py",
     "scripts/providers.py",
     "scripts/batch_runner.py",
+    "scripts/millionverifier.py",
 )
 
 

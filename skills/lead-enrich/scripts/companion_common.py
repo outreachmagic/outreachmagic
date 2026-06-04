@@ -220,6 +220,18 @@ def _chunk_timeout(
     return max(min_s, min(max_s, int(item_count * per_item)))
 
 
+def _resolve_timeout(
+    item_count: int,
+    *,
+    per_item: float = 0.5,
+    max_s: int = 300,
+    override: Optional[int] = None,
+) -> int:
+    if override is not None:
+        return override
+    return _chunk_timeout(item_count, per_item=per_item, max_s=max_s)
+
+
 def profiles_have_known_lead_ids(profiles: list[dict]) -> bool:
     if not profiles:
         return False
@@ -316,6 +328,10 @@ def _merge_pipeline_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]
         if s.get("status"):
             merged["status"] = s["status"]
             break
+    for s in reversed(summaries):
+        if s.get("mode"):
+            merged["mode"] = s["mode"]
+            break
     merged["chunks"] = len(summaries)
     return merged
 
@@ -328,7 +344,7 @@ def _run_apply_email_find_once(
     overwrite: bool = False,
     source: str = "",
     source_detail: str = "companion",
-    timeout: int = 120,
+    timeout: Optional[int] = None,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     cmd = [
@@ -356,14 +372,14 @@ def run_apply_email_find_results(
     overwrite: bool = False,
     source: str = "",
     source_detail: str = "companion",
-    timeout: int = 120,
+    timeout: Optional[int] = None,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     if not profiles:
         return {}
     if len(profiles) <= PIPELINE_FAST_CHUNK_SIZE:
-        chunk_timeout = timeout if timeout != 120 else _chunk_timeout(
-            len(profiles), per_item=0.1, max_s=120,
+        chunk_timeout = _resolve_timeout(
+            len(profiles), per_item=0.1, max_s=120, override=timeout,
         )
         return _run_apply_email_find_once(
             om_dir,
@@ -380,7 +396,9 @@ def run_apply_email_find_results(
     for i in range(0, len(profiles), PIPELINE_FAST_CHUNK_SIZE):
         chunk = profiles[i : i + PIPELINE_FAST_CHUNK_SIZE]
         chunk_num = i // PIPELINE_FAST_CHUNK_SIZE + 1
-        chunk_timeout = _chunk_timeout(len(chunk), per_item=0.1, max_s=120)
+        chunk_timeout = _resolve_timeout(
+            len(chunk), per_item=0.1, max_s=120, override=timeout,
+        )
         print(
             f"  apply-email-find-results chunk {chunk_num}/{total_chunks} ({len(chunk)} leads)...",
             flush=True,
@@ -408,6 +426,45 @@ def run_apply_email_find_results(
     return _merge_pipeline_summaries(summaries)
 
 
+def save_email_find_profiles(
+    om_dir: Path,
+    profiles: list[dict],
+    *,
+    workspace: str,
+    overwrite: bool = False,
+    source: str = "",
+    source_detail: str = "email-finder/batch",
+    timeout: Optional[int] = None,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Save email-finder batch output to OM (fast apply when every row has lead id)."""
+    if not workspace:
+        raise RuntimeError("--workspace is required to save batch results to Outreach Magic")
+    if not profiles:
+        return {}
+    if profiles_have_known_lead_ids(profiles):
+        return run_apply_email_find_results(
+            om_dir,
+            profiles,
+            workspace=workspace,
+            overwrite=overwrite,
+            source=source,
+            source_detail=source_detail,
+            timeout=timeout,
+            skill_dir=skill_dir,
+        )
+    return run_import_profiles(
+        om_dir,
+        profiles,
+        workspace=workspace,
+        overwrite=overwrite,
+        source=source,
+        source_detail=source_detail,
+        timeout=timeout,
+        skill_dir=skill_dir,
+    )
+
+
 def _run_import_profiles_once(
     om_dir: Path,
     profiles: list[dict],
@@ -416,7 +473,7 @@ def _run_import_profiles_once(
     overwrite: bool = False,
     source: str = "",
     source_detail: str = "companion",
-    timeout: int = 120,
+    timeout: Optional[int] = None,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     cmd = [
@@ -443,24 +500,13 @@ def run_import_profiles(
     overwrite: bool = False,
     source: str = "",
     source_detail: str = "companion",
-    timeout: int = 120,
+    timeout: Optional[int] = None,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     if not profiles:
         return {}
-    if workspace and profiles_have_known_lead_ids(profiles):
-        return run_apply_email_find_results(
-            om_dir,
-            profiles,
-            workspace=workspace,
-            overwrite=overwrite,
-            source=source,
-            source_detail=source_detail,
-            timeout=timeout,
-            skill_dir=skill_dir,
-        )
     if len(profiles) <= PIPELINE_CHUNK_SIZE:
-        chunk_timeout = timeout if timeout != 120 else _chunk_timeout(len(profiles))
+        chunk_timeout = _resolve_timeout(len(profiles), override=timeout)
         return _run_import_profiles_once(
             om_dir,
             profiles,
@@ -476,7 +522,7 @@ def run_import_profiles(
     for i in range(0, len(profiles), PIPELINE_CHUNK_SIZE):
         chunk = profiles[i : i + PIPELINE_CHUNK_SIZE]
         chunk_num = i // PIPELINE_CHUNK_SIZE + 1
-        chunk_timeout = _chunk_timeout(len(chunk))
+        chunk_timeout = _resolve_timeout(len(chunk), override=timeout)
         print(
             f"  import-profiles chunk {chunk_num}/{total_chunks} ({len(chunk)} leads)...",
             flush=True,
@@ -509,7 +555,7 @@ def _run_batch_lead_lookup_once(
     items: list[dict[str, Any]],
     *,
     workspace: str = "",
-    timeout: int = 120,
+    timeout: Optional[int] = None,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     cmd = [
@@ -528,14 +574,14 @@ def run_batch_lead_lookup(
     items: list[dict[str, Any]],
     *,
     workspace: str = "",
-    timeout: int = 120,
+    timeout: Optional[int] = None,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     """pipeline.py batch-lead-lookup (file payload + chunking for large batches)."""
     if not items:
         return {"status": "ok", "results": []}
     if len(items) <= LOOKUP_CHUNK_SIZE:
-        lookup_timeout = timeout if timeout != 120 else _chunk_timeout(len(items), per_item=0.15)
+        lookup_timeout = _resolve_timeout(len(items), per_item=0.15, override=timeout)
         return _run_batch_lead_lookup_once(
             om_dir,
             items,
@@ -556,7 +602,7 @@ def run_batch_lead_lookup(
             om_dir,
             chunk,
             workspace=workspace,
-            timeout=_chunk_timeout(len(chunk), per_item=0.15),
+            timeout=_resolve_timeout(len(chunk), per_item=0.15, override=timeout),
             skill_dir=skill_dir,
         )
         merged_results.extend(part.get("results") or [])
@@ -603,7 +649,7 @@ def _run_verify_email_batch_once(
     om_dir: Path,
     items: list[dict[str, Any]],
     *,
-    timeout: int = 120,
+    timeout: Optional[int] = None,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     cmd = [
@@ -620,13 +666,13 @@ def run_verify_email_batch(
     om_dir: Path,
     items: list[dict[str, Any]],
     *,
-    timeout: int = 120,
+    timeout: Optional[int] = None,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     if not items:
         return {"status": "batch_recorded", "recorded": 0, "errors": []}
     if len(items) <= PIPELINE_CHUNK_SIZE:
-        chunk_timeout = timeout if timeout != 120 else _chunk_timeout(len(items))
+        chunk_timeout = _resolve_timeout(len(items), override=timeout)
         return _run_verify_email_batch_once(
             om_dir, items, timeout=chunk_timeout, skill_dir=skill_dir,
         )
@@ -643,7 +689,7 @@ def run_verify_email_batch(
             _run_verify_email_batch_once(
                 om_dir,
                 chunk,
-                timeout=_chunk_timeout(len(chunk)),
+                timeout=_resolve_timeout(len(chunk), override=timeout),
                 skill_dir=skill_dir,
             )
         )

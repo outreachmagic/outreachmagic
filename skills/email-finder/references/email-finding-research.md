@@ -94,22 +94,20 @@ was saved. Keep provider-specific validity/certainty details in `notes`.
 
 ## Saving found emails
 
-**Preferred — `batch-find` with `lead_id` + `--workspace`:** one command finds emails, writes CSV/JSON incrementally, then saves to OM via `apply-email-find-results` (verification recorded inline). Requires outreachmagic ≥ v1.25.9.
+**`batch-find` with `lead_id` + `--workspace`:** finds emails, writes CSV/JSON incrementally, saves via `apply-email-find-results` (tags + verification inline).
 
 ```bash
 python3 scripts/email_finder.py batch-find --workspace your_workspace --yes \
   --output-base ./export/emails --workers 3 --delay 3 leads.json
 ```
 
-**Manual / split workflow** (same OM commands the batch runner uses):
+**OM save only** (after `--no-save` or a failed import):
 
 ```bash
-python3 scripts/email_finder.py batch-find --no-save --workspace your_workspace --yes leads.json
-python3 scripts/email_finder.py prepare-import --csv results.csv --output import.json
-python3 scripts/email_finder.py import-to-om --file import.json --workspace your_workspace
+python3 scripts/email_finder.py import-to-om --file ./export/emails.json --workspace your_workspace
 ```
 
-`import-to-om` and the companion layer pick `apply-email-find-results` automatically when every profile has `id`/`lead_id` and a workspace is set.
+`save_email_find_profiles` (companion) calls `apply-email-find-results` when every profile has `lead_id`; otherwise `import-profiles`.
 
 **Single lead** — email-finder CLI (tags + notes on `--save`):
 

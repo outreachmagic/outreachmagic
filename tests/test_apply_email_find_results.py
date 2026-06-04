@@ -110,7 +110,7 @@ class TestCompanionFastPath(unittest.TestCase):
 
     @patch.object(ef_cc, "_run_subprocess_json")
     @patch.object(ef_cc, "_append_json_or_file")
-    def test_run_import_profiles_uses_fast_apply_when_ids_and_workspace(
+    def test_save_email_find_profiles_uses_fast_apply_when_ids_and_workspace(
         self, mock_append, mock_run,
     ):
         mock_append.side_effect = lambda cmd, payload, **kw: (cmd + ["--json", "[]"], None)
@@ -122,7 +122,7 @@ class TestCompanionFastPath(unittest.TestCase):
             "results": [],
         }
         profiles = [{"id": 1, "email": "a@acme.com"}, {"id": 2, "email": "b@acme.com"}]
-        ef_cc.run_import_profiles(
+        ef_cc.save_email_find_profiles(
             Path("/tmp/om"),
             profiles,
             workspace="ws1",
@@ -131,6 +131,17 @@ class TestCompanionFastPath(unittest.TestCase):
         cmd = mock_run.call_args[0][0]
         self.assertIn("apply-email-find-results", cmd)
         self.assertNotIn("import-profiles", cmd)
+
+    @patch.object(ef_cc, "_run_subprocess_json")
+    @patch.object(ef_cc, "_append_json_or_file")
+    def test_run_import_profiles_never_uses_fast_apply(self, mock_append, mock_run):
+        mock_append.side_effect = lambda cmd, payload, **kw: (cmd + ["--json", "[]"], None)
+        mock_run.return_value = {"matched": 1, "results": []}
+        profiles = [{"id": 1, "email": "a@acme.com"}]
+        ef_cc.run_import_profiles(Path("/tmp/om"), profiles, workspace="ws1", source="trykitt")
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("import-profiles", cmd)
+        self.assertNotIn("apply-email-find-results", cmd)
 
     @patch.object(ef_cc.subprocess, "run")
     def test_subprocess_timeout_becomes_runtime_error(self, mock_run):

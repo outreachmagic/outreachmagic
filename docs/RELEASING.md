@@ -65,37 +65,20 @@ For tag `v1.21.0`:
 
 ---
 
-## v1.25.10 / email-finder v2.2.4 / lead-enrich v2.0.8 (docs alignment)
+## v1.25.11 / email-finder v2.2.5 / lead-enrich v2.0.9 (cleanup)
 
-- SKILL/README/skill-suite/platform overlays document `apply-email-find-results` vs `import-profiles`.
-- Removed unused root `scripts/companion_common.py` (canonical copy lives under each companion skill).
-- No pipeline behavior change from v1.25.9.
+- **Fast path only in email-finder** — `save_email_find_profiles()`; shared `run_import_profiles()` no longer routes lead-enrich through `apply-email-find-results`.
+- **`--workspace` required** for batch OM save and `import-to-om`.
+- Removed `parallel-find` CLI alias; simplified timeout handling (`_resolve_timeout`).
+- Docs trimmed (no version-floor or legacy Errno 7 notes).
 
 ---
 
-## v1.25.9 / email-finder v2.2.3 / lead-enrich v2.0.7 (batch OM import)
+## v1.25.9+ batch OM import (reference)
 
-**Requires all three** for the fast email-finder batch save path.
-
-### outreachmagic v1.25.9
-
-- **`pipeline.py apply-email-find-results`** — batch update email, workspace tags, and provider verification when every row has `lead_id`/`id` and `--workspace` is set.
-- **`import-profiles`** — reuses one DB connection when all rows include `lead_id` (fewer locks on large companion imports).
-
-### email-finder v2.2.3
-
-- **Fast path** — `run_import_profiles` calls `apply-email-find-results` when `workspace` + every profile has `lead_id` (500 rows/chunk; verification inline).
-- **Fallback** — chunked `import-profiles` (200/chunk, up to **300s**/chunk); payloads >100KB use `--file` (fixes historical `Errno 7`).
-- **Recovery** — failed OM save prints checkpoint CSV/JSON paths and `import-to-om` command.
-
-### lead-enrich v2.0.7
-
-- Same **`companion_common.py`** chunking/timeouts as email-finder (must stay byte-identical between companions before each tag).
-
-### Maintainer notes
-
-- **Canonical `companion_common.py`:** `skills/email-finder/scripts/` and `skills/lead-enrich/scripts/` only. The old `scripts/companion_common.py` at repo root was removed (unused, divergent).
-- **Backward compatible:** Older email-finder versions still call `import-profiles` only; upgrade **outreachmagic first**, then companions, for 1k-lead batch saves.
+- **`apply-email-find-results`** — email-finder batch save when every row has `lead_id` + `--workspace`.
+- **`import-profiles`** — tiered match for CSV/lead-enrich; chunked 200 rows, up to 300s/chunk; payloads >100KB use `--file`.
+- **Canonical `companion_common.py`:** `skills/email-finder/scripts/` and `skills/lead-enrich/scripts/` only (keep copies in sync before each companion tag).
 
 ---
 

@@ -366,11 +366,6 @@ def build_verify_batch(
     return verify_items
 
 
-def strip_profiles_for_import(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep _verify_* keys for post-import verify batch (not sent to API)."""
-    return [dict(profile) for profile in profiles]
-
-
 def run_batch(
     input_path: str,
     cfg: dict[str, Any],
@@ -600,55 +595,63 @@ def run_batch(
             people, results, normalize_linkedin_fn, lookup_by_index=lookup_by_index,
         )
         if profiles:
-            try:
-                import_profiles = strip_profiles_for_import(profiles)
-                batch_source = (opts.provider or "").strip() if opts.provider else ""
-                imported = cc.run_import_profiles(
-                    om_dir,
-                    import_profiles,
-                    workspace=opts.workspace,
-                    source=batch_source,
-                    source_detail="email-finder/batch",
-                    skill_dir=skill_dir,
-                )
-                import_created = int(imported.get("created") or 0)
-                if import_created:
-                    new_ids = [
-                        str(r.get("lead_id") or r.get("id"))
-                        for r in (imported.get("results") or [])
-                        if isinstance(r, dict) and r.get("created")
-                    ]
-                    id_hint = f" ids: {', '.join(new_ids[:5])}" if new_ids else ""
-                    if len(new_ids) > 5:
-                        id_hint += f" (+{len(new_ids) - 5} more)"
-                    print(
-                        f"\n⚠️  Warning: OM import created {import_created} new lead(s) "
-                        f"(expected 0 — pass lead_id on every row).{id_hint}\n",
-                        file=sys.stderr,
-                    )
-                save_out = {"imported": len(import_profiles), "import": imported, "created": import_created}
-                verify_items = build_verify_batch(imported, import_profiles)
-                if imported.get("mode") == "apply_email_find_results":
-                    verified = int(imported.get("recorded") or 0)
-                elif verify_items:
-                    vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=skill_dir)
-                    verified = int(vout.get("recorded") or 0)
-                    save_out["verify"] = vout
-            except (RuntimeError, subprocess.TimeoutExpired) as e:
-                save_out = {"error": str(e)}
-                json_hint = f"{output_base}.json" if output_base else "<checkpoint.json>"
-                csv_hint = f"{output_base}.csv" if output_base else "<checkpoint.csv>"
+            if not opts.workspace:
+                save_out = {"error": "workspace required for OM save (--workspace)"}
                 print(
-                    "\n❌ Outreach Magic save failed (email finding completed; results on disk).\n"
-                    f"   {e}\n"
-                    f"   CSV: {csv_hint}\n"
-                    f"   JSON: {json_hint}\n"
-                    "   Re-sync to OM:\n"
-                    f"     python3 scripts/email_finder.py import-to-om --file {json_hint}"
-                    f" --workspace {opts.workspace or 'WORKSPACE'}\n"
-                    "   Or re-run batch-find (resume skips completed API rows).\n",
+                    "\n❌ Outreach Magic save skipped: --workspace is required.\n"
+                    "   Email results are in CSV/JSON on disk.\n",
                     file=sys.stderr,
                 )
+            else:
+                try:
+                    batch_source = (opts.provider or "").strip() if opts.provider else ""
+                    imported = cc.save_email_find_profiles(
+                        om_dir,
+                        profiles,
+                        workspace=opts.workspace,
+                        source=batch_source,
+                        source_detail="email-finder/batch",
+                        skill_dir=skill_dir,
+                    )
+                    import_created = int(imported.get("created") or 0)
+                    if import_created:
+                        new_ids = [
+                            str(r.get("lead_id") or r.get("id"))
+                            for r in (imported.get("results") or [])
+                            if isinstance(r, dict) and r.get("created")
+                        ]
+                        id_hint = f" ids: {', '.join(new_ids[:5])}" if new_ids else ""
+                        if len(new_ids) > 5:
+                            id_hint += f" (+{len(new_ids) - 5} more)"
+                        print(
+                            f"\n⚠️  Warning: OM import created {import_created} new lead(s) "
+                            f"(expected 0 — pass lead_id on every row).{id_hint}\n",
+                            file=sys.stderr,
+                        )
+                    save_out = {"imported": len(profiles), "import": imported, "created": import_created}
+                    if imported.get("mode") == "apply_email_find_results":
+                        verified = int(imported.get("recorded") or 0)
+                    else:
+                        verify_items = build_verify_batch(imported, profiles)
+                        if verify_items:
+                            vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=skill_dir)
+                            verified = int(vout.get("recorded") or 0)
+                            save_out["verify"] = vout
+                except (RuntimeError, subprocess.TimeoutExpired) as e:
+                    save_out = {"error": str(e)}
+                    json_hint = f"{output_base}.json" if output_base else "<checkpoint.json>"
+                    csv_hint = f"{output_base}.csv" if output_base else "<checkpoint.csv>"
+                    print(
+                        "\n❌ Outreach Magic save failed (email finding completed; results on disk).\n"
+                        f"   {e}\n"
+                        f"   CSV: {csv_hint}\n"
+                        f"   JSON: {json_hint}\n"
+                        "   Re-sync to OM:\n"
+                        f"     python3 scripts/email_finder.py import-to-om --file {json_hint}"
+                        f" --workspace {opts.workspace}\n"
+                        "   Or re-run batch-find (resume skips completed API rows).\n",
+                        file=sys.stderr,
+                    )
 
     elapsed = time.time() - start
     print_final_summary(

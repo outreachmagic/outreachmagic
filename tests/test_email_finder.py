@@ -341,7 +341,7 @@ class TestBatchRun(unittest.TestCase):
         mock_run.assert_called_once()
 
     @patch.object(lemail.cc, "run_batch_lead_lookup")
-    @patch.object(lemail.cc, "run_import_profiles")
+    @patch.object(lemail.cc, "save_email_find_profiles")
     @patch("batch_runner.run_find_with_fallback")
     def test_batch_single_import(self, mock_find, mock_import, mock_lookup):
         mock_lookup.return_value = {
@@ -357,6 +357,8 @@ class TestBatchRun(unittest.TestCase):
             ]},
         ]
         mock_import.return_value = {
+            "mode": "apply_email_find_results",
+            "recorded": 1,
             "results": [
                 {"lead_id": 1},
                 {"lead_id": 2},
@@ -366,13 +368,14 @@ class TestBatchRun(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             inp = Path(td) / "batch.json"
             inp.write_text(json.dumps([
-                {"name": "A", "domain": "acme.com"},
-                {"name": "B", "domain": "acme.com"},
+                {"lead_id": 1, "name": "A", "domain": "acme.com"},
+                {"lead_id": 2, "name": "B", "domain": "acme.com"},
             ]))
             out_base = str(Path(td) / "out")
             opts = lemail.BatchOptions(
                 yes=True,
                 skip_om=False,
+                workspace="ws1",
                 output_base=out_base,
                 workers=1,
                 delay=0,
@@ -385,7 +388,7 @@ class TestBatchRun(unittest.TestCase):
             }
             with patch.object(lemail, "find_outreachmagic", return_value=om), patch(
                 "batch_runner.run_health_check", return_value=(True, [], []),
-            ), patch.object(lemail.cc, "run_verify_email_batch", return_value={"recorded": 1}):
+            ):
                 from batch_runner import run_batch
                 result = run_batch(
                     str(inp),

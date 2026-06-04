@@ -26,7 +26,7 @@ flowchart LR
 
 1. **outreachmagic** — `pipeline.py init` then `pipeline.py login` in terminal  
 2. **lead-enrich** — add `SERPER_API_KEY` to `~/.hermes/.env`  
-3. **email-finder** (optional) — `TRYKITT_API_KEY` and/or `ICYPEAS_API_KEY`; needs domain. Batch OM save is fastest with **`lead_id` + `--workspace`** (pipeline ≥ v1.25.9, email-finder ≥ v2.2.3).  
+3. **email-finder** (optional) — `TRYKITT_API_KEY` and/or `ICYPEAS_API_KEY`; batch OM save needs **`lead_id` on every row + `--workspace`**.  
 
 **Canonical install commands (Hermes, Cursor, Claude):** [install-companions.md](./install-companions.md)
 

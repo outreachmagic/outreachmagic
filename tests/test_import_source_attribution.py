@@ -155,11 +155,12 @@ class TestEmailFinderSource(unittest.TestCase):
 
     def test_batch_import_results_passes_provider(self):
         email_finder = _load_module("ef_email_finder", EMAIL_SCRIPTS / "email_finder.py")
-        with patch.object(email_finder.cc, "run_import_profiles") as mock_import:
+        with patch.object(email_finder.cc, "save_email_find_profiles") as mock_import:
             mock_import.return_value = {"results": [{"id": 1}]}
             email_finder.batch_import_results(
                 Path("/tmp/om"),
-                [{"name": "Jane", "email": "j@acme.com"}],
+                [{"id": 1, "name": "Jane", "email": "j@acme.com"}],
+                workspace="ws1",
                 source="trykitt",
                 source_detail="email-finder/trykitt",
             )

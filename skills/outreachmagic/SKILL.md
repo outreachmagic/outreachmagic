@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.25.10
+version: 1.25.11
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -576,7 +576,7 @@ python3 scripts/pipeline.py import-profiles \
   --file nace.csv --workspace acme_corp --import-batch-id nace-2026-05
 ```
 
-**Email-finder batch save (known `lead_id` on every row):** companions call `apply-email-find-results` instead of full identity matching — updates email, workspace tags, and provider verification in one pass. Requires `--workspace`. Manual recovery:
+**Email-finder batch save (known `lead_id` on every row):** email-finder calls `apply-email-find-results` — updates email, workspace tags, and provider verification in one pass. Requires `--workspace`. Manual recovery:
 
 ```bash
 python3 scripts/pipeline.py apply-email-find-results \

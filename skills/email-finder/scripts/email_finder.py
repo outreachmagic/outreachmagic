@@ -10,7 +10,6 @@ Usage:
     email_finder.py check [--workspace W] "Name" "Company"
     email_finder.py find --name X --domain Y [--linkedin URL] [--save] [--workspace W]
     email_finder.py batch-find [options] input.json
-    email_finder.py parallel-find [options] input.json   # alias: batch-find --workers N
     email_finder.py prepare-import --csv PATH [--workspace W] [--output PATH]
     email_finder.py import-to-om --file PATH [--workspace W]
     email_finder.py update [--check] [--tag vX.Y.Z]
@@ -218,14 +217,23 @@ def batch_import_results(
 ) -> dict[str, Any]:
     if not profiles:
         return {"imported": 0, "profiles": []}
-    imported = cc.run_import_profiles(
-        om_dir,
-        profiles,
-        workspace=workspace,
-        source=source,
-        source_detail=source_detail,
-        skill_dir=_find_skill_dir(),
-    )
+    if workspace:
+        imported = cc.save_email_find_profiles(
+            om_dir,
+            profiles,
+            workspace=workspace,
+            source=source,
+            source_detail=source_detail,
+            skill_dir=_find_skill_dir(),
+        )
+    else:
+        imported = cc.run_import_profiles(
+            om_dir,
+            profiles,
+            source=source,
+            source_detail=source_detail,
+            skill_dir=_find_skill_dir(),
+        )
     return {"imported": len(profiles), "import": imported}
 
 
@@ -570,9 +578,12 @@ def cmd_import_to_om(file_path: str, workspace: str = "") -> None:
         print(json.dumps({"error": "JSON must be {profiles: [...]} or an array"}))
         sys.exit(1)
     ws = workspace or (data.get("workspace") if isinstance(data, dict) else "") or ""
+    if not ws:
+        print(json.dumps({"error": "--workspace required for import-to-om"}))
+        sys.exit(1)
     result = batch_import_results(
         om_dir,
-        [{k: v for k, v in p.items() if not str(k).startswith("_verify")} for p in profiles],
+        profiles,
         workspace=ws,
         source_detail="email-finder/import-to-om",
     )
@@ -896,10 +907,8 @@ def main() -> None:
                 print("Usage: email_finder.py find --name X --domain Y [--linkedin URL] [--save] [--workspace W]")
                 sys.exit(1)
             cmd_find(name, domain, linkedin, workspace, save, company)
-        elif cmd in ("batch-find", "parallel-find"):
+        elif cmd == "batch-find":
             opts, path = _parse_batch_args(sys.argv[2:])
-            if cmd == "parallel-find" and opts.workers == 1:
-                opts.workers = 3
             if not path:
                 print("Usage: email_finder.py batch-find [options] input.json")
                 sys.exit(1)

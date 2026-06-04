@@ -17,6 +17,7 @@ Usage:
   pipeline.py lead-table                    # Print canonical lead info table
   pipeline.py add-lead --name "Jane" ...    # Add a lead
   pipeline.py import-profiles --file leads.csv  # Bulk enrich from CSV/JSON
+  pipeline.py apply-email-find-results --json '[...]' --workspace W  # Fast batch (known lead ids)
   pipeline.py log-event --lead-id 1 ...     # Log outreach event
   pipeline.py history --id 1                # Show lead's event timeline
   pipeline.py history --email j@acme.com    # Look up by email

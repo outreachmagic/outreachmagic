@@ -4,7 +4,7 @@
 
 - **Local:** Reads lead records via outreachmagic `pipeline.py history` (SQLite on your machine).
 - **External:** Calls **api.trykitt.ai** and/or **app.icypeas.com** with your API keys when running `find` or `batch-find`.
-- **Save:** Uses outreachmagic `import-profiles` and `verify-email` locally — same trust model as the core skill.
+- **Save:** Writes via outreachmagic locally (`apply-email-find-results` when every batch row has `lead_id` + workspace; otherwise chunked `import-profiles` and `verify-email`). No relay upload on save — same trust model as the core skill.
 
 ## Secrets
 

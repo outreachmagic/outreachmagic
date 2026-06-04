@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas (waterfall). Checks Outreach Magic
   first to avoid duplicate API spend. Saves email and verification via outreachmagic.
   Optional MillionVerifier for bulk re-check.
-version: 2.2.3
+version: 2.2.4
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -37,7 +37,7 @@ metadata:
       - domain: api.millionverifier.com
         purpose: Optional single/bulk verification
       - domain: api.outreachmagic.io
-        purpose: Via outreachmagic — local import-profiles only
+        purpose: Via outreachmagic — apply-email-find-results (batch) or import-profiles
 ---
 
 # Email Finder
@@ -91,7 +91,7 @@ Config overrides in `config.json`: `icypeas_poll_attempts` (default 30), `icypea
 ]
 ```
 
-`lead_id` maps to `id` on `import-profiles`. Without `lead_id` or `linkedin`, dry-run warns that new OM leads may be created.
+`lead_id` maps to `id` on OM save. With `lead_id` on every row and `--workspace`, batch-find uses fast `apply-email-find-results` (requires outreachmagic ≥ v1.25.9). Without `lead_id` or `linkedin`, dry-run warns that new OM leads may be created via `import-profiles`.
 
 ## Commands
 

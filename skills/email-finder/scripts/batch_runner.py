@@ -622,8 +622,8 @@ def run_batch(
                     if len(new_ids) > 5:
                         id_hint += f" (+{len(new_ids) - 5} more)"
                     print(
-                        f"\n⚠️  Warning: import-profiles created {import_created} new lead(s) "
-                        f"(expected 0 — pass lead_id/linkedin in input).{id_hint}\n",
+                        f"\n⚠️  Warning: OM import created {import_created} new lead(s) "
+                        f"(expected 0 — pass lead_id on every row).{id_hint}\n",
                         file=sys.stderr,
                     )
                 save_out = {"imported": len(import_profiles), "import": imported, "created": import_created}

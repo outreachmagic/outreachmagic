@@ -35,7 +35,9 @@ python3 scripts/email_finder.py batch-find --provider icypeas --workspace YOUR_W
   --workers 2 --delay 3 --output-base ./export/icypeas leads.json
 ```
 
-Include `lead_id` in `leads.json` when enriching existing OM imports (see `config.example.json` for poll/rate-limit tuning).
+Include `lead_id` in `leads.json` when enriching existing OM leads — batch save uses fast `apply-email-find-results` (needs **outreachmagic ≥ v1.25.9** and **email-finder ≥ v2.2.3**). Without `lead_id`, OM save falls back to tiered `import-profiles`. See `config.example.json` for poll/rate-limit tuning.
+
+If OM save fails after a run, results remain in `{output-base}.csv` / `.json`; re-sync with `import-to-om --file … --workspace YOUR_WS`.
 
 ## License
 

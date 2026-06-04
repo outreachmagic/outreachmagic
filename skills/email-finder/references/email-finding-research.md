@@ -90,18 +90,26 @@ Use in this order; stop when a deliverable email is saved to outreachmagic.
 
 After provider attempts, tag the lead with provider-specific attempt tags:
 `trykitt_attempted` and/or `icypeas_attempted`; add `email_found` when an email
-was saved. Keep provider-specific validity/certainty details in `notes` and do
-not call `verify-email` during batch.
+was saved. Keep provider-specific validity/certainty details in `notes`.
 
 ## Saving found emails
 
-**Batch / large runs:** collect API results first, import once (avoids SQLite lock):
+**Preferred — `batch-find` with `lead_id` + `--workspace`:** one command finds emails, writes CSV/JSON incrementally, then saves to OM via `apply-email-find-results` (verification recorded inline). Requires outreachmagic ≥ v1.25.9.
 
 ```bash
-python3 scripts/email_finder.py parallel-find --workers 3 --output-csv results.csv --no-save leads.json
+python3 scripts/email_finder.py batch-find --workspace your_workspace --yes \
+  --output-base ./export/emails --workers 3 --delay 3 leads.json
+```
+
+**Manual / split workflow** (same OM commands the batch runner uses):
+
+```bash
+python3 scripts/email_finder.py batch-find --no-save --workspace your_workspace --yes leads.json
 python3 scripts/email_finder.py prepare-import --csv results.csv --output import.json
 python3 scripts/email_finder.py import-to-om --file import.json --workspace your_workspace
 ```
+
+`import-to-om` and the companion layer pick `apply-email-find-results` automatically when every profile has `id`/`lead_id` and a workspace is set.
 
 **Single lead** — email-finder CLI (tags + notes on `--save`):
 

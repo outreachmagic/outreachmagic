@@ -26,7 +26,8 @@ python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py pull --if-stale 5m
 | `query engagement --workspace SLUG --since 48h --json` | Engagement by campaign (fast) |
 | `pull` | Refresh from relay when needed |
 | `show` / `history` | Lead list / timeline |
-| `import-profiles --file leads.csv` | Bulk import |
+| `import-profiles --file leads.csv` | Bulk import (tiered match) |
+| `apply-email-find-results --workspace W --file …` | Fast batch (known lead ids) |
 
 ## Rules
 

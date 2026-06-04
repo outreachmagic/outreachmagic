@@ -13,7 +13,7 @@ flowchart LR
   EF[email-finder]
   LE -->|"dedup free; save needs OM"| OM
   OM -->|"domain + linkedin on file"| EF
-  EF -->|"import-profiles + verify-email"| OM
+  EF -->|"apply-email-find-results or import-profiles"| OM
 ```
 
 | Skill | Role | Public repo | Release tag |
@@ -26,7 +26,7 @@ flowchart LR
 
 1. **outreachmagic** — `pipeline.py init` then `pipeline.py login` in terminal  
 2. **lead-enrich** — add `SERPER_API_KEY` to `~/.hermes/.env`  
-3. **email-finder** (optional) — `TRYKITT_API_KEY` and/or `ICYPEAS_API_KEY`; needs domain (+ `lead_id` for OM imports)  
+3. **email-finder** (optional) — `TRYKITT_API_KEY` and/or `ICYPEAS_API_KEY`; needs domain. Batch OM save is fastest with **`lead_id` + `--workspace`** (pipeline ≥ v1.25.9, email-finder ≥ v2.2.3).  
 
 **Canonical install commands (Hermes, Cursor, Claude):** [install-companions.md](./install-companions.md)
 
@@ -40,7 +40,7 @@ flowchart LR
 | Free forever (no relay count) | Counts as relay event |
 |------------------------------|------------------------|
 | Local pipeline queries | Webhook events synced from sequencers |
-| `import-profiles`, export | |
+| `import-profiles`, `apply-email-find-results`, export | |
 | lead-enrich dedup (`check`) | |
 | email-finder OM pre-check | |
 | `verify-email` recording | |

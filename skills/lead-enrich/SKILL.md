@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill. For email finding, use the email-finder companion skill.
-version: 2.0.7
+version: 2.0.8
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -101,7 +101,7 @@ python3 scripts/enrich.py batch-check --workspace your_workspace input/awards.cs
 python3 scripts/enrich.py backfill --fields title,industry --workspace your_workspace input/patch.csv
 ```
 
-`batch-check` accepts `.json` or `.csv`. `backfill` requires `email` or `linkedin` per row; uses `import-profiles` (fills empty fields; add `--overwrite` to replace).
+`batch-check` accepts `.json` or `.csv`. `backfill` requires `email` or `linkedin` per row; uses chunked `import-profiles` via `companion_common` (200 rows/chunk, up to 300s/chunk; fills empty fields; add `--overwrite` to replace).
 
 ## When to Use
 

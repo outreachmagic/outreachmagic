@@ -65,6 +65,40 @@ For tag `v1.21.0`:
 
 ---
 
+## v1.25.10 / email-finder v2.2.4 / lead-enrich v2.0.8 (docs alignment)
+
+- SKILL/README/skill-suite/platform overlays document `apply-email-find-results` vs `import-profiles`.
+- Removed unused root `scripts/companion_common.py` (canonical copy lives under each companion skill).
+- No pipeline behavior change from v1.25.9.
+
+---
+
+## v1.25.9 / email-finder v2.2.3 / lead-enrich v2.0.7 (batch OM import)
+
+**Requires all three** for the fast email-finder batch save path.
+
+### outreachmagic v1.25.9
+
+- **`pipeline.py apply-email-find-results`** — batch update email, workspace tags, and provider verification when every row has `lead_id`/`id` and `--workspace` is set.
+- **`import-profiles`** — reuses one DB connection when all rows include `lead_id` (fewer locks on large companion imports).
+
+### email-finder v2.2.3
+
+- **Fast path** — `run_import_profiles` calls `apply-email-find-results` when `workspace` + every profile has `lead_id` (500 rows/chunk; verification inline).
+- **Fallback** — chunked `import-profiles` (200/chunk, up to **300s**/chunk); payloads >100KB use `--file` (fixes historical `Errno 7`).
+- **Recovery** — failed OM save prints checkpoint CSV/JSON paths and `import-to-om` command.
+
+### lead-enrich v2.0.7
+
+- Same **`companion_common.py`** chunking/timeouts as email-finder (must stay byte-identical between companions before each tag).
+
+### Maintainer notes
+
+- **Canonical `companion_common.py`:** `skills/email-finder/scripts/` and `skills/lead-enrich/scripts/` only. The old `scripts/companion_common.py` at repo root was removed (unused, divergent).
+- **Backward compatible:** Older email-finder versions still call `import-profiles` only; upgrade **outreachmagic first**, then companions, for 1k-lead batch saves.
+
+---
+
 ## v1.25.8 highlights (CLI ergonomics)
 
 - **Data freshness** — read commands print `last_pull` age on stderr and in `--json` (`stale_minutes`, `freshness_message`).
@@ -199,7 +233,7 @@ git push origin email-finder-v1.0.0
 Workflow: `.github/workflows/publish-email-finder.yml`.
 Domains: `docs/hermeshub-reviewed-domains-email-finder.md`.
 
-Both companions vend `scripts/companion_common.py` in manifests. Regenerate manifests before every companion tag.
+Both companions vend `scripts/companion_common.py` in manifests (keep **email-finder** and **lead-enrich** copies in sync). Regenerate manifests before every companion tag. There is no separate root `scripts/companion_common.py` — edit the skill copies only.
 
 ### How `enrich.py` / `email_finder.py update` works
 

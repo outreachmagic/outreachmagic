@@ -65,6 +65,16 @@ For tag `v1.21.0`:
 
 ---
 
+## v1.25.12 / email-finder v2.2.6 / lead-enrich v2.0.10 (batch import reliability)
+
+- **Fix:** Ship `data_freshness.py` in update manifest (v1.25.11 installs could crash every `pipeline.py` command).
+- **Import timeouts:** `companion_common._chunk_timeout` uses `per_item=0.8` (200 leads → 160s, cap 300s).
+- **Graceful import failure:** email-finder `batch-find` and lead-enrich `backfill` print recovery commands on timeout/error.
+- **CI:** `sync-companion-common.sh --check`, `test_pipeline_import_smoke.py`, expanded `run-tests.sh` (pytest suite).
+- **Canonical copy:** `skills/email-finder/scripts/companion_common.py` — run `bash scripts/sync-companion-common.sh` before companion tags.
+
+---
+
 ## email-finder v2.2.6 (simplified OM import)
 
 - Removed `prepare-import`; `import-to-om` accepts batch checkpoint `.csv` or `.json` directly.
@@ -223,7 +233,17 @@ git push origin email-finder-v1.0.0
 Workflow: `.github/workflows/publish-email-finder.yml`.
 Domains: `docs/hermeshub-reviewed-domains-email-finder.md`.
 
-Both companions vend `scripts/companion_common.py` in manifests (keep **email-finder** and **lead-enrich** copies in sync). Regenerate manifests before every companion tag. There is no separate root `scripts/companion_common.py` — edit the skill copies only.
+Both companions vend `scripts/companion_common.py` in manifests. **Canonical file:** `skills/email-finder/scripts/companion_common.py`. Before companion tags:
+
+```bash
+# Edit email-finder copy, then sync to lead-enrich
+bash scripts/sync-companion-common.sh
+bash scripts/sync-companion-common.sh --check   # CI uses this
+python3 scripts/generate-email-finder-manifest.py
+python3 scripts/generate-lead-enrich-manifest.py
+```
+
+Regenerate manifests before every companion tag.
 
 ### How `enrich.py` / `email_finder.py update` works
 
@@ -315,7 +335,9 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
+| `ModuleNotFoundError: data_freshness` | v1.25.11 update missing `data_freshness.py` | `pipeline.py update --tag v1.25.12` (or copy `scripts/data_freshness.py` from release tree) |
 | `Update failed: HTTP Error 404` | Release missing on public repo or wrong tag | `gh release view vX.Y.Z --repo outreachmagic/outreachmagic`; reinstall from `outreachmagic/outreachmagic` if scripts are corrupt |
+| `import-profiles` / batch save timeout | Large chunk under load | Re-run `import-to-om` or `pipeline.py import-profiles --file …`; v2.2.6+ uses longer per-lead timeout |
 | `No GitHub release found` | Checking wrong repo (`magic-creators/outreachmagic-skill` is private) or release not created on public repo | `gh release view vX.Y.Z --repo outreachmagic/outreachmagic`; fix CI / `PUBLISH_TOKEN` |
 | Tag on GitHub but update 404 | Release on **private** repo only | User needs **outreachmagic/outreachmagic**, not monorepo |
 | `update --check` says no update but GitHub has newer tag | Wrong `GITHUB_REPO` in installed script | Reinstall or verify `grep GITHUB_REPO …/pipeline.py` → `outreachmagic/outreachmagic` |

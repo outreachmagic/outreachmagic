@@ -490,8 +490,8 @@ class TestCompanionCommonPipelinePayload(unittest.TestCase):
         Path(temp).unlink(missing_ok=True)
 
     def test_chunk_timeout_defaults(self):
-        self.assertEqual(lemail.cc._chunk_timeout(200), 100)
-        self.assertEqual(lemail.cc._chunk_timeout(100), 50)
+        self.assertEqual(lemail.cc._chunk_timeout(200), 160)
+        self.assertEqual(lemail.cc._chunk_timeout(100), 80)
         self.assertEqual(lemail.cc._chunk_timeout(1000), 300)
 
     def test_profiles_have_known_lead_ids(self):

@@ -210,10 +210,13 @@ def history_lookup(
     return None
 
 
+CHUNK_TIMEOUT_PER_ITEM_S = 0.8
+
+
 def _chunk_timeout(
     item_count: int,
     *,
-    per_item: float = 0.5,
+    per_item: float = CHUNK_TIMEOUT_PER_ITEM_S,
     min_s: int = 30,
     max_s: int = 300,
 ) -> int:
@@ -223,13 +226,29 @@ def _chunk_timeout(
 def _resolve_timeout(
     item_count: int,
     *,
-    per_item: float = 0.5,
+    per_item: float = CHUNK_TIMEOUT_PER_ITEM_S,
     max_s: int = 300,
     override: Optional[int] = None,
 ) -> int:
     if override is not None:
         return override
     return _chunk_timeout(item_count, per_item=per_item, max_s=max_s)
+
+
+def print_import_failure_recovery(
+    exc: BaseException,
+    *,
+    skill: str,
+    recovery_lines: list[str],
+    data_paths: Optional[list[str]] = None,
+) -> None:
+    """Print actionable stderr when OM import subprocess fails (data may still be on disk)."""
+    print(f"\n⚠️  Import to Outreach Magic failed ({skill}): {exc}", file=sys.stderr)
+    for path in data_paths or []:
+        if path:
+            print(f"   Data safe at: {path}", file=sys.stderr)
+    for line in recovery_lines:
+        print(f"   {line}", file=sys.stderr)
 
 
 def profiles_have_known_lead_ids(profiles: list[dict]) -> bool:

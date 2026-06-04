@@ -40,6 +40,15 @@ import companion_common as cc
 # ── Constants ────────────────────────────────────────────────────────────────
 
 SKILL_NAME = "lead-enrich"
+BACKFILL_FIELDS = frozenset({
+    "title",
+    "industry",
+    "headcount",
+    "company_domain",
+    "notes",
+    "company",
+    "name",
+})
 GITHUB_REPO = "outreachmagic/lead-enrich"
 GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RAW_BASE = "https://raw.githubusercontent.com"
@@ -1045,12 +1054,26 @@ def cmd_backfill(
         print(json.dumps(summary, indent=2))
         return
 
-    summary["import"] = run_import_profiles(
-        om_dir,
-        profiles,
-        workspace=workspace,
-        overwrite=overwrite,
-    )
+    try:
+        summary["import"] = run_import_profiles(
+            om_dir,
+            profiles,
+            workspace=workspace,
+            overwrite=overwrite,
+        )
+    except Exception as e:
+        summary["import"] = {"error": str(e), "processed": 0}
+        ws_flag = f" --workspace {workspace}" if workspace else ""
+        cc.print_import_failure_recovery(
+            e,
+            skill="lead-enrich/backfill",
+            data_paths=[input_file],
+            recovery_lines=[
+                "Retry with pipeline:",
+                f"python3 {om_dir}/scripts/pipeline.py import-profiles"
+                f" --file {input_file}{ws_flag}",
+            ],
+        )
     print(json.dumps(summary, indent=2))
 
 

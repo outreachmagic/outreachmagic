@@ -2,6 +2,5 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bash "$ROOT/scripts/test-install-bootstrap.sh"
-python3 "$ROOT/tests/test_workspace_routing.py"
-python3 "$ROOT/tests/test_lead_enrich.py"
-python3 "$ROOT/tests/test_db_health.py"
+bash "$ROOT/scripts/sync-companion-common.sh" --check
+python3 -m pytest "$ROOT/tests/" -q

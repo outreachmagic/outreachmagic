@@ -734,20 +734,22 @@ def run_batch(
                             vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=skill_dir)
                             verified = int(vout.get("recorded") or 0)
                             save_out["verify"] = vout
-                except (RuntimeError, subprocess.TimeoutExpired) as e:
-                    save_out = {"error": str(e)}
+                except Exception as e:
+                    save_out = {"error": str(e), "imported": 0}
                     json_hint = f"{output_base}.json" if output_base else "<checkpoint.json>"
                     csv_hint = f"{output_base}.csv" if output_base else "<checkpoint.csv>"
-                    print(
-                        "\n❌ Outreach Magic save failed (email finding completed; results on disk).\n"
-                        f"   {e}\n"
-                        f"   CSV: {csv_hint}\n"
-                        f"   JSON: {json_hint}\n"
-                        "   Re-sync to OM (CSV or JSON checkpoint):\n"
-                        f"     python3 scripts/email_finder.py import-to-om --file {csv_hint}"
-                        f" --workspace {opts.workspace}\n"
-                        "   Or re-run batch-find (resume skips completed API rows).\n",
-                        file=sys.stderr,
+                    cc.print_import_failure_recovery(
+                        e,
+                        skill="email-finder/batch-find",
+                        data_paths=[csv_hint, json_hint],
+                        recovery_lines=[
+                            "Re-sync to OM:",
+                            f"python3 scripts/email_finder.py import-to-om --file {csv_hint}"
+                            f" --workspace {opts.workspace}",
+                            f"python3 scripts/email_finder.py import-to-om --file {json_hint}"
+                            f" --workspace {opts.workspace}",
+                            "Or re-run batch-find (resume skips completed API rows).",
+                        ],
                     )
 
     elapsed = time.time() - start

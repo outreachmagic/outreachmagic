@@ -22,8 +22,14 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install test dependencies
+        run: python3 -m pip install -q pytest
+
+      - name: Verify companion_common sync
+        run: bash scripts/sync-companion-common.sh --check
+
       - name: Run lead-enrich tests
-        run: python3 tests/test_lead_enrich.py
+        run: python3 tests/test_lead_enrich.py && python3 tests/test_companion_common_sync.py
 
       - name: HermesHub SkillScan (strict)
         run: bash scripts/skill-scan.sh --strict lead-enrich

@@ -28,7 +28,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run workspace routing tests
+      - name: Install test dependencies
+        run: python3 -m pip install -q pytest
+
+      - name: Run test suite
         run: bash scripts/run-tests.sh
 
       - name: Run lead-enrich tests
@@ -48,6 +51,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Verify companion_common sync
+        run: bash scripts/sync-companion-common.sh --check
 
       - name: Verify update-manifest.json is current
         run: |

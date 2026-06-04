@@ -103,7 +103,7 @@ def test_import_rows_all_have_lead_id():
 
 class TestCompanionFastPath(unittest.TestCase):
     def test_chunk_timeout_200_leads(self):
-        self.assertEqual(ef_cc._chunk_timeout(200), 100)
+        self.assertEqual(ef_cc._chunk_timeout(200), 160)
 
     def test_chunk_timeout_cap(self):
         self.assertEqual(ef_cc._chunk_timeout(1000), 300)

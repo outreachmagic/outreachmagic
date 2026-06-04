@@ -245,6 +245,28 @@ class TestTeamAndBackfill(unittest.TestCase):
         finally:
             Path(path).unlink()
 
+    @patch.object(enrich, "load_config")
+    @patch.object(enrich, "find_outreachmagic")
+    @patch.object(enrich, "run_import_profiles")
+    def test_backfill_import_failure_returns_error(self, mock_import, mock_find, _mock_cfg):
+        import subprocess
+        import tempfile
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        mock_find.return_value = Path("/tmp/om-test")
+        mock_import.side_effect = subprocess.TimeoutExpired(cmd="import", timeout=60)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("linkedin,title\nhttps://linkedin.com/in/jane,VP\n")
+            path = f.name
+        try:
+            buf = StringIO()
+            with redirect_stdout(buf):
+                enrich.cmd_backfill(path, "title", workspace="ws1")
+            self.assertIn("error", buf.getvalue())
+        finally:
+            Path(path).unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

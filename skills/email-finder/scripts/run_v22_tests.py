@@ -57,7 +57,7 @@ def run_unit_tests() -> list[dict[str, Any]]:
         assert count_rows_missing_om_match([{"lead_id": 1, "name": "A", "company_domain": "x.com"}]) == 0
         assert cc.profiles_have_known_lead_ids([{"id": 1}, {"lead_id": 2}])
         assert not cc.profiles_have_known_lead_ids([{"id": 1}, {"name": "x"}])
-        assert cc._chunk_timeout(200) == 100
+        assert cc._chunk_timeout(200) == 160
         assert cc._chunk_timeout(1000) == 300
         mv = MillionVerifierProvider("x")
         assert callable(getattr(mv, "wait_for_completion", None))

@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.25.11
+version: 1.25.12
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -779,6 +779,8 @@ python3 scripts/pipeline.py update
 6. Relay archive stays on api.outreachmagic.io; `pull` dedupes locally. Use `refresh --yes` for a true rebuild (sync + backup + wipe + `pull --full`). `pull --full` alone only helps after deleting the DB manually.
 7. **Tags:** always pass plain names (`nace`, `vip`) — not JSON list strings like `['nace']`. Run `tag repair` if legacy rows used bracket form.
 8. **`add-lead` on an existing email does not enrich** — use `import-profiles` or rely on relay `pull` for fill-if-empty updates.
+9. **`ModuleNotFoundError: data_freshness`** — broken partial update (v1.25.11); run `pipeline.py update` to **v1.25.12+**.
+10. **Large `import-profiles` batches** — chunked 200 rows; if save times out, re-run with `--file` on your export JSON/CSV.
 
 ## Pull Troubleshooting Runbook
 

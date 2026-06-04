@@ -15,4 +15,9 @@ fi
 python3 "$ROOT/scripts/generate-update-manifest.py"
 git diff --exit-code "$ROOT/skills/outreachmagic/update-manifest.json"
 
+bash "$ROOT/scripts/sync-companion-common.sh" --check
+
+python3 "$ROOT/tests/test_pipeline_import_smoke.py"
+python3 "$ROOT/tests/test_companion_common_sync.py"
+
 echo "Release tag ${TAG} matches VERSION ${FILE_VERSION} and manifest is current."

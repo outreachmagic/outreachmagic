@@ -94,7 +94,9 @@ Resume a crashed batch by re-running the same `batch-find` command (skips comple
 
 ## Troubleshooting
 
-- **CSV has emails, OM empty** — `import-to-om --file {output-base}.csv --workspace W`
+- **`ModuleNotFoundError: data_freshness`** — run `pipeline.py update` (needs outreachmagic **v1.25.12+**).
+- **CSV has emails, OM empty** — batch save failed; `import-to-om --file {output-base}.csv --workspace W`
+- **`import-profiles` timed out** — results are on disk; use `import-to-om` or re-run with smaller batches.
 - **IcyPeas ~10% hit rate** — poll timeout; raise `icypeas_poll_attempts` in config
 - **New leads created** — every row needs `lead_id`
 

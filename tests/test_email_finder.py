@@ -176,6 +176,29 @@ class TestIcypeasFind(unittest.TestCase):
         self.assertEqual(result["email"], "jane@acme.com")
 
 
+class TestValidityMapping(unittest.TestCase):
+    def test_icypeas_probable_is_catch_all(self):
+        self.assertEqual(prov.validity_to_verify_status("probable", provider="icypeas"), "catch_all")
+
+    def test_trykitt_valid_risky_is_catch_all(self):
+        self.assertEqual(prov.validity_to_verify_status("valid-risky", provider="trykitt"), "catch_all")
+
+
+class TestImportProfileLeadId(unittest.TestCase):
+    def test_lead_id_in_profile(self):
+        profile = lemail.build_import_profile(
+            full_name="Jane",
+            company="Acme",
+            domain="acme.com",
+            linkedin="https://linkedin.com/in/jane",
+            find_result={"email": "j@acme.com", "validity": "valid"},
+            normalize_linkedin_fn=lemail._normalize_linkedin,
+            lead_id=42,
+        )
+        self.assertEqual(profile["id"], 42)
+        self.assertEqual(profile["linkedin"], lemail._normalize_linkedin("https://linkedin.com/in/jane"))
+
+
 class TestFallbackOrder(unittest.TestCase):
     @patch.object(prov, "icypeas_find")
     @patch.object(prov, "trykitt_find")
@@ -186,6 +209,20 @@ class TestFallbackOrder(unittest.TestCase):
         result = prov.run_find_with_fallback(cfg, full_name="Jane Doe", domain="acme.com")
         self.assertEqual(result["provider"], "icypeas")
         mock_trykitt.assert_called_once()
+        mock_icypeas.assert_called_once()
+
+    @patch.object(prov, "icypeas_find")
+    @patch.object(prov, "trykitt_find")
+    def test_credit_exhaustion_falls_through(self, mock_trykitt, mock_icypeas):
+        cfg = {"trykitt_enabled": True, "icypeas_enabled": True}
+        mock_trykitt.side_effect = prov.CreditsExhaustedError("trykitt out of credits")
+        mock_icypeas.return_value = {
+            "status": "found",
+            "email": "jane@acme.com",
+            "provider": "icypeas",
+        }
+        result = prov.run_find_with_fallback(cfg, full_name="Jane Doe", domain="acme.com")
+        self.assertEqual(result["provider"], "icypeas")
         mock_icypeas.assert_called_once()
 
     @patch.object(prov, "icypeas_find")

@@ -2082,6 +2082,7 @@ def resolve_lead(
     identities: Optional[list[tuple[str, str]]] = None,
     import_batch: Optional[str] = None,
     import_extra: Optional[dict[str, str]] = None,
+    force_lead_id: Optional[int] = None,
 ) -> dict:
     """Match or create lead by tiered identities (email, external_id, name+company, etc.)."""
     email_norm = normalize_email(email)
@@ -2121,7 +2122,16 @@ def resolve_lead(
     created = True
     match_method: Optional[str] = None
 
-    if by_email and by_li and by_email != by_li and auto_merge and not dry_run:
+    if force_lead_id is not None:
+        row = conn.execute("SELECT id FROM leads WHERE id = ?", (int(force_lead_id),)).fetchone()
+        if not row:
+            if own_conn:
+                conn.close()
+            return {"status": "error", "error": f"lead not found: {force_lead_id}"}
+        lead_id = int(force_lead_id)
+        created = False
+        match_method = "lead_id"
+    elif by_email and by_li and by_email != by_li and auto_merge and not dry_run:
         keep_id, merge_id = _pick_merge_keep_id(conn, by_email, by_li)
         if own_conn:
             conn.close()
@@ -2134,20 +2144,21 @@ def resolve_lead(
         lead_id = keep_id
         created = False
 
-    for itype, val in identities:
-        found = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
-        if found:
-            if lead_id is None:
-                lead_id = found
-                match_method = itype
-                created = False
-            elif lead_id != found and itype in (
-                "email", "linkedin_url", "linkedin_sales_nav_id",
-                "linkedin_member_id", "external_id",
-            ):
-                pass
-            elif lead_id != found:
-                break
+    if force_lead_id is None:
+        for itype, val in identities:
+            found = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
+            if found:
+                if lead_id is None:
+                    lead_id = found
+                    match_method = itype
+                    created = False
+                elif lead_id != found and itype in (
+                    "email", "linkedin_url", "linkedin_sales_nav_id",
+                    "linkedin_member_id", "external_id",
+                ):
+                    pass
+                elif lead_id != found:
+                    break
 
     if lead_id is None:
         created = True
@@ -2524,6 +2535,7 @@ def upsert_lead_profile(
     hq_country: Optional[str] = None,
     import_batch: Optional[str] = None,
     import_extra: Optional[dict[str, str]] = None,
+    force_lead_id: Optional[int] = None,
 ) -> dict:
     """Match or create by tiered identities; enrich profile and company link."""
     extra = dict(import_extra or {})
@@ -2569,6 +2581,7 @@ def upsert_lead_profile(
         identities=idents,
         import_batch=import_batch,
         import_extra=extra,
+        force_lead_id=force_lead_id,
     )
 
 
@@ -2765,6 +2778,13 @@ def import_profiles(
         row_hq_state = extra.get("hq_state")
         row_hq_country = extra.get("hq_country")
 
+        lead_id_hint: Optional[int] = None
+        for key in ("lead_id", "id"):
+            val = raw.get(key)
+            if val is not None and str(val).strip().isdigit():
+                lead_id_hint = int(str(val).strip())
+                break
+
         try:
             result = upsert_lead_profile(
                 profile,
@@ -2782,6 +2802,7 @@ def import_profiles(
                 hq_country=row_hq_country,
                 import_batch=import_batch_id,
                 import_extra=extra,
+                force_lead_id=lead_id_hint,
             )
         except Exception as e:
             summary["errors"].append({"row": i + 1, "email": profile.get("email"), "error": str(e)})

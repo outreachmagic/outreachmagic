@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,9 +14,16 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import companion_common as cc
-from health import run_health_check
+from health import format_health_lines, run_health_check
 from normalize import lead_resume_key, load_people_json, row_fields, sanitize_input_path, validate_domain
-from progress import print_dry_run_box, print_final_summary, print_progress
+from progress import (
+    print_dry_run_box,
+    print_final_summary,
+    print_progress,
+    print_resume_banner,
+    record_api_calls,
+    record_verify_status,
+)
 from providers import (
     CreditsExhaustedError,
     provider_note_text,
@@ -26,8 +34,9 @@ from providers import (
 
 BATCH_CSV_COLUMNS = (
     "resume_key", "lead_id", "name", "domain", "email", "validity",
-    "error", "provider", "credits_used", "status", "timestamp",
+    "error", "provider", "api_calls", "status", "timestamp",
 )
+CREDIT_RECHECK_EVERY = 100
 
 
 @dataclass
@@ -55,6 +64,8 @@ def build_import_profile(
     linkedin: str,
     find_result: dict[str, Any],
     normalize_linkedin_fn: Callable[[str], str],
+    lead_id: Optional[int] = None,
+    external_id: Optional[str] = None,
 ) -> dict[str, Any]:
     email = find_result.get("email")
     attempts = find_result.get("provider_attempts") if isinstance(find_result.get("provider_attempts"), list) else []
@@ -75,6 +86,10 @@ def build_import_profile(
         "company_domain": domain,
         "tags": attempted_tags,
     }
+    if lead_id is not None:
+        profile["id"] = lead_id
+    if external_id:
+        profile["external_id"] = external_id
     if linkedin:
         profile["linkedin"] = normalize_linkedin_fn(linkedin)
     if email:
@@ -99,12 +114,20 @@ def collect_import_profiles(
     rows: list[dict[str, Any]],
     results: list[dict[str, Any]],
     normalize_linkedin_fn: Callable[[str], str],
+    *,
+    lookup_by_index: Optional[dict[int, dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     profiles: list[dict[str, Any]] = []
-    for row, result in zip(rows, results):
+    for i, (row, result) in enumerate(zip(rows, results)):
         if result.get("batch_status") == "skipped":
             continue
-        name, domain, company, linkedin, _lid = row_fields(row)
+        name, domain, company, linkedin, lead_id = row_fields(row)
+        lookup = (lookup_by_index or {}).get(i) if lookup_by_index else None
+        if lead_id is None and lookup and lookup.get("lead_id"):
+            lead_id = int(lookup["lead_id"])
+        if not linkedin and lookup:
+            linkedin = str(lookup.get("linkedin_url") or lookup.get("linkedin") or "")
+        ext = str(row.get("external_id") or row.get("sales_nav_id") or "").strip() or None
         attempts = result.get("provider_attempts") if isinstance(result.get("provider_attempts"), list) else []
         should_tag = any(should_tag_provider_attempt(a) for a in attempts if isinstance(a, dict))
         if not should_tag and not result.get("email"):
@@ -117,6 +140,8 @@ def collect_import_profiles(
                 linkedin=linkedin,
                 find_result=result,
                 normalize_linkedin_fn=normalize_linkedin_fn,
+                lead_id=lead_id,
+                external_id=ext,
             )
         )
     return profiles
@@ -197,10 +222,33 @@ class IncrementalWriter:
         self._load_existing()
 
     def _load_existing(self) -> None:
-        if not os.path.exists(self.csv_path):
+        if os.path.exists(self.json_path):
+            try:
+                data = json.loads(Path(self.json_path).read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    for row in data:
+                        if isinstance(row, dict):
+                            key = (row.get("resume_key") or "").strip()
+                            if key:
+                                self.done_keys.add(key)
+                                self.buffer.append(row)
+            except (json.JSONDecodeError, OSError):
+                pass
+        if self.done_keys or not os.path.exists(self.csv_path):
             return
         with open(self.csv_path, encoding="utf-8", newline="") as fh:
+            first_line = fh.readline()
+            if not first_line.strip().startswith(BATCH_CSV_COLUMNS[0]):
+                recovered = self.csv_path.replace(".csv", "-recovered.csv")
+                try:
+                    os.rename(self.csv_path, recovered)
+                except OSError:
+                    pass
+                return
+            fh.seek(0)
             reader = csv.DictReader(fh)
+            if not reader.fieldnames or BATCH_CSV_COLUMNS[0] not in (reader.fieldnames or []):
+                return
             for row in reader:
                 key = (row.get("resume_key") or "").strip()
                 if key:
@@ -333,16 +381,36 @@ def run_batch(
             continue
         to_process.append((i, row))
 
-    est_credits = len(to_process) * 0.005 * len(provider_names)
+    resume_done = len(writer.done_keys) if writer else 0
+    if resume_done and not opts.dry_run:
+        print_resume_banner(resume_done, len(to_process), len(people))
 
+    api_providers = []
+    for pname in provider_names:
+        key = cfg.get(f"{pname}_api_key") or cfg.get("trykitt_api_key" if pname == "trykitt" else "icypeas_api_key")
+        api_providers.append((pname, str(key or "").strip()))
+
+    health_lines: list[str] = []
     if opts.dry_run:
+        _ok, issues, ok_msgs = run_health_check(
+            cfg,
+            om_dir=om_dir,
+            key_status_fn=key_status_fn,
+            providers=api_providers,
+            batch_size=len(to_process),
+            skip_om=opts.skip_om,
+        )
+        health_lines = format_health_lines(
+            issues, ok_msgs, skip_om=opts.skip_om, om_connected=om_dir is not None,
+        )
         print_dry_run_box(
             to_process=len(to_process),
             skipped_email=skipped_email,
             skipped_tagged=skipped_tagged,
-            estimated_credits=est_credits,
             provider=provider_label,
             workers=min(max(opts.workers, 1), 5),
+            health_lines=health_lines,
+            resume_done=resume_done,
         )
         return {
             "dry_run": True,
@@ -350,11 +418,6 @@ def run_batch(
             "skipped_email": skipped_email,
             "skipped_tagged": skipped_tagged,
         }
-
-    api_providers = []
-    for pname in provider_names:
-        key = cfg.get(f"{pname}_api_key") or cfg.get("trykitt_api_key" if pname == "trykitt" else "icypeas_api_key")
-        api_providers.append((pname, str(key or "").strip()))
 
     ok, issues, ok_msgs = run_health_check(
         cfg,
@@ -373,22 +436,32 @@ def run_batch(
         if not opts.yes:
             return {"error": "health check failed", "issues": issues}
 
-    if to_process and not opts.yes and est_credits > 0:
-        print(f"\nAbout to run {len(to_process)} lookups (~{est_credits:.3f} credits). Pass --yes to confirm.\n")
+    if to_process and not opts.yes:
+        print(f"\nAbout to run {len(to_process)} API lookups ({provider_label}). Pass --yes to confirm.\n")
         return {"error": "confirmation required", "use": "--yes"}
 
-    stats: dict[str, Any] = {"found": 0, "not_found": 0, "errors": 0, "credits_used": 0.0, "skipped": skipped_email + skipped_tagged}
+    stats: dict[str, Any] = {
+        "found": 0,
+        "not_found": 0,
+        "errors": 0,
+        "api_calls": {p: 0 for p in provider_names},
+        "verify": {"valid": 0, "catch_all": 0, "invalid": 0, "unknown": 0},
+        "waterfall": {p: {"calls": 0, "found": 0, "not_found": 0, "errors": 0} for p in provider_names},
+        "skipped": skipped_email + skipped_tagged,
+    }
     results: list[dict[str, Any]] = [{"batch_status": "pending"} for _ in people]
     start = time.time()
     workers = max(1, min(opts.workers, 5))
     done_count = 0
     total_work = len(to_process)
 
+    credits_stop = False
+
     def _work(item: tuple[int, dict[str, Any]]) -> tuple[int, dict[str, Any]]:
         idx, row = item
         if opts.delay > 0 and workers == 1:
             time.sleep(opts.delay)
-        name, domain, company, linkedin, lead_id = row_fields(row)
+        name, domain, _company, linkedin, _lead_id = row_fields(row)
         try:
             result = run_find_with_fallback(
                 cfg,
@@ -398,7 +471,7 @@ def run_batch(
                 provider_names=provider_names,
             )
         except CreditsExhaustedError as e:
-            result = {"status": "error", "error": str(e)}
+            result = {"status": "error", "error": str(e), "provider_attempts": []}
         result["batch_status"] = "processed"
         return idx, result
 
@@ -406,18 +479,27 @@ def run_batch(
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_work, item): item for item in to_process}
             for fut in as_completed(futures):
+                if credits_stop:
+                    fut.cancel()
+                    continue
                 idx, result = fut.result()
                 results[idx] = result
                 done_count += 1
                 _record_result(idx, people[idx], result, writer, stats)
+                if done_count % CREDIT_RECHECK_EVERY == 0:
+                    credits_stop = _mid_batch_credit_stop(cfg, api_providers, provider_names)
                 if done_count % opts.progress_every == 0:
                     print_progress(done_count, total_work, stats, start, provider=provider_label)
     else:
         for item in to_process:
+            if credits_stop:
+                break
             idx, result = _work(item)
             results[idx] = result
             done_count += 1
             _record_result(idx, people[idx], result, writer, stats)
+            if done_count % CREDIT_RECHECK_EVERY == 0:
+                credits_stop = _mid_batch_credit_stop(cfg, api_providers, provider_names)
             if done_count % opts.progress_every == 0:
                 print_progress(done_count, total_work, stats, start, provider=provider_label)
 
@@ -426,8 +508,11 @@ def run_batch(
 
     save_out: dict[str, Any] = {}
     verified = 0
+    import_created = 0
     if om_dir and not opts.no_save and not opts.skip_om:
-        profiles = collect_import_profiles(people, results, normalize_linkedin_fn)
+        profiles = collect_import_profiles(
+            people, results, normalize_linkedin_fn, lookup_by_index=lookup_by_index,
+        )
         if profiles:
             try:
                 import_profiles = strip_profiles_for_import(profiles)
@@ -438,7 +523,14 @@ def run_batch(
                     source_detail="email-finder/batch",
                     skill_dir=skill_dir,
                 )
-                save_out = {"imported": len(import_profiles), "import": imported}
+                import_created = int(imported.get("created") or 0)
+                if import_created:
+                    print(
+                        f"\n⚠️  Warning: import-profiles created {import_created} new lead(s) "
+                        f"(expected 0 — pass lead_id/linkedin in input).\n",
+                        file=sys.stderr,
+                    )
+                save_out = {"imported": len(import_profiles), "import": imported, "created": import_created}
                 verify_items = build_verify_batch(imported, import_profiles)
                 if verify_items:
                     vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=skill_dir)
@@ -455,6 +547,7 @@ def run_batch(
         provider=provider_label,
         imported_count=int(save_out.get("imported") or 0),
         verified_count=verified,
+        import_created=import_created,
     )
 
     return {
@@ -465,6 +558,32 @@ def run_batch(
         "batch_save": save_out,
         "results": results,
     }
+
+
+def _mid_batch_credit_stop(
+    cfg: dict[str, Any],
+    api_providers: list[tuple[str, str]],
+    provider_names: list[str],
+) -> bool:
+    """Return True if all configured find providers are out of credits."""
+    from health import probe_trykitt
+
+    exhausted = 0
+    checked = 0
+    for name, api_key in api_providers:
+        if name not in provider_names or not api_key:
+            continue
+        checked += 1
+        if name == "trykitt":
+            remaining, _lookups, err = probe_trykitt(api_key)
+            if err or remaining <= 0:
+                exhausted += 1
+        elif name == "icypeas":
+            pass
+    if checked and exhausted >= checked:
+        print("\n⚠️  Credits exhausted — stopping batch (partial results saved).\n", file=sys.stderr)
+        return True
+    return False
 
 
 def _record_result(
@@ -478,16 +597,42 @@ def _record_result(
         stats["errors"] += 1
     elif result.get("email"):
         stats["found"] += 1
+        record_verify_status(
+            stats,
+            str(result.get("validity") or ""),
+            str(result.get("provider") or "trykitt"),
+        )
     elif result.get("status") == "skipped":
         pass
     else:
         stats["not_found"] += 1
-    stats["credits_used"] = float(stats.get("credits_used", 0)) + float(result.get("credits_used") or 0)
+    record_api_calls(stats, result)
+    attempts = result.get("provider_attempts") if isinstance(result.get("provider_attempts"), list) else []
+    wf = stats.setdefault("waterfall", {})
+    for att in attempts:
+        if not isinstance(att, dict):
+            continue
+        p = str(att.get("provider") or "")
+        if p not in wf:
+            wf[p] = {"calls": 0, "found": 0, "not_found": 0, "errors": 0}
+        wf[p]["calls"] = int(wf[p].get("calls", 0)) + 1
+        st = str(att.get("status") or "")
+        if st == "found" or (p == str(result.get("provider")) and result.get("email")):
+            wf[p]["found"] = int(wf[p].get("found", 0)) + 1
+        elif st in ("error", "http_error"):
+            wf[p]["errors"] = int(wf[p].get("errors", 0)) + 1
+        elif st == "not_found":
+            wf[p]["not_found"] = int(wf[p].get("not_found", 0)) + 1
 
     if not writer:
         return
     name, domain, _c, _li, lead_id = row_fields(row)
     resume_key = lead_resume_key(row, index=idx)
+    api_n = 1
+    if isinstance(attempts, list):
+        api_n = sum(1 for a in attempts if isinstance(a, dict) and a.get("attempted", True))
+    elif result.get("provider"):
+        api_n = 1
     row_dict = {
         "resume_key": resume_key,
         "lead_id": lead_id or "",
@@ -497,7 +642,7 @@ def _record_result(
         "validity": result.get("validity") or "",
         "error": result.get("error") or "",
         "provider": result.get("provider") or "",
-        "credits_used": result.get("credits_used") or 0,
+        "api_calls": api_n,
         "status": result.get("status") or "",
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }

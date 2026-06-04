@@ -49,12 +49,12 @@ def validity_to_verify_status(validity: str, *, provider: str) -> str:
         if v in ("ultra_sure", "sure", "valid"):
             return "valid"
         if v in ("probable", "risky"):
-            return "risky"
+            return "catch_all"
         return "unknown"
     if v == "valid":
         return "valid"
     if v in ("valid-risky", "risky"):
-        return "risky"
+        return "catch_all"
     if v == "invalid":
         return "invalid"
     return "unknown"
@@ -315,12 +315,13 @@ def run_find_with_fallback(
             else:
                 continue
         except CreditsExhaustedError as e:
-            return {
+            attempts.append({
+                "provider": provider,
                 "status": "error",
                 "error": str(e),
-                "provider": provider,
-                "provider_attempts": attempts,
-            }
+                "attempted": True,
+            })
+            continue
         attempt = {
             "provider": provider,
             "status": res.get("status"),

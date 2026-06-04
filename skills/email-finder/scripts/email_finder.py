@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -47,7 +48,8 @@ from batch_runner import (
     should_tag_provider_attempt,
 )
 from normalize import load_people_json, normalize_linkedin, row_fields, validate_domain
-from progress import print_om_setup_box
+from millionverifier import MillionVerifierProvider, mv_to_om_status
+from progress import print_mv_summary, print_om_setup_box
 from providers import (
     icypeas_find,
     icypeas_poll_result,
@@ -77,6 +79,7 @@ UPDATE_FILES = (
     "scripts/health.py",
     "scripts/providers.py",
     "scripts/batch_runner.py",
+    "scripts/millionverifier.py",
 )
 
 
@@ -104,6 +107,9 @@ def load_config() -> dict[str, Any]:
     icypeas_key = os.environ.get("ICYPEAS_API_KEY", "").strip()
     if icypeas_key:
         cfg["icypeas_api_key"] = icypeas_key
+    mv_key = os.environ.get("MILLIONVERIFIER_API_KEY", "").strip()
+    if mv_key:
+        cfg["millionverifier_api_key"] = mv_key
     if os.environ.get("OUTREACHMAGIC_HOME"):
         cfg["outreachmagic_home"] = os.environ["OUTREACHMAGIC_HOME"]
     cfg.setdefault("trykitt_enabled", True)
@@ -228,6 +234,7 @@ def save_find_result(
     linkedin: str,
     find_result: dict[str, Any],
     workspace: str = "",
+    lead_id: Optional[int] = None,
 ) -> dict[str, Any]:
     email = find_result.get("email")
     if not email:
@@ -239,6 +246,7 @@ def save_find_result(
         linkedin=linkedin,
         find_result=find_result,
         normalize_linkedin_fn=normalize_linkedin,
+        lead_id=lead_id,
     )
     provider = str(find_result.get("provider") or "trykitt")
     imported = batch_import_results(
@@ -310,6 +318,7 @@ def cmd_find(
 ) -> None:
     cfg = load_config()
     om_dir = find_outreachmagic(cfg)
+    existing: dict[str, Any] = {}
     if om_dir:
         existing = check_existing_email(om_dir, name, company or domain, linkedin, workspace=workspace)
         if existing.get("email"):
@@ -320,6 +329,9 @@ def cmd_find(
             }, indent=2))
             return
     result = run_find_with_fallback(cfg, full_name=name, domain=domain, linkedin=linkedin)
+    existing_lead_id = None
+    if om_dir and existing.get("lead_id"):
+        existing_lead_id = int(existing["lead_id"])
     if om_dir and save:
         if result.get("email"):
             result["save"] = save_find_result(
@@ -330,6 +342,7 @@ def cmd_find(
                 linkedin=linkedin,
                 find_result=result,
                 workspace=workspace,
+                lead_id=existing_lead_id,
             )
         else:
             attempts = result.get("provider_attempts") if isinstance(result.get("provider_attempts"), list) else []
@@ -345,6 +358,7 @@ def cmd_find(
                         "provider_attempts": taggable,
                     },
                     normalize_linkedin_fn=normalize_linkedin,
+                    lead_id=existing_lead_id,
                 )
                 tag_result = batch_import_results(
                     om_dir,
@@ -510,6 +524,10 @@ def cmd_prepare_import(csv_path: str, workspace: str = "", output_path: str = ""
                 find_result["email"] = email
             if not name or not domain:
                 continue
+            lead_id_raw = row.get("lead_id") or row.get("id")
+            lead_id_val: Optional[int] = None
+            if lead_id_raw is not None and str(lead_id_raw).strip().isdigit():
+                lead_id_val = int(str(lead_id_raw).strip())
             profile = build_import_profile(
                 full_name=name,
                 company=company,
@@ -517,6 +535,8 @@ def cmd_prepare_import(csv_path: str, workspace: str = "", output_path: str = ""
                 linkedin=linkedin,
                 find_result=find_result,
                 normalize_linkedin_fn=normalize_linkedin,
+                lead_id=lead_id_val,
+                external_id=str(row.get("external_id") or "").strip() or None,
             )
             if workspace:
                 profile["workspace"] = workspace
@@ -550,6 +570,163 @@ def cmd_import_to_om(file_path: str, workspace: str = "") -> None:
         source_detail="email-finder/import-to-om",
     )
     print(json.dumps({"status": "ok", **result}, indent=2))
+
+
+def _mv_provider(cfg: dict[str, Any]) -> MillionVerifierProvider:
+    return MillionVerifierProvider(str(cfg.get("millionverifier_api_key") or ""))
+
+
+def cmd_verify(email: str, workspace: str = "") -> None:
+    cfg = load_config()
+    mv = _mv_provider(cfg)
+    result = mv.verify_single(email)
+    if result.get("status") in ("error", "http_error", "no_key"):
+        print(json.dumps(result, indent=2))
+        sys.exit(1)
+    om_dir = find_outreachmagic(cfg)
+    if om_dir and workspace:
+        try:
+            cc.run_verify_email_batch(
+                om_dir,
+                [{
+                    "email": email,
+                    "status": result.get("status"),
+                    "source": "millionverifier",
+                    "source_detail": "email-finder/verify",
+                }],
+                skill_dir=_find_skill_dir(),
+            )
+            result["saved_to_om"] = True
+        except RuntimeError as e:
+            result["save_error"] = str(e)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_verify_bulk(
+    *,
+    workspace: str = "",
+    file_path: str = "",
+    output_path: str = "",
+    poll: bool = False,
+) -> None:
+    cfg = load_config()
+    mv = _mv_provider(cfg)
+    emails: list[str] = []
+    if file_path:
+        with Path(file_path).open(encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                em = (row.get("email") or row.get("found_email") or "").strip()
+                if em:
+                    emails.append(em)
+    elif workspace:
+        om_dir = find_outreachmagic(cfg)
+        if not om_dir:
+            print(json.dumps({"error": "outreachmagic not found for --workspace export"}))
+            sys.exit(1)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(cc.get_pipeline_path(om_dir)),
+                "export",
+                "--workspace",
+                workspace,
+                "--format",
+                "json",
+                "--limit",
+                "5000",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=cc.subprocess_env(_find_skill_dir()),
+        )
+        if proc.returncode != 0:
+            print(json.dumps({"error": proc.stderr.strip() or "export failed"}))
+            sys.exit(1)
+        data = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        for lead in data.get("leads") or []:
+            em = (lead.get("email") or "").strip()
+            if em:
+                emails.append(em)
+    else:
+        print(json.dumps({"error": "provide --file or --workspace"}))
+        sys.exit(1)
+    emails = list(dict.fromkeys(emails))
+    if not emails:
+        print(json.dumps({"error": "no emails to verify"}))
+        sys.exit(1)
+    created = mv.create_bulk(emails)
+    file_id = str(created.get("file_id") or "")
+    if not file_id:
+        print(json.dumps({"error": "bulk submit failed", "response": created}))
+        sys.exit(1)
+    if output_path:
+        Path(output_path).write_text(file_id + "\n", encoding="utf-8")
+    out: dict[str, Any] = {
+        "status": "submitted",
+        "file_id": file_id,
+        "total_emails": len(emails),
+        "output": output_path or None,
+    }
+    if poll:
+        status = mv.poll_until_complete(file_id)
+        out["poll_status"] = status
+        if str(status.get("status")).lower() == "completed":
+            rows = mv.download_results(file_id)
+            out["results_count"] = len(rows)
+            om_dir = find_outreachmagic(cfg)
+            if om_dir and workspace:
+                verify_items = [
+                    {
+                        "email": (r.get("email") or "").strip(),
+                        "status": mv_to_om_status(str(r.get("status") or "")),
+                        "source": "millionverifier",
+                        "source_detail": "email-finder/verify-bulk",
+                    }
+                    for r in rows
+                    if (r.get("email") or "").strip()
+                ]
+                vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=_find_skill_dir())
+                out["verify"] = vout
+    print(json.dumps(out, indent=2))
+
+
+def cmd_verify_status(file_id: str) -> None:
+    cfg = load_config()
+    print(json.dumps(_mv_provider(cfg).check_status(file_id), indent=2))
+
+
+def cmd_verify_list() -> None:
+    cfg = load_config()
+    files = _mv_provider(cfg).list_files()
+    print(json.dumps({"files": files, "count": len(files)}, indent=2))
+
+
+def cmd_verify_download(file_id: str, workspace: str = "") -> None:
+    cfg = load_config()
+    mv = _mv_provider(cfg)
+    rows = mv.download_results(file_id)
+    verify_items = [
+        {
+            "email": (r.get("email") or "").strip(),
+            "status": mv_to_om_status(str(r.get("status") or r.get("result") or "")),
+            "source": "millionverifier",
+            "source_detail": "email-finder/verify-download",
+        }
+        for r in rows
+        if (r.get("email") or "").strip()
+    ]
+    saved = 0
+    om_dir = find_outreachmagic(cfg)
+    if om_dir and workspace:
+        vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=_find_skill_dir())
+        saved = int(vout.get("recorded") or 0)
+    stats = {"downloaded": len(rows), "saved_to_om": saved}
+    for st in ("valid", "catch_all", "invalid", "unknown"):
+        stats[st] = sum(1 for v in verify_items if v["status"] == st)
+    print_mv_summary(stats, title="MILLIONVERIFIER — VERIFICATION COMPLETE")
+    print(json.dumps({"file_id": file_id, "stats": stats}, indent=2))
 
 
 # ── Back-compat aliases for tests ───────────────────────────────────────────
@@ -778,6 +955,92 @@ def main() -> None:
                 print("Usage: email_finder.py import-to-om --file PATH [--workspace W]")
                 sys.exit(1)
             cmd_import_to_om(file_path, workspace)
+        elif cmd == "verify":
+            email = workspace = ""
+            args = sys.argv[2:]
+            i = 0
+            while i < len(args):
+                if args[i] == "--email" and i + 1 < len(args):
+                    email = args[i + 1]
+                    i += 2
+                elif args[i].startswith("--email="):
+                    email = args[i].split("=", 1)[1]
+                    i += 1
+                elif args[i] == "--workspace" and i + 1 < len(args):
+                    workspace = args[i + 1]
+                    i += 2
+                elif args[i].startswith("--workspace="):
+                    workspace = args[i].split("=", 1)[1]
+                    i += 1
+                else:
+                    i += 1
+            if not email:
+                print("Usage: email_finder.py verify --email ADDR [--workspace W]")
+                sys.exit(1)
+            cmd_verify(email, workspace)
+        elif cmd == "verify-bulk":
+            workspace = file_path = output_path = ""
+            poll = "--poll" in sys.argv
+            args = [a for a in sys.argv[2:] if a != "--poll"]
+            i = 0
+            while i < len(args):
+                if args[i] == "--workspace" and i + 1 < len(args):
+                    workspace = args[i + 1]
+                    i += 2
+                elif args[i].startswith("--workspace="):
+                    workspace = args[i].split("=", 1)[1]
+                    i += 1
+                elif args[i] == "--file" and i + 1 < len(args):
+                    file_path = args[i + 1]
+                    i += 2
+                elif args[i].startswith("--file="):
+                    file_path = args[i].split("=", 1)[1]
+                    i += 1
+                elif args[i] == "--output" and i + 1 < len(args):
+                    output_path = args[i + 1]
+                    i += 2
+                elif args[i].startswith("--output="):
+                    output_path = args[i].split("=", 1)[1]
+                    i += 1
+                else:
+                    i += 1
+            cmd_verify_bulk(workspace=workspace, file_path=file_path, output_path=output_path, poll=poll)
+        elif cmd == "verify-status":
+            file_id = ""
+            args = sys.argv[2:]
+            if args and args[0] == "--file-id" and len(args) > 1:
+                file_id = args[1]
+            elif args and args[0].startswith("--file-id="):
+                file_id = args[0].split("=", 1)[1]
+            if not file_id:
+                print("Usage: email_finder.py verify-status --file-id ID")
+                sys.exit(1)
+            cmd_verify_status(file_id)
+        elif cmd == "verify-list":
+            cmd_verify_list()
+        elif cmd == "verify-download":
+            file_id = workspace = ""
+            args = sys.argv[2:]
+            i = 0
+            while i < len(args):
+                if args[i] == "--file-id" and i + 1 < len(args):
+                    file_id = args[i + 1]
+                    i += 2
+                elif args[i].startswith("--file-id="):
+                    file_id = args[i].split("=", 1)[1]
+                    i += 1
+                elif args[i] == "--workspace" and i + 1 < len(args):
+                    workspace = args[i + 1]
+                    i += 2
+                elif args[i].startswith("--workspace="):
+                    workspace = args[i].split("=", 1)[1]
+                    i += 1
+                else:
+                    i += 1
+            if not file_id or not workspace:
+                print("Usage: email_finder.py verify-download --file-id ID --workspace W")
+                sys.exit(1)
+            cmd_verify_download(file_id, workspace)
         elif cmd == "update":
             check_only = "--check" in sys.argv
             tag = ""

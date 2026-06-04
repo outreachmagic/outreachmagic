@@ -493,6 +493,32 @@ def test_agent_sync_full_payload_roundtrip():
     conn.close()
 
 
+def test_import_profiles_force_lead_id_enriches_existing():
+    _reset_db()
+    s0 = om.import_profiles([{
+        "name": "Lucia Stanković",
+        "company": "ISAB",
+        "company_domain": "isab.berkeley.edu",
+        "linkedin": "https://linkedin.com/in/lucia-stankovic",
+    }], workspace="default")
+    assert s0["created"] == 1
+    lead_id = s0["results"][0]["id"]
+
+    s1 = om.import_profiles([{
+        "id": lead_id,
+        "email": "lucia@berkeley.edu",
+        "tags": "email_found",
+    }], workspace="default")
+    assert s1["created"] == 0
+    assert s1["matched"] == 1
+    assert s1["results"][0]["id"] == lead_id
+
+    conn = om.get_conn()
+    row = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    conn.close()
+    assert row["email"] == "lucia@berkeley.edu"
+
+
 def test_import_profiles_weak_identity_and_entity_key():
     _reset_db()
     row = {

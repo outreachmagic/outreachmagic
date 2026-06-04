@@ -94,3 +94,28 @@ def run_health_check(
             ok_msgs.append(f"{name}: API key configured")
 
     return (len(issues) == 0, issues, ok_msgs)
+
+
+def format_health_lines(
+    issues: list[str],
+    ok_msgs: list[str],
+    *,
+    skip_om: bool = False,
+    om_connected: bool = False,
+) -> list[str]:
+    lines: list[str] = []
+    for msg in ok_msgs:
+        lines.append(f"✅ {msg}")
+    if not skip_om and om_connected and not any("OutreachMagic" in i for i in issues):
+        lines.append("✅ OM connected (will dedup + save)")
+    elif skip_om:
+        lines.append("⚠️  OM skipped (--skip-om)")
+    for issue in issues:
+        lines.append(f"❌ {issue}")
+    disk = check_disk_space()
+    if disk:
+        lines.append(f"❌ {disk}")
+    else:
+        free_mb = shutil.disk_usage("/").free // (1024 * 1024)
+        lines.append(f"✅ Disk: {free_mb}MB free")
+    return lines

@@ -19,12 +19,51 @@ def green(text: str) -> str:
     return _c("32", text)
 
 
-def yellow(text: str) -> str:
-    return _c("33", text)
+def _api_calls_line(stats: dict[str, Any]) -> str:
+    calls = stats.get("api_calls") or {}
+    if not isinstance(calls, dict):
+        return "API calls: 0"
+    total = sum(int(v) for v in calls.values())
+    parts = ", ".join(f"{k}: {int(v)}" for k, v in sorted(calls.items()) if int(v))
+    return f"API calls: {total} total ({parts})" if parts else f"API calls: {total}"
 
 
-def red(text: str) -> str:
-    return _c("31", text)
+def _init_stats(stats: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    base = stats or {}
+    base.setdefault("found", 0)
+    base.setdefault("not_found", 0)
+    base.setdefault("errors", 0)
+    base.setdefault("api_calls", {})
+    base.setdefault("verify", {"valid": 0, "catch_all": 0, "invalid": 0, "unknown": 0})
+    base.setdefault("waterfall", {})
+    return base
+
+
+def record_api_calls(stats: dict[str, Any], result: dict[str, Any]) -> None:
+    _init_stats(stats)
+    calls = stats["api_calls"]
+    attempts = result.get("provider_attempts")
+    if isinstance(attempts, list) and attempts:
+        for att in attempts:
+            if not isinstance(att, dict) or not att.get("attempted", True):
+                continue
+            p = str(att.get("provider") or "")
+            if p:
+                calls[p] = int(calls.get(p, 0)) + 1
+    else:
+        p = str(result.get("provider") or "")
+        if p and result.get("status") not in ("skipped",):
+            calls[p] = int(calls.get(p, 0)) + 1
+
+
+def record_verify_status(stats: dict[str, Any], validity: str, provider: str) -> None:
+    from providers import validity_to_verify_status
+
+    _init_stats(stats)
+    v = stats["verify"]
+    status = validity_to_verify_status(validity, provider=provider)
+    key = status if status in v else "unknown"
+    v[key] = int(v.get(key, 0)) + 1
 
 
 def print_progress(
@@ -36,6 +75,7 @@ def print_progress(
     provider: str = "",
     file=sys.stderr,
 ) -> None:
+    stats = _init_stats(stats)
     elapsed = max(time.time() - start_time, 0.001)
     rate = done / elapsed
     eta = (total - done) / rate if rate > 0 else 0
@@ -46,7 +86,6 @@ def print_progress(
     bar = "█" * filled + "░" * (bar_len - filled)
     elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
     eta_str = f"{int(eta // 60)}m {int(eta % 60)}s" if eta > 0 else "—"
-    credits = float(stats.get("credits_used", 0) or 0)
 
     print(file=file)
     print("═" * 60, file=file)
@@ -54,11 +93,10 @@ def print_progress(
     print("─" * 60, file=file)
     print(f" Found:      {stats.get('found', 0):>5}  ({hit_rate:.1f}% hit rate)  {bar}", file=file)
     print(f" Not found:  {stats.get('not_found', 0):>5}", file=file)
-    err_n = stats.get("errors", 0)
-    print(f" Errors:     {err_n:>5}", file=file)
+    print(f" Errors:     {stats.get('errors', 0):>5}", file=file)
     print("─" * 60, file=file)
+    print(f" {_api_calls_line(stats)}", file=file)
     print(f" Rate:       {rate:.2f}/s  ETA: {eta_str}", file=file)
-    print(f" Credits:    {credits:.3f} used", file=file)
     if provider:
         print(f" Provider:   {provider}", file=file)
     print("═" * 60, file=file)
@@ -73,55 +111,93 @@ def print_final_summary(
     provider: str = "",
     imported_count: int = 0,
     verified_count: int = 0,
+    import_created: int = 0,
     file=sys.stderr,
 ) -> None:
+    stats = _init_stats(stats)
     total = stats.get("found", 0) + stats.get("not_found", 0) + stats.get("errors", 0)
     denom = max(stats.get("found", 0) + stats.get("not_found", 0), 1)
     hit_rate = stats.get("found", 0) / denom * 100
     elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
     speed = total / max(elapsed, 0.001)
-    credits = float(stats.get("credits_used", 0) or 0)
+    verify = stats.get("verify") or {}
+    found_n = stats.get("found", 0)
 
     print(file=file)
-    print("╔" + "═" * 54 + "╗", file=file)
-    print(f"║{'EMAIL FINDER — COMPLETE':^54}║", file=file)
-    print("╠" + "═" * 54 + "╣", file=file)
-    print(f"║  Total processed:  {total:<33}║", file=file)
-    print(f"║  Found:            {stats.get('found', 0):<5} ({hit_rate:.1f}% hit rate){'':>22}║", file=file)
-    print(f"║  Not found:        {stats.get('not_found', 0):<5}{'':>32}║", file=file)
-    print(f"║  Errors:           {stats.get('errors', 0):<5}{'':>32}║", file=file)
-    print(f"║{'':54}║", file=file)
+    print("╔" + "═" * 62 + "╗", file=file)
+    print(f"║{'EMAIL FINDER — COMPLETE':^62}║", file=file)
+    print("╠" + "═" * 62 + "╣", file=file)
+    print(f"║  Total processed:  {total:<44}║", file=file)
+    print(f"║  Found:            {stats.get('found', 0):<5} ({hit_rate:.1f}% hit rate){'':>30}║", file=file)
+    print(f"║  Not found:        {stats.get('not_found', 0):<44}║", file=file)
+    print(f"║  Errors:           {stats.get('errors', 0):<44}║", file=file)
+    print(f"║{'':62}║", file=file)
+    print(f"║  {_api_calls_line(stats):<60}║", file=file)
     if provider:
-        print(f"║  Provider:         {provider:<40}║", file=file)
-    print(f"║  Credits used:     {credits:.3f}{'':>32}║", file=file)
-    print(f"║  Time elapsed:     {elapsed_str:<40}║", file=file)
-    print(f"║  Average speed:    {speed:.2f} leads/s{'':>24}║", file=file)
+        print(f"║  Provider:         {provider:<47}║", file=file)
+    if found_n:
+        print(f"║{'':62}║", file=file)
+        print(f"║  Verification (of found):{'':36}║", file=file)
+        for key in ("valid", "catch_all", "invalid", "unknown"):
+            n = int(verify.get(key, 0))
+            if n:
+                pct = n / found_n * 100
+                print(f"║    {key:<12} {n:>5}  ({pct:.1f}%){'':>28}║", file=file)
+    wf = stats.get("waterfall") or {}
+    if wf and "+" in (provider or ""):
+        print(f"║{'':62}║", file=file)
+        print(f"║  Waterfall:{'':50}║", file=file)
+        for line in _waterfall_lines(wf):
+            print(f"║    {line:<58}║", file=file)
+    print(f"║  Time elapsed:     {elapsed_str:<47}║", file=file)
+    print(f"║  Average speed:    {speed:.2f} leads/s{'':>31}║", file=file)
     if output_base:
-        print(f"║{'':54}║", file=file)
-        print(f"║  CSV saved:        {output_base}.csv{'':>31}║", file=file)
-        print(f"║  JSON saved:       {output_base}.json{'':>31}║", file=file)
+        print(f"║{'':62}║", file=file)
+        print(f"║  CSV saved:        {output_base}.csv{'':>34}║", file=file)
+        print(f"║  JSON saved:       {output_base}.json{'':>33}║", file=file)
     if imported_count:
-        print(f"║  Imported to OM:   {imported_count} leads{'':>24}║", file=file)
+        print(f"║  Imported to OM:   {imported_count} leads{'':>27}║", file=file)
+    if import_created:
+        print(f"║  ⚠ New leads created: {import_created} (expected 0){'':>18}║", file=file)
     if verified_count:
-        print(f"║  Verified:         {verified_count} record(s){'':>24}║", file=file)
-    print("╚" + "═" * 54 + "╝", file=file)
+        print(f"║  Verified:         {verified_count} record(s){'':>27}║", file=file)
+    print("╚" + "═" * 62 + "╝", file=file)
     print(file=file)
+
+
+def _waterfall_lines(wf: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for p, data in sorted(wf.items()):
+        if not isinstance(data, dict):
+            continue
+        calls = int(data.get("calls", 0))
+        found = int(data.get("found", 0))
+        nf = int(data.get("not_found", 0))
+        err = int(data.get("errors", 0))
+        lines.append(f"{p}: {calls} calls, {found} found, {nf} miss, {err} err")
+    return lines
 
 
 def print_om_setup_box(file=sys.stderr) -> None:
     print(file=file)
-    print("╔" + "═" * 54 + "╗", file=file)
-    print(f"║{'OUTREACHMAGIC — NOT CONNECTED':^54}║", file=file)
-    print("╠" + "═" * 54 + "╣", file=file)
-    print("║  OutreachMagic stores leads locally and prevents       ║", file=file)
-    print("║  double-paying for email enrichment.                 ║", file=file)
-    print("║                                                      ║", file=file)
-    print("║  Setup:                                              ║", file=file)
-    print("║    bash install.sh --platform hermes                 ║", file=file)
-    print("║    python3 pipeline.py login                         ║", file=file)
-    print("║                                                      ║", file=file)
-    print("║  Or run with --skip-om (CSV/JSON only, no dedup).    ║", file=file)
-    print("╚" + "═" * 54 + "╝", file=file)
+    print("╔" + "═" * 62 + "╗", file=file)
+    print(f"║{'OUTREACHMAGIC — NOT CONNECTED':^62}║", file=file)
+    print("╠" + "═" * 62 + "╣", file=file)
+    print("║  This tool needs OutreachMagic to check if a lead already has  ║", file=file)
+    print("║  an email — this prevents double-paying for enrichment.        ║", file=file)
+    print("║                                                              ║", file=file)
+    print("║  Tell your AI assistant:                                     ║", file=file)
+    print("║  ┌────────────────────────────────────────────────────────┐  ║", file=file)
+    print("║  │ Install OutreachMagic and set it up, then re-run       │  ║", file=file)
+    print("║  │ email_finder.py batch-find. Install from:              │  ║", file=file)
+    print("║  │ https://github.com/outreachmagic/outreachmagic           │  ║", file=file)
+    print("║  │ 1. Clone or run install.sh --platform hermes             │  ║", file=file)
+    print("║  │ 2. Create account at https://app.outreachmagic.io        │  ║", file=file)
+    print("║  │ 3. Run pipeline.py login to connect                      │  ║", file=file)
+    print("║  │ 4. Re-run batch-find with --workspace and --yes          │  ║", file=file)
+    print("║  └────────────────────────────────────────────────────────┘  ║", file=file)
+    print("║  Or run with --skip-om (CSV/JSON only, no dedup).             ║", file=file)
+    print("╚" + "═" * 62 + "╝", file=file)
     print(file=file)
 
 
@@ -130,21 +206,48 @@ def print_dry_run_box(
     to_process: int,
     skipped_email: int,
     skipped_tagged: int,
-    estimated_credits: float,
     provider: str,
     workers: int,
+    health_lines: Optional[list[str]] = None,
+    resume_done: int = 0,
     file=sys.stderr,
 ) -> None:
     print(file=file)
-    print("╔" + "═" * 54 + "╗", file=file)
-    print(f"║{'EMAIL FINDER — DRY RUN':^54}║", file=file)
-    print("╠" + "═" * 54 + "╣", file=file)
-    print(f"║  New lookups:       {to_process:<33}║", file=file)
-    print(f"║  Skipped (email):    {skipped_email:<33}║", file=file)
-    print(f"║  Skipped (tagged):   {skipped_tagged:<33}║", file=file)
-    print(f"║  Est. credits:      ~{estimated_credits:.3f}{'':>28}║", file=file)
-    print(f"║  Provider:          {provider:<33}║", file=file)
-    print(f"║  Workers:           {workers:<33}║", file=file)
-    print("║  Run without --dry-run to proceed.                   ║", file=file)
-    print("╚" + "═" * 54 + "╝", file=file)
+    print("╔" + "═" * 62 + "╗", file=file)
+    print(f"║{'EMAIL FINDER — DRY RUN':^62}║", file=file)
+    print("╠" + "═" * 62 + "╣", file=file)
+    if resume_done:
+        print(f"║  Resuming: already done {resume_done}, new {to_process}{'':>28}║", file=file)
+    print(f"║  New lookups:       {to_process:<44}║", file=file)
+    print(f"║  Skipped (email):    {skipped_email:<44}║", file=file)
+    print(f"║  Skipped (tagged):   {skipped_tagged:<44}║", file=file)
+    print(f"║  Provider:          {provider:<44}║", file=file)
+    print(f"║  Workers:           {workers:<44}║", file=file)
+    if health_lines:
+        print(f"║{'':62}║", file=file)
+        print(f"║  Health:{'':54}║", file=file)
+        for line in health_lines:
+            print(f"║    {line[:58]:<58}║", file=file)
+    print(f"║  Run without --dry-run to proceed.{'':>28}║", file=file)
+    print("╚" + "═" * 62 + "╝", file=file)
+    print(file=file)
+
+
+def print_resume_banner(done: int, new_count: int, total: int, file=sys.stderr) -> None:
+    print(file=file)
+    print(f"Resuming from previous run:", file=file)
+    print(f"  Already done:  {done} leads (loaded from CSV/JSON)", file=file)
+    print(f"  New:           {new_count} leads", file=file)
+    print(f"  Total:         {total}", file=file)
+    print(file=file)
+
+
+def print_mv_summary(stats: dict[str, Any], *, title: str, file=sys.stderr) -> None:
+    print(file=file)
+    print("╔" + "═" * 62 + "╗", file=file)
+    print(f"║{title:^62}║", file=file)
+    print("╠" + "═" * 62 + "╣", file=file)
+    for key, val in stats.items():
+        print(f"║  {str(key):<20} {str(val):<40}║", file=file)
+    print("╚" + "═" * 62 + "╝", file=file)
     print(file=file)

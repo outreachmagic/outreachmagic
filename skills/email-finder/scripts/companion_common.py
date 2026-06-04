@@ -76,7 +76,11 @@ def load_dotenv_file(path: Path, *, force_api_keys: bool = False) -> None:
             continue
         key, value = parsed
         if force_api_keys and key in _API_KEY_VARS:
-            if value and value.strip() not in ("***", "changeme", "your_key_here"):
+            if (
+                value
+                and value.strip() not in ("***", "changeme", "your_key_here")
+                and _env_value_empty(key)
+            ):
                 os.environ[key] = value
             continue
         if key not in os.environ:

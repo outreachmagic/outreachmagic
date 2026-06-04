@@ -8,7 +8,6 @@ import urllib.request
 from typing import Any, Callable, Optional
 
 TRYKITT_FIND_URL = "https://api.trykitt.ai/job/find_email"
-ICYPEAS_FIND_URL = "https://app.icypeas.com/api/email-search"
 
 
 def check_disk_space(min_mb: int = 100) -> Optional[str]:
@@ -28,22 +27,40 @@ def check_outreachmagic(om_dir: Any, key_status_fn: Callable) -> Optional[str]:
     return None
 
 
-def probe_trykitt(api_key: str, timeout: int = 15) -> tuple[float, int, Optional[str]]:
+def probe_trykitt(
+    api_key: str,
+    timeout: int = 15,
+    *,
+    live_probe: bool = False,
+) -> tuple[float, int, Optional[str]]:
+    """Return (remaining_credits, estimated_lookups, error).
+
+    When live_probe is False (default), only validates the key is present — no API call.
+    Set trykitt_live_health_probe in config.json to true for a live credit check (~1 lookup).
+    """
+    if not api_key or len(api_key.strip()) < 8:
+        return 0.0, 0, "API key not set"
+    if not live_probe:
+        return 1.0, 999999, None
+
     import json
 
     body = json.dumps({"fullName": "Health Check", "domain": "example.com", "realtime": True}).encode()
     req = urllib.request.Request(
         TRYKITT_FIND_URL,
         data=body,
-        headers={"Content-Type": "application/json", "x-api-key": api_key, "User-Agent": "email-finder/2.0"},
+        headers={"Content-Type": "application/json", "x-api-key": api_key, "User-Agent": "email-finder/2.1"},
         method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
         if e.code == 401:
             return 0.0, 0, "invalid API key (401)"
+        if e.code == 500 and "out of credits" in err_body.lower():
+            return 0.0, 0, "out of credits"
         return 0.0, 0, f"HTTP {e.code}"
     except (urllib.error.URLError, TimeoutError) as e:
         return 0.0, 0, str(e)
@@ -52,6 +69,36 @@ def probe_trykitt(api_key: str, timeout: int = 15) -> tuple[float, int, Optional
     job_cost = float(credits.get("jobCredits") or 0.005)
     lookups = int(remaining / job_cost) if job_cost > 0 else 0
     return remaining, lookups, None
+
+
+def count_usable_find_providers(
+    cfg: dict[str, Any],
+    api_providers: list[tuple[str, str]],
+    provider_names: list[str],
+) -> tuple[int, list[str], list[str]]:
+    """Return (usable_count, usable_names, issues)."""
+    live = bool(cfg.get("trykitt_live_health_probe", False))
+    usable: list[str] = []
+    issues: list[str] = []
+    for name, api_key in api_providers:
+        if name not in provider_names:
+            continue
+        if not api_key:
+            issues.append(f"{name}: API key not set")
+            continue
+        if name == "trykitt":
+            remaining, lookups, err = probe_trykitt(api_key, live_probe=live)
+            if err:
+                issues.append(f"trykitt: {err}")
+            elif live and remaining <= 0:
+                issues.append("trykitt: out of credits")
+            else:
+                usable.append(name)
+                if live and lookups < 1:
+                    issues.append("trykitt: out of credits")
+        else:
+            usable.append(name)
+    return len(usable), usable, issues
 
 
 def run_health_check(
@@ -66,6 +113,7 @@ def run_health_check(
     """Return (ok, issues, successes)."""
     issues: list[str] = []
     ok_msgs: list[str] = []
+    live = bool(cfg.get("trykitt_live_health_probe", False))
 
     disk_issue = check_disk_space()
     if disk_issue:
@@ -81,17 +129,23 @@ def run_health_check(
             issues.append(f"{name}: API key not set")
             continue
         if name == "trykitt":
-            remaining, lookups, err = probe_trykitt(api_key)
+            remaining, lookups, err = probe_trykitt(api_key, live_probe=live)
             if err:
                 issues.append(f"trykitt: {err}")
-            elif remaining <= 0:
+            elif live and remaining <= 0:
                 issues.append("trykitt: out of credits")
-            elif lookups < batch_size:
+            elif live and lookups < batch_size:
                 issues.append(f"trykitt: only ~{lookups} lookups left (batch {batch_size})")
-            else:
+            elif live:
                 ok_msgs.append(f"trykitt: {remaining:.3f} credits (~{lookups} lookups)")
+            else:
+                ok_msgs.append("trykitt: API key configured (set trykitt_live_health_probe for live balance)")
         else:
             ok_msgs.append(f"{name}: API key configured")
+
+    usable_n, _usable, _ = count_usable_find_providers(cfg, providers, [p for p, _ in providers])
+    if not usable_n and providers:
+        issues.append("no find providers available")
 
     return (len(issues) == 0, issues, ok_msgs)
 

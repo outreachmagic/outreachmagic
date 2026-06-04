@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas. Checks Outreach
   Magic first to avoid duplicate API spend. Saves email and verification status
   via the outreachmagic skill.
-version: 2.1.1
+version: 2.1.2
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -21,6 +21,10 @@ required_environment_variables:
     prompt: Outreach Magic agent key
     help: Create at https://app.outreachmagic.io/setup/agent (starts with om_agent_)
     required_for: Saving found emails and dedup checks against local SQLite
+  - name: MILLIONVERIFIER_API_KEY
+    prompt: MillionVerifier API key
+    help: Get your key at https://app.millionverifier.com for verify / verify-bulk commands
+    required_for: MillionVerifier email verification (optional)
 metadata:
   hermes:
     tags: [sales, outreach, email, enrichment, leads, trykitt, icypeas, pipeline]
@@ -30,6 +34,8 @@ metadata:
         purpose: Email find + SMTP verify (POST job/find_email with user API key)
       - domain: app.icypeas.com
         purpose: Email find + polling read endpoints (Authorization API key)
+      - domain: api.millionverifier.com
+        purpose: Email verification (single + bulk upload)
       - domain: api.outreachmagic.io
         purpose: Via outreachmagic skill — save profiles via import-profiles locally
 ---

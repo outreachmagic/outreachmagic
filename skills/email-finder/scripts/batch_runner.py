@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import companion_common as cc
-from health import format_health_lines, run_health_check
+from health import count_usable_find_providers, format_health_lines, run_health_check
 from normalize import lead_resume_key, load_people_json, row_fields, sanitize_input_path, validate_domain
 from progress import (
     print_dry_run_box,
@@ -127,6 +127,11 @@ def collect_import_profiles(
             lead_id = int(lookup["lead_id"])
         if not linkedin and lookup:
             linkedin = str(lookup.get("linkedin_url") or lookup.get("linkedin") or "")
+        lookup_domain = (lookup or {}).get("company_domain")
+        if lookup_domain:
+            domain = str(lookup_domain).strip().lower().lstrip("@")
+        if not company and lookup and lookup.get("company"):
+            company = str(lookup.get("company") or "")
         ext = str(row.get("external_id") or row.get("sales_nav_id") or "").strip() or None
         attempts = result.get("provider_attempts") if isinstance(result.get("provider_attempts"), list) else []
         should_tag = any(should_tag_provider_attempt(a) for a in attempts if isinstance(a, dict))
@@ -221,45 +226,65 @@ class IncrementalWriter:
         self._lock = threading.Lock()
         self._load_existing()
 
+    @staticmethod
+    def _normalize_resume_row(row: dict[str, Any]) -> dict[str, Any]:
+        out = dict(row)
+        if "api_calls" not in out and out.get("credits_used") not in (None, ""):
+            out["api_calls"] = out.get("credits_used")
+        return out
+
     def _load_existing(self) -> None:
+        by_key: dict[str, dict[str, Any]] = {}
+
+        def _merge_row(row: dict[str, Any]) -> None:
+            row = self._normalize_resume_row(row)
+            key = (row.get("resume_key") or "").strip()
+            if key:
+                by_key[key] = row
+
         if os.path.exists(self.json_path):
             try:
                 data = json.loads(Path(self.json_path).read_text(encoding="utf-8"))
                 if isinstance(data, list):
                     for row in data:
                         if isinstance(row, dict):
-                            key = (row.get("resume_key") or "").strip()
-                            if key:
-                                self.done_keys.add(key)
-                                self.buffer.append(row)
+                            _merge_row(row)
             except (json.JSONDecodeError, OSError):
                 pass
-        if self.done_keys or not os.path.exists(self.csv_path):
-            return
-        with open(self.csv_path, encoding="utf-8", newline="") as fh:
-            first_line = fh.readline()
-            if not first_line.strip().startswith(BATCH_CSV_COLUMNS[0]):
-                recovered = self.csv_path.replace(".csv", "-recovered.csv")
-                try:
-                    os.rename(self.csv_path, recovered)
-                except OSError:
-                    pass
-                return
-            fh.seek(0)
-            reader = csv.DictReader(fh)
-            if not reader.fieldnames or BATCH_CSV_COLUMNS[0] not in (reader.fieldnames or []):
-                return
-            for row in reader:
-                key = (row.get("resume_key") or "").strip()
-                if key:
-                    self.done_keys.add(key)
-                    self.buffer.append(row)
+
+        if os.path.exists(self.csv_path):
+            with open(self.csv_path, encoding="utf-8", newline="") as fh:
+                first_line = fh.readline()
+                if not first_line.strip().startswith(BATCH_CSV_COLUMNS[0]):
+                    if not by_key:
+                        recovered = self.csv_path.replace(".csv", "-recovered.csv")
+                        try:
+                            os.rename(self.csv_path, recovered)
+                        except OSError:
+                            pass
+                else:
+                    fh.seek(0)
+                    reader = csv.DictReader(fh)
+                    if reader.fieldnames and BATCH_CSV_COLUMNS[0] in reader.fieldnames:
+                        for row in reader:
+                            _merge_row(row)
+
+        self.done_keys = set(by_key.keys())
+        self.buffer = list(by_key.values())
 
     def _open_csv(self):
-        new_file = not self.done_keys
-        fh = open(self.csv_path, "a" if self.done_keys else "w", encoding="utf-8", newline="")
+        need_header = (
+            not os.path.exists(self.csv_path)
+            or os.path.getsize(self.csv_path) == 0
+        )
+        fh = open(
+            self.csv_path,
+            "a" if os.path.exists(self.csv_path) and not need_header else "w",
+            encoding="utf-8",
+            newline="",
+        )
         writer = csv.writer(fh)
-        if new_file:
+        if need_header:
             writer.writerow(BATCH_CSV_COLUMNS)
             fh.flush()
             os.fsync(fh.fileno())
@@ -456,6 +481,7 @@ def run_batch(
     total_work = len(to_process)
 
     credits_stop = False
+    pending_queue: list[tuple[int, dict[str, Any]]] = list(to_process)
 
     def _work(item: tuple[int, dict[str, Any]]) -> tuple[int, dict[str, Any]]:
         idx, row = item
@@ -471,37 +497,44 @@ def run_batch(
                 provider_names=provider_names,
             )
         except CreditsExhaustedError as e:
-            result = {"status": "error", "error": str(e), "provider_attempts": []}
+            result = {
+                "status": "credits_exhausted",
+                "error": str(e),
+                "provider_attempts": [],
+            }
         result["batch_status"] = "processed"
         return idx, result
 
-    if workers > 1:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_work, item): item for item in to_process}
+    def _mark_credit_stop_remaining(queue: list[tuple[int, dict[str, Any]]]) -> None:
+        for idx, _row in queue:
+            results[idx] = {
+                "batch_status": "skipped",
+                "status": "skipped",
+                "reason": "credits_exhausted",
+                "provider_attempts": [],
+            }
+
+    while pending_queue and not credits_stop:
+        chunk = pending_queue[:workers]
+        pending_queue = pending_queue[workers:]
+        with ThreadPoolExecutor(max_workers=len(chunk)) as pool:
+            futures = [pool.submit(_work, item) for item in chunk]
             for fut in as_completed(futures):
-                if credits_stop:
-                    fut.cancel()
-                    continue
                 idx, result = fut.result()
                 results[idx] = result
                 done_count += 1
                 _record_result(idx, people[idx], result, writer, stats)
                 if done_count % CREDIT_RECHECK_EVERY == 0:
-                    credits_stop = _mid_batch_credit_stop(cfg, api_providers, provider_names)
+                    credits_stop = _mid_batch_credit_stop(cfg, api_providers, provider_names, stats)
                 if done_count % opts.progress_every == 0:
                     print_progress(done_count, total_work, stats, start, provider=provider_label)
-    else:
-        for item in to_process:
-            if credits_stop:
-                break
-            idx, result = _work(item)
-            results[idx] = result
-            done_count += 1
-            _record_result(idx, people[idx], result, writer, stats)
-            if done_count % CREDIT_RECHECK_EVERY == 0:
-                credits_stop = _mid_batch_credit_stop(cfg, api_providers, provider_names)
-            if done_count % opts.progress_every == 0:
-                print_progress(done_count, total_work, stats, start, provider=provider_label)
+        if credits_stop:
+            _mark_credit_stop_remaining(pending_queue)
+            pending_queue = []
+            break
+
+    if credits_stop:
+        stats["stopped_reason"] = "credits_exhausted"
 
     if writer:
         writer.finalize()
@@ -564,24 +597,21 @@ def _mid_batch_credit_stop(
     cfg: dict[str, Any],
     api_providers: list[tuple[str, str]],
     provider_names: list[str],
+    stats: Optional[dict[str, Any]] = None,
 ) -> bool:
-    """Return True if all configured find providers are out of credits."""
-    from health import probe_trykitt
+    """Return True when no configured find provider can continue."""
+    live = bool(cfg.get("trykitt_live_health_probe", False))
+    if not live and stats:
+        trykitt_remaining = stats.get("trykitt_remaining_credits")
+        if trykitt_remaining is not None and float(trykitt_remaining) <= 0:
+            if "icypeas" in provider_names and any(
+                p == "icypeas" and k for p, k in api_providers
+            ):
+                return False
 
-    exhausted = 0
-    checked = 0
-    for name, api_key in api_providers:
-        if name not in provider_names or not api_key:
-            continue
-        checked += 1
-        if name == "trykitt":
-            remaining, _lookups, err = probe_trykitt(api_key)
-            if err or remaining <= 0:
-                exhausted += 1
-        elif name == "icypeas":
-            pass
-    if checked and exhausted >= checked:
-        print("\n⚠️  Credits exhausted — stopping batch (partial results saved).\n", file=sys.stderr)
+    usable_n, _usable, _issues = count_usable_find_providers(cfg, api_providers, provider_names)
+    if usable_n == 0:
+        print("\n⚠️  No find providers available — stopping batch (partial results saved).\n", file=sys.stderr)
         return True
     return False
 
@@ -593,7 +623,10 @@ def _record_result(
     writer: Optional[IncrementalWriter],
     stats: dict[str, Any],
 ) -> None:
-    if result.get("error") and result.get("status") == "error":
+    if result.get("status") == "credits_exhausted":
+        stats["errors"] += 1
+        stats["credits_exhausted"] = int(stats.get("credits_exhausted", 0)) + 1
+    elif result.get("error") and result.get("status") == "error":
         stats["errors"] += 1
     elif result.get("email"):
         stats["found"] += 1
@@ -607,21 +640,33 @@ def _record_result(
     else:
         stats["not_found"] += 1
     record_api_calls(stats, result)
+    credits = result.get("credits") if isinstance(result.get("credits"), dict) else {}
+    if not credits and isinstance(result.get("credits_used"), (int, float)):
+        pass
+    if str(result.get("provider") or "") == "trykitt" and isinstance(result.get("credits"), dict):
+        rem = result["credits"].get("remainingCredits")
+        if rem is not None:
+            stats["trykitt_remaining_credits"] = float(rem)
     attempts = result.get("provider_attempts") if isinstance(result.get("provider_attempts"), list) else []
     wf = stats.setdefault("waterfall", {})
+    winning_provider = str(result.get("provider") or "") if result.get("email") else ""
     for att in attempts:
         if not isinstance(att, dict):
             continue
         p = str(att.get("provider") or "")
         if p not in wf:
             wf[p] = {"calls": 0, "found": 0, "not_found": 0, "errors": 0}
+        if not att.get("attempted", True):
+            continue
         wf[p]["calls"] = int(wf[p].get("calls", 0)) + 1
         st = str(att.get("status") or "")
-        if st == "found" or (p == str(result.get("provider")) and result.get("email")):
+        if p == winning_provider and result.get("email"):
             wf[p]["found"] = int(wf[p].get("found", 0)) + 1
-        elif st in ("error", "http_error"):
+        elif st in ("error", "http_error") or (
+            st == "error" and "credit" in str(att.get("error") or "").lower()
+        ):
             wf[p]["errors"] = int(wf[p].get("errors", 0)) + 1
-        elif st == "not_found":
+        elif st == "not_found" or (st == "found" and p != winning_provider):
             wf[p]["not_found"] = int(wf[p].get("not_found", 0)) + 1
 
     if not writer:

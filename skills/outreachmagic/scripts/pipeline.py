@@ -118,6 +118,7 @@ from bounces import (
     verify_email_batch,
     verify_pending,
     verify_status,
+    leads_needing_verification,
 )
 from constants import (
     ATTRIBUTE_INSIGHT_FIELDS,
@@ -1873,6 +1874,7 @@ def batch_lead_lookup(
                     "email": (lead.get("email") or "").strip() or None,
                     "name": lead.get("name"),
                     "company": lead.get("company_display") or lead.get("company"),
+                    "company_domain": (lead.get("email_domain") or "").strip() or None,
                     "linkedin_url": lead.get("linkedin_url"),
                 }
             results.append(entry)
@@ -2131,6 +2133,30 @@ def resolve_lead(
         lead_id = int(force_lead_id)
         created = False
         match_method = "lead_id"
+        if (
+            email_norm
+            and by_email
+            and int(by_email) != lead_id
+            and auto_merge
+            and not dry_run
+        ):
+            keep_id, merge_id = lead_id, int(by_email)
+            if own_conn:
+                conn.close()
+            merge_leads(
+                keep_id, merge_id, reason="force_lead_id_email_conflict",
+                conn=None if own_conn else conn,
+            )
+            if own_conn:
+                conn = get_conn()
+        elif email_norm and by_email and int(by_email) != lead_id and dry_run:
+            if own_conn:
+                conn.close()
+            return {
+                "status": "error",
+                "error": f"email already on lead {by_email}, conflicts with lead_id {lead_id}",
+                "dry_run": True,
+            }
     elif by_email and by_li and by_email != by_li and auto_merge and not dry_run:
         keep_id, merge_id = _pick_merge_keep_id(conn, by_email, by_li)
         if own_conn:
@@ -8561,6 +8587,15 @@ def main():
     verp_p.add_argument("--limit", type=int, default=50)
     verp_p.add_argument("--json", action="store_true")
 
+    vc_p = sub.add_parser(
+        "verification-candidates",
+        help="List workspace leads due for MillionVerifier (or similar) re-check",
+    )
+    vc_p.add_argument("--workspace", required=True)
+    vc_p.add_argument("--max-age", type=int, default=30, dest="max_age")
+    vc_p.add_argument("--skip-mv-days", type=int, default=7, dest="skip_mv_days")
+    vc_p.add_argument("--limit", type=int, default=5000)
+
     bounce_p = sub.add_parser("bounce-list", help="List deduplicated platform bounce records")
     bounce_p.add_argument("--platform", help="Filter by platform (plusvibe, smartlead, etc.)")
     bounce_p.add_argument("--bounce-type", dest="bounce_type", choices=("hard", "soft", "unknown"))
@@ -9464,6 +9499,16 @@ def main():
             print(f"{len(result)} leads pending verification:")
             for r in result:
                 print(f"  [{r['id']}] {r.get('name') or '?'} — {r.get('email') or ''}")
+    elif args.command == "verification-candidates":
+        print(json.dumps(
+            leads_needing_verification(
+                args.workspace,
+                max_age_days=getattr(args, "max_age", 30),
+                skip_mv_days=getattr(args, "skip_mv_days", 7),
+                limit=getattr(args, "limit", 5000),
+            ),
+            indent=2,
+        ))
     elif args.command == "bounce-list":
         rows = list_bounce_events(
             platform=getattr(args, "platform", None),

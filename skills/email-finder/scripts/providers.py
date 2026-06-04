@@ -143,6 +143,8 @@ def trykitt_find(
 
     credits = payload.get("credits") or {}
     job_credits = float(credits.get("jobCredits") or 0)
+    if credits:
+        credits = dict(credits)
     email = (payload.get("email") or "").strip()
     if email == "no-results-found":
         email = ""
@@ -157,6 +159,7 @@ def trykitt_find(
         "domain": domain,
         "full_name": full_name,
         "credits_used": job_credits,
+        "credits": credits,
     }
 
 
@@ -333,8 +336,25 @@ def run_find_with_fallback(
             res["provider_attempts"] = attempts
             return res
     if attempts:
+        credit_errors = [
+            a for a in attempts
+            if isinstance(a, dict)
+            and a.get("status") == "error"
+            and "credit" in str(a.get("error") or "").lower()
+        ]
+        if credit_errors and len(credit_errors) == len(attempts):
+            return {
+                "status": "credits_exhausted",
+                "error": "all providers exhausted credits",
+                "email": None,
+                "validity": None,
+                "provider_attempts": attempts,
+            }
         final = dict(attempts[-1]) if attempts else {}
-        final.setdefault("status", "not_found")
+        if final.get("status") == "error" and not final.get("email"):
+            pass
+        else:
+            final.setdefault("status", "not_found")
         final.setdefault("email", None)
         final.setdefault("validity", None)
         final["provider_attempts"] = attempts

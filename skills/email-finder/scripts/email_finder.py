@@ -608,10 +608,13 @@ def cmd_verify_bulk(
     file_path: str = "",
     output_path: str = "",
     poll: bool = False,
+    max_age_days: int = 30,
+    skip_mv_days: int = 7,
 ) -> None:
     cfg = load_config()
     mv = _mv_provider(cfg)
     emails: list[str] = []
+    candidate_meta: dict[str, Any] = {}
     if file_path:
         with Path(file_path).open(encoding="utf-8", newline="") as fh:
             reader = csv.DictReader(fh)
@@ -622,30 +625,23 @@ def cmd_verify_bulk(
     elif workspace:
         om_dir = find_outreachmagic(cfg)
         if not om_dir:
-            print(json.dumps({"error": "outreachmagic not found for --workspace export"}))
+            print(json.dumps({"error": "outreachmagic not found for --workspace"}))
             sys.exit(1)
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(cc.get_pipeline_path(om_dir)),
-                "export",
-                "--workspace",
+        try:
+            candidate_meta = cc.run_verification_candidates(
+                om_dir,
                 workspace,
-                "--format",
-                "json",
-                "--limit",
-                "5000",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=cc.subprocess_env(_find_skill_dir()),
-        )
-        if proc.returncode != 0:
-            print(json.dumps({"error": proc.stderr.strip() or "export failed"}))
+                max_age_days=max_age_days,
+                skip_mv_days=skip_mv_days,
+                skill_dir=_find_skill_dir(),
+            )
+        except RuntimeError as e:
+            print(json.dumps({"error": str(e)}))
             sys.exit(1)
-        data = json.loads(proc.stdout) if proc.stdout.strip() else {}
-        for lead in data.get("leads") or []:
+        if candidate_meta.get("status") == "error":
+            print(json.dumps(candidate_meta))
+            sys.exit(1)
+        for lead in candidate_meta.get("leads") or []:
             em = (lead.get("email") or "").strip()
             if em:
                 emails.append(em)
@@ -668,6 +664,7 @@ def cmd_verify_bulk(
         "file_id": file_id,
         "total_emails": len(emails),
         "output": output_path or None,
+        "candidates": candidate_meta.get("count") if candidate_meta else None,
     }
     if poll:
         status = mv.poll_until_complete(file_id)
@@ -981,6 +978,8 @@ def main() -> None:
         elif cmd == "verify-bulk":
             workspace = file_path = output_path = ""
             poll = "--poll" in sys.argv
+            max_age = 30
+            skip_mv = 7
             args = [a for a in sys.argv[2:] if a != "--poll"]
             i = 0
             while i < len(args):
@@ -1002,9 +1001,28 @@ def main() -> None:
                 elif args[i].startswith("--output="):
                     output_path = args[i].split("=", 1)[1]
                     i += 1
+                elif args[i] == "--max-age" and i + 1 < len(args):
+                    max_age = int(args[i + 1])
+                    i += 2
+                elif args[i].startswith("--max-age="):
+                    max_age = int(args[i].split("=", 1)[1])
+                    i += 1
+                elif args[i] == "--skip-mv-days" and i + 1 < len(args):
+                    skip_mv = int(args[i + 1])
+                    i += 2
+                elif args[i].startswith("--skip-mv-days="):
+                    skip_mv = int(args[i].split("=", 1)[1])
+                    i += 1
                 else:
                     i += 1
-            cmd_verify_bulk(workspace=workspace, file_path=file_path, output_path=output_path, poll=poll)
+            cmd_verify_bulk(
+                workspace=workspace,
+                file_path=file_path,
+                output_path=output_path,
+                poll=poll,
+                max_age_days=max_age,
+                skip_mv_days=skip_mv,
+            )
         elif cmd == "verify-status":
             file_id = ""
             args = sys.argv[2:]

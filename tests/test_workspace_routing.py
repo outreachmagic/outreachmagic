@@ -493,6 +493,35 @@ def test_agent_sync_full_payload_roundtrip():
     conn.close()
 
 
+def test_import_profiles_force_lead_id_merges_email_conflict():
+    _reset_db()
+    s0 = om.import_profiles([{
+        "name": "Target Lead",
+        "company_domain": "target.com",
+    }], workspace="default")
+    target_id = s0["results"][0]["id"]
+    s1 = om.import_profiles([{
+        "name": "Other Lead",
+        "email": "shared@acme.com",
+        "company_domain": "acme.com",
+    }], workspace="default")
+    other_id = s1["results"][0]["id"]
+    assert other_id != target_id
+
+    s2 = om.import_profiles([{
+        "id": target_id,
+        "email": "shared@acme.com",
+        "tags": "email_found",
+    }], workspace="default")
+    assert s2["matched"] == 1
+    conn = om.get_conn()
+    row = conn.execute("SELECT email FROM leads WHERE id = ?", (target_id,)).fetchone()
+    other = conn.execute("SELECT id FROM leads WHERE id = ?", (other_id,)).fetchone()
+    conn.close()
+    assert row["email"] == "shared@acme.com"
+    assert other is None
+
+
 def test_import_profiles_force_lead_id_enriches_existing():
     _reset_db()
     s0 = om.import_profiles([{

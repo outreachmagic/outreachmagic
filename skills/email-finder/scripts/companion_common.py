@@ -252,6 +252,42 @@ def run_batch_lead_lookup(
     return json.loads(proc.stdout) if proc.stdout.strip() else {}
 
 
+def run_verification_candidates(
+    om_dir: Path,
+    workspace: str,
+    *,
+    max_age_days: int = 30,
+    skip_mv_days: int = 7,
+    limit: int = 5000,
+    timeout: int = 120,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    cmd = [
+        sys.executable,
+        str(get_pipeline_path(om_dir)),
+        "verification-candidates",
+        "--workspace",
+        workspace,
+        "--max-age",
+        str(max_age_days),
+        "--skip-mv-days",
+        str(skip_mv_days),
+        "--limit",
+        str(limit),
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=subprocess_env(skill_dir),
+    )
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        raise RuntimeError(err)
+    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+
+
 def run_verify_email_batch(
     om_dir: Path,
     items: list[dict[str, Any]],

@@ -199,6 +199,49 @@ class TestImportProfileLeadId(unittest.TestCase):
         self.assertEqual(profile["linkedin"], lemail._normalize_linkedin("https://linkedin.com/in/jane"))
 
 
+class TestIncrementalWriterResume(unittest.TestCase):
+    def test_merges_json_and_csv_done_keys(self):
+        import batch_runner as br
+        with tempfile.TemporaryDirectory() as td:
+            base = str(Path(td) / "out")
+            writer = br.IncrementalWriter(base)
+            writer.append({
+                "resume_key": "id:1",
+                "lead_id": "1",
+                "name": "A",
+                "domain": "a.com",
+                "email": "",
+                "validity": "",
+                "error": "",
+                "provider": "",
+                "api_calls": 1,
+                "status": "not_found",
+                "timestamp": "2026-01-01T00:00:00Z",
+            }, "id:1")
+            writer.finalize()
+            with open(f"{base}.csv", "a", encoding="utf-8", newline="") as fh:
+                w = __import__("csv").writer(fh)
+                w.writerow([
+                    "id:2", "2", "B", "b.com", "b@b.com", "valid", "",
+                    "trykitt", 1, "found", "2026-01-02T00:00:00Z",
+                ])
+            writer2 = br.IncrementalWriter(base)
+            self.assertIn("id:1", writer2.done_keys)
+            self.assertIn("id:2", writer2.done_keys)
+            self.assertEqual(len(writer2.done_keys), 2)
+
+
+class TestCreditsExhaustedStatus(unittest.TestCase):
+    @patch.object(prov, "icypeas_find")
+    @patch.object(prov, "trykitt_find")
+    def test_all_providers_credit_errors(self, mock_trykitt, mock_icypeas):
+        cfg = {"trykitt_enabled": True, "icypeas_enabled": True}
+        mock_trykitt.side_effect = prov.CreditsExhaustedError("trykitt out of credits")
+        mock_icypeas.side_effect = prov.CreditsExhaustedError("icypeas out of credits")
+        result = prov.run_find_with_fallback(cfg, full_name="Jane", domain="acme.com")
+        self.assertEqual(result["status"], "credits_exhausted")
+
+
 class TestFallbackOrder(unittest.TestCase):
     @patch.object(prov, "icypeas_find")
     @patch.object(prov, "trykitt_find")

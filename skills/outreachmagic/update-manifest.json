@@ -1,11 +1,11 @@
 {
-  "version": "1.25.3",
+  "version": "1.25.4",
   "files": {
-    "pipeline.py": "134e588a0c96936e37e34e1c0806b7054f65e55f57793edb424715d6b9192318",
+    "pipeline.py": "6267f6e50eaa4f2027f4ff11bf7097f114b5611ff315eaaf63e91dd26a59499a",
     "constants.py": "33c79b260a3f4070d96a466799620d23d8f80fdae516ccde94c1f3a316a28af8",
     "db_conn.py": "9b1fac47e3f07dfeb5f314ffb432ee3a80930af18781e36d5d09864e0ebdf995",
     "formatters.py": "16c07eb4fc75eff106e81f5d6096a7842dad7f1cfcb70d56d8ba81f998038541",
-    "bounces.py": "515f891bf8a257bbf5e8341a53d920082289299ec058e4c9622e3fa5325bb070",
+    "bounces.py": "77ec21392ccda5b9310e1a82abdded31dddc263716e728ede0cd784a50a3ad78",
     "activity_sync.py": "a1d36da5b1b35863ecdff8e366d89601ef622729978b148ee1e1cba0da3a04d2",
     "event_classification.py": "95dd951213fa08f27f871fcfa0717bc9598d9d71d01e687ce90ba20fe3d1e9fe",
     "lead_sync.py": "f24e8f02985c089475fea0ff694ed8ef4da13bf47e19defbfb79044906468aaa",
@@ -24,7 +24,7 @@
     "query_cli.py": "30f799670e26102b312a6115788bd03ce03a972ce1f5c9552da6b6225b1e42d8",
     "schema.py": "3b4544aaa32f60532de2e0a153620ee1a4b8d590e2b45229d8018eacf2b26679",
     "schema_views.py": "0307f3d44c157742dc1092c9914bd9bed2a1684180a73a9afc9dd6f41260ee08",
-    "VERSION": "1a5f864a6e14d1dca220111f059b1362800b34b928dc0fb4063250e3ce97ecdf",
-    "SKILL.md": "1feb57e46ec265327227a44259041515f1e7aeeaa685a02c22116f57c7eb6841"
+    "VERSION": "50e7153c5a6a0b92d206cbcfb7a7e97f7ad179c898fecfd9d9aa72965eff8c76",
+    "SKILL.md": "76a3d325b6c67da88057dd6d2099cb0875538cdce0b062952156a953a8591e4b"
   }
 }

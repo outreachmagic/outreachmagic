@@ -583,3 +583,53 @@ def verify_pending(limit: int = 50) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def leads_needing_verification(
+    workspace: str,
+    *,
+    max_age_days: int = 30,
+    skip_mv_days: int = 7,
+    limit: int = 5000,
+) -> dict:
+    """Leads in a workspace whose emails need (re-)verification for MillionVerifier bulk."""
+    from workspace_routing import resolve_workspace_identity
+
+    conn = get_conn()
+    try:
+        ws_row = resolve_workspace_identity(conn, workspace)
+        if not ws_row:
+            return {"status": "error", "error": f"workspace not found: {workspace}"}
+        ws_id = ws_row["id"]
+        rows = conn.execute(
+            """SELECT l.id AS lead_id, l.email, l.name, l.email_verified_at
+               FROM leads l
+               INNER JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?
+               WHERE l.email IS NOT NULL AND TRIM(l.email) != ''
+                 AND (
+                     l.email_verified_at IS NULL
+                     OR l.email_verified_at < datetime('now', ?)
+                 )
+                 AND l.id NOT IN (
+                     SELECT lead_id FROM lead_email_verification
+                     WHERE source = 'millionverifier'
+                       AND created_at > datetime('now', ?)
+                 )
+               ORDER BY l.updated_at DESC
+               LIMIT ?""",
+            (
+                ws_id,
+                f"-{max_age_days} days",
+                f"-{skip_mv_days} days",
+                limit,
+            ),
+        ).fetchall()
+        leads = [dict(r) for r in rows]
+        return {
+            "status": "ok",
+            "workspace": workspace,
+            "count": len(leads),
+            "leads": leads,
+        }
+    finally:
+        conn.close()

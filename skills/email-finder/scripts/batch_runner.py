@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -604,7 +605,7 @@ def run_batch(
                 batch_source = (opts.provider or "").strip() if opts.provider else ""
                 imported = cc.run_import_profiles(
                     om_dir,
-                    [{k: v for k, v in p.items() if not str(k).startswith("_verify")} for p in import_profiles],
+                    import_profiles,
                     workspace=opts.workspace,
                     source=batch_source,
                     source_detail="email-finder/batch",
@@ -627,19 +628,25 @@ def run_batch(
                     )
                 save_out = {"imported": len(import_profiles), "import": imported, "created": import_created}
                 verify_items = build_verify_batch(imported, import_profiles)
-                if verify_items:
+                if imported.get("mode") == "apply_email_find_results":
+                    verified = int(imported.get("recorded") or 0)
+                elif verify_items:
                     vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=skill_dir)
                     verified = int(vout.get("recorded") or 0)
                     save_out["verify"] = vout
-            except RuntimeError as e:
+            except (RuntimeError, subprocess.TimeoutExpired) as e:
                 save_out = {"error": str(e)}
+                json_hint = f"{output_base}.json" if output_base else "<checkpoint.json>"
+                csv_hint = f"{output_base}.csv" if output_base else "<checkpoint.csv>"
                 print(
-                    "\n❌ Outreach Magic save failed (email finding may have completed).\n"
+                    "\n❌ Outreach Magic save failed (email finding completed; results on disk).\n"
                     f"   {e}\n"
-                    "   CSV/JSON output is on disk. Re-sync with:\n"
-                    f"     python3 scripts/email_finder.py import-to-om --file <profiles.json>"
+                    f"   CSV: {csv_hint}\n"
+                    f"   JSON: {json_hint}\n"
+                    "   Re-sync to OM:\n"
+                    f"     python3 scripts/email_finder.py import-to-om --file {json_hint}"
                     f" --workspace {opts.workspace or 'WORKSPACE'}\n"
-                    "   Or re-run the same batch-find to resume API work and retry OM import.\n",
+                    "   Or re-run batch-find (resume skips completed API rows).\n",
                     file=sys.stderr,
                 )
 

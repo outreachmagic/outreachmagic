@@ -443,6 +443,15 @@ class TestCompanionCommonPipelinePayload(unittest.TestCase):
         self.assertTrue(Path(temp).is_file())
         Path(temp).unlink(missing_ok=True)
 
+    def test_chunk_timeout_defaults(self):
+        self.assertEqual(lemail.cc._chunk_timeout(200), 100)
+        self.assertEqual(lemail.cc._chunk_timeout(100), 50)
+        self.assertEqual(lemail.cc._chunk_timeout(1000), 300)
+
+    def test_profiles_have_known_lead_ids(self):
+        self.assertTrue(lemail.cc.profiles_have_known_lead_ids([{"id": 1}, {"lead_id": 2}]))
+        self.assertFalse(lemail.cc.profiles_have_known_lead_ids([{"id": 1}, {"name": "x"}]))
+
     def test_merge_import_summaries(self):
         merged = lemail.cc._merge_pipeline_summaries([
             {"processed": 100, "matched": 80, "enriched": 50, "created": 0, "results": [{"lead_id": 1}]},

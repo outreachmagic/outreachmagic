@@ -7,12 +7,14 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 # Avoid OS ARG_MAX when passing large JSON to pipeline.py subprocesses.
 JSON_ARG_THRESHOLD = 100_000
 PIPELINE_CHUNK_SIZE = 200
+PIPELINE_FAST_CHUNK_SIZE = 500
 LOOKUP_CHUNK_SIZE = 1000
 
 OUTREACHMAGIC_NAME = "outreachmagic"
@@ -208,8 +210,24 @@ def history_lookup(
     return None
 
 
-def _chunk_timeout(item_count: int, *, per_item: float = 0.3, min_s: int = 30, max_s: int = 180) -> int:
+def _chunk_timeout(
+    item_count: int,
+    *,
+    per_item: float = 0.5,
+    min_s: int = 30,
+    max_s: int = 300,
+) -> int:
     return max(min_s, min(max_s, int(item_count * per_item)))
+
+
+def profiles_have_known_lead_ids(profiles: list[dict]) -> bool:
+    if not profiles:
+        return False
+    for profile in profiles:
+        lid = profile.get("id") if profile.get("id") is not None else profile.get("lead_id")
+        if lid is None or not str(lid).strip().isdigit():
+            return False
+    return True
 
 
 def _append_json_or_file(
@@ -247,6 +265,12 @@ def _run_subprocess_json(
             timeout=timeout,
             env=subprocess_env(skill_dir),
         )
+    except subprocess.TimeoutExpired as e:
+        cmd_name = cmd[2] if len(cmd) > 2 else "pipeline"
+        raise RuntimeError(
+            f"{cmd_name} timed out after {timeout}s"
+            + (f" ({e.cmd[-2]} payload)" if e.cmd and len(e.cmd) > 2 else "")
+        ) from e
     finally:
         if temp_path and os.path.exists(temp_path):
             try:
@@ -296,6 +320,94 @@ def _merge_pipeline_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]
     return merged
 
 
+def _run_apply_email_find_once(
+    om_dir: Path,
+    profiles: list[dict],
+    *,
+    workspace: str,
+    overwrite: bool = False,
+    source: str = "",
+    source_detail: str = "companion",
+    timeout: int = 120,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    cmd = [
+        sys.executable,
+        str(get_pipeline_path(om_dir)),
+        "apply-email-find-results",
+        "--workspace",
+        workspace,
+        "--source-detail",
+        source_detail,
+    ]
+    if source:
+        cmd.extend(["--source", source])
+    if overwrite:
+        cmd.append("--overwrite")
+    cmd, temp_path = _append_json_or_file(cmd, profiles)
+    return _run_subprocess_json(cmd, temp_path=temp_path, timeout=timeout, skill_dir=skill_dir)
+
+
+def run_apply_email_find_results(
+    om_dir: Path,
+    profiles: list[dict],
+    *,
+    workspace: str,
+    overwrite: bool = False,
+    source: str = "",
+    source_detail: str = "companion",
+    timeout: int = 120,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    if not profiles:
+        return {}
+    if len(profiles) <= PIPELINE_FAST_CHUNK_SIZE:
+        chunk_timeout = timeout if timeout != 120 else _chunk_timeout(
+            len(profiles), per_item=0.1, max_s=120,
+        )
+        return _run_apply_email_find_once(
+            om_dir,
+            profiles,
+            workspace=workspace,
+            overwrite=overwrite,
+            source=source,
+            source_detail=source_detail,
+            timeout=chunk_timeout,
+            skill_dir=skill_dir,
+        )
+    summaries: list[dict[str, Any]] = []
+    total_chunks = (len(profiles) + PIPELINE_FAST_CHUNK_SIZE - 1) // PIPELINE_FAST_CHUNK_SIZE
+    for i in range(0, len(profiles), PIPELINE_FAST_CHUNK_SIZE):
+        chunk = profiles[i : i + PIPELINE_FAST_CHUNK_SIZE]
+        chunk_num = i // PIPELINE_FAST_CHUNK_SIZE + 1
+        chunk_timeout = _chunk_timeout(len(chunk), per_item=0.1, max_s=120)
+        print(
+            f"  apply-email-find-results chunk {chunk_num}/{total_chunks} ({len(chunk)} leads)...",
+            flush=True,
+        )
+        t0 = time.monotonic()
+        summaries.append(
+            _run_apply_email_find_once(
+                om_dir,
+                chunk,
+                workspace=workspace,
+                overwrite=overwrite,
+                source=source,
+                source_detail=source_detail,
+                timeout=chunk_timeout,
+                skill_dir=skill_dir,
+            )
+        )
+        last = summaries[-1]
+        elapsed = time.monotonic() - t0
+        print(
+            f"    matched={last.get('matched', 0)} enriched={last.get('enriched', 0)} "
+            f"recorded={last.get('recorded', 0)} ({elapsed:.1f}s)",
+            flush=True,
+        )
+    return _merge_pipeline_summaries(summaries)
+
+
 def _run_import_profiles_once(
     om_dir: Path,
     profiles: list[dict],
@@ -336,6 +448,17 @@ def run_import_profiles(
 ) -> dict[str, Any]:
     if not profiles:
         return {}
+    if workspace and profiles_have_known_lead_ids(profiles):
+        return run_apply_email_find_results(
+            om_dir,
+            profiles,
+            workspace=workspace,
+            overwrite=overwrite,
+            source=source,
+            source_detail=source_detail,
+            timeout=timeout,
+            skill_dir=skill_dir,
+        )
     if len(profiles) <= PIPELINE_CHUNK_SIZE:
         chunk_timeout = timeout if timeout != 120 else _chunk_timeout(len(profiles))
         return _run_import_profiles_once(
@@ -358,6 +481,7 @@ def run_import_profiles(
             f"  import-profiles chunk {chunk_num}/{total_chunks} ({len(chunk)} leads)...",
             flush=True,
         )
+        t0 = time.monotonic()
         summaries.append(
             _run_import_profiles_once(
                 om_dir,
@@ -371,9 +495,10 @@ def run_import_profiles(
             )
         )
         last = summaries[-1]
+        elapsed = time.monotonic() - t0
         print(
             f"    matched={last.get('matched', 0)} enriched={last.get('enriched', 0)} "
-            f"created={last.get('created', 0)}",
+            f"created={last.get('created', 0)} ({elapsed:.1f}s)",
             flush=True,
         )
     return _merge_pipeline_summaries(summaries)

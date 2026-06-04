@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas (waterfall). Checks Outreach Magic
   first to avoid duplicate API spend. Saves email and verification via outreachmagic.
   Optional MillionVerifier for bulk re-check.
-version: 2.2.2
+version: 2.2.3
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -73,7 +73,7 @@ Config overrides in `config.json`: `icypeas_poll_attempts` (default 30), `icypea
 3. **Waterfall** — trykitt then Icypeas when both keys are set.
 4. **Tags** — `trykitt_attempted` / `icypeas_attempted`; `email_found` when saved.
 5. **Batch input** — pass `lead_id` (preferred) or `linkedin` + `company_domain` for OM-matched leads.
-6. **Batch find** — chunked `import-profiles` + `verify-email --batch` at end (200 leads/chunk, temp file when payload >100KB); CSV/JSON saved incrementally (resumable). Saves set `original_source` to the provider (`trykitt` / `icypeas`).
+6. **Batch find** — when every row has `lead_id` and `--workspace`, OM save uses fast `apply-email-find-results` (500 leads/chunk, verification inline). Otherwise chunked `import-profiles` (200/chunk, up to 300s/chunk). Temp file when payload >100KB. CSV/JSON incremental + resumable. `original_source` = provider (`trykitt` / `icypeas`).
 7. **Secrets** — `pipeline.py login` in terminal, not chat.
 8. **IcyPeas batches** — never use 3 workers with zero delay; low hit rate (~10%) often means poll timeout, not list quality.
 9. **Result semantics** — `not_found` = no email; `error` + `icypeas_timeout` = still processing; `rate_limited` = retry with higher `--delay`; `DEBITED_NOT_FOUND` = charged, no email (`icypeas_status` in CSV).
@@ -121,8 +121,8 @@ Re-run the same `batch-find` after a crash to resume from `{output-base}.csv`.
 
 - **CSV/JSON always written** during the run; OM sync is a separate final step.
 - **Success check** — final summary must show `imported` / `verified` counts, not only CSV rows.
-- **`Errno 7` / import timeout** — fixed in v2.2.1+ via temp-file payloads and 200-lead import chunks.
-- **Recovery** — if OM save fails, stderr shows the error; re-run `import-to-om --file` from checkpoint JSON or re-run `batch-find` (resume skips completed rows).
+- **`Errno 7` / import timeout** — v2.2.1+ temp-file payloads; v2.2.3+ fast apply path + 300s/chunk cap on `import-profiles`.
+- **Recovery** — if OM save fails, stderr lists CSV/JSON paths; `import-to-om --file {output-base}.json --workspace W` or re-run `batch-find` (resume skips API rows).
 
 ## Troubleshooting
 

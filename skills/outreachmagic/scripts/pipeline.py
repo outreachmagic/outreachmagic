@@ -2743,6 +2743,242 @@ def _parse_cli_tags(raw: str) -> list[str]:
     return parse_tags_value(raw)
 
 
+def _lead_id_hint_from_raw(raw: dict) -> Optional[int]:
+    for key in ("lead_id", "id"):
+        val = raw.get(key)
+        if val is not None and str(val).strip().isdigit():
+            return int(str(val).strip())
+    return None
+
+
+def import_rows_all_have_lead_id(rows: list[dict]) -> bool:
+    if not rows:
+        return False
+    return all(_lead_id_hint_from_raw(row) is not None for row in rows)
+
+
+def _tags_from_import_row(raw: dict, extra: dict[str, str]) -> list[str]:
+    tags_val = raw.get("tags") if raw.get("tags") is not None else extra.get("tags")
+    if not tags_val:
+        return []
+    if isinstance(tags_val, list):
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in tags_val:
+            norm = normalize_tag(str(item))
+            if norm and norm not in seen:
+                out.append(norm)
+                seen.add(norm)
+        return out
+    return _parse_tags(str(tags_val))
+
+
+def _validity_to_verify_status(validity: str, *, provider: str) -> str:
+    v = (validity or "").strip().lower()
+    prov = (provider or "").strip().lower()
+    if prov == "icypeas":
+        if v in ("ultra_sure", "sure", "valid"):
+            return "valid"
+        if v in ("probable", "risky", "valid-risky"):
+            return "catch_all"
+        return "unknown"
+    if v == "valid":
+        return "valid"
+    if v in ("valid-risky", "risky"):
+        return "catch_all"
+    if v == "invalid":
+        return "invalid"
+    return "unknown"
+
+
+def apply_email_find_results(
+    rows: list[dict],
+    *,
+    workspace: str,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    source: Optional[str] = None,
+    source_detail: Optional[str] = None,
+) -> dict:
+    """Fast batch save when every row has a known lead id (email-finder batch tail)."""
+    default_source = source if source is not None else "email_finder"
+    summary: dict = {
+        "processed": 0,
+        "created": 0,
+        "matched": 0,
+        "enriched": 0,
+        "personalized": 0,
+        "tagged": 0,
+        "recorded": 0,
+        "errors": [],
+        "results": [],
+        "mode": "apply_email_find_results",
+    }
+
+    ws_conn = get_conn()
+    ws_row = resolve_workspace_identity(ws_conn, workspace)
+    if not ws_row:
+        ws_conn.close()
+        summary["errors"].append({"error": f"Workspace not found: {workspace}"})
+        return summary
+    workspace_id = ws_row["id"]
+    ensure_organization(ws_conn)
+
+    if dry_run:
+        for i, raw in enumerate(rows):
+            lid = _lead_id_hint_from_raw(raw)
+            if lid is None:
+                summary["errors"].append({"row": i + 1, "error": "missing lead id"})
+                continue
+            summary["processed"] += 1
+            summary["matched"] += 1
+            summary["results"].append({
+                "lead_id": lid,
+                "id": lid,
+                "status": "matched",
+                "dry_run": True,
+            })
+        ws_conn.close()
+        return summary
+
+    now_ts = datetime.now(timezone.utc).isoformat()
+    ws_tag_pending: list[tuple[int, list[str]]] = []
+    verify_pending: list[dict] = []
+
+    try:
+        for i, raw in enumerate(rows):
+            lid = _lead_id_hint_from_raw(raw)
+            if lid is None:
+                summary["errors"].append({"row": i + 1, "error": "missing lead id"})
+                continue
+            exists = ws_conn.execute("SELECT id FROM leads WHERE id = ?", (lid,)).fetchone()
+            if not exists:
+                summary["errors"].append({"row": i + 1, "lead_id": lid, "error": "lead not found"})
+                continue
+
+            profile = normalize_profile_row(raw)
+            extra = _extract_extra_import_fields(raw)
+            email_norm = normalize_email(profile.get("email"))
+            row_source, row_source_detail = csv_import_source_fields(
+                extra,
+                default_source=default_source,
+                default_source_detail=source_detail,
+            )
+            notes = extra.get("notes")
+
+            sets: list[str] = []
+            params: list = []
+            if email_norm:
+                domain_from_email = email_domain(email_norm)
+                if overwrite:
+                    sets.extend(["email = ?", "email_domain = ?"])
+                    params.extend([email_norm, domain_from_email])
+                else:
+                    sets.extend([
+                        "email = COALESCE(NULLIF(TRIM(email), ''), ?)",
+                        "email_domain = COALESCE(NULLIF(TRIM(email_domain), ''), ?)",
+                    ])
+                    params.extend([email_norm, domain_from_email])
+            if row_source:
+                sets.extend([
+                    "latest_source = ?",
+                    "latest_source_detail = ?",
+                    "latest_source_platform = ?",
+                    "latest_source_at = ?",
+                    "original_source = COALESCE(original_source, ?)",
+                    "original_source_detail = COALESCE(original_source_detail, ?)",
+                    "original_source_platform = COALESCE(original_source_platform, ?)",
+                    "original_source_at = COALESCE(original_source_at, ?)",
+                    "cloud_pending = 1",
+                ])
+                params.extend([
+                    row_source, row_source_detail, "csv", now_ts,
+                    row_source, row_source_detail, "csv", now_ts,
+                ])
+            if notes:
+                if overwrite:
+                    sets.append("notes = ?")
+                    params.append(notes)
+                else:
+                    sets.append(
+                        "notes = CASE WHEN notes IS NULL OR notes = '' THEN ? ELSE notes END",
+                    )
+                    params.append(notes)
+
+            enriched = False
+            if sets:
+                sets.append("updated_at = datetime('now')")
+                params.append(lid)
+                ws_conn.execute(
+                    f"UPDATE leads SET {', '.join(sets)} WHERE id = ?",
+                    params,
+                )
+                enriched = True
+
+            summary["processed"] += 1
+            summary["matched"] += 1
+            if enriched:
+                summary["enriched"] += 1
+            summary["results"].append({
+                "lead_id": lid,
+                "id": lid,
+                "status": "matched",
+                "filled": enriched,
+                "match_method": "lead_id",
+            })
+
+            tags = _tags_from_import_row(raw, extra)
+            if tags:
+                ws_tag_pending.append((lid, tags))
+
+            provider = str(
+                raw.get("_verify_provider") or extra.get("_verify_provider") or row_source or "",
+            ).strip()
+            validity = str(raw.get("_verify_validity") or extra.get("_verify_validity") or "").strip()
+            if email_norm and provider:
+                verify_pending.append({
+                    "lead_id": lid,
+                    "email": email_norm,
+                    "status": _validity_to_verify_status(validity, provider=provider),
+                    "source": provider,
+                    "source_detail": source_detail or "email-finder/batch",
+                })
+
+        for lead_id, tags in ws_tag_pending:
+            upsert_workspace_lead(
+                ws_conn, DEFAULT_ORG_ID, workspace_id, lead_id,
+                status="prospecting",
+            )
+            for tag in tags:
+                tag_id = f"wlt_{workspace_id}_{lead_id}_{hashlib.md5(tag.encode()).hexdigest()[:8]}"
+                ws_conn.execute(
+                    """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
+                       VALUES (?, ?, ?, ?)""",
+                    (tag_id, workspace_id, lead_id, tag),
+                )
+            summary["tagged"] += 1
+
+        for item in verify_pending:
+            out = verify_email(
+                int(item["lead_id"]),
+                item["status"],
+                item["source"],
+                source_detail=item.get("source_detail"),
+                conn=ws_conn,
+                commit=False,
+            )
+            if out.get("status") == "recorded":
+                summary["recorded"] += 1
+            else:
+                summary["errors"].append(out)
+
+        ws_conn.commit()
+    finally:
+        ws_conn.close()
+
+    return summary
+
+
 def import_profiles(
     rows: list[dict],
     *,
@@ -2811,6 +3047,12 @@ def import_profiles(
     if personalize_columns_detected and dry_run:
         summary["personalization_detected"] = personalize_columns_detected
 
+    use_shared_conn = (
+        not dry_run
+        and import_rows_all_have_lead_id(rows)
+    )
+    shared_conn: Optional[sqlite3.Connection] = get_conn() if use_shared_conn else None
+
     for i, raw in enumerate(rows):
         profile = normalize_profile_row(raw)
         extra = _extract_extra_import_fields(raw)
@@ -2834,12 +3076,7 @@ def import_profiles(
         row_hq_state = extra.get("hq_state")
         row_hq_country = extra.get("hq_country")
 
-        lead_id_hint: Optional[int] = None
-        for key in ("lead_id", "id"):
-            val = raw.get(key)
-            if val is not None and str(val).strip().isdigit():
-                lead_id_hint = int(str(val).strip())
-                break
+        lead_id_hint = _lead_id_hint_from_raw(raw)
 
         try:
             result = upsert_lead_profile(
@@ -2859,6 +3096,7 @@ def import_profiles(
                 import_batch=import_batch_id,
                 import_extra=extra,
                 force_lead_id=lead_id_hint,
+                conn=shared_conn,
             )
         except Exception as e:
             summary["errors"].append({"row": i + 1, "email": profile.get("email"), "error": str(e)})
@@ -2922,6 +3160,10 @@ def import_profiles(
 
         if workspace_id:
             ws_pending.append((lead_id, extra))
+
+    if shared_conn is not None:
+        shared_conn.commit()
+        shared_conn.close()
 
     # Batch workspace operations after all leads are resolved (avoids SQLite lock contention)
     if workspace_id and ws_pending:
@@ -8671,6 +8913,18 @@ def main():
         help="Stable batch id for name-only rows (import_key dedupe within batch)",
     )
 
+    aef_p = sub.add_parser(
+        "apply-email-find-results",
+        help="Fast batch save when every row has lead id (email-finder companion)",
+    )
+    aef_p.add_argument("--file", help="Path to .json file")
+    aef_p.add_argument("--json", dest="json_data", help='JSON array string, or "-" for stdin')
+    aef_p.add_argument("--workspace", required=True, help="Workspace slug/ID (required for tags)")
+    aef_p.add_argument("--dry-run", action="store_true")
+    aef_p.add_argument("--overwrite", action="store_true")
+    aef_p.add_argument("--source", dest="source", help="Attribution source (trykitt, icypeas, …)")
+    aef_p.add_argument("--source-detail", dest="source_detail")
+
     tag_p = sub.add_parser("tag", help="Manage workspace-scoped lead tags")
     tag_sub = tag_p.add_subparsers(dest="tag_action")
     tag_add_p = tag_sub.add_parser("add", help="Add a tag to a lead")
@@ -9602,6 +9856,51 @@ def main():
             source=getattr(args, "source", None),
             source_detail=getattr(args, "source_detail", None),
             import_batch_id=getattr(args, "import_batch_id", None),
+        )
+        print(json.dumps(summary, indent=2))
+    elif args.command == "apply-email-find-results":
+        rows: list[dict] = []
+        if args.file and args.json_data:
+            print(json.dumps({"error": "Use --file or --json, not both"}))
+            sys.exit(1)
+        if args.file:
+            try:
+                path = resolve_project_path(args.file, kind="input")
+            except ValueError as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+            if not path.is_file():
+                print(json.dumps({"error": f"File not found: {path}"}))
+                sys.exit(1)
+            try:
+                rows = load_profile_rows_from_file(path)
+            except (json.JSONDecodeError, ValueError) as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+        elif args.json_data:
+            raw = sys.stdin.read() if args.json_data.strip() == "-" else args.json_data
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as e:
+                print(json.dumps({"error": f"Invalid JSON: {e}"}))
+                sys.exit(1)
+            if isinstance(data, list):
+                rows = data
+            elif isinstance(data, dict):
+                rows = [data]
+            else:
+                print(json.dumps({"error": "JSON must be an array of objects or a single object"}))
+                sys.exit(1)
+        else:
+            print(json.dumps({"error": "Provide --file or --json"}))
+            sys.exit(1)
+        summary = apply_email_find_results(
+            rows,
+            workspace=args.workspace,
+            dry_run=args.dry_run,
+            overwrite=args.overwrite,
+            source=getattr(args, "source", None),
+            source_detail=getattr(args, "source_detail", None),
         )
         print(json.dumps(summary, indent=2))
     elif args.command == "tag":

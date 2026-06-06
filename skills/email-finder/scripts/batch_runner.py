@@ -993,9 +993,6 @@ def _record_result(
     else:
         stats["not_found"] += 1
     record_api_calls(stats, result)
-    credits = result.get("credits") if isinstance(result.get("credits"), dict) else {}
-    if not credits and isinstance(result.get("credits_used"), (int, float)):
-        pass
     if str(result.get("provider") or "") == "trykitt" and isinstance(result.get("credits"), dict):
         rem = result["credits"].get("remainingCredits")
         if rem is not None:

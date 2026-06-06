@@ -120,6 +120,56 @@ def print_progress(
     print(file=file)
 
 
+def _import_status_lines(
+    import_status: dict[str, Any],
+    *,
+    output_base: str,
+    verify: dict[str, Any],
+) -> list[str]:
+    reason = str(import_status.get("reason") or "not_attempted")
+    lines: list[str] = []
+    if reason == "success":
+        imported = int(import_status.get("imported_count") or 0)
+        verified = int(import_status.get("verified_count") or 0)
+        valid_n = int(verify.get("valid", 0))
+        catch_n = int(verify.get("catch_all", 0))
+        detail = f"{imported} leads"
+        if valid_n or catch_n:
+            detail = f"{imported} leads ({valid_n} valid, {catch_n} catch_all)"
+        lines.append(f"Imported to OM:  {detail}")
+        if verified:
+            lines.append(f"Verified:        {verified} record(s)")
+        created = int(import_status.get("import_created") or 0)
+        if created:
+            lines.append(f"⚠ New leads created: {created} (expected 0)")
+        source = str(import_status.get("source") or "")
+        if source == "from_checkpoint":
+            lines.append("Source:          checkpoint CSV/JSON")
+    elif reason == "no_save":
+        lines.append("⚠ No import (--no-save); CSV/JSON saved to disk")
+    elif reason == "skip_om":
+        lines.append("⚠ No import (--skip-om); CSV/JSON saved to disk")
+    elif reason == "no_om":
+        lines.append("⚠ No import (OutreachMagic not connected)")
+    elif reason == "no_workspace":
+        lines.append("⚠ No import (--workspace required)")
+    elif reason == "no_profiles":
+        lines.append("⚠ No import performed (0 profiles to save)")
+    elif reason == "failed":
+        err = str(import_status.get("error") or "unknown error")[:48]
+        lines.append(f"⚠ Import failed: {err}")
+    elif reason == "not_attempted":
+        lines.append("⚠ No import performed")
+    else:
+        lines.append(f"⚠ No import ({reason})")
+    hint = str(import_status.get("recovery_hint") or "").strip()
+    if hint and reason in ("no_profiles", "no_workspace", "failed", "not_attempted"):
+        lines.append(f"Recovery:        {hint[:48]}")
+    elif hint and output_base and reason in ("no_profiles", "failed"):
+        lines.append(f"Recovery:        import-to-om --file {output_base}.csv")
+    return lines
+
+
 def print_final_summary(
     stats: dict[str, Any],
     elapsed: float,
@@ -129,6 +179,7 @@ def print_final_summary(
     imported_count: int = 0,
     verified_count: int = 0,
     import_created: int = 0,
+    import_status: Optional[dict[str, Any]] = None,
     file=sys.stderr,
 ) -> None:
     stats = _init_stats(stats)
@@ -177,16 +228,39 @@ def print_final_summary(
             print(f"║    {line:<58}║", file=file)
     print(f"║  Time elapsed:     {elapsed_str:<47}║", file=file)
     print(f"║  Average speed:    {speed:.2f} leads/s{'':>31}║", file=file)
+    skipped_email = int(stats.get("skipped_email", 0))
+    skipped_tagged = int(stats.get("skipped_tagged", 0))
+    skipped_resume = int(stats.get("skipped_resume", 0))
+    skipped_mid = int(stats.get("skipped_mid_batch", 0))
+    if skipped_email or skipped_tagged or skipped_resume or skipped_mid:
+        print(f"║{'':62}║", file=file)
+        print(f"║  SKIPPED{'':54}║", file=file)
+        if skipped_email:
+            print(f"║    Already has email:  {skipped_email:<38}║", file=file)
+        if skipped_tagged:
+            print(f"║    Already attempted:   {skipped_tagged:<37}║", file=file)
+        if skipped_resume:
+            print(f"║    Resume (checkpoint): {skipped_resume:<37}║", file=file)
+        if skipped_mid:
+            print(f"║    Mid-batch (fresh OM): {skipped_mid:<36}║", file=file)
     if output_base:
         print(f"║{'':62}║", file=file)
-        print(f"║  CSV saved:        {output_base}.csv{'':>34}║", file=file)
-        print(f"║  JSON saved:       {output_base}.json{'':>33}║", file=file)
-    if imported_count:
-        print(f"║  Imported to OM:   {imported_count} leads{'':>27}║", file=file)
-    if import_created:
-        print(f"║  ⚠ New leads created: {import_created} (expected 0){'':>18}║", file=file)
-    if verified_count:
-        print(f"║  Verified:         {verified_count} record(s){'':>27}║", file=file)
+        print(f"║  OUTPUT{'':55}║", file=file)
+        print(f"║    CSV:             {output_base}.csv{'':>30}║", file=file)
+        print(f"║    JSON:            {output_base}.json{'':>29}║", file=file)
+    status = import_status or {}
+    if not status and imported_count:
+        status = {
+            "reason": "success",
+            "imported_count": imported_count,
+            "verified_count": verified_count,
+            "import_created": import_created,
+        }
+    if status:
+        print(f"║{'':62}║", file=file)
+        print(f"║  IMPORT{'':55}║", file=file)
+        for line in _import_status_lines(status, output_base=output_base, verify=verify):
+            print(f"║    {line[:58]:<58}║", file=file)
     print("╚" + "═" * 62 + "╝", file=file)
     print(file=file)
 

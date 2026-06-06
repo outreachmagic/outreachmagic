@@ -1,20 +1,20 @@
 {
-  "version": "2.2.7",
+  "version": "2.2.8",
   "files": {
-    "SKILL.md": "5cc0611bd887061de3b841c42b32839cc8ee12881c4d9c7686d06fd8c0151773",
+    "SKILL.md": "4a76204b0ab808d1f3bd805a4218ea2d5fcf99dea466bbfcbce47839901c2a2e",
     "README.md": "0411fd7b8c6efc811c8d11650bdd85d7bfa4180c18c5bf944176352f1a41a8c6",
     "SECURITY.md": "2c6f4ec06edbfae9d656fad4d6526f0989592fe72a7eaa00818c79de106b9bc3",
     "config.example.json": "fe1ab1c08b846c9ec111e94fa361de4e70899f134e4857ca48b014475b526314",
     "default.env": "6b47dd4f42fa3d422a88845b6c6064b8de3d53e05dd829b515f897199968e706",
     ".gitignore": "341c76ab4124d205ea796850984d042aefae420226f5017983fab00e435d746e",
-    "references/email-finding-research.md": "32983e7d357b81feb4d103ab458d6dee5920e6f8455f8891b8215869ec772c6a",
+    "references/email-finding-research.md": "928569b8ea9f4ff322df94b40ab13875e08a213b9cc29e231248791c52805d61",
     "scripts/companion_common.py": "75b8229f6e780ffa3cfc3fd992f64923fea5a36845400ec15208900a38aad346",
-    "scripts/email_finder.py": "3ba2f9426b9a11cf3549b230abb607337411682d2c209bcd840a7f11b93036ca",
+    "scripts/email_finder.py": "cdb8740835ad272dc847e60e43df9dcc6943db302df37e6c024b6634a544db78",
     "scripts/normalize.py": "ef45b6198181f009ffd8a32e1767d0d13a2cadb20da6f1677221fac8fd6a7a84",
-    "scripts/progress.py": "02ec8d7ec724241aed0eeebffa22e8fd06e47dc348e831db1b27211c5ecd6436",
+    "scripts/progress.py": "e262e9c28d216cf9c3175bd0275fd8ca2fe4a5d42e6ec0fec60df5e328634e6d",
     "scripts/health.py": "4a0bf1ffd63e63ce61648fd507ca0ea65a5e255baf0a562e8afffc3541cd0668",
     "scripts/providers.py": "b1b6d82faa1c41e8d21b403ebbad5fd554778374438f17cdc8af6834fa561960",
-    "scripts/batch_runner.py": "7b8c085518babe21b0c24f943da63a26b012457e22bc118aa4af1f77e75106c5",
+    "scripts/batch_runner.py": "a934fd63761cc5b7a16623a9ecd861379ecd649f9f60ea3a2f7bda4a15442e9e",
     "scripts/millionverifier.py": "55ad2a28007be2f6ec8cfd3651771a984510b8f107018ddac46547e7824f81a7"
   }
 }

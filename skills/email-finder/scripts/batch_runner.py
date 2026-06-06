@@ -44,6 +44,7 @@ BATCH_CSV_COLUMNS = (
     "error", "provider", "api_calls", "status", "icypeas_status", "timestamp",
 )
 CREDIT_RECHECK_EVERY = 100
+DEDUP_REFRESH_EVERY = 100
 
 
 @dataclass
@@ -118,6 +119,21 @@ def should_tag_provider_attempt(result: dict[str, Any]) -> bool:
     return result.get("status") in ("found", "not_found")
 
 
+def should_import_result(result: dict[str, Any]) -> bool:
+    """True when a batch row should be saved to OM (found, not_found, or has email)."""
+    if result.get("batch_status") == "skipped":
+        return False
+    if result.get("email"):
+        return True
+    status = str(result.get("status") or "").lower()
+    if status in ("found", "not_found"):
+        return True
+    attempts = result.get("provider_attempts") if isinstance(result.get("provider_attempts"), list) else []
+    if any(should_tag_provider_attempt(a) for a in attempts if isinstance(a, dict)):
+        return True
+    return False
+
+
 def collect_import_profiles(
     rows: list[dict[str, Any]],
     results: list[dict[str, Any]],
@@ -141,9 +157,7 @@ def collect_import_profiles(
         if not company and lookup and lookup.get("company"):
             company = str(lookup.get("company") or "")
         ext = str(row.get("external_id") or row.get("sales_nav_id") or "").strip() or None
-        attempts = result.get("provider_attempts") if isinstance(result.get("provider_attempts"), list) else []
-        should_tag = any(should_tag_provider_attempt(a) for a in attempts if isinstance(a, dict))
-        if not should_tag and not result.get("email"):
+        if not should_import_result(result):
             continue
         profiles.append(
             build_import_profile(
@@ -158,6 +172,27 @@ def collect_import_profiles(
             )
         )
     return profiles
+
+
+def resolve_profiles_for_import(
+    rows: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    normalize_linkedin_fn: Callable[[str], str],
+    *,
+    lookup_by_index: Optional[dict[int, dict[str, Any]]] = None,
+    checkpoint_rows: Optional[list[dict[str, Any]]] = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """Build OM import profiles from in-memory results, falling back to checkpoint rows."""
+    profiles = collect_import_profiles(
+        rows, results, normalize_linkedin_fn, lookup_by_index=lookup_by_index,
+    )
+    if profiles:
+        return profiles, "from_results"
+    if checkpoint_rows:
+        checkpoint_profiles = profiles_from_checkpoint_rows(checkpoint_rows, normalize_linkedin_fn)
+        if checkpoint_profiles:
+            return checkpoint_profiles, "from_checkpoint"
+    return [], "empty"
 
 
 def _is_import_profile_row(row: dict[str, Any]) -> bool:
@@ -264,11 +299,14 @@ def bulk_dedup_map(
     workspace: str,
     skill_dir: Path,
     provider_names: list[str],
-) -> dict[int, dict[str, Any]]:
+    indices: Optional[list[int]] = None,
+) -> tuple[dict[int, dict[str, Any]], bool]:
+    """Return (index → lookup row, lookup_failed). indices maps each people[i] to original row index."""
     items: list[dict[str, Any]] = []
     for i, row in enumerate(people):
         name, domain, _co, linkedin, lead_id = row_fields(row)
-        item: dict[str, Any] = {"index": i}
+        orig_idx = indices[i] if indices is not None else i
+        item: dict[str, Any] = {"index": orig_idx}
         if lead_id is not None:
             item["lead_id"] = lead_id
         elif linkedin:
@@ -277,11 +315,16 @@ def bulk_dedup_map(
             item["name"] = name
         items.append(item)
     if not items:
-        return {}
+        return {}, False
     try:
         payload = cc.run_batch_lead_lookup(om_dir, items, workspace=workspace, skill_dir=skill_dir)
-    except RuntimeError:
-        return {}
+    except RuntimeError as e:
+        print(
+            f"\n⚠️  OM lead lookup failed: {e}\n"
+            "   Dedup disabled — API credits may be wasted on already-resolved leads.\n",
+            file=sys.stderr,
+        )
+        return {}, True
     out: dict[int, dict[str, Any]] = {}
     for entry in payload.get("results") or []:
         if not isinstance(entry, dict):
@@ -290,7 +333,37 @@ def bulk_dedup_map(
         if idx is None:
             continue
         out[int(idx)] = entry
-    return out
+    return out, False
+
+
+def refresh_pending_dedup(
+    om_dir: Path,
+    pending_queue: list[tuple[int, dict[str, Any]]],
+    lookup_by_index: dict[int, dict[str, Any]],
+    *,
+    workspace: str,
+    skill_dir: Path,
+    provider_names: list[str],
+) -> tuple[list[tuple[int, dict[str, Any]]], dict[int, dict[str, Any]], list[tuple[int, dict[str, Any], str]]]:
+    """Re-check OM for pending rows; return (new_queue, updated_lookup, newly_skipped)."""
+    if not pending_queue:
+        return pending_queue, lookup_by_index, []
+    rows = [row for _idx, row in pending_queue]
+    indices = [idx for idx, _row in pending_queue]
+    fresh, _failed = bulk_dedup_map(
+        om_dir, rows, workspace=workspace, skill_dir=skill_dir,
+        provider_names=provider_names, indices=indices,
+    )
+    lookup_by_index = {**lookup_by_index, **fresh}
+    new_queue: list[tuple[int, dict[str, Any]]] = []
+    newly_skipped: list[tuple[int, dict[str, Any], str]] = []
+    for idx, row in pending_queue:
+        reason = skip_reason_from_lookup(lookup_by_index.get(idx), provider_names)
+        if reason:
+            newly_skipped.append((idx, row, reason))
+        else:
+            new_queue.append((idx, row))
+    return new_queue, lookup_by_index, newly_skipped
 
 
 def count_rows_missing_om_match(people: list[dict[str, Any]]) -> int:
@@ -491,14 +564,15 @@ def run_batch(
     )
 
     lookup_by_index: dict[int, dict[str, Any]] = {}
+    dedup_lookup_failed = False
     if om_dir and not opts.skip_om:
-        lookup_by_index = bulk_dedup_map(
+        lookup_by_index, dedup_lookup_failed = bulk_dedup_map(
             om_dir, people, workspace=opts.workspace, skill_dir=skill_dir, provider_names=provider_names,
         )
 
     to_process: list[tuple[int, dict[str, Any]]] = []
     pre_skipped: dict[int, dict[str, Any]] = {}
-    skipped_email = skipped_tagged = 0
+    skipped_email = skipped_tagged = skipped_resume = 0
     for i, row in enumerate(people):
         name, domain, _c, _li, _lid = row_fields(row)
         if not name or not domain:
@@ -528,12 +602,21 @@ def run_batch(
             }
             continue
         if writer and lead_resume_key(row, index=i) in writer.done_keys:
-            skipped_tagged += 1
-            pre_skipped[i] = {
-                "batch_status": "skipped",
-                "status": "skipped",
-                "skip_reason": "resume_done",
-            }
+            resume_reason = skip_reason_from_lookup(lookup_by_index.get(i), provider_names)
+            if resume_reason in ("has_email", "email_found_tag"):
+                skipped_email += 1
+                pre_skipped[i] = {
+                    "batch_status": "skipped",
+                    "status": "skipped",
+                    "skip_reason": resume_reason,
+                }
+            else:
+                skipped_resume += 1
+                pre_skipped[i] = {
+                    "batch_status": "skipped",
+                    "status": "skipped",
+                    "skip_reason": "resume_done",
+                }
             continue
         to_process.append((i, row))
 
@@ -581,6 +664,7 @@ def run_batch(
             "to_process": len(to_process),
             "skipped_email": skipped_email,
             "skipped_tagged": skipped_tagged,
+            "skipped_resume": skipped_resume,
         }
 
     ok, issues, ok_msgs = run_health_check(
@@ -605,6 +689,7 @@ def run_batch(
         print(f"\nAbout to run {len(to_process)} API lookups ({provider_label}). Pass --yes to confirm.\n")
         return {"error": "confirmation required", "use": "--yes"}
 
+    skipped_mid_batch = 0
     stats: dict[str, Any] = {
         "found": 0,
         "not_found": 0,
@@ -614,7 +699,12 @@ def run_batch(
         "api_calls": {p: 0 for p in provider_names},
         "verify": {"valid": 0, "catch_all": 0, "invalid": 0, "unknown": 0},
         "waterfall": {p: {"calls": 0, "found": 0, "not_found": 0, "errors": 0} for p in provider_names},
-        "skipped": skipped_email + skipped_tagged,
+        "skipped": skipped_email + skipped_tagged + skipped_resume,
+        "skipped_email": skipped_email,
+        "skipped_tagged": skipped_tagged,
+        "skipped_resume": skipped_resume,
+        "skipped_mid_batch": 0,
+        "dedup_lookup_failed": dedup_lookup_failed,
     }
     request_delay = provider_request_delay_seconds(cfg, provider_names, cli_delay=opts.delay)
     results: list[dict[str, Any]] = [
@@ -671,6 +761,34 @@ def run_batch(
                 _record_result(idx, people[idx], result, writer, stats)
                 if done_count % CREDIT_RECHECK_EVERY == 0:
                     credits_stop = _mid_batch_credit_stop(cfg, api_providers, provider_names, stats)
+                if (
+                    om_dir
+                    and not opts.skip_om
+                    and pending_queue
+                    and done_count % DEDUP_REFRESH_EVERY == 0
+                ):
+                    pending_queue, lookup_by_index, fresh_skips = refresh_pending_dedup(
+                        om_dir,
+                        pending_queue,
+                        lookup_by_index,
+                        workspace=opts.workspace,
+                        skill_dir=skill_dir,
+                        provider_names=provider_names,
+                    )
+                    for idx, row, reason in fresh_skips:
+                        results[idx] = {
+                            "batch_status": "skipped",
+                            "status": "skipped",
+                            "skip_reason": reason,
+                            "provider_attempts": [],
+                        }
+                        skipped_mid_batch += 1
+                        if reason in ("has_email", "email_found_tag"):
+                            stats["skipped_email"] = int(stats.get("skipped_email", 0)) + 1
+                        else:
+                            stats["skipped_tagged"] = int(stats.get("skipped_tagged", 0)) + 1
+                        stats["skipped"] = int(stats.get("skipped", 0)) + 1
+                    stats["skipped_mid_batch"] = skipped_mid_batch
                 if done_count % opts.progress_every == 0:
                     print_progress(done_count, total_work, stats, start, provider=provider_label)
         if credits_stop:
@@ -685,82 +803,146 @@ def run_batch(
         writer.finalize()
 
     save_out: dict[str, Any] = {}
+    import_status: dict[str, Any] = {"reason": "not_attempted"}
     verified = 0
     import_created = 0
-    if om_dir and not opts.no_save and not opts.skip_om:
-        profiles = collect_import_profiles(
-            people, results, normalize_linkedin_fn, lookup_by_index=lookup_by_index,
+    csv_hint = f"{output_base}.csv" if output_base else "<checkpoint.csv>"
+    json_hint = f"{output_base}.json" if output_base else "<checkpoint.json>"
+
+    if opts.no_save:
+        import_status = {"reason": "no_save", "recovery_hint": ""}
+    elif opts.skip_om:
+        import_status = {"reason": "skip_om", "recovery_hint": ""}
+    elif not om_dir:
+        import_status = {"reason": "no_om", "recovery_hint": ""}
+    else:
+        checkpoint_rows = writer.buffer if writer else None
+        profiles, profile_source = resolve_profiles_for_import(
+            people,
+            results,
+            normalize_linkedin_fn,
+            lookup_by_index=lookup_by_index,
+            checkpoint_rows=checkpoint_rows,
         )
-        if profiles:
-            if not opts.workspace:
-                save_out = {"error": "workspace required for OM save (--workspace)"}
-                print(
-                    "\n❌ Outreach Magic save skipped: --workspace is required.\n"
-                    "   Email results are in CSV/JSON on disk.\n",
-                    file=sys.stderr,
+        if not profiles:
+            import_status = {
+                "reason": "no_profiles",
+                "recovery_hint": (
+                    f"python3 scripts/email_finder.py import-to-om --file {csv_hint}"
+                    f" --workspace {opts.workspace or 'WORKSPACE'}"
+                ),
+            }
+            print(
+                f"\n⚠️  0 profiles to import — skipping OM save "
+                f"(results on disk: {csv_hint})\n",
+                file=sys.stderr,
+            )
+        elif not opts.workspace:
+            save_out = {"error": "workspace required for OM save (--workspace)"}
+            import_status = {
+                "reason": "no_workspace",
+                "error": save_out["error"],
+                "recovery_hint": (
+                    f"python3 scripts/email_finder.py import-to-om --file {csv_hint}"
+                    f" --workspace WORKSPACE"
+                ),
+            }
+            print(
+                "\n❌ Outreach Magic save skipped: --workspace is required.\n"
+                "   Email results are in CSV/JSON on disk.\n",
+                file=sys.stderr,
+            )
+        else:
+            import_status = {"reason": "pending", "source": profile_source}
+            print(
+                f"\n  Importing {len(profiles)} profile(s) to workspace {opts.workspace}"
+                f" ({profile_source})...",
+                flush=True,
+            )
+            try:
+                batch_source = (opts.provider or "").strip() if opts.provider else ""
+                imported = cc.save_email_find_profiles(
+                    om_dir,
+                    profiles,
+                    workspace=opts.workspace,
+                    source=batch_source,
+                    source_detail="email-finder/batch",
+                    skill_dir=skill_dir,
                 )
-            else:
-                try:
-                    batch_source = (opts.provider or "").strip() if opts.provider else ""
-                    imported = cc.save_email_find_profiles(
-                        om_dir,
-                        profiles,
-                        workspace=opts.workspace,
-                        source=batch_source,
-                        source_detail="email-finder/batch",
-                        skill_dir=skill_dir,
+                import_created = int(imported.get("created") or 0)
+                if import_created:
+                    new_ids = [
+                        str(r.get("lead_id") or r.get("id"))
+                        for r in (imported.get("results") or [])
+                        if isinstance(r, dict) and r.get("created")
+                    ]
+                    id_hint = f" ids: {', '.join(new_ids[:5])}" if new_ids else ""
+                    if len(new_ids) > 5:
+                        id_hint += f" (+{len(new_ids) - 5} more)"
+                    print(
+                        f"\n⚠️  Warning: OM import created {import_created} new lead(s) "
+                        f"(expected 0 — pass lead_id on every row).{id_hint}\n",
+                        file=sys.stderr,
                     )
-                    import_created = int(imported.get("created") or 0)
-                    if import_created:
-                        new_ids = [
-                            str(r.get("lead_id") or r.get("id"))
-                            for r in (imported.get("results") or [])
-                            if isinstance(r, dict) and r.get("created")
-                        ]
-                        id_hint = f" ids: {', '.join(new_ids[:5])}" if new_ids else ""
-                        if len(new_ids) > 5:
-                            id_hint += f" (+{len(new_ids) - 5} more)"
-                        print(
-                            f"\n⚠️  Warning: OM import created {import_created} new lead(s) "
-                            f"(expected 0 — pass lead_id on every row).{id_hint}\n",
-                            file=sys.stderr,
-                        )
-                    save_out = {"imported": len(profiles), "import": imported, "created": import_created}
-                    if imported.get("mode") == "apply_email_find_results":
-                        verified = int(imported.get("recorded") or 0)
-                    else:
-                        verify_items = build_verify_batch(imported, profiles)
-                        if verify_items:
-                            vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=skill_dir)
-                            verified = int(vout.get("recorded") or 0)
-                            save_out["verify"] = vout
-                except Exception as e:
-                    save_out = {"error": str(e), "imported": 0}
-                    json_hint = f"{output_base}.json" if output_base else "<checkpoint.json>"
-                    csv_hint = f"{output_base}.csv" if output_base else "<checkpoint.csv>"
-                    cc.print_import_failure_recovery(
-                        e,
-                        skill="email-finder/batch-find",
-                        data_paths=[csv_hint, json_hint],
-                        recovery_lines=[
-                            "Re-sync to OM:",
-                            f"python3 scripts/email_finder.py import-to-om --file {csv_hint}"
-                            f" --workspace {opts.workspace}",
-                            f"python3 scripts/email_finder.py import-to-om --file {json_hint}"
-                            f" --workspace {opts.workspace}",
-                            "Or re-run batch-find (resume skips completed API rows).",
-                        ],
-                    )
+                save_out = {"imported": len(profiles), "import": imported, "created": import_created}
+                if imported.get("mode") == "apply_email_find_results":
+                    verified = int(imported.get("recorded") or 0)
+                else:
+                    verify_items = build_verify_batch(imported, profiles)
+                    if verify_items:
+                        vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=skill_dir)
+                        verified = int(vout.get("recorded") or 0)
+                        save_out["verify"] = vout
+                print(
+                    f"  Imported: {len(profiles)} profile(s), verified {verified} record(s)",
+                    flush=True,
+                )
+                import_status = {
+                    "reason": "success",
+                    "source": profile_source,
+                    "imported_count": len(profiles),
+                    "verified_count": verified,
+                    "import_created": import_created,
+                }
+            except Exception as e:
+                save_out = {"error": str(e), "imported": 0}
+                import_status = {
+                    "reason": "failed",
+                    "error": str(e),
+                    "source": profile_source,
+                    "recovery_hint": (
+                        f"python3 scripts/email_finder.py import-to-om --file {csv_hint}"
+                        f" --workspace {opts.workspace}"
+                    ),
+                }
+                cc.print_import_failure_recovery(
+                    e,
+                    skill="email-finder/batch-find",
+                    data_paths=[csv_hint, json_hint],
+                    recovery_lines=[
+                        "Re-sync to OM:",
+                        f"python3 scripts/email_finder.py import-to-om --file {csv_hint}"
+                        f" --workspace {opts.workspace}",
+                        f"python3 scripts/email_finder.py import-to-om --file {json_hint}"
+                        f" --workspace {opts.workspace}",
+                        "Or re-run batch-find (resume skips completed API rows).",
+                    ],
+                )
 
     elapsed = time.time() - start
+    if import_status.get("reason") == "not_attempted" and save_out.get("imported"):
+        import_status = {
+            "reason": "success",
+            "imported_count": int(save_out.get("imported") or 0),
+            "verified_count": verified,
+            "import_created": import_created,
+        }
     print_final_summary(
         stats,
         elapsed,
         output_base,
         provider=provider_label,
-        imported_count=int(save_out.get("imported") or 0),
-        verified_count=verified,
-        import_created=import_created,
+        import_status=import_status,
     )
 
     return {

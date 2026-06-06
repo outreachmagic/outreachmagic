@@ -22,23 +22,25 @@ spec.loader.exec_module(lemail)
 import normalize as norm  # noqa: E402
 import providers as prov  # noqa: E402
 
+from providers import provider_note_text  # noqa: E402
+
 
 class TestValidityNotes(unittest.TestCase):
     def test_valid(self):
         self.assertEqual(
-            lemail._validity_note_text("valid", found=True),
+            provider_note_text("trykitt", "valid", found=True),
             "trykitt verify: valid",
         )
 
     def test_catch_all(self):
         self.assertEqual(
-            lemail._validity_note_text("valid-risky", found=True),
+            provider_note_text("trykitt", "valid-risky", found=True),
             "trykitt verify: catch_all",
         )
 
     def test_not_found(self):
         self.assertEqual(
-            lemail._validity_note_text("", found=False),
+            provider_note_text("trykitt", "", found=False),
             "trykitt: no email found",
         )
 
@@ -63,7 +65,7 @@ class TestBuildImportProfile(unittest.TestCase):
             domain="acme.com",
             linkedin="",
             find_result={"email": "j@acme.com", "validity": "valid"},
-            normalize_linkedin_fn=lemail._normalize_linkedin,
+            normalize_linkedin_fn=norm.normalize_linkedin,
         )
         self.assertEqual(profile["tags"], ["trykitt_attempted", "email_found"])
         self.assertEqual(profile["notes"], "trykitt verify: valid")
@@ -75,7 +77,7 @@ class TestBuildImportProfile(unittest.TestCase):
             domain="acme.com",
             linkedin="",
             find_result={},
-            normalize_linkedin_fn=lemail._normalize_linkedin,
+            normalize_linkedin_fn=norm.normalize_linkedin,
         )
         self.assertEqual(profile["tags"], ["trykitt_attempted"])
         self.assertNotIn("email", profile)
@@ -87,7 +89,7 @@ class TestBuildImportProfile(unittest.TestCase):
             domain="acme.com",
             linkedin="",
             find_result={"email": "j@acme.com", "validity": "ultra_sure", "provider": "icypeas"},
-            normalize_linkedin_fn=lemail._normalize_linkedin,
+            normalize_linkedin_fn=norm.normalize_linkedin,
         )
         self.assertEqual(profile["tags"], ["icypeas_attempted", "email_found"])
         self.assertEqual(profile["notes"], "icypeas certainty: ultra_sure")
@@ -197,11 +199,11 @@ class TestImportProfileLeadId(unittest.TestCase):
             domain="acme.com",
             linkedin="https://linkedin.com/in/jane",
             find_result={"email": "j@acme.com", "validity": "valid"},
-            normalize_linkedin_fn=lemail._normalize_linkedin,
+            normalize_linkedin_fn=norm.normalize_linkedin,
             lead_id=42,
         )
         self.assertEqual(profile["id"], 42)
-        self.assertEqual(profile["linkedin"], lemail._normalize_linkedin("https://linkedin.com/in/jane"))
+        self.assertEqual(profile["linkedin"], norm.normalize_linkedin("https://linkedin.com/in/jane"))
 
 
 class TestIncrementalWriterResume(unittest.TestCase):
@@ -317,7 +319,7 @@ class TestBatchPreSkipped(unittest.TestCase):
                     Path("/tmp/om"),
                     opts,
                     skill_dir=lemail._find_skill_dir(),
-                    normalize_linkedin_fn=lemail._normalize_linkedin,
+                    normalize_linkedin_fn=norm.normalize_linkedin,
                     key_status_fn=lemail.cc.outreachmagic_agent_key_status,
                 )
         self.assertEqual(result["stats"]["skipped"], 1)
@@ -396,7 +398,7 @@ class TestBatchRun(unittest.TestCase):
                     om,
                     opts,
                     skill_dir=lemail._find_skill_dir(),
-                    normalize_linkedin_fn=lemail._normalize_linkedin,
+                    normalize_linkedin_fn=norm.normalize_linkedin,
                     key_status_fn=lemail.cc.outreachmagic_agent_key_status,
                 )
                 mock_import.assert_called_once()
@@ -584,6 +586,218 @@ class TestTagOnMiss(unittest.TestCase):
         self.assertEqual(mock_import.call_args.kwargs.get("source"), "trykitt")
         profiles = mock_import.call_args[0][1]
         self.assertEqual(profiles[0]["tags"], ["trykitt_attempted"])
+
+
+class TestImportProfileCollection(unittest.TestCase):
+    def test_should_import_not_found_without_attempts_list(self):
+        from batch_runner import collect_import_profiles, should_import_result
+
+        result = {"batch_status": "processed", "status": "not_found", "provider": "trykitt"}
+        self.assertTrue(should_import_result(result))
+        profiles = collect_import_profiles(
+            [{"lead_id": 1, "name": "A", "domain": "acme.com"}],
+            [result],
+            norm.normalize_linkedin,
+        )
+        self.assertEqual(len(profiles), 1)
+        self.assertIn("trykitt_attempted", profiles[0]["tags"])
+
+    def test_resolve_profiles_falls_back_to_checkpoint(self):
+        from batch_runner import resolve_profiles_for_import
+
+        checkpoint = [{
+            "lead_id": "5",
+            "name": "Jane",
+            "domain": "acme.com",
+            "email": "jane@acme.com",
+            "status": "found",
+            "provider": "trykitt",
+            "validity": "valid",
+        }]
+        skipped = {"batch_status": "skipped", "status": "skipped", "skip_reason": "resume_done"}
+        profiles, source = resolve_profiles_for_import(
+            [{"lead_id": 5, "name": "Jane", "domain": "acme.com"}],
+            [skipped],
+            norm.normalize_linkedin,
+            checkpoint_rows=checkpoint,
+        )
+        self.assertEqual(source, "from_checkpoint")
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0]["email"], "jane@acme.com")
+
+    def test_bulk_dedup_map_reports_lookup_failure(self):
+        from batch_runner import bulk_dedup_map
+
+        with patch.object(lemail.cc, "run_batch_lead_lookup", side_effect=RuntimeError("timeout")):
+            out, failed = bulk_dedup_map(
+                Path("/tmp/om"),
+                [{"lead_id": 1, "name": "A", "domain": "acme.com"}],
+                workspace="ws",
+                skill_dir=lemail._find_skill_dir(),
+                provider_names=["trykitt"],
+            )
+        self.assertEqual(out, {})
+        self.assertTrue(failed)
+
+
+class TestResumeImport(unittest.TestCase):
+    @patch.object(lemail.cc, "save_email_find_profiles")
+    @patch.object(lemail.cc, "run_batch_lead_lookup")
+    @patch("batch_runner.run_find_with_fallback")
+    def test_resume_run_imports_from_checkpoint(self, mock_find, mock_lookup, mock_save):
+        import batch_runner as br
+
+        mock_lookup.return_value = {"results": [{"index": 0, "status": "not_found"}]}
+        mock_save.return_value = {"mode": "apply_email_find_results", "recorded": 1, "results": [{"lead_id": 1}]}
+        om = Path("/tmp/om")
+        with tempfile.TemporaryDirectory() as td:
+            inp = Path(td) / "batch.json"
+            inp.write_text(json.dumps([{"lead_id": 1, "name": "A", "domain": "acme.com"}]))
+            out_base = str(Path(td) / "out")
+            checkpoint_csv = Path(f"{out_base}.csv")
+            checkpoint_csv.write_text(
+                "resume_key,lead_id,name,domain,email,validity,error,provider,api_calls,status,icypeas_status,timestamp\n"
+                "id:1,1,A,acme.com,a@acme.com,valid,,trykitt,1,found,,2020-01-01T00:00:00Z\n"
+            )
+            opts = lemail.BatchOptions(
+                yes=True, skip_om=False, workspace="ws1", output_base=out_base, workers=1, delay=0,
+            )
+            cfg = {
+                "max_people_per_run": 500,
+                "trykitt_enabled": True,
+                "icypeas_enabled": False,
+                "trykitt_api_key": "testkey1234567890123456789012",
+            }
+            with patch.object(lemail, "find_outreachmagic", return_value=om), patch.object(
+                br, "run_health_check", return_value=(True, [], []),
+            ):
+                result = br.run_batch(
+                    str(inp),
+                    cfg,
+                    om,
+                    opts,
+                    skill_dir=lemail._find_skill_dir(),
+                    normalize_linkedin_fn=norm.normalize_linkedin,
+                    key_status_fn=lemail.cc.outreachmagic_agent_key_status,
+                )
+        mock_find.assert_not_called()
+        mock_save.assert_called_once()
+        profiles = mock_save.call_args[0][1]
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0]["email"], "a@acme.com")
+        self.assertEqual(result["processed"], 0)
+
+    @patch.object(lemail.cc, "save_email_find_profiles")
+    @patch.object(lemail.cc, "run_batch_lead_lookup")
+    @patch("batch_runner.run_find_with_fallback")
+    def test_batch_imports_found_and_not_found(self, mock_find, mock_lookup, mock_save):
+        import batch_runner as br
+
+        mock_lookup.return_value = {
+            "results": [
+                {"index": 0, "status": "not_found"},
+                {"index": 1, "status": "not_found"},
+            ],
+        }
+        mock_find.side_effect = [
+            {"status": "found", "email": "a@acme.com", "validity": "valid", "provider": "trykitt"},
+            {"status": "not_found", "provider": "trykitt"},
+        ]
+        mock_save.return_value = {"mode": "apply_email_find_results", "recorded": 1, "results": []}
+        om = Path("/tmp/om")
+        with tempfile.TemporaryDirectory() as td:
+            inp = Path(td) / "batch.json"
+            inp.write_text(json.dumps([
+                {"lead_id": 1, "name": "A", "domain": "acme.com"},
+                {"lead_id": 2, "name": "B", "domain": "acme.com"},
+            ]))
+            out_base = str(Path(td) / "out")
+            opts = lemail.BatchOptions(
+                yes=True, skip_om=False, workspace="ws1", output_base=out_base, workers=1, delay=0,
+            )
+            cfg = {
+                "max_people_per_run": 500,
+                "trykitt_enabled": True,
+                "icypeas_enabled": False,
+                "trykitt_api_key": "testkey1234567890123456789012",
+            }
+            with patch.object(lemail, "find_outreachmagic", return_value=om), patch.object(
+                br, "run_health_check", return_value=(True, [], []),
+            ):
+                br.run_batch(
+                    str(inp), cfg, om, opts,
+                    skill_dir=lemail._find_skill_dir(),
+                    normalize_linkedin_fn=norm.normalize_linkedin,
+                    key_status_fn=lemail.cc.outreachmagic_agent_key_status,
+                )
+        profiles = mock_save.call_args[0][1]
+        self.assertEqual(len(profiles), 2)
+        self.assertEqual(profiles[0]["email"], "a@acme.com")
+        self.assertIn("trykitt_attempted", profiles[1]["tags"])
+        self.assertNotIn("email_found", profiles[1]["tags"])
+
+
+class TestImportSummaryOutput(unittest.TestCase):
+    def test_final_summary_always_shows_import_section(self):
+        from progress import print_final_summary
+        import io
+
+        buf = io.StringIO()
+        print_final_summary(
+            {"found": 1, "not_found": 0, "errors": 0, "skipped_email": 2},
+            10.0,
+            "/tmp/out",
+            import_status={"reason": "no_profiles", "recovery_hint": "import-to-om ..."},
+            file=buf,
+        )
+        text = buf.getvalue()
+        self.assertIn("IMPORT", text)
+        self.assertIn("No import performed", text)
+        self.assertIn("SKIPPED", text)
+        self.assertIn("Already has email", text)
+
+    def test_no_save_shows_import_skipped(self):
+        from progress import print_final_summary
+        import io
+
+        buf = io.StringIO()
+        print_final_summary(
+            {"found": 0, "not_found": 0, "errors": 0},
+            1.0,
+            "",
+            import_status={"reason": "no_save"},
+            file=buf,
+        )
+        self.assertIn("no-save", buf.getvalue())
+
+
+class TestMidBatchDedup(unittest.TestCase):
+    def test_refresh_pending_skips_resolved_leads(self):
+        from batch_runner import refresh_pending_dedup
+
+        pending = [(0, {"lead_id": 1, "name": "A", "domain": "acme.com"})]
+        lookup: dict = {}
+        with patch.object(lemail.cc, "run_batch_lead_lookup") as mock_lookup:
+            mock_lookup.return_value = {
+                "results": [{
+                    "index": 0,
+                    "status": "found",
+                    "email": "exists@acme.com",
+                    "tags": [],
+                }],
+            }
+            new_q, updated, skipped = refresh_pending_dedup(
+                Path("/tmp/om"),
+                pending,
+                lookup,
+                workspace="ws",
+                skill_dir=lemail._find_skill_dir(),
+                provider_names=["trykitt"],
+            )
+        self.assertEqual(new_q, [])
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0][2], "has_email")
+        self.assertIn(0, updated)
 
 
 if __name__ == "__main__":

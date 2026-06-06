@@ -176,9 +176,6 @@ def print_final_summary(
     output_base: str,
     *,
     provider: str = "",
-    imported_count: int = 0,
-    verified_count: int = 0,
-    import_created: int = 0,
     import_status: Optional[dict[str, Any]] = None,
     file=sys.stderr,
 ) -> None:
@@ -231,8 +228,8 @@ def print_final_summary(
     skipped_email = int(stats.get("skipped_email", 0))
     skipped_tagged = int(stats.get("skipped_tagged", 0))
     skipped_resume = int(stats.get("skipped_resume", 0))
-    skipped_mid = int(stats.get("skipped_mid_batch", 0))
-    if skipped_email or skipped_tagged or skipped_resume or skipped_mid:
+    skipped_fresh = int(stats.get("skipped_fresh_om", 0))
+    if skipped_email or skipped_tagged or skipped_resume or skipped_fresh:
         print(f"║{'':62}║", file=file)
         print(f"║  SKIPPED{'':54}║", file=file)
         if skipped_email:
@@ -241,21 +238,14 @@ def print_final_summary(
             print(f"║    Already attempted:   {skipped_tagged:<37}║", file=file)
         if skipped_resume:
             print(f"║    Resume (checkpoint): {skipped_resume:<37}║", file=file)
-        if skipped_mid:
-            print(f"║    Mid-batch (fresh OM): {skipped_mid:<36}║", file=file)
+        if skipped_fresh:
+            print(f"║    Fresh OM (pre-API):  {skipped_fresh:<37}║", file=file)
     if output_base:
         print(f"║{'':62}║", file=file)
         print(f"║  OUTPUT{'':55}║", file=file)
         print(f"║    CSV:             {output_base}.csv{'':>30}║", file=file)
         print(f"║    JSON:            {output_base}.json{'':>29}║", file=file)
     status = import_status or {}
-    if not status and imported_count:
-        status = {
-            "reason": "success",
-            "imported_count": imported_count,
-            "verified_count": verified_count,
-            "import_created": import_created,
-        }
     if status:
         print(f"║{'':62}║", file=file)
         print(f"║  IMPORT{'':55}║", file=file)

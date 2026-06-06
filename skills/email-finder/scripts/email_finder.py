@@ -669,19 +669,6 @@ def cmd_verify_download(file_id: str, workspace: str = "") -> None:
     print(json.dumps({"file_id": file_id, "stats": stats}, indent=2))
 
 
-# ── Back-compat aliases for tests ───────────────────────────────────────────
-
-_normalize_linkedin = normalize_linkedin
-_row_fields = row_fields
-_load_people_json = load_people_json
-_validity_note_text = lambda validity, found=True: provider_note_text("trykitt", validity, found=found)
-_should_tag_provider_attempt = should_tag_provider_attempt
-_icypeas_poll_result = icypeas_poll_result
-_enabled_providers = resolve_provider_names
-_cfg_bool = lambda cfg, key, default=False: bool(cfg.get(key, default))
-_split_name = lambda full_name: __import__("providers", fromlist=["split_name"]).split_name(full_name)
-
-
 def _fetch_url(url: str) -> bytes:
     req = urllib.request.Request(
         url,

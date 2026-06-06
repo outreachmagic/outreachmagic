@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas (waterfall). Checks Outreach Magic
   first to avoid duplicate API spend. Saves email and verification via outreachmagic.
   Optional MillionVerifier for bulk re-check.
-version: 2.2.8
+version: 2.2.9
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -65,8 +65,9 @@ Find work emails when you have **name + company domain**. **trykitt** first, **I
 3. Waterfall: trykitt → Icypeas when both keys set.
 4. Tags: `trykitt_attempted` / `icypeas_attempted`; `email_found` when saved.
 5. Batch: `lead_id` on every row; `--workspace` required for OM save.
-6. `batch-find` writes `{output-base}.csv` / `.json` incrementally, then saves to OM (`apply-email-find-results` when all rows have `lead_id`).
-7. COMPLETE box always shows **IMPORT** status. If import was skipped or failed, run `import-to-om` with the checkpoint file.
+6. `batch-find` re-checks OM immediately before each API call (skips leads resolved since batch start).
+7. `batch-find` writes `{output-base}.csv` / `.json` incrementally, then saves to OM (`apply-email-find-results` when all rows have `lead_id`).
+8. COMPLETE box always shows **IMPORT** status. If import was skipped or failed, run `import-to-om` with the checkpoint file.
 
 ## Batch input
 

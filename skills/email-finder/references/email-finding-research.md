@@ -64,7 +64,7 @@ curl -s -X POST https://api.trykitt.ai/job/find_email \
 
 - Throttles at **~10 concurrent** requests → HTTP 500 with message like
   `"free tier API is busy"`.
-- **Batch workaround:** sleep **8+ seconds** between requests for 50+ leads,
+- **Large batches:** sleep **8+ seconds** between requests for 50+ leads,
   or contact trykitt for higher concurrency.
 - `/credit` may show `0` while requests still process.
 

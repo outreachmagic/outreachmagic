@@ -44,7 +44,6 @@ BATCH_CSV_COLUMNS = (
     "error", "provider", "api_calls", "status", "icypeas_status", "timestamp",
 )
 CREDIT_RECHECK_EVERY = 100
-DEDUP_REFRESH_EVERY = 100
 
 
 @dataclass
@@ -336,34 +335,44 @@ def bulk_dedup_map(
     return out, False
 
 
-def refresh_pending_dedup(
+def skip_resolved_before_api(
     om_dir: Path,
-    pending_queue: list[tuple[int, dict[str, Any]]],
+    chunk: list[tuple[int, dict[str, Any]]],
     lookup_by_index: dict[int, dict[str, Any]],
     *,
     workspace: str,
     skill_dir: Path,
     provider_names: list[str],
 ) -> tuple[list[tuple[int, dict[str, Any]]], dict[int, dict[str, Any]], list[tuple[int, dict[str, Any], str]]]:
-    """Re-check OM for pending rows; return (new_queue, updated_lookup, newly_skipped)."""
-    if not pending_queue:
-        return pending_queue, lookup_by_index, []
-    rows = [row for _idx, row in pending_queue]
-    indices = [idx for idx, _row in pending_queue]
+    """Fresh OM lookup immediately before API calls; return (api_chunk, lookup, skipped)."""
+    if not chunk:
+        return chunk, lookup_by_index, []
+    rows = [row for _idx, row in chunk]
+    indices = [idx for idx, _row in chunk]
     fresh, _failed = bulk_dedup_map(
         om_dir, rows, workspace=workspace, skill_dir=skill_dir,
         provider_names=provider_names, indices=indices,
     )
     lookup_by_index = {**lookup_by_index, **fresh}
-    new_queue: list[tuple[int, dict[str, Any]]] = []
-    newly_skipped: list[tuple[int, dict[str, Any], str]] = []
-    for idx, row in pending_queue:
+    api_chunk: list[tuple[int, dict[str, Any]]] = []
+    skipped: list[tuple[int, dict[str, Any], str]] = []
+    for idx, row in chunk:
         reason = skip_reason_from_lookup(lookup_by_index.get(idx), provider_names)
         if reason:
-            newly_skipped.append((idx, row, reason))
+            skipped.append((idx, row, reason))
         else:
-            new_queue.append((idx, row))
-    return new_queue, lookup_by_index, newly_skipped
+            api_chunk.append((idx, row))
+    return api_chunk, lookup_by_index, skipped
+
+
+def _record_om_skip(stats: dict[str, Any], reason: str, *, fresh: bool = False) -> None:
+    if reason in ("has_email", "email_found_tag"):
+        stats["skipped_email"] = int(stats.get("skipped_email", 0)) + 1
+    else:
+        stats["skipped_tagged"] = int(stats.get("skipped_tagged", 0)) + 1
+    stats["skipped"] = int(stats.get("skipped", 0)) + 1
+    if fresh:
+        stats["skipped_fresh_om"] = int(stats.get("skipped_fresh_om", 0)) + 1
 
 
 def count_rows_missing_om_match(people: list[dict[str, Any]]) -> int:
@@ -414,18 +423,10 @@ class IncrementalWriter:
         self._lock = threading.Lock()
         self._load_existing()
 
-    @staticmethod
-    def _normalize_resume_row(row: dict[str, Any]) -> dict[str, Any]:
-        out = dict(row)
-        if "api_calls" not in out and out.get("credits_used") not in (None, ""):
-            out["api_calls"] = out.get("credits_used")
-        return out
-
     def _load_existing(self) -> None:
         by_key: dict[str, dict[str, Any]] = {}
 
         def _merge_row(row: dict[str, Any]) -> None:
-            row = self._normalize_resume_row(row)
             key = (row.get("resume_key") or "").strip()
             if key:
                 by_key[key] = row
@@ -689,7 +690,6 @@ def run_batch(
         print(f"\nAbout to run {len(to_process)} API lookups ({provider_label}). Pass --yes to confirm.\n")
         return {"error": "confirmation required", "use": "--yes"}
 
-    skipped_mid_batch = 0
     stats: dict[str, Any] = {
         "found": 0,
         "not_found": 0,
@@ -703,7 +703,7 @@ def run_batch(
         "skipped_email": skipped_email,
         "skipped_tagged": skipped_tagged,
         "skipped_resume": skipped_resume,
-        "skipped_mid_batch": 0,
+        "skipped_fresh_om": 0,
         "dedup_lookup_failed": dedup_lookup_failed,
     }
     request_delay = provider_request_delay_seconds(cfg, provider_names, cli_delay=opts.delay)
@@ -752,6 +752,25 @@ def run_batch(
     while pending_queue and not credits_stop:
         chunk = pending_queue[:workers]
         pending_queue = pending_queue[workers:]
+        if om_dir and not opts.skip_om:
+            chunk, lookup_by_index, fresh_skips = skip_resolved_before_api(
+                om_dir,
+                chunk,
+                lookup_by_index,
+                workspace=opts.workspace,
+                skill_dir=skill_dir,
+                provider_names=provider_names,
+            )
+            for idx, _row, reason in fresh_skips:
+                results[idx] = {
+                    "batch_status": "skipped",
+                    "status": "skipped",
+                    "skip_reason": reason,
+                    "provider_attempts": [],
+                }
+                _record_om_skip(stats, reason, fresh=True)
+        if not chunk:
+            continue
         with ThreadPoolExecutor(max_workers=len(chunk)) as pool:
             futures = [pool.submit(_work, item) for item in chunk]
             for fut in as_completed(futures):
@@ -761,34 +780,6 @@ def run_batch(
                 _record_result(idx, people[idx], result, writer, stats)
                 if done_count % CREDIT_RECHECK_EVERY == 0:
                     credits_stop = _mid_batch_credit_stop(cfg, api_providers, provider_names, stats)
-                if (
-                    om_dir
-                    and not opts.skip_om
-                    and pending_queue
-                    and done_count % DEDUP_REFRESH_EVERY == 0
-                ):
-                    pending_queue, lookup_by_index, fresh_skips = refresh_pending_dedup(
-                        om_dir,
-                        pending_queue,
-                        lookup_by_index,
-                        workspace=opts.workspace,
-                        skill_dir=skill_dir,
-                        provider_names=provider_names,
-                    )
-                    for idx, row, reason in fresh_skips:
-                        results[idx] = {
-                            "batch_status": "skipped",
-                            "status": "skipped",
-                            "skip_reason": reason,
-                            "provider_attempts": [],
-                        }
-                        skipped_mid_batch += 1
-                        if reason in ("has_email", "email_found_tag"):
-                            stats["skipped_email"] = int(stats.get("skipped_email", 0)) + 1
-                        else:
-                            stats["skipped_tagged"] = int(stats.get("skipped_tagged", 0)) + 1
-                        stats["skipped"] = int(stats.get("skipped", 0)) + 1
-                    stats["skipped_mid_batch"] = skipped_mid_batch
                 if done_count % opts.progress_every == 0:
                     print_progress(done_count, total_work, stats, start, provider=provider_label)
         if credits_stop:
@@ -930,13 +921,6 @@ def run_batch(
                 )
 
     elapsed = time.time() - start
-    if import_status.get("reason") == "not_attempted" and save_out.get("imported"):
-        import_status = {
-            "reason": "success",
-            "imported_count": int(save_out.get("imported") or 0),
-            "verified_count": verified,
-            "import_created": import_created,
-        }
     print_final_summary(
         stats,
         elapsed,

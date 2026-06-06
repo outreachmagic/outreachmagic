@@ -771,11 +771,11 @@ class TestImportSummaryOutput(unittest.TestCase):
         self.assertIn("no-save", buf.getvalue())
 
 
-class TestMidBatchDedup(unittest.TestCase):
-    def test_refresh_pending_skips_resolved_leads(self):
-        from batch_runner import refresh_pending_dedup
+class TestFreshOmDedup(unittest.TestCase):
+    def test_skip_resolved_before_api(self):
+        from batch_runner import skip_resolved_before_api
 
-        pending = [(0, {"lead_id": 1, "name": "A", "domain": "acme.com"})]
+        chunk = [(0, {"lead_id": 1, "name": "A", "domain": "acme.com"})]
         lookup: dict = {}
         with patch.object(lemail.cc, "run_batch_lead_lookup") as mock_lookup:
             mock_lookup.return_value = {
@@ -786,18 +786,61 @@ class TestMidBatchDedup(unittest.TestCase):
                     "tags": [],
                 }],
             }
-            new_q, updated, skipped = refresh_pending_dedup(
+            api_chunk, updated, skipped = skip_resolved_before_api(
                 Path("/tmp/om"),
-                pending,
+                chunk,
                 lookup,
                 workspace="ws",
                 skill_dir=lemail._find_skill_dir(),
                 provider_names=["trykitt"],
             )
-        self.assertEqual(new_q, [])
+        self.assertEqual(api_chunk, [])
         self.assertEqual(len(skipped), 1)
         self.assertEqual(skipped[0][2], "has_email")
         self.assertIn(0, updated)
+
+    @patch.object(lemail.cc, "save_email_find_profiles")
+    @patch.object(lemail.cc, "run_batch_lead_lookup")
+    @patch("batch_runner.run_find_with_fallback")
+    def test_fresh_om_skip_before_api_in_batch(self, mock_find, mock_lookup, mock_save):
+        import batch_runner as br
+
+        mock_lookup.side_effect = [
+            {"results": [{"index": 0, "status": "not_found"}]},
+            {"results": [{
+                "index": 0,
+                "status": "found",
+                "email": "filled@acme.com",
+                "tags": [],
+            }]},
+        ]
+        mock_save.return_value = {"mode": "apply_email_find_results", "recorded": 0, "results": []}
+        om = Path("/tmp/om")
+        with tempfile.TemporaryDirectory() as td:
+            inp = Path(td) / "batch.json"
+            inp.write_text(json.dumps([{"lead_id": 1, "name": "A", "domain": "acme.com"}]))
+            opts = lemail.BatchOptions(
+                yes=True, skip_om=False, workspace="ws1",
+                output_base=str(Path(td) / "out"), workers=1, delay=0,
+            )
+            cfg = {
+                "max_people_per_run": 500,
+                "trykitt_enabled": True,
+                "icypeas_enabled": False,
+                "trykitt_api_key": "testkey1234567890123456789012",
+            }
+            with patch.object(lemail, "find_outreachmagic", return_value=om), patch.object(
+                br, "run_health_check", return_value=(True, [], []),
+            ):
+                result = br.run_batch(
+                    str(inp), cfg, om, opts,
+                    skill_dir=lemail._find_skill_dir(),
+                    normalize_linkedin_fn=norm.normalize_linkedin,
+                    key_status_fn=lemail.cc.outreachmagic_agent_key_status,
+                )
+        mock_find.assert_not_called()
+        self.assertEqual(result["stats"]["skipped_fresh_om"], 1)
+        self.assertEqual(result["processed"], 0)
 
 
 if __name__ == "__main__":

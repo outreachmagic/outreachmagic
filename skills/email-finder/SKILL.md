@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas (waterfall). Checks Outreach Magic
   first to avoid duplicate API spend. Saves email and verification via outreachmagic.
   Optional MillionVerifier for bulk re-check.
-version: 2.2.10
+version: 2.2.11
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -105,4 +105,4 @@ Resume a crashed batch by re-running the same `batch-find` command (skips comple
 
 ## Funnel
 
-`lead-enrich` → OM (keep `lead_id`) → `batch-find --workspace W`
+`lead-enrich` → OM (keep `lead_id`, stamp `serper_attempted`) → `batch-find --workspace W`. Both companions skip leads already tagged (`serper_attempted` / `trykitt_attempted` / `icypeas_attempted`).

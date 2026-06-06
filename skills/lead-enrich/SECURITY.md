@@ -2,8 +2,8 @@
 
 ## Data boundaries
 
-- **Local:** Reads lead records via the outreachmagic `pipeline.py history` CLI
-  (your machine's SQLite database only).
+- **Local:** Reads lead records via outreachmagic `batch-lead-lookup` (your machine's
+  SQLite database only; includes workspace tags for dedup).
 - **External:** Calls **google.serper.dev** with your Serper API key when the
   agent runs `serper-search` or equivalent HTTP requests.
 - **No** Outreach Magic cloud person-research API. **No** scraping of Google or LinkedIn HTML.
@@ -18,7 +18,7 @@
 ## Optional dependency
 
 outreachmagic is recommended but not required for search/format helpers. When
-installed, saving uses `import-profiles` locally — same trust model as the core skill.
+installed, saving uses `import-profiles` / `tag bulk` locally — same trust model as the core skill.
 
 ## Reporting vulnerabilities
 

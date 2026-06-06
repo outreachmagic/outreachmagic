@@ -37,7 +37,7 @@ python3 scripts/pipeline.py pull --if-stale 5m
 | `history` | Full timeline for a lead |
 | `import-profiles` | Bulk import CSV/JSON (tiered identity match) |
 | `apply-email-find-results` | Fast batch save when every row has `lead_id` (email-finder) |
-| `workspace summary --json` | Tag counts, LinkedIn connection by sender |
+| `workspace summary --json` | Tag counts, LinkedIn connection by sender (`--tags-only` on large workspaces) |
 
 ## Rules
 

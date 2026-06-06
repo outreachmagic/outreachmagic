@@ -742,22 +742,9 @@ _SNAPSHOT_CURSOR_KEYS = {
 }
 
 
-def migrate_legacy_snapshot_cursor(cfg: Optional[dict] = None) -> dict:
-    """Move pre-v2 last_snapshot_after_id into last_snapshot_workspace_after_id."""
-    cfg = dict(cfg if cfg is not None else load_config())
-    legacy = int(cfg.get("last_snapshot_after_id") or 0)
-    ws_key = _SNAPSHOT_CURSOR_KEYS["workspace"]
-    if legacy and not int(cfg.get(ws_key) or 0):
-        cfg[ws_key] = legacy
-    if "last_snapshot_after_id" in cfg:
-        del cfg["last_snapshot_after_id"]
-        save_config(cfg)
-    return cfg
-
-
 def get_snapshot_cursor(kind: str = "workspace") -> int:
     key = _SNAPSHOT_CURSOR_KEYS.get(kind, _SNAPSHOT_CURSOR_KEYS["workspace"])
-    cfg = migrate_legacy_snapshot_cursor()
+    cfg = load_config()
     return int(cfg.get(key) or 0)
 
 
@@ -3296,23 +3283,32 @@ def tag_set(workspace_id: str, lead_id: int, tags: list[str]) -> dict:
     return {"status": "set", "tags": added, "lead_id": lead_id}
 
 
-def tag_list(workspace_id: str, lead_id: Optional[int] = None) -> list[dict]:
+def tag_list(
+    workspace_id: str,
+    lead_id: Optional[int] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict]:
     """List tags for a workspace, optionally filtered by lead_id."""
-    conn = get_conn()
-    if lead_id:
-        rows = conn.execute(
-            "SELECT tag, lead_id, created_at FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ? ORDER BY created_at",
-            (workspace_id, lead_id),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT tag, COUNT(*) as lead_count
-               FROM workspace_lead_tags WHERE workspace_id = ?
-               GROUP BY tag ORDER BY lead_count DESC""",
-            (workspace_id,),
-        ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        if lead_id:
+            rows = conn.execute(
+                "SELECT tag, lead_id, created_at FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ? ORDER BY created_at",
+                (workspace_id, lead_id),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT tag, COUNT(*) as lead_count
+                   FROM workspace_lead_tags WHERE workspace_id = ?
+                   GROUP BY tag ORDER BY lead_count DESC""",
+                (workspace_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def _sender_slug_from_profile(sender_profile: str) -> str:
@@ -3327,25 +3323,33 @@ def _sender_slug_from_profile(sender_profile: str) -> str:
     return parts[-1] if parts else norm
 
 
-def linkedin_status_summary(workspace_id: str) -> dict:
+def linkedin_status_summary(
+    workspace_id: str,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict:
     """Aggregate LinkedIn connection state by sender for a workspace."""
-    conn = get_conn()
-    rows = conn.execute(
-        """SELECT sender_profile,
-                  SUM(CASE WHEN is_connected = 1 THEN 1 ELSE 0 END) AS connected,
-                  SUM(CASE WHEN is_request_pending = 1 THEN 1 ELSE 0 END) AS pending
-           FROM workspace_lead_linkedin_status
-           WHERE workspace_id = ?
-           GROUP BY sender_profile
-           ORDER BY connected DESC, pending DESC, sender_profile""",
-        (workspace_id,),
-    ).fetchall()
-    connected_leads = conn.execute(
-        """SELECT COUNT(DISTINCT lead_id) FROM workspace_lead_linkedin_status
-           WHERE workspace_id = ? AND is_connected = 1""",
-        (workspace_id,),
-    ).fetchone()[0]
-    conn.close()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT sender_profile,
+                      SUM(CASE WHEN is_connected = 1 THEN 1 ELSE 0 END) AS connected,
+                      SUM(CASE WHEN is_request_pending = 1 THEN 1 ELSE 0 END) AS pending
+               FROM workspace_lead_linkedin_status
+               WHERE workspace_id = ?
+               GROUP BY sender_profile
+               ORDER BY connected DESC, pending DESC, sender_profile""",
+            (workspace_id,),
+        ).fetchall()
+        connected_leads = conn.execute(
+            """SELECT COUNT(DISTINCT lead_id) FROM workspace_lead_linkedin_status
+               WHERE workspace_id = ? AND is_connected = 1""",
+            (workspace_id,),
+        ).fetchone()[0]
+    finally:
+        if own_conn:
+            conn.close()
     senders = []
     for row in rows:
         profile = row["sender_profile"] or ""
@@ -3361,7 +3365,7 @@ def linkedin_status_summary(workspace_id: str) -> dict:
     }
 
 
-def get_workspace_summary(workspace: str) -> dict:
+def get_workspace_summary(workspace: str, *, tags_only: bool = False) -> dict:
     """Workspace inventory: lead count, tags, LinkedIn sender connection aggregates."""
     conn = get_conn()
     try:
@@ -3373,16 +3377,20 @@ def get_workspace_summary(workspace: str) -> dict:
             "SELECT COUNT(*) FROM workspace_leads WHERE workspace_id = ?",
             (ws_id,),
         ).fetchone()[0]
+        tags = tag_list(ws_id, conn=conn)
+        if tags_only:
+            li_summary = {"linkedin_senders": [], "linkedin_connected_leads": 0}
+        else:
+            li_summary = linkedin_status_summary(ws_id, conn=conn)
     finally:
         conn.close()
-    li_summary = linkedin_status_summary(ws_id)
     cfg = load_config()
     return {
         "workspace": ws_row["slug"],
         "workspace_name": ws_row["name"],
         "lead_count": int(lead_count or 0),
         "last_pull": cfg.get("last_pull"),
-        "tags": tag_list(ws_id),
+        "tags": tags,
         **li_summary,
     }
 
@@ -9257,6 +9265,11 @@ def main():
     )
     ws_summary.add_argument("--workspace", required=True, help="Workspace slug or name")
     ws_summary.add_argument("--json", action="store_true", help="JSON output (recommended for agents)")
+    ws_summary.add_argument(
+        "--tags-only",
+        action="store_true",
+        help="Skip LinkedIn sender aggregates (faster on large workspaces)",
+    )
 
     cmap_p = sub.add_parser("campaign-map", help="Campaign to workspace routing")
     cmap_sub = cmap_p.add_subparsers(dest="campaign_map_cmd")
@@ -10201,7 +10214,10 @@ def main():
         print(json.dumps(insights, indent=2) if args.json else format_segment_insights(insights))
     elif args.command == "workspace":
         if args.workspace_cmd == "summary":
-            summary = get_workspace_summary(args.workspace)
+            summary = get_workspace_summary(
+                args.workspace,
+                tags_only=getattr(args, "tags_only", False),
+            )
             if summary.get("error"):
                 print(json.dumps(summary, indent=2) if getattr(args, "json", False) else summary["error"])
                 sys.exit(1)

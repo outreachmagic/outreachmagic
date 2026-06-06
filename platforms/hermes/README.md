@@ -10,8 +10,8 @@ Skills live in `~/.hermes/skills/` (real files). Each Hermes profile gets symlin
 curl -fsSL https://raw.githubusercontent.com/outreachmagic/hermes-outreachmagic/v1.20.20/install.sh | bash -s -- \
   --with-lead-enrich --with-email-finder --migrate \
   --tag v1.20.20 \
-  --lead-enrich-tag v2.0.2 \
-  --email-finder-tag v1.0.2
+  --lead-enrich-tag lead-enrich-v2.1.0 \
+  --email-finder-tag email-finder-v2.2.11
 ```
 
 Full suite install docs: [install-companions.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/install-companions.md)

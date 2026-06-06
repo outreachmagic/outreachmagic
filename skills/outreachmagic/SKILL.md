@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.25.12
+version: 1.25.13
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -65,7 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/in
 bash install.sh --platform hermes --with-lead-enrich --with-email-finder --migrate
 ```
 
-Pin a release (optional): add `--tag v1.21.5 --lead-enrich-tag v2.0.2 --email-finder-tag v1.0.2`.
+Pin a release (optional): add `--tag vX.Y.Z --lead-enrich-tag lead-enrich-vA.B.C --email-finder-tag email-finder-vA.B.C`.
 
 Use `--platform cursor` or `--platform claude` for other agents. Setup: https://app.outreachmagic.io/setup/agent
 
@@ -177,7 +177,7 @@ Install commands for each platform are in **Platform install** above. After inst
 - When the user asks for message content, use `history` on the specific lead.
 - For copy-performance analysis (full subject/body on positive leads + winner), use `copy-insights`.
 - For **all-time** campaign totals (no time window), use `campaigns` or `stats`. For **last N hours/days by campaign**, use **`query engagement`** or **`query replies`** — not `campaigns`.
-- For **tag counts** or **LinkedIn connection counts by sender**, use **`workspace summary --workspace <slug> --json`**. Do not use `export` or custom Python to aggregate.
+- For **tag counts** or **LinkedIn connection counts by sender**, use **`workspace summary --workspace <slug> --json`**. On large workspaces (>2,000 leads), add **`--tags-only`** for faster tag rollups. Do not use `export` or custom Python to aggregate.
 - **Tags** (`workspace_lead_tags`) and **LinkedIn connection state** (`workspace_lead_linkedin_status`, `is_connected` per sender) are different.
 - When the user asks about connections, webhook URLs, or platform health, use `status` or `connections`.
 - When the user wants to connect a new platform, use `connect-platform --platform <id>`.
@@ -262,9 +262,12 @@ This fetches the latest events from the relay. Skip for offline/local analytics;
 
 ```bash
 python3 scripts/pipeline.py workspace summary --workspace <slug> --json
+python3 scripts/pipeline.py workspace summary --workspace <slug> --json --tags-only
 ```
 
-Example JSON keys: `lead_count`, `last_pull`, `tags` (`tag`, `lead_count`), `linkedin_senders` (`sender_slug`, `connected`, `pending`), `linkedin_connected_leads`.
+Example JSON keys: `lead_count`, `last_pull`, `tags` (`tag`, `lead_count`), `linkedin_senders` (`sender_slug`, `connected`, `pending`), `linkedin_connected_leads`. With `--tags-only`, LinkedIn keys are empty arrays/zero.
+
+Companion attempt tags: **`serper_attempted`** (lead-enrich), **`trykitt_attempted`** / **`icypeas_attempted`** / **`email_found`** (email-finder).
 
 Tag-only (same tag data as summary): `pipeline.py tag list --workspace <slug>`.
 
@@ -777,9 +780,9 @@ python3 scripts/pipeline.py update
 4. Setup/auth errors (including 401 Unauthorized) should run `python3 scripts/pipeline.py login` in terminal.
 5. **Version:** run `pipeline.py version` — do not guess from SKILL.md frontmatter alone.
 6. Relay archive stays on api.outreachmagic.io; `pull` dedupes locally. Use `refresh --yes` for a true rebuild (sync + backup + wipe + `pull --full`). `pull --full` alone only helps after deleting the DB manually.
-7. **Tags:** always pass plain names (`nace`, `vip`) — not JSON list strings like `['nace']`. Run `tag repair` if legacy rows used bracket form.
+7. **Tags:** plain names (`nace`, `vip`) — not JSON list strings like `['nace']`. Run `tag repair` for bracket-form tags.
 8. **`add-lead` on an existing email does not enrich** — use `import-profiles` or rely on relay `pull` for fill-if-empty updates.
-9. **`ModuleNotFoundError: data_freshness`** — broken partial update (v1.25.11); run `pipeline.py update` to **v1.25.12+**.
+9. **`ModuleNotFoundError: data_freshness`** — run `pipeline.py update`.
 10. **Large `import-profiles` batches** — chunked 200 rows; if save times out, re-run with `--file` on your export JSON/CSV.
 
 ## Pull Troubleshooting Runbook

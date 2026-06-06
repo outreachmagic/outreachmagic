@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill. For email finding, use the email-finder companion skill.
-version: 2.0.10
+version: 2.1.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -87,15 +87,19 @@ See `references/email-finder.md` and the email-finder skill docs.
 
 **Workspace rollups (no Serper credits):** after saving leads, use outreachmagic
 `workspace summary --workspace <slug> --json` for tag counts and LinkedIn
-connection accepted per sender. Local DB only — pull optional.
+connection accepted per sender. On large workspaces (>2,000 leads), add
+`--tags-only` for faster tag counts. Local DB only — pull optional.
 
 ## CSV / award-list workflow (preferred for 10+ people)
 
 ```bash
-# 0 credits — dedup entire file first
+# 0 credits — dedup entire file first (auto-stamps serper_attempted on complete rows)
 python3 scripts/enrich.py batch-check --workspace your_workspace input/awards.csv
 
-# Serper only for rows that need LinkedIn/domain (skip team_award, exists_linkedin_*)
+# Re-run dedup skipping leads already tagged serper_attempted
+python3 scripts/enrich.py batch-check --workspace your_workspace --skip-tagged input/awards.csv
+
+# Serper only for rows that need LinkedIn/domain (skip team_award, exists_linkedin_*, skipped_serper_attempted)
 
 # After research — patch title/industry only (0 Serper credits)
 python3 scripts/enrich.py backfill --fields title,industry --workspace your_workspace input/patch.csv
@@ -126,12 +130,22 @@ python3 scripts/enrich.py backfill --fields title,industry --workspace your_work
    extraction engine.
 4. **Complete research before saving.** Run the full search ladder first, then save once.
 5. **Save via outreachmagic.** Use `import-profiles` for leads with LinkedIn.
-   For leads without LinkedIn, use `add-lead` with notes (absolute last resort) or report unsaved.
-   For read-only dedup checks use `pipeline.py query` or `enrich.py check` — never raw `INSERT`/`UPDATE`. Never run both save paths for the same person.
-6. **Transparency.** Show which Serper queries ran, confidence, and what was
+   Always append **`serper_attempted`** to tags on save (included automatically in
+   `map-to-om` output). For leads without LinkedIn but with a known `lead_id`, stamp
+   the tag via `stamp-attempted` or `import-profiles` with `id` + tags — do not rely
+   on notes alone. For read-only dedup checks use `pipeline.py query` or
+   `enrich.py check` — never raw `INSERT`/`UPDATE`. Never run both save paths for
+   the same person.
+6. **Tag after enrichment.** Every lead that goes through Serper must get
+   `serper_attempted` on save. Prevents re-processing on future runs.
+7. **Check tag before Serper.** Before spending Serper credits, check for
+   `serper_attempted` (via `enrich.py check --skip-tagged` or `skip_reason` in
+   check output). If present and LinkedIn is still empty, skip unless the user
+   explicitly wants a retry (e.g. stale >30 days).
+8. **Transparency.** Show which Serper queries ran, confidence, and what was
    saved. The user should see exactly where their credits went.
-7. **Batch wisely.** Cap at 50 people per run. For CSV/award lists run **`batch-check` once** on the whole file (JSON or CSV) before any Serper. Process Serper only for statuses that need LinkedIn/domain. Skip `team_award` and `exists_linkedin_email` rows.
-8. **Email finding — use email-finder.** After enrichment saves `company_domain`,
+9. **Batch wisely.** Cap at 50 people per run. For CSV/award lists run **`batch-check` once** on the whole file (JSON or CSV) before any Serper. Process Serper only for statuses that need LinkedIn/domain. Skip `team_award`, `exists_linkedin_email`, and `skipped_serper_attempted` rows.
+10. **Email finding — use email-finder.** After enrichment saves `company_domain`,
    hand off to **email-finder** (`email_finder.py find --save`). See `references/email-finder.md`.
    Never fabricate or pattern-guess emails in this skill.
 
@@ -147,7 +161,11 @@ python3 scripts/enrich.py check --workspace your_workspace "Jane Doe" "Acme Corp
 
 # Batch from JSON or CSV (run this before Serper on lists)
 python3 scripts/enrich.py batch-check --workspace your_workspace input/people.json
-python3 scripts/enrich.py batch-check input/awards.csv
+python3 scripts/enrich.py batch-check --workspace your_workspace --skip-tagged input/awards.csv
+
+# Stamp serper_attempted after failed LinkedIn lookup (when lead_id is known)
+python3 scripts/enrich.py stamp-attempted --workspace your_workspace --lead-ids 42,43 \
+  --notes "No LinkedIn found via Serper"
 
 # Backfill title/industry on existing leads (linkedin or email required)
 python3 scripts/enrich.py backfill --fields title,industry input/patch.csv
@@ -182,13 +200,14 @@ Output per person:
 | `exists_linkedin_no_email` | Same company, LinkedIn, no email | Skip Serper → **email-finder** if user wants email |
 | `exists_no_linkedin_email` | Same company, email, no LinkedIn | LinkedIn Serper queries only |
 | `exists_no_linkedin` | Same company, neither | LinkedIn Serper queries only |
+| `skipped_serper_attempted` | Has `serper_attempted` tag, no LinkedIn | Skip Serper — already tried |
 | `ambiguous` | Name match, company mismatch | Run full Serper pack — do not skip |
 | `not_found` | No match | Run full Serper search pack |
 | `team_award` | Team/group row (no individual) | Skip Serper — tag `team_award`, add contact note |
 | `dedup_disabled` | `dedup_before_search: false` in config | Run Serper as requested |
 
-The helper script calls `pipeline.py history --name` and `--linkedin`, then
-parses the output. All local, zero API credits.
+Check output includes `tags` and optional `skip_reason` (`has_linkedin` or
+`skipped_serper_attempted`). Uses `batch-lead-lookup` (local, zero Serper credits).
 
 ### Phase 2 — Serper Search Pack
 
@@ -336,19 +355,34 @@ If an `import_name` is provided, detail appends as `"lead-enrich/{import_name}"`
 # Org-wide (no workspace)
 python3 {outreachmagic_home}/scripts/pipeline.py import-profiles \
   --source lead_enrich --source-detail "lead-enrich" \
-  --json '[{"name":"Jane Doe","company":"Acme Corp","job_title":"VP Marketing","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["nace"]}]'
+  --json '[{"name":"Jane Doe","company":"Acme Corp","job_title":"VP Marketing","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["nace","serper_attempted"]}]'
 
 # Scoped to a workspace
 python3 {outreachmagic_home}/scripts/pipeline.py import-profiles \
   --workspace your_workspace \
   --source lead_enrich --source-detail "lead-enrich" \
-  --json '[{"name":"Jane Doe","company":"Acme Corp","job_title":"VP Marketing","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["nace"]}]'
+  --json '[{"name":"Jane Doe","company":"Acme Corp","job_title":"VP Marketing","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["nace","serper_attempted"]}]'
 ```
 
 **If no LinkedIn, no email:**
-Cannot use `import-profiles` (requires email or LinkedIn). Either:
-- `add-lead --name ... --company ... --notes "domain: acme.com, no LinkedIn found"`
-- Or report: "found domain X, no LinkedIn — not saved to pipeline DB"
+When `lead_id` is known (from `batch-check`), stamp attempt state — do not bury
+failure only in notes:
+
+```bash
+python3 scripts/enrich.py stamp-attempted --workspace your_workspace --lead-ids 42 \
+  --notes "No LinkedIn found via Serper"
+```
+
+Or via import-profiles when you also have name + company:
+
+```bash
+python3 {outreachmagic_home}/scripts/pipeline.py import-profiles \
+  --workspace your_workspace \
+  --source lead_enrich --source-detail "lead-enrich/no-linkedin" \
+  --json '[{"id":42,"name":"Jane Doe","company":"Acme Corp","tags":["nace","serper_attempted"],"notes":"No LinkedIn found"}]'
+```
+
+Without a `lead_id`, use `add-lead` with notes (last resort) or report unsaved.
 
 ### Email finding (email-finder skill)
 
@@ -389,6 +423,7 @@ outreachmagic) but lack email:
 2. **Skip Serper entirely** (0 Serper credits).
 3. Run **email-finder** `batch-find` for each person with domain + LinkedIn.
 4. Respect `trykitt_attempted` tag — email-finder skips rows already tagged.
+5. Respect `serper_attempted` tag — lead-enrich skips rows already researched.
 
 Useful after a prior enrichment pass or when importing a pre-researched list.
 
@@ -443,6 +478,43 @@ Max 50 people per run.
 
 ---
 
+## Enrichment query patterns (SQL)
+
+Use via `pipeline.py query --sql '…' --params '[…]' --json`.
+
+**Leads that still need Serper** (no LinkedIn, not yet attempted):
+
+```sql
+SELECT l.id, l.name, l.company
+FROM leads l
+JOIN workspace_lead_tags n ON n.lead_id = l.id AND n.tag = ?
+JOIN workspaces w ON n.workspace_id = w.id
+WHERE w.slug = ?
+  AND (l.linkedin_url IS NULL OR l.linkedin_url = '')
+  AND l.id NOT IN (
+    SELECT lead_id FROM workspace_lead_tags
+    WHERE tag = 'serper_attempted' AND workspace_id = w.id
+  )
+```
+
+Params: `["nace", "your_workspace"]`
+
+**Enrichment attempted but failed** (retry-eligible when stale):
+
+```sql
+SELECT l.id, l.name, l.company, l.updated_at
+FROM leads l
+JOIN workspace_lead_tags s ON s.lead_id = l.id AND s.tag = 'serper_attempted'
+JOIN workspaces w ON s.workspace_id = w.id
+WHERE w.slug = ?
+  AND (l.linkedin_url IS NULL OR l.linkedin_url = '')
+  AND l.updated_at < datetime('now', '-30 days')
+```
+
+Params: `["your_workspace"]`
+
+---
+
 ## What this skill does NOT do
 
 - ❌ Call Outreach Magic person-research API (`/v1/person-research`)
@@ -473,7 +545,8 @@ Max 50 people per run.
 | Stale skill or empty DB | Hermes: run `install.sh --migrate` (links all profiles by default). Check `pipeline.py paths` for `warning`. |
 | "No outreachmagic found" | Set `outreachmagic_home` in config.json to the absolute path |
 | Serper 400 "not allowed" | Query too restrictive — fallback to simpler template |
-| `import-profiles` rejects row | Requires email or LinkedIn. Use `add-lead` for stub records |
+| `import-profiles` rejects row | Requires email, LinkedIn, or `id` (lead_id). Use `stamp-attempted` for tag-only updates |
+| Serper credits wasted on re-runs | Use `batch-check --skip-tagged`; ensure `serper_attempted` is stamped on save |
 | Empty extraction | Serper results too thin — try broad queries, or mark confidence `low` |
 | `ambiguous` on check | Name matched wrong company — run Serper or `check --force` |
 | Team / group award row | `batch-check` returns `team_award` — skip research |

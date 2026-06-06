@@ -33,9 +33,9 @@ Issue templates: `docs/hermeshub-reviewed-domains-*.md`
 
 | Skill | Monorepo tag | Public repo |
 |-------|--------------|-------------|
-| outreachmagic | `v1.20.x` | `outreachmagic/outreachmagic` |
-| lead-enrich | `lead-enrich-v2.0.0` | `outreachmagic/lead-enrich` |
-| email-finder | `email-finder-v1.0.0` | `outreachmagic/email-finder` (create repo) |
+| outreachmagic | `v1.25.x` | `outreachmagic/outreachmagic` |
+| lead-enrich | `lead-enrich-v2.1.0` | `outreachmagic/lead-enrich` |
+| email-finder | `email-finder-v2.2.11` | `outreachmagic/email-finder` |
 
 CI: `.github/workflows/publish-platforms.yml`, `publish-lead-enrich.yml`, `publish-email-finder.yml`
 

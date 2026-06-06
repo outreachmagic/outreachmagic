@@ -4,9 +4,12 @@
 import json
 import os
 import sys
+import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from contextlib import redirect_stderr, redirect_stdout
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills" / "lead-enrich" / "scripts"))
@@ -30,6 +33,49 @@ class TestCompanyMatch(unittest.TestCase):
 
     def test_empty_actual_allows_match(self):
         self.assertTrue(enrich.companies_match("Acme", ""))
+
+
+class TestSerperAttemptedTags(unittest.TestCase):
+    def test_append_serper_attempted_idempotent(self):
+        self.assertEqual(
+            enrich.append_serper_attempted(["nace"]),
+            ["nace", enrich.SERPER_ATTEMPTED_TAG],
+        )
+        self.assertEqual(
+            enrich.append_serper_attempted(["nace", enrich.SERPER_ATTEMPTED_TAG]),
+            ["nace", enrich.SERPER_ATTEMPTED_TAG],
+        )
+
+    def test_skip_reason_has_linkedin(self):
+        self.assertEqual(
+            enrich.skip_reason_from_tags([], "linkedin.com/in/jane"),
+            "has_linkedin",
+        )
+
+    def test_skip_reason_serper_attempted(self):
+        self.assertEqual(
+            enrich.skip_reason_from_tags([enrich.SERPER_ATTEMPTED_TAG], None),
+            "skipped_serper_attempted",
+        )
+
+    def test_skip_reason_empty_when_needs_enrichment(self):
+        self.assertEqual(enrich.skip_reason_from_tags(["nace"], None), "")
+
+    def test_map_to_outreachmagic_always_tags_serper_attempted(self):
+        person = {"full_name": "Jane Doe", "company_name": "Acme", "tags": ["nace"]}
+        enrichment = {
+            "company_domain": "acme.com",
+            "linkedin_url": "https://www.linkedin.com/in/janedoe",
+            "confidence": "high",
+        }
+        mapped = enrich.map_to_outreachmagic(person, enrichment)
+        self.assertIn(enrich.SERPER_ATTEMPTED_TAG, mapped["profile"]["tags"])
+        self.assertIn("nace", mapped["profile"]["tags"])
+
+    def test_build_stamp_profile(self):
+        profile = enrich.build_stamp_profile(42, name="Jane", company="Acme")
+        self.assertEqual(profile["id"], 42)
+        self.assertIn(enrich.SERPER_ATTEMPTED_TAG, profile["tags"])
 
 
 class TestNormalizeInput(unittest.TestCase):
@@ -88,7 +134,7 @@ class TestCheckLeadStatus(unittest.TestCase):
         self.assertEqual(result["status"], "not_found")
         self.assertTrue(result.get("force"))
 
-    @patch.object(enrich, "_history_lookup")
+    @patch.object(enrich, "_single_lead_lookup")
     def test_ambiguous_on_company_mismatch(self, mock_lookup):
         om = Path("/tmp/om")
         mock_lookup.return_value = {
@@ -97,11 +143,44 @@ class TestCheckLeadStatus(unittest.TestCase):
             "company_display": "Beta Inc",
             "email": None,
             "linkedin_url": "linkedin.com/in/jane",
+            "tags": [],
         }
         result = enrich.check_lead_exists(om, "Jane Doe", "Acme Corp")
         self.assertEqual(result["status"], "ambiguous")
         self.assertIsNone(result["lead_id"])
         self.assertEqual(result["ambiguous_lead_id"], 1)
+
+    @patch.object(enrich, "_single_lead_lookup")
+    def test_skip_tagged_returns_skipped_status(self, mock_lookup):
+        om = Path("/tmp/om")
+        mock_lookup.return_value = {
+            "id": 5,
+            "name": "Jane Doe",
+            "company_display": "Acme",
+            "email": None,
+            "linkedin_url": None,
+            "tags": [enrich.SERPER_ATTEMPTED_TAG],
+        }
+        result = enrich.check_lead_exists(
+            om, "Jane Doe", "Acme Corp", skip_tagged=True,
+        )
+        self.assertEqual(result["status"], "skipped_serper_attempted")
+        self.assertEqual(result["skip_reason"], "skipped_serper_attempted")
+
+    @patch.object(enrich, "_single_lead_lookup")
+    def test_serper_attempted_without_skip_flag_keeps_exists_status(self, mock_lookup):
+        om = Path("/tmp/om")
+        mock_lookup.return_value = {
+            "id": 5,
+            "name": "Jane Doe",
+            "company_display": "Acme",
+            "email": None,
+            "linkedin_url": None,
+            "tags": [enrich.SERPER_ATTEMPTED_TAG],
+        }
+        result = enrich.check_lead_exists(om, "Jane Doe", "Acme Corp")
+        self.assertEqual(result["status"], "exists_no_linkedin")
+        self.assertEqual(result["skip_reason"], "skipped_serper_attempted")
 
     def test_apply_lead_match_email_aware_statuses(self):
         result: dict = {}
@@ -113,11 +192,13 @@ class TestCheckLeadStatus(unittest.TestCase):
                 "company_display": "Acme",
                 "email": "j@acme.com",
                 "linkedin_url": "linkedin.com/in/jane",
+                "tags": ["nace"],
             },
             input_company="Acme",
             force=False,
         )
         self.assertEqual(result["status"], "exists_linkedin_email")
+        self.assertEqual(result["tags"], ["nace"])
 
         result = {}
         enrich._apply_lead_match(
@@ -128,6 +209,7 @@ class TestCheckLeadStatus(unittest.TestCase):
                 "company_display": "Acme",
                 "email": None,
                 "linkedin_url": "linkedin.com/in/bob",
+                "tags": [],
             },
             input_company="Acme",
             force=False,
@@ -143,11 +225,72 @@ class TestCheckLeadStatus(unittest.TestCase):
                 "company_display": "Acme",
                 "email": "p@acme.com",
                 "linkedin_url": None,
+                "tags": [],
             },
             input_company="Acme",
             force=False,
         )
         self.assertEqual(result["status"], "exists_no_linkedin_email")
+
+
+class TestBatchCheck(unittest.TestCase):
+    @patch.object(enrich, "stamp_serper_attempted_leads")
+    @patch.object(enrich, "check_lead_exists")
+    def test_persist_tags_stamps_linkedin_complete(self, mock_check, mock_stamp):
+        om = Path("/tmp/om")
+        mock_check.side_effect = [
+            {"status": "exists_linkedin_email", "lead_id": 1, "tags": []},
+            {"status": "exists_no_linkedin", "lead_id": 2, "tags": []},
+            {"status": "not_found", "lead_id": None, "tags": []},
+        ]
+        mock_stamp.return_value = {"status": "added", "changed": 1}
+        people = [
+            {"full_name": "A", "company_name": "Co"},
+            {"full_name": "B", "company_name": "Co"},
+            {"full_name": "C", "company_name": "Co"},
+        ]
+        results, meta = enrich.batch_check(
+            om, people, workspace="ws1", persist_tags=True,
+        )
+        self.assertEqual(len(results), 3)
+        mock_stamp.assert_called_once()
+        stamp_args = mock_stamp.call_args
+        self.assertEqual(stamp_args[0][1], "ws1")
+        self.assertEqual(stamp_args[0][2], [1])
+        self.assertTrue(meta.get("persisted"))
+
+    @patch.object(enrich, "check_lead_exists")
+    def test_skip_tagged_propagates(self, mock_check):
+        om = Path("/tmp/om")
+        mock_check.return_value = {
+            "status": "skipped_serper_attempted",
+            "lead_id": 9,
+            "tags": [enrich.SERPER_ATTEMPTED_TAG],
+        }
+        results, _meta = enrich.batch_check(
+            om,
+            [{"full_name": "Jane", "company_name": "Acme"}],
+            workspace="ws1",
+            skip_tagged=True,
+        )
+        self.assertEqual(results[0]["status"], "skipped_serper_attempted")
+        mock_check.assert_called_once()
+        self.assertTrue(mock_check.call_args.kwargs.get("skip_tagged"))
+
+
+class TestStampSerperAttemptedLeads(unittest.TestCase):
+    @patch.object(cc, "run_tag_bulk")
+    def test_excludes_already_tagged(self, mock_bulk):
+        om = Path("/tmp/om")
+        mock_bulk.return_value = {"status": "added", "changed": 1}
+        enrich.stamp_serper_attempted_leads(
+            om,
+            "ws1",
+            [1, 2],
+            known_tags_by_lead={1: [enrich.SERPER_ATTEMPTED_TAG], 2: []},
+        )
+        mock_bulk.assert_called_once()
+        self.assertEqual(mock_bulk.call_args[0][2], [2])
 
 
 class TestSerperSearch(unittest.TestCase):
@@ -159,7 +302,6 @@ class TestSerperSearch(unittest.TestCase):
 class TestHermesEnv(unittest.TestCase):
     def setUp(self):
         cc._AGENT_ENV_LOADED = False
-        enrich._HERMES_ENV_LOADED = False  # noqa: legacy tests
         self._saved = {
             k: os.environ[k]
             for k in ("SERPER_API_KEY", "OUTREACHMAGIC_AGENT_KEY", "HERMES_HOME")
@@ -182,8 +324,6 @@ class TestHermesEnv(unittest.TestCase):
         self.assertIsNone(enrich._parse_dotenv_line("# comment"))
 
     def test_loads_serper_from_hermes_env_file(self):
-        import tempfile
-
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             (home / ".env").write_text(
@@ -191,7 +331,6 @@ class TestHermesEnv(unittest.TestCase):
                 "OUTREACHMAGIC_AGENT_KEY=om_agent_test\n"
             )
             os.environ["HERMES_HOME"] = str(home)
-            enrich._HERMES_ENV_LOADED = False
             cc._AGENT_ENV_LOADED = False
             enrich.ensure_hermes_env_loaded()
             self.assertEqual(os.environ.get("SERPER_API_KEY"), "from-hermes-env")
@@ -202,14 +341,11 @@ class TestHermesEnv(unittest.TestCase):
             self.assertEqual(cfg["serper_api_key"], "from-hermes-env")
 
     def test_does_not_override_existing_shell_env(self):
-        import tempfile
-
         os.environ["SERPER_API_KEY"] = "shell-wins"
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             (home / ".env").write_text("SERPER_API_KEY=from-file\n")
             os.environ["HERMES_HOME"] = str(home)
-            enrich._HERMES_ENV_LOADED = False
             cc._AGENT_ENV_LOADED = False
             enrich.ensure_hermes_env_loaded()
             self.assertEqual(os.environ["SERPER_API_KEY"], "shell-wins")
@@ -234,8 +370,6 @@ class TestTeamAndBackfill(unittest.TestCase):
         self.assertIn("linkedin.com/in/jane", profile["linkedin"])
 
     def test_load_people_file_csv(self):
-        import tempfile
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             f.write("full_name,company_name\nJane,Acme\n")
             path = f.name
@@ -250,9 +384,6 @@ class TestTeamAndBackfill(unittest.TestCase):
     @patch.object(enrich, "run_import_profiles")
     def test_backfill_import_failure_returns_error(self, mock_import, mock_find, _mock_cfg):
         import subprocess
-        import tempfile
-        from contextlib import redirect_stdout
-        from io import StringIO
 
         mock_find.return_value = Path("/tmp/om-test")
         mock_import.side_effect = subprocess.TimeoutExpired(cmd="import", timeout=60)
@@ -266,6 +397,52 @@ class TestTeamAndBackfill(unittest.TestCase):
             self.assertIn("error", buf.getvalue())
         finally:
             Path(path).unlink()
+
+
+class TestFormatReport(unittest.TestCase):
+    def test_skipped_serper_attempted_in_report(self):
+        report = enrich.format_report([
+            {
+                "status": "skipped_serper_attempted",
+                "_input": {"full_name": "Jane", "company_name": "Acme"},
+            }
+        ])
+        self.assertIn("serper_attempted", report)
+        self.assertIn("Skipped", report)
+
+
+class TestCmdBatchCheckIntegration(unittest.TestCase):
+    @patch.object(enrich, "batch_check")
+    @patch.object(enrich, "find_outreachmagic")
+    @patch.object(enrich, "load_config")
+    def test_cmd_batch_check_stderr_on_persist(self, mock_cfg, mock_find, mock_batch):
+        mock_cfg.return_value = {"dedup_before_search": True, "max_people_per_run": 50}
+        mock_find.return_value = Path("/tmp/om")
+        mock_batch.return_value = ([{"status": "not_found"}], {"persisted": True, "changed": 3, "requested": 3})
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"people": [{"full_name": "Jane", "company_name": "Acme"}]}, f)
+            path = f.name
+        try:
+            out = StringIO()
+            err = StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                enrich.cmd_batch_check(path, "ws1", persist_tags=True)
+            self.assertIn("serper_attempted", err.getvalue())
+            self.assertTrue(out.getvalue().startswith("["))
+        finally:
+            Path(path).unlink()
+
+
+class TestRunTagBulk(unittest.TestCase):
+    @patch.object(cc, "_run_subprocess_json")
+    @patch.object(cc, "get_pipeline_path")
+    def test_chunks_large_id_lists(self, mock_path, mock_run):
+        mock_path.return_value = Path("/tmp/pipeline.py")
+        mock_run.return_value = {"status": "added", "changed": 500}
+        om = Path("/tmp/om")
+        ids = list(range(1200))
+        cc.run_tag_bulk(om, "ws1", ids, ["serper_attempted"], skill_dir=None)
+        self.assertEqual(mock_run.call_count, 3)
 
 
 if __name__ == "__main__":

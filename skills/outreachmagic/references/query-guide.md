@@ -33,7 +33,7 @@ Canonical DDL: [`scripts/schema.py`](../scripts/schema.py) (`SCHEMA_SQL`). Views
 |----------|-----|
 | Replies, engagement, campaign breakdowns, timelines | **`events`** + `campaigns` |
 | Lead list with stage / sentiment filters | `pipeline.py show` or `lead-table` |
-| Tag counts, LinkedIn connected-by-sender | `pipeline.py workspace summary --json` |
+| Tag counts, LinkedIn connected-by-sender | `pipeline.py workspace summary --json` (add `--tags-only` on large workspaces) |
 | Full message bodies / copy winners | `pipeline.py history`, `copy-insights` |
 | Workspace ingest audit (rare) | `workspace_lead_events` — **not** for volume analytics |
 

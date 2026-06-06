@@ -713,3 +713,53 @@ def run_verify_email_batch(
             )
         )
     return _merge_pipeline_summaries(summaries)
+
+
+SERPER_ATTEMPTED_TAG = "serper_attempted"
+TAG_BULK_CHUNK_SIZE = 500
+
+
+def run_tag_bulk(
+    om_dir: Path,
+    workspace: str,
+    lead_ids: list[int],
+    tags: list[str],
+    *,
+    remove: bool = False,
+    timeout: int = 120,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Add or remove workspace tags via pipeline.py tag bulk (chunked for large id lists)."""
+    if not workspace or not lead_ids or not tags:
+        return {"status": "noop", "changed": 0, "leads": 0, "tags": tags}
+    tag_str = ",".join(tags)
+    summaries: list[dict[str, Any]] = []
+    for i in range(0, len(lead_ids), TAG_BULK_CHUNK_SIZE):
+        chunk = lead_ids[i : i + TAG_BULK_CHUNK_SIZE]
+        cmd = [
+            sys.executable,
+            str(get_pipeline_path(om_dir)),
+            "tag",
+            "bulk",
+            "--workspace",
+            workspace,
+            "--lead-ids",
+            ",".join(str(lid) for lid in chunk),
+            "--tags",
+            tag_str,
+        ]
+        if remove:
+            cmd.append("--remove")
+        summaries.append(
+            _run_subprocess_json(cmd, temp_path=None, timeout=timeout, skill_dir=skill_dir)
+        )
+    if len(summaries) == 1:
+        return summaries[0]
+    changed = sum(int(s.get("changed") or 0) for s in summaries)
+    return {
+        "status": summaries[-1].get("status", "added"),
+        "changed": changed,
+        "leads": len(lead_ids),
+        "tags": tags,
+        "chunks": len(summaries),
+    }

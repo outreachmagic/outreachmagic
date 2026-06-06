@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -59,6 +60,11 @@ def test_workspace_summary_json_stdout_only():
     payload = json.loads(out)
     assert payload["workspace"] == "testws"
     assert payload["local_pending"] == pending
+
+
+class TestWorkspaceSummaryJson(unittest.TestCase):
+    def test_workspace_summary_json_stdout_only(self):
+        test_workspace_summary_json_stdout_only()
 
 
 if __name__ == "__main__":

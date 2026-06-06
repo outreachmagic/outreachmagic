@@ -10,6 +10,7 @@ Usage:
     enrich.py check "Jane Doe" "Acme Corp"    # Dedup check (0 credits)
     enrich.py check --force "Jane Doe" "Acme" # Ignore existing DB match
     enrich.py batch-check input.json|input.csv  # Batch dedup (JSON or CSV)
+    enrich.py stamp-attempted --workspace W --lead-ids 1,2,3  # Tag serper_attempted
     enrich.py backfill --fields title,industry rows.csv  # Patch existing leads (0 Serper credits)
     enrich.py normalize input.json            # Normalize input data
     enrich.py serper-queries person.json      # Print Serper query pack
@@ -66,6 +67,12 @@ UPDATE_FILES = (
 
 _parse_dotenv_line = cc.parse_dotenv_line
 _TEAM_RE = re.compile(r"\bteam\b|center team|group award", re.I)
+
+SERPER_ATTEMPTED_TAG = cc.SERPER_ATTEMPTED_TAG
+_BATCH_CHECK_STAMP_STATUSES = frozenset({
+    "exists_linkedin_email",
+    "exists_linkedin_no_email",
+})
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -226,22 +233,120 @@ def lead_company_display(lead: dict[str, Any]) -> str:
     return (lead.get("company_display") or lead.get("company") or "").strip()
 
 
+# ── Serper attempt tagging ───────────────────────────────────────────────────
+
+def append_serper_attempted(tags: Optional[list[str]]) -> list[str]:
+    """Return tags with serper_attempted appended once (mirrors email-finder attempted tags)."""
+    out = list(dict.fromkeys(tags or []))
+    if SERPER_ATTEMPTED_TAG not in out:
+        out.append(SERPER_ATTEMPTED_TAG)
+    return out
+
+
+def skip_reason_from_tags(tags: Optional[list[str]], linkedin_url: Optional[str]) -> str:
+    """Return skip reason when Serper is not needed, else empty string."""
+    if linkedin_url and str(linkedin_url).strip():
+        return "has_linkedin"
+    if SERPER_ATTEMPTED_TAG in (tags or []):
+        return "skipped_serper_attempted"
+    return ""
+
+
+def build_stamp_profile(
+    lead_id: int,
+    *,
+    name: str = "",
+    company: str = "",
+    notes: str = "",
+    extra_tags: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Minimal import-profiles row to stamp serper_attempted on an existing lead."""
+    profile: dict[str, Any] = {
+        "id": lead_id,
+        "tags": append_serper_attempted(extra_tags),
+    }
+    if name:
+        profile["name"] = name
+    if company:
+        profile["company"] = company
+    if notes:
+        profile["notes"] = notes
+    return profile
+
+
+def stamp_serper_attempted_leads(
+    om_dir: Path,
+    workspace: str,
+    lead_ids: list[int],
+    *,
+    exclude_already_tagged: bool = True,
+    known_tags_by_lead: Optional[dict[int, list[str]]] = None,
+) -> dict[str, Any]:
+    """Bulk-stamp serper_attempted via pipeline tag bulk (0 Serper credits)."""
+    if not workspace or not lead_ids:
+        return {"status": "noop", "changed": 0, "leads": 0}
+    ids = []
+    for lid in lead_ids:
+        if lid is None:
+            continue
+        lid_int = int(lid)
+        if exclude_already_tagged:
+            tags = (known_tags_by_lead or {}).get(lid_int) or []
+            if SERPER_ATTEMPTED_TAG in tags:
+                continue
+        ids.append(lid_int)
+    if not ids:
+        return {"status": "noop", "changed": 0, "leads": 0}
+    return cc.run_tag_bulk(
+        om_dir,
+        workspace,
+        ids,
+        [SERPER_ATTEMPTED_TAG],
+        skill_dir=_find_skill_dir(),
+    )
+
+
 # ── Dedup check ──────────────────────────────────────────────────────────────
 
-def _history_lookup(
+def _single_lead_lookup(
     om_dir: Path,
-    extra_args: list[str],
     *,
+    name: Optional[str] = None,
+    linkedin: Optional[str] = None,
     workspace: Optional[str] = None,
     timeout: int = 10,
 ) -> Optional[dict[str, Any]]:
-    return cc.history_lookup(
-        om_dir,
-        extra_args,
-        workspace=workspace,
-        timeout=timeout,
-        skill_dir=_find_skill_dir(),
-    )
+    """Lookup one lead via batch-lead-lookup (includes workspace tags)."""
+    items: list[dict[str, Any]] = [{"index": 0}]
+    if linkedin:
+        items[0]["linkedin"] = linkedin
+    elif name:
+        items[0]["name"] = name
+    else:
+        return None
+    try:
+        payload = cc.run_batch_lead_lookup(
+            om_dir,
+            items,
+            workspace=workspace,
+            timeout=timeout,
+            skill_dir=_find_skill_dir(),
+        )
+    except RuntimeError:
+        return None
+    entries = payload.get("results") or []
+    if not entries or entries[0].get("status") != "found":
+        return None
+    entry = entries[0]
+    return {
+        "id": entry.get("lead_id"),
+        "name": entry.get("name"),
+        "company_display": entry.get("company"),
+        "company": entry.get("company"),
+        "email": entry.get("email"),
+        "linkedin_url": entry.get("linkedin_url"),
+        "tags": entry.get("tags") or [],
+    }
 
 
 def _apply_lead_match(
@@ -258,6 +363,7 @@ def _apply_lead_match(
     result["company"] = lead_company_display(lead) or lead.get("company")
     result["email"] = lead.get("email")
     result["linkedin_url"] = lead.get("linkedin_url")
+    result["tags"] = list(lead.get("tags") or [])
     if raw:
         result["raw"] = raw
 
@@ -300,12 +406,14 @@ def check_lead_exists(
     *,
     force: bool = False,
     dedup_before_search: bool = True,
+    skip_tagged: bool = False,
 ) -> dict[str, Any]:
     """Check if a lead exists in outreachmagic.
 
     Returns status:
         not_found, exists_linkedin_email, exists_linkedin_no_email,
-        exists_no_linkedin_email, exists_no_linkedin, ambiguous, dedup_disabled
+        exists_no_linkedin_email, exists_no_linkedin, ambiguous,
+        dedup_disabled, skipped_serper_attempted
     """
     result: dict[str, Any] = {
         "status": "not_found",
@@ -314,6 +422,7 @@ def check_lead_exists(
         "email": None,
         "name": None,
         "company": None,
+        "tags": [],
         "raw": None,
     }
 
@@ -328,21 +437,28 @@ def check_lead_exists(
         result["note"] = "force=true — ignoring existing DB matches"
         return result
 
-    pipeline = str(get_pipeline_path(om_dir))
-    _ = pipeline  # history via cc.history_lookup
-
     # LinkedIn hint is a strong identity match
     if linkedin:
         slug = linkedin.strip("/").split("/")[-1] if "/" in linkedin else linkedin
-        lead = _history_lookup(om_dir, ["--linkedin", slug], workspace=workspace, timeout=timeout)
+        lead = _single_lead_lookup(
+            om_dir,
+            linkedin=slug,
+            workspace=workspace,
+            timeout=timeout,
+        )
         if lead:
             _apply_lead_match(result, lead, input_company=company, force=False)
+            skip = skip_reason_from_tags(result.get("tags"), result.get("linkedin_url"))
+            if skip:
+                result["skip_reason"] = skip
+            if skip_tagged and skip == "skipped_serper_attempted":
+                result["status"] = "skipped_serper_attempted"
             return result
 
     if name:
-        lead = _history_lookup(
+        lead = _single_lead_lookup(
             om_dir,
-            ["--name", name],
+            name=name,
             workspace=workspace,
             timeout=timeout,
         )
@@ -354,6 +470,11 @@ def check_lead_exists(
                 force=False,
                 raw=json.dumps({"lead": lead}),
             )
+            skip = skip_reason_from_tags(result.get("tags"), result.get("linkedin_url"))
+            if skip:
+                result["skip_reason"] = skip
+            if skip_tagged and skip == "skipped_serper_attempted":
+                result["status"] = "skipped_serper_attempted"
 
     return result
 
@@ -437,9 +558,11 @@ def batch_check(
     timeout: int = 10,
     *,
     dedup_before_search: bool = True,
-) -> list[dict[str, Any]]:
-    """Run dedup check for multiple people."""
-    results = []
+    skip_tagged: bool = False,
+    persist_tags: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Run dedup check for multiple people. Optionally stamp serper_attempted tags."""
+    results: list[dict[str, Any]] = []
     for person in people:
         name = person.get("full_name") or person.get("name", "")
         company = person.get("company_name") or person.get("company", "")
@@ -461,10 +584,34 @@ def batch_check(
             timeout,
             force=force,
             dedup_before_search=dedup_before_search,
+            skip_tagged=skip_tagged,
         )
         result["_input"] = person
         results.append(result)
-    return results
+
+    tag_meta: dict[str, Any] = {"persisted": False}
+    if persist_tags and workspace:
+        stamp_ids: list[int] = []
+        tags_by_lead: dict[int, list[str]] = {}
+        for row in results:
+            lid = row.get("lead_id")
+            if lid is None:
+                continue
+            lid_int = int(lid)
+            tags_by_lead[lid_int] = list(row.get("tags") or [])
+            if row.get("status") in _BATCH_CHECK_STAMP_STATUSES:
+                stamp_ids.append(lid_int)
+        if stamp_ids:
+            tag_meta = stamp_serper_attempted_leads(
+                om_dir,
+                workspace,
+                stamp_ids,
+                known_tags_by_lead=tags_by_lead,
+            )
+            tag_meta["persisted"] = True
+            tag_meta["requested"] = len(stamp_ids)
+
+    return results, tag_meta
 
 
 # ── Input normalization ──────────────────────────────────────────────────────
@@ -800,9 +947,12 @@ def map_to_outreachmagic(
     if notes_str:
         profile["notes"] = notes_str
 
-    tags = person.get("tags", [])
+    raw_tags = person.get("tags", [])
+    if isinstance(raw_tags, str):
+        raw_tags = [t.strip() for t in re.split(r"[,;\n]+", raw_tags) if t.strip()]
+    tags = append_serper_attempted(raw_tags if isinstance(raw_tags, list) else [])
     if tags:
-        profile["tags"] = tags if isinstance(tags, list) else [tags]
+        profile["tags"] = tags
 
     can_import = bool(linkedin or profile.get("email"))
     workspace = person.get("workspace", "")
@@ -865,6 +1015,14 @@ def format_report(results: list[dict[str, Any]]) -> str:
         if status == "exists_linkedin_no_email":
             lines.append(
                 f"  ⏭️  LinkedIn on file, no email — skip Serper; use email-finder if needed"
+            )
+            totals["skipped"] += 1
+            lines.append("")
+            continue
+
+        if status == "skipped_serper_attempted":
+            lines.append(
+                f"  ⏭️  Already enriched (serper_attempted) — skip Serper (0 credits)"
             )
             totals["skipped"] += 1
             lines.append("")
@@ -955,6 +1113,7 @@ def cmd_check(
     workspace: str = "",
     *,
     force: bool = False,
+    skip_tagged: bool = False,
 ) -> None:
     """Dedup check for a single person."""
     cfg = load_config()
@@ -970,11 +1129,18 @@ def cmd_check(
         workspace=workspace or None,
         force=force,
         dedup_before_search=bool(cfg.get("dedup_before_search", True)),
+        skip_tagged=skip_tagged,
     )
     print(json.dumps(result, indent=2))
 
 
-def cmd_batch_check(input_file: str, workspace: str = "") -> None:
+def cmd_batch_check(
+    input_file: str,
+    workspace: str = "",
+    *,
+    skip_tagged: bool = False,
+    persist_tags: bool = False,
+) -> None:
     """Batch dedup check from JSON or CSV."""
     cfg = load_config()
     om_dir = find_outreachmagic(cfg)
@@ -987,13 +1153,63 @@ def cmd_batch_check(input_file: str, workspace: str = "") -> None:
         data["workspace"] = workspace
     people = normalize_input(data)
     ws = data.get("workspace", "")
-    results = batch_check(
+    results, tag_meta = batch_check(
         om_dir,
         people,
         workspace=ws or None,
         dedup_before_search=bool(cfg.get("dedup_before_search", True)),
+        skip_tagged=skip_tagged,
+        persist_tags=persist_tags and bool(ws),
     )
+    if tag_meta.get("persisted"):
+        changed = int(tag_meta.get("changed") or 0)
+        requested = int(tag_meta.get("requested") or 0)
+        print(
+            f"Stamped {SERPER_ATTEMPTED_TAG} on {changed} of {requested} leads "
+            f"(workspace {ws})",
+            file=sys.stderr,
+        )
     print(json.dumps(results, indent=2))
+
+
+def cmd_stamp_attempted(
+    workspace: str,
+    lead_ids: str,
+    *,
+    notes: str = "",
+) -> None:
+    """Stamp serper_attempted on existing leads (e.g. after failed LinkedIn lookup)."""
+    cfg = load_config()
+    om_dir = find_outreachmagic(cfg)
+    if not om_dir:
+        print(json.dumps({"error": "outreachmagic not found"}))
+        sys.exit(1)
+    if not workspace:
+        print(json.dumps({"error": "--workspace is required"}))
+        sys.exit(1)
+    ids = [int(x.strip()) for x in lead_ids.split(",") if x.strip().isdigit()]
+    if not ids:
+        print(json.dumps({"error": "no valid lead ids"}))
+        sys.exit(1)
+    if notes:
+        profiles = [
+            build_stamp_profile(lid, notes=notes) for lid in ids
+        ]
+        summary = run_import_profiles(
+            om_dir,
+            profiles,
+            workspace=workspace,
+            source="lead_enrich",
+            source_detail="lead-enrich/stamp-attempted",
+        )
+    else:
+        summary = stamp_serper_attempted_leads(
+            om_dir,
+            workspace,
+            ids,
+            exclude_already_tagged=False,
+        )
+    print(json.dumps(summary, indent=2))
 
 
 def cmd_backfill(
@@ -1204,13 +1420,15 @@ def cmd_update(check_only: bool = False, explicit_tag: str = "") -> None:
     }, indent=2))
 
 
-def _parse_cli_flags(argv: list[str]) -> tuple[str, bool, str, bool, bool, list[str]]:
-    """Extract --workspace, --force, --fields, --dry-run, --overwrite from argv."""
+def _parse_cli_flags(argv: list[str]) -> tuple[str, bool, str, bool, bool, bool, bool, list[str]]:
+    """Extract shared CLI flags from argv."""
     workspace = ""
     force = False
     fields = ""
     dry_run = False
     overwrite = False
+    skip_tagged = False
+    no_persist_tags = False
     remaining: list[str] = []
     skip = False
     for i, arg in enumerate(argv):
@@ -1225,6 +1443,12 @@ def _parse_cli_flags(argv: list[str]) -> tuple[str, bool, str, bool, bool, list[
             continue
         if arg == "--overwrite":
             overwrite = True
+            continue
+        if arg == "--skip-tagged":
+            skip_tagged = True
+            continue
+        if arg == "--no-persist-tags":
+            no_persist_tags = True
             continue
         if arg == "--workspace" and i + 1 < len(argv):
             workspace = argv[i + 1]
@@ -1241,7 +1465,7 @@ def _parse_cli_flags(argv: list[str]) -> tuple[str, bool, str, bool, bool, list[
             fields = arg.split("=", 1)[1]
             continue
         remaining.append(arg)
-    return workspace, force, fields, dry_run, overwrite, remaining
+    return workspace, force, fields, dry_run, overwrite, skip_tagged, no_persist_tags, remaining
 
 
 def main() -> None:
@@ -1249,16 +1473,17 @@ def main() -> None:
         print(__doc__)
         sys.exit(1)
 
-    workspace, force, fields, dry_run, overwrite, argv = _parse_cli_flags(sys.argv[1:])
+    workspace, force, fields, dry_run, overwrite, skip_tagged, no_persist_tags, argv = _parse_cli_flags(sys.argv[1:])
     cmd = argv[0] if argv else ""
+    persist_tags = bool(workspace) and not no_persist_tags
 
     if cmd == "config":
         cmd_config()
     elif cmd == "check":
         if len(argv) < 3:
-            print("Usage: enrich.py check [--workspace W] [--force] 'Name' 'Company'")
+            print("Usage: enrich.py check [--workspace W] [--force] [--skip-tagged] 'Name' 'Company'")
             sys.exit(1)
-        cmd_check(argv[1], argv[2], workspace, force=force)
+        cmd_check(argv[1], argv[2], workspace, force=force, skip_tagged=skip_tagged)
     elif cmd == "serper-search":
         query = ""
         label = ""
@@ -1282,9 +1507,44 @@ def main() -> None:
         cmd_serper_search(query, label)
     elif cmd == "batch-check":
         if len(argv) < 2:
-            print("Usage: enrich.py batch-check [--workspace W] input.json|input.csv")
+            print(
+                "Usage: enrich.py batch-check [--workspace W] [--skip-tagged] "
+                "[--no-persist-tags] input.json|input.csv"
+            )
             sys.exit(1)
-        cmd_batch_check(argv[1], workspace)
+        cmd_batch_check(
+            argv[1],
+            workspace,
+            skip_tagged=skip_tagged,
+            persist_tags=persist_tags,
+        )
+    elif cmd == "stamp-attempted":
+        lead_ids = ""
+        notes = ""
+        args = argv[1:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--lead-ids" and i + 1 < len(args):
+                lead_ids = args[i + 1]
+                i += 2
+            elif args[i].startswith("--lead-ids="):
+                lead_ids = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--notes" and i + 1 < len(args):
+                notes = args[i + 1]
+                i += 2
+            elif args[i].startswith("--notes="):
+                notes = args[i].split("=", 1)[1]
+                i += 1
+            else:
+                i += 1
+        if not workspace or not lead_ids:
+            print(
+                "Usage: enrich.py stamp-attempted --workspace W --lead-ids 1,2,3 "
+                "[--notes 'No LinkedIn found']"
+            )
+            sys.exit(1)
+        cmd_stamp_attempted(workspace, lead_ids, notes=notes)
     elif cmd == "backfill":
         if len(argv) < 2 or not fields:
             print("Usage: enrich.py backfill --fields title,industry [--workspace W] [--dry-run] [--overwrite] rows.csv")

@@ -14,7 +14,7 @@ All pipeline commands use: `python3 ~/.claude/skills/outreachmagic/scripts/pipel
 - `query engagement|replies|interested` — read-only analytics (preferred for counts)
 - `pull` — refresh from relay when needed
 - `show`, `history`, `stats`, `campaigns`, `import-profiles`, `log-event`, `update-stage`
-- `workspace summary --workspace SLUG --json` — tags / LinkedIn sender stats
+- `workspace summary --workspace SLUG --json` — tags / LinkedIn sender stats (`--tags-only` for large workspaces)
 
 ### Rules
 

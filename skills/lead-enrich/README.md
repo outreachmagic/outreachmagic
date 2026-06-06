@@ -7,16 +7,25 @@ dedup and save. Use **[email-finder](https://github.com/outreachmagic/email-find
 
 > **Credit-saving:** checks your local outreachmagic database first. Skips Serper
 > when the same person **and company** already have LinkedIn (and email when present).
+> Stamps **`serper_attempted`** on every enrichment run so re-runs skip already-tried leads.
 
 ## What it does
 
 Given a name + company, the agent:
 
-1. Checks outreachmagic (`enrich.py check`) — email-aware dedup, 0 credits when complete
+1. Checks outreachmagic (`enrich.py check` / `batch-check`) — tag-aware dedup, 0 credits when complete or already attempted
 2. Runs targeted Serper searches (company website, LinkedIn profile)
 3. Extracts structured fields using the agent's built-in model (no external LLM)
-4. Saves via outreachmagic `import-profiles` (`company_domain` + LinkedIn)
+4. Saves via outreachmagic `import-profiles` with `serper_attempted` tag
 5. Optionally runs **email-finder** when the user wants an address
+
+## Batch workflow
+
+```bash
+python3 scripts/enrich.py batch-check --workspace YOUR_WS input.csv
+python3 scripts/enrich.py batch-check --workspace YOUR_WS --skip-tagged input.csv
+python3 scripts/enrich.py stamp-attempted --workspace YOUR_WS --lead-ids 1,2,3
+```
 
 ## Install
 

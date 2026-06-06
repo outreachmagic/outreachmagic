@@ -34,6 +34,7 @@ flowchart LR
 
 - **lead-enrich** and **email-finder** work without outreachmagic for JSON/API helpers, but **dedup + save require OM**.
 - `check` / `batch-check` exit with a clear error if outreachmagic is missing — Serper paths still work when OM is installed elsewhere.
+- Both companions stamp **`{provider}_attempted`** tags on save (`serper_attempted`, `trykitt_attempted`, `icypeas_attempted`) so re-runs skip already-processed leads.
 
 ## Freemium
 
@@ -58,16 +59,6 @@ Launch limits: **1,000 relay events/mo free**, **Pro $9/mo** (50k cap). See [pos
 - outreachmagic → `[lead-enrich, email-finder]`
 - lead-enrich → `[outreachmagic, email-finder]`
 - email-finder → `[outreachmagic, lead-enrich]`
-
-## Minimum versions (batch import reliability)
-
-| Skill | Tag | Notes |
-|-------|-----|-------|
-| outreachmagic | `v1.25.12+` | Includes `data_freshness.py` in update manifest |
-| email-finder | `email-finder-v2.2.7+` | Longer import timeouts; graceful batch save failures |
-| lead-enrich | `lead-enrich-v2.0.10+` | Synced `companion_common.py`; backfill import recovery |
-
-Pin all three on fresh installs: `install.sh --tag v1.25.12 --email-finder-tag email-finder-v2.2.7 --lead-enrich-tag lead-enrich-v2.0.10`
 
 ## Release docs
 

@@ -23,30 +23,32 @@ class ExportEnrichmentTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self._root = Path(self._tmp.name)
         om_paths.set_data_root_override(self._root)
-        om_paths.set_project_root_override(self._root / "project")
+        om_paths.set_working_root_override(self._root / "workspace")
         os.environ.pop("OUTREACHMAGIC_AGENT_KEY", None)
         om.init_db()
         conn = om.get_conn()
         om.ensure_organization(conn)
         conn.close()
-        om.ensure_project_layout()
 
     def tearDown(self):
         om_paths.set_data_root_override(self._prev_data_override)
-        om_paths.set_project_root_override(self._prev_project_override)
+        om_paths.set_working_root_override(self._prev_project_override)
         self._tmp.cleanup()
 
-    def test_ensure_project_layout(self):
-        root = om.ensure_project_layout()
-        self.assertTrue((root / "input").is_dir())
+    def test_resolve_project_path_creates_export_dir(self):
+        root = self._root / "workspace"
+        out = om_paths.resolve_project_path("out.csv", kind="export", for_write=True)
         self.assertTrue((root / "export").is_dir())
-        self.assertTrue((root / "agent_resources").is_dir())
+        self.assertEqual(out, (root / "export" / "out.csv").resolve())
 
     def test_resolve_project_path_input(self):
-        csv_path = om_paths.get_input_dir() / "leads.csv"
-        csv_path.write_text("email,name\ntest@x.com,Test\n", encoding="utf-8")
-        resolved = om_paths.resolve_project_path("leads.csv", kind="input")
-        self.assertEqual(resolved, csv_path)
+        resolved = om_paths.resolve_project_path("leads.csv", kind="input", for_write=True)
+        resolved.write_text("email,name\ntest@x.com,Test\n", encoding="utf-8")
+        self.assertEqual(
+            om_paths.resolve_project_path("leads.csv", kind="input"),
+            resolved,
+        )
+        self.assertEqual(resolved, (self._root / "workspace" / "input" / "leads.csv").resolve())
 
     def test_build_lead_sync_payload_linkedin(self):
         conn = om.get_conn()

@@ -1,13 +1,15 @@
 """
 Skill install paths. Resolves ~/.hermes (or ~/.cursor / ~/.claude) from scripts location.
 Hermes: install real files under <home>/skills/outreachmagic/; profile dirs use symlinks only.
+
+Working files (CSVs, exports): relative paths resolve under process cwd, or an optional
+project_root in outreachmagic_config.json. Skill state (DB, config) stays under skill_home.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -61,10 +63,15 @@ def set_data_root_override(path: Optional[Path]) -> None:
     _DATA_ROOT_OVERRIDE = path
 
 
-def set_project_root_override(path: Optional[Path]) -> None:
-    """Tests only: redirect project folders."""
+def set_working_root_override(path: Optional[Path]) -> None:
+    """Tests only: redirect working file paths (input/export)."""
     global _PROJECT_ROOT_OVERRIDE
     _PROJECT_ROOT_OVERRIDE = path
+
+
+def set_project_root_override(path: Optional[Path]) -> None:
+    """Tests only: alias for set_working_root_override."""
+    set_working_root_override(path)
 
 
 def _read_bootstrap_config(default_root: Path) -> dict:
@@ -105,7 +112,7 @@ def get_db_path() -> Path:
     return get_skill_home() / "databases" / "outreachmagic.db"
 
 
-def _config_project_root() -> Optional[Path]:
+def _config_working_root() -> Optional[Path]:
     if _PROJECT_ROOT_OVERRIDE is not None:
         return _PROJECT_ROOT_OVERRIDE
     raw = (_read_bootstrap_config(get_data_root()).get("project_root") or "").strip()
@@ -114,39 +121,20 @@ def _config_project_root() -> Optional[Path]:
     return None
 
 
-def get_project_root() -> Path:
-    return _config_project_root() or (get_skill_home() / "project")
+def get_working_root() -> Path:
+    """Root for relative input/export paths: config project_root or process cwd."""
+    configured = _config_working_root()
+    if configured:
+        return configured.resolve()
+    return Path.cwd()
 
 
 def get_input_dir() -> Path:
-    return get_project_root() / "input"
+    return get_working_root() / "input"
 
 
 def get_export_dir() -> Path:
-    return get_project_root() / "export"
-
-
-def get_agent_resources_dir() -> Path:
-    return get_project_root() / "agent_resources"
-
-
-def ensure_project_layout() -> Path:
-    """Create input/, export/, agent_resources/ under project_root."""
-    root = get_project_root()
-    for sub in ("input", "export", "agent_resources"):
-        (root / sub).mkdir(parents=True, exist_ok=True)
-        gitkeep = root / sub / ".gitkeep"
-        if not gitkeep.exists():
-            gitkeep.touch()
-    guide_src = get_install_dir() / "references" / "query-guide.md"
-    guide_dest = get_agent_resources_dir() / "query-guide.md"
-    if guide_src.is_file():
-        try:
-            if not guide_dest.exists() or guide_src.stat().st_mtime > guide_dest.stat().st_mtime:
-                shutil.copy2(guide_src, guide_dest)
-        except OSError:
-            pass
-    return root
+    return get_working_root() / "export"
 
 
 def resolve_project_path(
@@ -155,7 +143,7 @@ def resolve_project_path(
     kind: Literal["input", "export"] = "input",
     for_write: bool = False,
 ) -> Path:
-    """Resolve a user path under project_root (no cwd fallback)."""
+    """Resolve a user path under working_root (cwd by default). Absolute paths pass through."""
     raw = (path or "").strip()
     if not raw:
         raise ValueError("path is required")
@@ -163,13 +151,13 @@ def resolve_project_path(
     if p.is_absolute():
         if for_write:
             p.parent.mkdir(parents=True, exist_ok=True)
-        return p
-    root = get_project_root()
+        return p.resolve()
+    root = get_working_root()
     if raw.startswith("input/") or raw.startswith("export/"):
-        resolved = root / raw
+        resolved = (root / raw).resolve()
     else:
         base = get_input_dir() if kind == "input" else get_export_dir()
-        resolved = base / raw
+        resolved = (base / raw).resolve()
     if for_write:
         resolved.parent.mkdir(parents=True, exist_ok=True)
     return resolved

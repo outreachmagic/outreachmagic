@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.25.14
+version: 1.25.15
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -113,7 +113,7 @@ If `pull` returns an error like "No agent key or token configured", the user nee
 
 If the skill is not installed yet, point them to **https://app.outreachmagic.io/setup/agent** or **https://app.outreachmagic.io/dashboard/agent** for install commands, then `login`.
 
-`init` creates the database and project folders (`input/`, `export/`, `agent_resources/` under `<skill_home>/project` by default). Override with `"project_root"` in config.
+`init` creates the database under `<skill_home>/databases/`. CSVs and exports use **`input/`** and **`export/`** relative to your **workspace directory** (where the agent runs commands). Set `"project_root"` in config to pin a fixed folder instead of cwd.
 
 If `pull` returns auth errors after a revoked key, tell them to run `login` again.
 
@@ -482,7 +482,7 @@ python3 scripts/pipeline.py export --workspace acme_corp --tag nace --format csv
 python3 scripts/pipeline.py export --workspace acme_corp --since today --format json
 ```
 
-Writes to `export/` by default. CSV uses `personalized_first_name`, `personalized_company_name`, plus lead fields, tags, HQ, and `latest_sender`.
+Writes to `export/` under your workspace by default. CSV uses `personalized_first_name`, `personalized_company_name`, plus lead fields, tags, HQ, and `latest_sender`.
 
 ### Reset local database (schema upgrade)
 

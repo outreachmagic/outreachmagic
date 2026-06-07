@@ -211,16 +211,14 @@ from relay_ingest import (
 # ──────────────────────────────────────────────────────────────────────
 
 from om_paths import (
-    ensure_project_layout,
-    get_agent_resources_dir,
     get_config_path,
     get_data_root,
     get_db_path,
     get_export_dir,
     get_input_dir,
     get_install_dir,
-    get_project_root,
     get_skill_home,
+    get_working_root,
     hermes_profile_copy_warning,
     resolve_project_path,
 )
@@ -246,6 +244,8 @@ UPDATE_SCRIPT_FILES = (
     "workspace_routing.py",
     "workspace_archive.py",
     "routing_cloud.py",
+    "agent_secrets_cloud.py",
+    "api_key_pool.py",
     "connections_cloud.py",
     "db_health.py",
     "om_paths.py",
@@ -6621,7 +6621,7 @@ def write_export_csv(result: dict, path: str):
         print(json.dumps({"status": "empty", "message": "No local leads to export"}))
         return
     fieldnames = ["email", "linkedin", "name", "company", "title", "industry", "headcount", "stage", "notes"]
-    out_path = Path(path).expanduser()
+    out_path = resolve_project_path(path, kind="export", for_write=True)
     with open(out_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -8227,10 +8227,9 @@ def _save_agent_key_and_validate(agent_key: str):
         print()
         print(format_stats(get_stats()))
 
-    project_root = ensure_project_layout()
     print()
-    print(f"Project folders: {project_root}")
-    print(f"  input/  export/  agent_resources/")
+    print(f"Working files: {get_working_root()}")
+    print("  input/  export/  (created on import/export)")
     print()
     print("Connected. Run 'pull' to sync events, 'show' to view pipeline.")
 
@@ -9157,7 +9156,7 @@ def main():
     export_p.add_argument("--since", help="Created/updated on or after date (YYYY-MM-DD or today)")
     export_p.add_argument("--limit", type=int, default=5000)
     export_p.add_argument("--format", choices=("csv", "json"), default="csv")
-    export_p.add_argument("--file", help="Output path under project export/ (default auto-named)")
+    export_p.add_argument("--file", help="Output path under workspace export/ (default auto-named)")
 
     agent_export_p = sub.add_parser("agent-changes", help="Show agent-created leads and events not yet synced")
     agent_export_p.add_argument("--json", action="store_true", help="Output as JSON (default)")
@@ -9539,7 +9538,8 @@ def main():
             "skill_home": str(get_skill_home()),
             "database": str(get_db_path()),
             "config": str(get_config_path()),
-            "project_root": str(get_project_root()),
+            "working_root": str(get_working_root()),
+            "cwd": str(Path.cwd()),
         }
         warn = hermes_profile_copy_warning()
         if warn:
@@ -9566,13 +9566,11 @@ def main():
 
     if args.command == "init":
         init_db()
-        project_root = ensure_project_layout()
         print(f"Outreach Magic v{__version__} installed.")
         print(f"Database initialized: {get_db_path()}")
-        print(f"Project root: {project_root}")
+        print(f"Working files (CSVs/exports): {get_working_root()}")
         print(f"  input/            → {get_input_dir()}")
         print(f"  export/           → {get_export_dir()}")
-        print(f"  agent_resources/  → {get_agent_resources_dir()}")
         print()
         print("Next: run 'pipeline.py login' to connect your agent to Outreach Magic.")
         return

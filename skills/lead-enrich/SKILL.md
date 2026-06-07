@@ -92,6 +92,8 @@ connection accepted per sender. On large workspaces (>2,000 leads), add
 
 ## CSV / award-list workflow (preferred for 10+ people)
 
+Paths like `input/awards.csv` are relative to your **workspace directory** (where the agent runs the command), not the skill install folder.
+
 ```bash
 # 0 credits — dedup entire file first (auto-stamps serper_attempted on complete rows)
 python3 scripts/enrich.py batch-check --workspace your_workspace input/awards.csv

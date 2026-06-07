@@ -1227,7 +1227,7 @@ If `pull` returns an error like "No agent key or token configured", the user nee
 
 If the skill is not installed yet, point them to **https://app.outreachmagic.io/setup/agent** or **https://app.outreachmagic.io/dashboard/agent** for install commands, then `login`.
 
-`init` creates the database and project folders (`input/`, `export/`, `agent_resources/` under `<skill_home>/project` by default). Override with `"project_root"` in config.
+`init` creates the database under `<skill_home>/databases/`. CSVs and exports use `input/` and `export/` relative to the workspace cwd (override with `"project_root"` in config).
 
 If `pull` returns auth errors after a revoked key, tell them to run `login` again.
 

@@ -51,7 +51,7 @@ def register_query_parser(sub) -> None:
         "--params",
         help='JSON array of SQL bind parameters, e.g. \'["popcam |%%"]\'',
     )
-    q.add_argument("--file", help="Read SQL from a file under project/")
+    q.add_argument("--file", help="Read SQL from a file (workspace input/ or absolute path)")
     q.add_argument("--limit", type=int, default=read_queries.DEFAULT_ROW_LIMIT)
     q.add_argument("--json", action="store_true", help="JSON output for agents")
     q.set_defaults(command="query")

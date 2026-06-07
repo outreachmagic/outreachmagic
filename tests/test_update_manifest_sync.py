@@ -28,6 +28,8 @@ MANIFEST_SCRIPT_FILES = {
     "workspace_routing.py",
     "workspace_archive.py",
     "routing_cloud.py",
+    "agent_secrets_cloud.py",
+    "api_key_pool.py",
     "connections_cloud.py",
     "db_health.py",
     "om_paths.py",

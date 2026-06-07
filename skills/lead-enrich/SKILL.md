@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill. For email finding, use the email-finder companion skill.
-version: 2.1.1
+version: 2.1.2
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -219,10 +219,10 @@ result quality:
 ### Serper Credit Budget Estimator
 
 - **Per person minimum:** `0` Serper credits (`exists_linkedin_email`).
-- **Common path:** `2` credits (`2a` strict company + `2c` primary LinkedIn).
-- **Per person hard max:** `5` credits when all fallbacks are needed (`2a` + `2b` + `2c` + `2d` + `2e`).
-- **Batch formula:** `min=0`, `max=5*N` where `N` is people in the run.
-- **Batch cap example:** with `N=50`, hard max is `250` credits (worst case).
+- **Common path:** `2` credits (`2a` strict company + `2c` LinkedIn profile).
+- **Per person hard max:** `4` credits when all fallbacks are needed (`2a` + `2b` + `2c` + `2e`).
+- **Batch formula:** `min=0`, `max=4*N` where `N` is people in the run.
+- **Batch cap example:** with `N=50`, hard max is `200` credits (worst case).
 
 #### 2a. Company discovery — strict (always)
 
@@ -247,32 +247,19 @@ python3 scripts/enrich.py serper-search --query 'Acme Corp official website' --l
 ```
 (Same template, unquoted company name.)
 
-#### 2c. LinkedIn — primary (always)
+#### 2c. LinkedIn profile (always)
 
-Build query:
+Build query (unquoted company — matches variant employer names in snippets):
+
 ```
-site:linkedin.com/in {First Last} {up to 5 words of role} "{Company Name}"
+site:linkedin.com/in {First Last} {up to 5 words of role} {Company Name}
 ```
 
 Example:
 ```bash
 python3 scripts/enrich.py serper-search \
-  --query 'site:linkedin.com/in Jane Doe VP Marketing "Acme Corp"' \
-  --label linkedin_primary
-```
-
-Fallback if rejected:
-```
-site:linkedin.com/in Jane Doe Acme Corp
-```
-
-#### 2d. LinkedIn — follow-up (conditional)
-
-Run only if 2c has **no** `/in/` URLs, **or** none of the profile titles contain
-both first and last name tokens. Use **unquoted** company:
-
-```
-site:linkedin.com/in Jane Doe VP Marketing Acme Corp
+  --query 'site:linkedin.com/in Jane Doe VP Marketing Acme Corp' \
+  --label linkedin_profile
 ```
 
 ### Phase 3 — Model Extraction

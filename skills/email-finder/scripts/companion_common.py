@@ -205,6 +205,26 @@ def get_pipeline_path(om_dir: Path) -> Path:
     return om_dir / "scripts" / "pipeline.py"
 
 
+def require_api_key_pool():
+    """Import api_key_pool from outreachmagic. Raises if unavailable."""
+    skill_dir = Path(__file__).resolve().parent.parent
+    ensure_agent_env_loaded(skill_dir)
+    om = find_outreachmagic({}, skill_dir=skill_dir)
+    if not om:
+        raise RuntimeError(
+            "outreachmagic skill required for API key pools. "
+            "Install via: python3 scripts/pipeline.py login"
+        )
+    scripts = om / "scripts"
+    if not (scripts / "api_key_pool.py").is_file():
+        raise RuntimeError(f"api_key_pool.py not found under {scripts}")
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    from api_key_pool import api_key_pool, call_with_key_pool, call_with_key_pool_results
+
+    return api_key_pool, call_with_key_pool, call_with_key_pool_results
+
+
 def outreachmagic_agent_key_status(om_dir: Optional[Path]) -> tuple[bool, str]:
     env_key = os.environ.get("OUTREACHMAGIC_AGENT_KEY", "").strip()
     if env_key:

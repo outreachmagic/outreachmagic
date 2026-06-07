@@ -129,11 +129,13 @@ class TestTrykittFind(unittest.TestCase):
     def test_missing_key(self):
         with patch.dict("os.environ", {}, clear=True):
             lemail.cc._AGENT_ENV_LOADED = False
-            with patch.object(lemail.cc, "load_dotenv_file"):
+            with patch.object(lemail.cc, "load_dotenv_file"), patch.object(
+                lemail.cc, "_load_synced_agent_secrets"
+            ):
                 cfg = lemail.load_config()
-        cfg.pop("trykitt_api_key", None)
-        result = prov.trykitt_find(cfg, full_name="Jane", domain="acme.com")
-        self.assertEqual(result["status"], "no_key")
+                cfg.pop("trykitt_api_key", None)
+                result = prov.trykitt_find(cfg, full_name="Jane", domain="acme.com")
+                self.assertEqual(result["status"], "no_key")
 
 
 class TestIcypeasFind(unittest.TestCase):

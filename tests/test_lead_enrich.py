@@ -445,5 +445,69 @@ class TestRunTagBulk(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 3)
 
 
+class TestBuildSerperQueries(unittest.TestCase):
+    def test_linkedin_query_unquoted_company(self):
+        person = {
+            "full_name": "Sean Williams",
+            "company_name": "KPMG LLP",
+            "stated_role": "Manager, Talent Acquisition",
+        }
+        queries = enrich.build_serper_queries(person)
+        labels = [q["label"] for q in queries]
+        self.assertIn("linkedin_profile", labels)
+        self.assertNotIn("linkedin_profile_strict", labels)
+        self.assertNotIn("linkedin_profile_broad", labels)
+        linkedin = next(q for q in queries if q["label"] == "linkedin_profile")
+        self.assertEqual(
+            linkedin["query"],
+            "site:linkedin.com/in Sean Williams Manager, Talent Acquisition KPMG LLP",
+        )
+        self.assertNotIn('"KPMG LLP"', linkedin["query"])
+
+    def test_linkedin_query_without_role(self):
+        person = {
+            "full_name": "Jane Doe",
+            "company_name": "Acme Corp",
+            "stated_role": "",
+        }
+        queries = enrich.build_serper_queries(person)
+        linkedin = next(q for q in queries if q["label"] == "linkedin_profile")
+        self.assertEqual(linkedin["query"], "site:linkedin.com/in Jane Doe Acme Corp")
+
+
+class TestSerperSearchPool(unittest.TestCase):
+    def setUp(self):
+        self._saved = dict(os.environ)
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._saved)
+
+    @patch.object(enrich, "_serper_search_with_key")
+    def test_serper_search_uses_key_pool(self, mock_search):
+        os.environ["SERPER_API_KEY"] = "primary"
+        mock_search.return_value = {"organic": []}
+        cfg = enrich.load_config()
+        result = enrich.serper_search("site:linkedin.com/in Jane Doe Acme", cfg)
+        self.assertEqual(result, {"organic": []})
+        mock_search.assert_called_once_with("primary", "site:linkedin.com/in Jane Doe Acme", cfg)
+
+    @patch.object(enrich, "_serper_search_with_key")
+    def test_serper_search_failover_on_credit_exhaustion(self, mock_search):
+        os.environ["SERPER_API_KEY"] = "exhausted"
+        os.environ["SERPER_API_KEY__1"] = "backup"
+
+        def side_effect(key, query, config):
+            if key == "exhausted":
+                raise ValueError('Serper HTTP 400: {"message":"Not enough credits"}')
+            return {"organic": [{"title": "Jane Doe"}]}
+
+        mock_search.side_effect = side_effect
+        cfg = enrich.load_config()
+        result = enrich.serper_search("site:linkedin.com/in Jane Doe Acme", cfg)
+        self.assertEqual(result["organic"][0]["title"], "Jane Doe")
+        self.assertEqual(mock_search.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

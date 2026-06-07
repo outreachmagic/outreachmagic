@@ -717,6 +717,15 @@ def build_role_fragment(stated_role: str, max_words: int = 5, max_chars: int = 8
     return frag
 
 
+def _linkedin_query(name: str, company: str, role_frag: str) -> str:
+    parts = ["site:linkedin.com/in", name]
+    if role_frag:
+        parts.append(role_frag)
+    if company:
+        parts.append(company)
+    return " ".join(parts)
+
+
 def build_serper_queries(person: dict[str, Any]) -> list[dict[str, str]]:
     """Build the Serper query pack for one person.
 
@@ -747,29 +756,11 @@ def build_serper_queries(person: dict[str, Any]) -> list[dict[str, str]]:
         "condition": "No organic results with http(s) links in strict search",
     })
 
-    # 2c — LinkedIn primary (always)
-    primary_li = f"site:linkedin.com/in {name}"
-    if role_frag:
-        primary_li += f" {role_frag}"
-    primary_li += f' "{company}"'
+    # 2c — LinkedIn profile (always, unquoted company for loose matching)
     queries.append({
-        "label": "linkedin_profile_strict",
-        "query": primary_li,
+        "label": "linkedin_profile",
+        "query": _linkedin_query(name, company, role_frag),
         "always": True,
-        "fallback_query": f"site:linkedin.com/in {name} {company}",
-    })
-
-    # 2d — LinkedIn follow-up (conditional)
-    followup_li = f"site:linkedin.com/in {name}"
-    if role_frag:
-        followup_li += f" {role_frag}"
-    followup_li += f" {company}"
-    queries.append({
-        "label": "linkedin_profile_broad",
-        "query": followup_li,
-        "always": False,
-        "fallback_query": "",
-        "condition": "No /in/ URLs in strict LinkedIn search, or no title matches name",
     })
 
     return queries
@@ -819,37 +810,17 @@ def _serper_search_with_key(api_key: str, query: str, config: dict[str, Any]) ->
 
 def serper_search(query: str, config: dict[str, Any]) -> dict[str, Any]:
     """Run one Serper search via stdlib HTTP. Raises ValueError on missing key or HTTP error."""
-    api_key = (config.get("serper_api_key") or os.environ.get("SERPER_API_KEY") or "").strip()
-    if not api_key and not os.environ.get("SERPER_API_KEY"):
+    ensure_hermes_env_loaded()
+    api_key_pool, call_with_key_pool, _ = cc.require_api_key_pool()
+    if not api_key_pool("SERPER_API_KEY"):
         raise ValueError(
-            "serper_api_key not set — add SERPER_API_KEY in Dashboard → API Keys, "
-            "~/.hermes/.env, or config.json"
+            "SERPER_API_KEY not set — add in Dashboard → API Keys, then sync-secrets"
         )
-
-    scripts_dir = Path(__file__).resolve().parent.parent.parent / "outreachmagic" / "scripts"
-    if not (scripts_dir / "api_key_pool.py").is_file():
-        for base in (Path.home() / ".hermes" / "skills", Path.home() / ".cursor" / "skills", Path.home() / ".claude" / "skills"):
-            candidate = base / "outreachmagic" / "scripts"
-            if (candidate / "api_key_pool.py").is_file():
-                scripts_dir = candidate
-                break
-    if str(scripts_dir) not in sys.path and (scripts_dir / "api_key_pool.py").is_file():
-        sys.path.insert(0, str(scripts_dir))
-    try:
-        from api_key_pool import api_key_pool, call_with_key_pool
-        if api_key_pool("SERPER_API_KEY"):
-            return call_with_key_pool(
-                "SERPER_API_KEY",
-                lambda key: _serper_search_with_key(key, query, config),
-                provider="serper",
-            )
-    except ImportError:
-        pass
-
-    key = api_key or (os.environ.get("SERPER_API_KEY") or "").strip()
-    if not key:
-        raise ValueError("SERPER_API_KEY not set")
-    return _serper_search_with_key(key, query, config)
+    return call_with_key_pool(
+        "SERPER_API_KEY",
+        lambda key: _serper_search_with_key(key, query, config),
+        provider="serper",
+    )
 
 
 # ── Serper result formatting ─────────────────────────────────────────────────

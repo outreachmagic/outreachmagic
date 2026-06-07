@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import sys
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Optional
 
+import companion_common as cc
 from normalize import normalize_linkedin, validate_domain
 
 TRYKITT_FIND_URL = "https://api.trykitt.ai/job/find_email"
@@ -19,27 +18,6 @@ HTTP_TIMEOUT = 30
 ICYPEAS_CREDIT_COST = 0.003
 ICYPEAS_PROCESSING_STATUSES = frozenset(("", "NONE", "SCHEDULED", "IN_PROGRESS"))
 ICYPEAS_DEBITED_STATUSES = frozenset(("FOUND", "DEBITED", "DEBITED_NOT_FOUND"))
-
-
-def _import_key_pool() -> Optional[
-    Tuple[Callable[..., dict], Callable[[str], list[str]]]
-]:
-    for base in (
-        Path(__file__).resolve().parent.parent.parent / "outreachmagic" / "scripts",
-        Path.home() / ".hermes" / "skills" / "outreachmagic" / "scripts",
-        Path.home() / ".cursor" / "skills" / "outreachmagic" / "scripts",
-        Path.home() / ".claude" / "skills" / "outreachmagic" / "scripts",
-    ):
-        if not (base / "api_key_pool.py").is_file():
-            continue
-        if str(base) not in sys.path:
-            sys.path.insert(0, str(base))
-        try:
-            from api_key_pool import api_key_pool, call_with_key_pool_results
-            return call_with_key_pool_results, api_key_pool
-        except ImportError:
-            continue
-    return None
 
 
 def is_icypeas_rate_limited(message: str) -> bool:
@@ -239,23 +217,12 @@ def trykitt_find(
     if not validate_domain(domain):
         return {"error": "valid domain required", "status": "bad_input", "provider": "trykitt"}
 
-    pool_fn = _import_key_pool()
-    if pool_fn:
-        call_with_key_pool_results, api_key_pool = pool_fn
-        if api_key_pool("TRYKITT_API_KEY"):
-            result = call_with_key_pool_results(
-                "TRYKITT_API_KEY",
-                lambda key: _trykitt_find_with_key(key, cfg, full_name=full_name, domain=domain, linkedin=linkedin),
-                provider="trykitt",
-            )
-            if result.get("status") == "http_error" and result.get("http_status") == 402:
-                raise CreditsExhaustedError("trykitt out of credits")
-            return result
-
-    api_key = (cfg.get("trykitt_api_key") or "").strip()
-    if not api_key:
-        return {"error": "TRYKITT_API_KEY not set", "status": "no_key", "provider": "trykitt"}
-    result = _trykitt_find_with_key(api_key, cfg, full_name=full_name, domain=domain, linkedin=linkedin)
+    _, _, call_with_key_pool_results = cc.require_api_key_pool()
+    result = call_with_key_pool_results(
+        "TRYKITT_API_KEY",
+        lambda key: _trykitt_find_with_key(key, cfg, full_name=full_name, domain=domain, linkedin=linkedin),
+        provider="trykitt",
+    )
     if result.get("status") == "http_error" and result.get("http_status") == 402:
         raise CreditsExhaustedError("trykitt out of credits")
     return result
@@ -333,22 +300,14 @@ def icypeas_find(
     if not firstname and not lastname:
         return {"error": "valid name required", "status": "bad_input", "provider": "icypeas"}
 
-    pool_fn = _import_key_pool()
-    if pool_fn:
-        call_with_key_pool_results, api_key_pool = pool_fn
-        if api_key_pool("ICYPEAS_API_KEY"):
-            return call_with_key_pool_results(
-                "ICYPEAS_API_KEY",
-                lambda key: _icypeas_find_with_key(
-                    key, cfg, full_name=full_name, domain=domain, linkedin=linkedin
-                ),
-                provider="icypeas",
-            )
-
-    api_key = (cfg.get("icypeas_api_key") or "").strip()
-    if not api_key:
-        return {"error": "ICYPEAS_API_KEY not set", "status": "no_key", "provider": "icypeas"}
-    return _icypeas_find_with_key(api_key, cfg, full_name=full_name, domain=domain, linkedin=linkedin)
+    _, _, call_with_key_pool_results = cc.require_api_key_pool()
+    return call_with_key_pool_results(
+        "ICYPEAS_API_KEY",
+        lambda key: _icypeas_find_with_key(
+            key, cfg, full_name=full_name, domain=domain, linkedin=linkedin
+        ),
+        provider="icypeas",
+    )
 
 
 def icypeas_poll_result(

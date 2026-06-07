@@ -305,3 +305,8 @@ def push_campaign_map(
 def push_db_health(api_base: str, token: str, payload: dict[str, Any]) -> dict[str, Any]:
     """POST aggregate local DB health (no lead PII). Explicit sync only."""
     return _request_json("POST", f"{api_base}/api/agent/db-health", token, body=payload)
+
+
+def push_api_key_status(api_base: str, token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """POST aggregate runtime API key status (no secret values)."""
+    return _request_json("POST", f"{api_base}/api/agent/api-key-status", token, body=payload)

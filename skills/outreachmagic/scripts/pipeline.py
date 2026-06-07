@@ -4814,9 +4814,47 @@ def sync_agent_secrets_cli(
             print(f"Sync failed: {exc}")
         return err
 
+    try:
+        from api_key_pool import maybe_push_api_key_status_to_cloud
+
+        status_result = maybe_push_api_key_status_to_cloud(
+            load_config_fn=load_config,
+            get_agent_key_fn=get_agent_key,
+            get_client_id_fn=get_or_create_client_id,
+            push_fn=routing_cloud.push_api_key_status,
+            quiet=quiet,
+        )
+        result = {**result, **status_result}
+    except ImportError:
+        pass
+
     if as_json:
         print(json.dumps(result))
+    elif result.get("api_key_status_reported") == "reported" and not quiet:
+        print("Runtime API key status reported to dashboard.")
     return result
+
+
+def api_keys_cli(*, as_json: bool = False, push: bool = False) -> dict:
+    from api_key_pool import build_api_keys_report, format_api_keys_report_text, maybe_push_api_key_status_to_cloud
+
+    report = build_api_keys_report()
+    if push:
+        report["cloud"] = maybe_push_api_key_status_to_cloud(
+            load_config_fn=load_config,
+            get_agent_key_fn=get_agent_key,
+            get_client_id_fn=get_or_create_client_id,
+            push_fn=routing_cloud.push_api_key_status,
+            quiet=False,
+        )
+    if as_json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(format_api_keys_report_text(report), end="")
+        cloud = report.get("cloud")
+        if isinstance(cloud, dict) and cloud.get("api_key_status_reported") == "reported":
+            print("Runtime status reported to dashboard.", flush=True)
+    return report
 
 
 def set_workspace_routing(
@@ -9220,6 +9258,17 @@ def main():
     sync_secrets_p.add_argument("--json", action="store_true", help="Emit JSON")
     sync_secrets_p.add_argument("--cron", action="store_true", help=argparse.SUPPRESS)
 
+    api_keys_p = sub.add_parser(
+        "api-keys",
+        help="Show runtime API key status (last use, errors, failover)",
+    )
+    api_keys_p.add_argument("--json", action="store_true", help="Emit JSON")
+    api_keys_p.add_argument(
+        "--push",
+        action="store_true",
+        help="Report runtime status to dashboard (no secret values)",
+    )
+
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
     pull_p.add_argument("--full", action="store_true", help="Re-import all relay events (after DB reset)")
@@ -9831,6 +9880,10 @@ def main():
         )
         if not result.get("ok", True) and getattr(args, "check", False) is False:
             sys.exit(1)
+        return
+
+    if args.command == "api-keys":
+        api_keys_cli(as_json=getattr(args, "json", False), push=getattr(args, "push", False))
         return
 
     if not db_exists():

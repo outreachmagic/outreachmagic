@@ -520,27 +520,12 @@ def _mv_provider(cfg: dict[str, Any]) -> MillionVerifierProvider:
 
 
 def _mv_verify_single(email: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    scripts_bases = [
-        Path.home() / ".hermes" / "skills" / "outreachmagic" / "scripts",
-        Path.home() / ".cursor" / "skills" / "outreachmagic" / "scripts",
-        Path.home() / ".claude" / "skills" / "outreachmagic" / "scripts",
-    ]
-    for base in scripts_bases:
-        if not (base / "api_key_pool.py").is_file():
-            continue
-        if str(base) not in sys.path:
-            sys.path.insert(0, str(base))
-        try:
-            from api_key_pool import api_key_pool, call_with_key_pool_results
-            if api_key_pool("MILLIONVERIFIER_API_KEY"):
-                return call_with_key_pool_results(
-                    "MILLIONVERIFIER_API_KEY",
-                    lambda key: MillionVerifierProvider(key).verify_single(email),
-                    provider="millionverifier",
-                )
-        except ImportError:
-            break
-    return _mv_provider(cfg).verify_single(email)
+    _, _, call_with_key_pool_results = cc.require_api_key_pool()
+    return call_with_key_pool_results(
+        "MILLIONVERIFIER_API_KEY",
+        lambda key: MillionVerifierProvider(key).verify_single(email),
+        provider="millionverifier",
+    )
 
 
 def cmd_verify(email: str, workspace: str = "") -> None:

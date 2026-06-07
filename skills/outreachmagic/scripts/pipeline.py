@@ -212,6 +212,7 @@ from relay_ingest import (
 # ──────────────────────────────────────────────────────────────────────
 
 from om_paths import (
+    get_agent_secrets_path,
     get_config_path,
     get_data_root,
     get_db_path,
@@ -9590,6 +9591,13 @@ def main():
 
     args = parser.parse_args()
 
+    # Load synced API keys (primary + backup __N slots) before any command that may call vendors.
+    if args.command not in (None, "update", "version"):
+        try:
+            agent_secrets_cloud.load_local_agent_secrets_to_environ()
+        except OSError:
+            pass
+
     # Check-only update notice (never downloads). At most once per hour.
     if args.command not in (None, "update", "version"):
         notify_update_available(quiet=getattr(args, "cron", False))
@@ -9605,6 +9613,7 @@ def main():
             "skill_home": str(get_skill_home()),
             "database": str(get_db_path()),
             "config": str(get_config_path()),
+            "agent_secrets": str(get_agent_secrets_path()),
             "working_root": str(get_working_root()),
             "cwd": str(Path.cwd()),
         }

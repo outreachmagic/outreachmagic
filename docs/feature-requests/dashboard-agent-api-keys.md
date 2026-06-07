@@ -41,7 +41,7 @@
 - [ ] `pipeline.py login` and `pull` auto-sync secrets (non-fatal on failure)
 - [ ] `sync-secrets --check` reports `configured` + `pool_sizes` (never values)
 - [ ] Synced keys override `.zshrc` / legacy env for same variable name
-- [ ] Per-org path `{data_root}/orgs/{organizationId}/agent_secrets.env` (mode 600)
+- [x] Skill config path `{skill_home}/config/agent_secrets.env` (mode 600)
 - [ ] Existing agent keys get `secrets:read` via migration (no re-login)
 
 **Key pools & failover**
@@ -153,7 +153,7 @@ flowchart TB
     Login["pipeline.py login"]
     Pull["pipeline.py pull"]
     Sync["pipeline.py sync-secrets"]
-    EnvFile["orgs/{orgId}/agent_secrets.env"]
+    EnvFile["config/agent_secrets.env"]
     Pool["api_key_pool.py"]
     Companions["lead-enrich / email-finder"]
     Vendors["serper.dev / trykitt.ai / icypeas / …"]
@@ -491,7 +491,7 @@ Non-fatal on failure: after `login`, during `pull` (with routing sync).
 **Files:** both `companion_common.py`
 
 1. `load_dotenv_file(..., override_existing=False|True)`
-2. Load chain: hermes `.env` → profile → repo → skill `default.env` → **`orgs/{orgId}/agent_secrets.env` last with `override_existing=True`**
+2. Load chain: **`config/agent_secrets.env` first (`override_all`)** → hermes `.env` → profile → repo → skill `default.env` (fill gaps only)
 3. Add `SERPER_API_KEY` to lead-enrich `_API_KEY_VARS`
 4. Load keys matching `^[A-Z][A-Z0-9_]+(__\d+)?$` from synced file
 5. Import `api_key_pool` in provider HTTP code paths
@@ -502,7 +502,7 @@ Non-fatal on failure: after `login`, during `pull` (with routing sync).
 
 | Priority | Source |
 |----------|--------|
-| 1 | `orgs/{orgId}/agent_secrets.env` after sync |
+| 1 | `{skill_home}/config/agent_secrets.env` after sync |
 | 2 | Shell / `.zshrc` |
 | 3 | `~/.hermes/.env`, profiles, `config.json` |
 

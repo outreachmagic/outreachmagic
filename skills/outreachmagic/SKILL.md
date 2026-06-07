@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
-version: 1.25.17
+version: 1.25.18
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -113,7 +113,7 @@ If `pull` returns an error like "No agent key or token configured", the user nee
 
 If the skill is not installed yet, point them to **https://app.outreachmagic.io/setup/agent** or **https://app.outreachmagic.io/dashboard/agent** for install commands, then `login`.
 
-`init` creates the database under `<skill_home>/databases/`. CSVs and exports use **`input/`** and **`export/`** relative to your **workspace directory** (where the agent runs commands). Set `"project_root"` in config to pin a fixed folder instead of cwd.
+`init` creates the database under `<skill_home>/databases/`. Dashboard API keys sync to `<skill_home>/config/agent_secrets.env` (next to `outreachmagic_config.json`). CSVs and exports use **`input/`** and **`export/`** relative to your **workspace directory** (where the agent runs commands). Set `"project_root"` in config to pin a fixed folder instead of cwd.
 
 If `pull` returns auth errors after a revoked key, tell them to run `login` again.
 

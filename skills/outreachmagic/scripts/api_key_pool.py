@@ -60,9 +60,9 @@ def key_fingerprint(key: str) -> tuple[str, str]:
 
 
 def status_file_path() -> Path:
-    from om_paths import get_data_root
+    from om_paths import get_config_path
 
-    return get_data_root() / _STATUS_FILENAME
+    return get_config_path().parent / _STATUS_FILENAME
 
 
 def load_key_status() -> dict[str, Any]:

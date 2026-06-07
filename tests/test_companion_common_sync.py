@@ -30,6 +30,10 @@ class CompanionCommonSyncTests(unittest.TestCase):
     def test_per_item_constant(self):
         self.assertEqual(cc.CHUNK_TIMEOUT_PER_ITEM_S, 0.8)
 
+    def test_pooled_api_key_var_includes_backup_slots(self):
+        self.assertTrue(cc._is_pooled_api_key_var("SERPER_API_KEY__1"))
+        self.assertFalse(cc._is_pooled_api_key_var("OTHER_KEY__1"))
+
 
 if __name__ == "__main__":
     unittest.main()

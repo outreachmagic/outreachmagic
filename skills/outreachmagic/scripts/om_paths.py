@@ -108,6 +108,10 @@ def get_config_path() -> Path:
     return get_skill_home() / "config" / "outreachmagic_config.json"
 
 
+def get_agent_secrets_path() -> Path:
+    return get_config_path().parent / "agent_secrets.env"
+
+
 def get_db_path() -> Path:
     return get_skill_home() / "databases" / "outreachmagic.db"
 

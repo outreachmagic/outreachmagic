@@ -155,7 +155,7 @@ flowchart LR
 | Cross-IDE | Same CLI + global skills | Same skill tree; optional **`data_root`** shares one DB across Hermes/Cursor/Claude |
 | Auth | Browser OAuth via CLI | `pipeline.py login` → agent key in `outreachmagic_config.json` |
 | Secrets (today) | Host `.env` + account | `.zshrc`, `~/.hermes/.env`, per-skill `config.json` |
-| Secrets (planned) | — | Dashboard **API Keys** → `sync-secrets` → `agent_secrets.env` ([feature doc](../feature-requests/dashboard-agent-api-keys.md)) |
+| Secrets | — | Dashboard **API Keys** → `sync-secrets` → `config/agent_secrets.env` ([feature doc](../feature-requests/dashboard-agent-api-keys.md)) |
 | Inbound network | Deepline API / playground | `pull` from `api.outreachmagic.io` (relay) |
 | Outbound upload | Workflow-dependent (SaaS) | Explicit `pipeline.py sync` only |
 | Windows | Strong (.cmd, Python shims) | SKILL metadata: `linux`, `macos` |

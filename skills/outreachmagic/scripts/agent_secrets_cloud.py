@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from om_paths import get_data_root
+from om_paths import get_agent_secrets_path
 
 DEFAULT_API_BASE = "https://app.outreachmagic.io"
 CONFIG_API_BASE_KEY = "api_base_url"
@@ -66,11 +66,9 @@ def fetch_secrets_bundle(api_base: str, token: str) -> dict[str, Any]:
     return _request_json("GET", f"{api_base}/api/agent-secrets", token)
 
 
-def agent_secrets_path(data_root: Path, organization_id: str) -> Path:
-    org_id = (organization_id or "").strip()
-    if org_id:
-        return data_root / "orgs" / org_id / "agent_secrets.env"
-    return data_root / "agent_secrets.env"
+def agent_secrets_path() -> Path:
+    """Synced API keys file under skill config (next to outreachmagic_config.json)."""
+    return get_agent_secrets_path()
 
 
 def env_var_for_slot(env_key: str, index: int) -> str:
@@ -144,6 +142,14 @@ def parse_agent_secrets_file(path: Path) -> dict[str, list[str]]:
     return out
 
 
+def load_local_agent_secrets_to_environ(*, override: bool = True) -> Path:
+    """Load synced keys from disk into os.environ (primary + backup __N slots)."""
+    path = agent_secrets_path()
+    pools = parse_agent_secrets_file(path)
+    apply_secrets_to_environ(pools, override=override)
+    return path
+
+
 def pool_sizes_from_pools(pools: dict[str, list[str]]) -> dict[str, int]:
     sizes: dict[str, int] = {k: 0 for k in CATALOG_ENV_KEYS}
     for key, values in pools.items():
@@ -174,8 +180,7 @@ def sync_agent_secrets_from_cloud(
     if not isinstance(secrets, dict):
         secrets = {}
 
-    data_root = get_data_root()
-    path = agent_secrets_path(data_root, org_id)
+    path = agent_secrets_path()
     keys_written = write_agent_secrets_env(path, secrets, version=version)
     apply_secrets_to_environ(secrets, override=True)
 
@@ -204,15 +209,8 @@ def check_agent_secrets_local(
     load_config_fn: Callable[[], dict],
 ) -> dict[str, Any]:
     cfg = load_config_fn()
-    org_id = str(cfg.get(CONFIG_ORGANIZATION_ID_KEY) or "").strip()
-    data_root = get_data_root()
-    path = agent_secrets_path(data_root, org_id)
+    path = load_local_agent_secrets_to_environ(override=True)
     pools = parse_agent_secrets_file(path)
-    for k, v in pools.items():
-        for idx, val in enumerate(v):
-            var = env_var_for_slot(k, idx)
-            if val.strip():
-                os.environ[var] = val.strip()
     return {
         "ok": True,
         "version": cfg.get(CONFIG_AGENT_SECRETS_VERSION_KEY),

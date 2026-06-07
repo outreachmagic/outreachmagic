@@ -59,6 +59,23 @@ _API_KEY_VARS = frozenset({
     "OUTREACHMAGIC_AGENT_KEY",
 })
 
+_POOL_API_KEY_BASES = (
+    "SERPER_API_KEY",
+    "TRYKITT_API_KEY",
+    "ICYPEAS_API_KEY",
+    "MILLIONVERIFIER_API_KEY",
+)
+
+
+def _is_pooled_api_key_var(key: str) -> bool:
+    if key in _API_KEY_VARS:
+        return True
+    for base in _POOL_API_KEY_BASES:
+        prefix = f"{base}__"
+        if key.startswith(prefix) and key[len(prefix) :].isdigit():
+            return True
+    return False
+
 
 def _env_value_empty(key: str) -> bool:
     val = os.environ.get(key, "")
@@ -95,11 +112,11 @@ def load_dotenv_file(
         if override_all:
             os.environ[key] = value
             continue
-        if force_api_keys and key in _API_KEY_VARS:
+        if force_api_keys and _is_pooled_api_key_var(key):
             if override_existing or _env_value_empty(key):
                 os.environ[key] = value
             continue
-        if override_existing and key in _API_KEY_VARS:
+        if override_existing and _is_pooled_api_key_var(key):
             os.environ[key] = value
             continue
         if key not in os.environ:
@@ -182,23 +199,9 @@ def _load_synced_agent_secrets() -> None:
         sys.path.insert(0, str(scripts))
     try:
         import agent_secrets_cloud
-        from om_paths import get_data_root
     except ImportError:
         return
-    cfg_path = om_home / "config" / "outreachmagic_config.json"
-    cfg: dict[str, Any] = {}
-    if cfg_path.is_file():
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            cfg = {}
-    org_id = str(cfg.get("organization_id") or "").strip()
-    data_root = get_data_root()
-    primary = agent_secrets_cloud.agent_secrets_path(data_root, org_id)
-    legacy = data_root / "agent_secrets.env"
-    load_dotenv_file(primary, override_all=True)
-    if legacy != primary:
-        load_dotenv_file(legacy, override_all=True)
+    load_dotenv_file(agent_secrets_cloud.agent_secrets_path(), override_all=True)
 
 
 def get_pipeline_path(om_dir: Path) -> Path:

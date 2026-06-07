@@ -37,10 +37,6 @@ Outreach Magic has a **private dev monorepo** and a **single public install repo
  (profiles symlink)       (+ .mdc overlay)         (+ CLAUDE_SNIPPET)
 ```
 
-### Legacy platform repos (removed)
-
-Fresh installs use [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) only. `pipeline.py update` no longer falls back to deprecated per-platform repos.
-
 ## How `pipeline.py update` works
 
 When a user runs `pipeline.py update`:
@@ -64,55 +60,6 @@ For tag `v1.21.0`:
 **Key requirement:** The public repo must have a GitHub **Release** (not only a git tag) or `update` / `update --check` cannot find the version.
 
 ---
-
-## v1.25.12 / email-finder v2.2.7 / lead-enrich v2.0.10 (batch import reliability)
-
-- **Fix:** Ship `data_freshness.py` in update manifest (v1.25.11 installs could crash every `pipeline.py` command).
-- **Import timeouts:** `companion_common._chunk_timeout` uses `per_item=0.8` (200 leads → 160s, cap 300s).
-- **Graceful import failure:** email-finder `batch-find` and lead-enrich `backfill` print recovery commands on timeout/error.
-- **CI:** `sync-companion-common.sh --check`, `test_pipeline_import_smoke.py`, expanded `run-tests.sh` (pytest suite).
-- **Canonical copy:** `skills/email-finder/scripts/companion_common.py` — run `bash scripts/sync-companion-common.sh` before companion tags.
-
----
-
-## email-finder v2.2.6 (simplified OM import)
-
-- Removed `prepare-import`; `import-to-om` accepts batch checkpoint `.csv` or `.json` directly.
-- Recovery: `import-to-om --file {output-base}.csv --workspace W`.
-
----
-
-## v1.25.11 / email-finder v2.2.5 / lead-enrich v2.0.9 (cleanup)
-
-- **Fast path only in email-finder** — `save_email_find_profiles()`; shared `run_import_profiles()` no longer routes lead-enrich through `apply-email-find-results`.
-- **`--workspace` required** for batch OM save and `import-to-om`.
-- Removed `parallel-find` CLI alias; simplified timeout handling (`_resolve_timeout`).
-- Docs trimmed (no version-floor or legacy Errno 7 notes).
-
----
-
-## v1.25.9+ batch OM import (reference)
-
-- **`apply-email-find-results`** — email-finder batch save when every row has `lead_id` + `--workspace`.
-- **`import-profiles`** — tiered match for CSV/lead-enrich; chunked 200 rows, up to 300s/chunk; payloads >100KB use `--file`.
-- **Canonical `companion_common.py`:** `skills/email-finder/scripts/` and `skills/lead-enrich/scripts/` only (keep copies in sync before each companion tag).
-
----
-
-## v1.25.8 highlights (CLI ergonomics)
-
-- **Data freshness** — read commands print `last_pull` age on stderr and in `--json` (`stale_minutes`, `freshness_message`).
-- **`pull --if-stale 5m`** / **`pull --force`** — skip redundant relay round-trips when data is fresh.
-- **Quarantine** — default list shows sample queue IDs; `quarantine skip --campaign-id` / `--all`.
-- **`workspace list --json`** — consistent with other commands.
-- **Fix** — `query --help` no longer crashes on `%` in example text.
-
-## v1.25.0 highlights (query layer)
-
-- **`pipeline.py query`** — read-only analytics presets: `engagement`, `replies`, `interested` (`--workspace`, `--since 48h`, `--json`).
-- **`references/query-guide.md`** — canonical SQL; copied to `project/agent_resources/` on `init`.
-- **`read_queries.py`**, **`schema.py`**, **`schema_views.py`** — faster agent reads; view `v_inbound_events_by_campaign`.
-- SKILL.md: SQL-first reads, pull only when freshness needed.
 
 ## How to release (maintainers)
 
@@ -263,7 +210,7 @@ After a release is published to the **platform** repo:
 # Hermes
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update --check
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update --tag v1.20.8
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update --tag vX.Y.Z
 
 # Cursor
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py update
@@ -272,7 +219,7 @@ python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py update
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py update
 ```
 
-If `update` fails on an **old** install, use `--tag` with a version you confirmed on GitHub:
+If `update` fails, use `--tag` with a release you confirmed on GitHub:
 
 `https://github.com/outreachmagic/outreachmagic/releases`
 
@@ -335,17 +282,15 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `ModuleNotFoundError: data_freshness` | v1.25.11 update missing `data_freshness.py` | `pipeline.py update --tag v1.25.12` (or copy `scripts/data_freshness.py` from release tree) |
+| `ModuleNotFoundError: data_freshness` | Incomplete `pipeline.py update` | `pipeline.py update` (or `update --tag vX.Y.Z`) |
 | `Update failed: HTTP Error 404` | Release missing on public repo or wrong tag | `gh release view vX.Y.Z --repo outreachmagic/outreachmagic`; reinstall from `outreachmagic/outreachmagic` if scripts are corrupt |
-| `import-profiles` / batch save timeout | Large chunk under load | Re-run `import-to-om` or `pipeline.py import-profiles --file …`; v2.2.6+ uses longer per-lead timeout |
-| `No GitHub release found` | Checking wrong repo (`magic-creators/outreachmagic-skill` is private) or release not created on public repo | `gh release view vX.Y.Z --repo outreachmagic/outreachmagic`; fix CI / `PUBLISH_TOKEN` |
+| `import-profiles` / batch save timeout | Large chunk under load | Re-run `import-to-om` or `pipeline.py import-profiles --file …` |
+| `No GitHub release found` | Checking private monorepo or release not on public repo | `gh release view vX.Y.Z --repo outreachmagic/outreachmagic`; fix CI / `PUBLISH_TOKEN` |
 | Tag on GitHub but update 404 | Release on **private** repo only | User needs **outreachmagic/outreachmagic**, not monorepo |
 | `update --check` says no update but GitHub has newer tag | Wrong `GITHUB_REPO` in installed script | Reinstall or verify `grep GITHUB_REPO …/pipeline.py` → `outreachmagic/outreachmagic` |
-| Checksum mismatch | Stale `update-manifest.json` in monorepo before tag, or manual edit of published files | Regenerate manifest before tag; re-run publish job |
+| Checksum mismatch | Stale `update-manifest.json` before tag, or manual edit of published files | Regenerate manifest before tag; re-run publish job |
 | `enrich.py update` manifest error | Stale lead-enrich manifest | `python3 scripts/generate-lead-enrich-manifest.py` before `lead-enrich-v*` tag |
 | CI publish fails | `PUBLISH_TOKEN` missing/expired | Rotate secret; re-run workflow |
-| User on old version forever | Never got one successful platform update | See 404 row; ship fix + doc; verify with post-release checklist above |
-| `platforms/common/install-companions.sh not found` on `curl \| bash` | Installer before v1.21.4 (piped script had no sibling files) | Use `main` or tag **v1.21.4+**; installer clones the public repo and re-execs |
 
 ### Bootstrap one stuck Hermes install (last resort)
 
@@ -357,8 +302,6 @@ curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/in
 ```
 
 Or download manifest files manually from `raw.githubusercontent.com/outreachmagic/outreachmagic/<tag>/skills/outreachmagic/…` (see `update_skill` in `pipeline.py`).
-
-Prefer `pipeline.py update --tag "$TAG"` once any v1.21+ copy is on disk.
 
 ---
 

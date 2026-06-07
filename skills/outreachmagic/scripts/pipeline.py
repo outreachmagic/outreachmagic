@@ -96,6 +96,7 @@ from workspace_routing import (
 )
 
 import routing_cloud
+import agent_secrets_cloud
 import connections_cloud
 import db_health
 import quarantine_resolutions as qres
@@ -2779,6 +2780,38 @@ def _validity_to_verify_status(validity: str, *, provider: str) -> str:
     return "unknown"
 
 
+def _conflicting_email_owner(
+    conn: sqlite3.Connection,
+    email: str,
+    lead_id: int,
+) -> Optional[int]:
+    """Return lead id that already owns this email, if different from lead_id."""
+    owner = find_lead_by_email(conn, email)
+    if owner is None or int(owner) == int(lead_id):
+        return None
+    return int(owner)
+
+
+def _apply_email_find_email_sets(
+    *,
+    overwrite: bool,
+    email_norm: str,
+    domain_from_email: str,
+) -> tuple[list[str], list]:
+    if overwrite:
+        return (
+            ["email = ?", "email_domain = ?"],
+            [email_norm, domain_from_email],
+        )
+    return (
+        [
+            "email = COALESCE(NULLIF(TRIM(email), ''), ?)",
+            "email_domain = COALESCE(NULLIF(TRIM(email_domain), ''), ?)",
+        ],
+        [email_norm, domain_from_email],
+    )
+
+
 def apply_email_find_results(
     rows: list[dict],
     *,
@@ -2798,6 +2831,7 @@ def apply_email_find_results(
         "personalized": 0,
         "tagged": 0,
         "recorded": 0,
+        "email_conflicts": 0,
         "errors": [],
         "results": [],
         "mode": "apply_email_find_results",
@@ -2854,21 +2888,22 @@ def apply_email_find_results(
             )
             notes = extra.get("notes")
 
-            sets: list[str] = []
-            params: list = []
+            email_conflict_id: Optional[int] = None
+            email_sets: list[str] = []
+            email_params: list = []
             if email_norm:
-                domain_from_email = email_domain(email_norm)
-                if overwrite:
-                    sets.extend(["email = ?", "email_domain = ?"])
-                    params.extend([email_norm, domain_from_email])
-                else:
-                    sets.extend([
-                        "email = COALESCE(NULLIF(TRIM(email), ''), ?)",
-                        "email_domain = COALESCE(NULLIF(TRIM(email_domain), ''), ?)",
-                    ])
-                    params.extend([email_norm, domain_from_email])
+                email_conflict_id = _conflicting_email_owner(ws_conn, email_norm, lid)
+                if not email_conflict_id:
+                    email_sets, email_params = _apply_email_find_email_sets(
+                        overwrite=overwrite,
+                        email_norm=email_norm,
+                        domain_from_email=email_domain(email_norm),
+                    )
+
+            meta_sets: list[str] = []
+            meta_params: list = []
             if row_source:
-                sets.extend([
+                meta_sets.extend([
                     "latest_source = ?",
                     "latest_source_detail = ?",
                     "latest_source_platform = ?",
@@ -2879,41 +2914,81 @@ def apply_email_find_results(
                     "original_source_at = COALESCE(original_source_at, ?)",
                     "cloud_pending = 1",
                 ])
-                params.extend([
+                meta_params.extend([
                     row_source, row_source_detail, "csv", now_ts,
                     row_source, row_source_detail, "csv", now_ts,
                 ])
             if notes:
                 if overwrite:
-                    sets.append("notes = ?")
-                    params.append(notes)
+                    meta_sets.append("notes = ?")
+                    meta_params.append(notes)
                 else:
-                    sets.append(
+                    meta_sets.append(
                         "notes = CASE WHEN notes IS NULL OR notes = '' THEN ? ELSE notes END",
                     )
-                    params.append(notes)
+                    meta_params.append(notes)
 
             enriched = False
-            if sets:
-                sets.append("updated_at = datetime('now')")
-                params.append(lid)
-                ws_conn.execute(
-                    f"UPDATE leads SET {', '.join(sets)} WHERE id = ?",
-                    params,
-                )
-                enriched = True
+            email_skipped = bool(email_conflict_id)
+            update_sets = [*email_sets, *meta_sets]
+            update_params = [*email_params, *meta_params]
+            if update_sets:
+                update_sets.append("updated_at = datetime('now')")
+                update_params.append(lid)
+                try:
+                    ws_conn.execute(
+                        f"UPDATE leads SET {', '.join(update_sets)} WHERE id = ?",
+                        update_params,
+                    )
+                    enriched = True
+                except sqlite3.IntegrityError:
+                    if email_sets:
+                        email_skipped = True
+                        retry_sets = [*meta_sets]
+                        retry_params = [*meta_params]
+                        if retry_sets:
+                            retry_sets.append("updated_at = datetime('now')")
+                            retry_params.append(lid)
+                            try:
+                                ws_conn.execute(
+                                    f"UPDATE leads SET {', '.join(retry_sets)} WHERE id = ?",
+                                    retry_params,
+                                )
+                                enriched = True
+                            except sqlite3.IntegrityError as exc:
+                                summary["errors"].append({
+                                    "row": i + 1,
+                                    "lead_id": lid,
+                                    "error": str(exc),
+                                })
+                                continue
+                    else:
+                        summary["errors"].append({
+                            "row": i + 1,
+                            "lead_id": lid,
+                            "error": "integrity constraint on lead update",
+                        })
+                        continue
+
+            if email_skipped:
+                summary["email_conflicts"] += 1
 
             summary["processed"] += 1
             summary["matched"] += 1
             if enriched:
                 summary["enriched"] += 1
-            summary["results"].append({
+            row_result: dict = {
                 "lead_id": lid,
                 "id": lid,
                 "status": "matched",
                 "filled": enriched,
                 "match_method": "lead_id",
-            })
+            }
+            if email_skipped:
+                row_result["email_skipped"] = True
+                if email_conflict_id:
+                    row_result["email_conflict_lead_id"] = email_conflict_id
+            summary["results"].append(row_result)
 
             tags = _tags_from_import_row(raw, extra)
             if tags:
@@ -2951,6 +3026,7 @@ def apply_email_find_results(
                 int(item["lead_id"]),
                 item["status"],
                 item["source"],
+                email_override=item.get("email"),
                 source_detail=item.get("source_detail"),
                 conn=ws_conn,
                 commit=False,
@@ -4683,6 +4759,63 @@ def maybe_sync_routing_from_cloud(*, quiet: bool = False) -> bool:
         return True
     finally:
         conn.close()
+
+
+def maybe_sync_agent_secrets_from_cloud(*, quiet: bool = False) -> bool:
+    """Pull org BYOK API keys from wbhk-app when an agent key is configured."""
+    return agent_secrets_cloud.maybe_sync_agent_secrets_from_cloud(
+        load_config_fn=load_config,
+        save_config_fn=save_config,
+        get_agent_key_fn=get_agent_key,
+        quiet=quiet,
+    )
+
+
+def sync_agent_secrets_cli(
+    *,
+    check_only: bool = False,
+    as_json: bool = False,
+    quiet: bool = False,
+) -> dict:
+    if check_only:
+        result = agent_secrets_cloud.check_agent_secrets_local(load_config)
+        if as_json:
+            print(json.dumps(result))
+        else:
+            print(f"Local API keys: {result.get('path')}")
+            for key, ok in (result.get("configured") or {}).items():
+                size = (result.get("pool_sizes") or {}).get(key, 0)
+                print(f"  {key}: {'set' if ok else 'missing'} (pool={size})")
+        return result
+
+    tok = get_agent_key()
+    if not agent_secrets_cloud.cloud_secrets_enabled(load_config, tok):
+        err = {"ok": False, "error": "Not logged in. Run: pipeline.py login"}
+        if as_json:
+            print(json.dumps(err))
+        else:
+            print(err["error"])
+        return err
+
+    try:
+        result = agent_secrets_cloud.sync_agent_secrets_from_cloud(
+            api_base=agent_secrets_cloud.get_api_base(load_config),
+            token=tok or "",
+            load_config_fn=load_config,
+            save_config_fn=save_config,
+            quiet=quiet,
+        )
+    except RuntimeError as exc:
+        err = {"ok": False, "error": str(exc)}
+        if as_json:
+            print(json.dumps(err))
+        else:
+            print(f"Sync failed: {exc}")
+        return err
+
+    if as_json:
+        print(json.dumps(result))
+    return result
 
 
 def set_workspace_routing(
@@ -7412,6 +7545,11 @@ def sync_from_relay_org(
             maybe_sync_routing_from_cloud(quiet=quiet)
         except RuntimeError as exc:
             raise RuntimeError(_pull_failure_message(exc)) from exc
+        try:
+            maybe_sync_agent_secrets_from_cloud(quiet=quiet)
+        except Exception:
+            if not quiet:
+                print("API key sync skipped (non-fatal).", flush=True)
     elif not quiet and do_events:
         print("Skipped routing config sync (--skip-routing-sync).", flush=True)
     if not quiet:
@@ -8063,6 +8201,16 @@ def _save_agent_key_and_validate(agent_key: str):
         maybe_sync_routing_from_cloud(quiet=True)
     except Exception:
         pass
+    try:
+        maybe_sync_agent_secrets_from_cloud(quiet=True)
+    except Exception:
+        pass
+
+    org_cloud_id = str(result.get("organization_id") or "").strip()
+    if org_cloud_id:
+        cfg = load_config()
+        cfg["organization_id"] = org_cloud_id
+        save_config(cfg)
 
     count = result.get("count", 0) if not result.get("error") else 0
     if count > 0:
@@ -9047,6 +9195,14 @@ def main():
     )
     sub.add_parser("logout", help="Clear local agent credentials")
 
+    sync_secrets_p = sub.add_parser(
+        "sync-secrets",
+        help="Sync org API keys from dashboard vault to local agent_secrets.env",
+    )
+    sync_secrets_p.add_argument("--check", action="store_true", help="Report local key status only (no network)")
+    sync_secrets_p.add_argument("--json", action="store_true", help="Emit JSON")
+    sync_secrets_p.add_argument("--cron", action="store_true", help=argparse.SUPPRESS)
+
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
     pull_p.add_argument("--full", action="store_true", help="Re-import all relay events (after DB reset)")
@@ -9649,6 +9805,16 @@ def main():
         return
     if args.command == "logout":
         logout()
+        return
+
+    if args.command == "sync-secrets":
+        result = sync_agent_secrets_cli(
+            check_only=getattr(args, "check", False),
+            as_json=getattr(args, "json", False),
+            quiet=getattr(args, "cron", False),
+        )
+        if not result.get("ok", True) and getattr(args, "check", False) is False:
+            sys.exit(1)
         return
 
     if not db_exists():

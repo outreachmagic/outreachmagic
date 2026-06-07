@@ -11,7 +11,7 @@ from typing import Optional
 
 from db_conn import get_conn
 from relay_extractors import extract_bounce_fields
-from workspace_routing import DEFAULT_ORG_ID
+from workspace_routing import DEFAULT_ORG_ID, normalize_email
 
 BOUNCE_EVENT_TYPES = frozenset({
     "email_bounce",
@@ -426,6 +426,7 @@ def verify_email(
     status: str,
     source: str,
     *,
+    email_override: Optional[str] = None,
     sub_status: Optional[str] = None,
     source_detail: Optional[str] = None,
     free_email: Optional[bool] = None,
@@ -443,7 +444,10 @@ def verify_email(
         if own_conn:
             conn.close()
         return {"status": "error", "error": f"Lead {lead_id} not found"}
-    email = row["email"] or ""
+    if email_override:
+        email = normalize_email(email_override) or ""
+    else:
+        email = row["email"] or ""
     org_id = DEFAULT_ORG_ID
     ver_id = f"ver_{lead_id}_{source}"
     now_ts = datetime.now(timezone.utc).isoformat()

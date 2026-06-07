@@ -33,6 +33,7 @@
 | [positioning/skill-path.md](./positioning/skill-path.md) | Install paths and Hub category |
 | [positioning/launch-strategy.md](./positioning/launch-strategy.md) | Launch checklist, cross-platform, platform framing |
 | [positioning/gap-analysis.md](./positioning/gap-analysis.md) | Competitive landscape and moat |
+| [positioning/deepline-competitor-analysis.md](./positioning/deepline-competitor-analysis.md) | **Deepline** — CLI, skills.sh, install/data model vs OM |
 
 ## Archive
 

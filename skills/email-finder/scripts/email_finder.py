@@ -519,10 +519,33 @@ def _mv_provider(cfg: dict[str, Any]) -> MillionVerifierProvider:
     return MillionVerifierProvider(str(cfg.get("millionverifier_api_key") or ""))
 
 
+def _mv_verify_single(email: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    scripts_bases = [
+        Path.home() / ".hermes" / "skills" / "outreachmagic" / "scripts",
+        Path.home() / ".cursor" / "skills" / "outreachmagic" / "scripts",
+        Path.home() / ".claude" / "skills" / "outreachmagic" / "scripts",
+    ]
+    for base in scripts_bases:
+        if not (base / "api_key_pool.py").is_file():
+            continue
+        if str(base) not in sys.path:
+            sys.path.insert(0, str(base))
+        try:
+            from api_key_pool import api_key_pool, call_with_key_pool_results
+            if api_key_pool("MILLIONVERIFIER_API_KEY"):
+                return call_with_key_pool_results(
+                    "MILLIONVERIFIER_API_KEY",
+                    lambda key: MillionVerifierProvider(key).verify_single(email),
+                    provider="millionverifier",
+                )
+        except ImportError:
+            break
+    return _mv_provider(cfg).verify_single(email)
+
+
 def cmd_verify(email: str, workspace: str = "") -> None:
     cfg = load_config()
-    mv = _mv_provider(cfg)
-    result = mv.verify_single(email)
+    result = _mv_verify_single(email, cfg)
     if result.get("status") in ("error", "http_error", "no_key"):
         print(json.dumps(result, indent=2))
         sys.exit(1)

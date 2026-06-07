@@ -27,7 +27,7 @@ install.sh                     # Unified cross-platform installer
 platforms/
   common/install-companions.sh
   overlays/                    # Cursor .mdc, Claude snippet
-  hermes|cursor|claude-code/   # Thin install wrappers + legacy READMEs
+  hermes|cursor|claude-code/   # Thin install wrappers
 .github/workflows/
   release.yml                  # Build tarball + GitHub Release on v* tag (private repo)
   publish-platforms.yml        # Push to outreachmagic/outreachmagic on v* tag

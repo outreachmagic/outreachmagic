@@ -75,6 +75,7 @@ The AI agent skills ecosystem for GTM/SDR/lead generation is dominated by **Clau
 
 | Threat | Risk | Mitigation |
 |---|---|---|
+| Deepline (CLI + skills.sh GTM meta skill) | Medium | See [deepline-competitor-analysis.md](./deepline-competitor-analysis.md) — differentiate on pipeline data layer; match onboarding (API Keys, skills.sh) |
 | ColdIQ or Extruct adds database/persistence | Medium | Speed to market + sequencer integrations |
 | Sequencers build AI agent integrations | Low | Cross-sequencer unification is the value |
 | Claude Code adds native state persistence | Low | Domain-specific schema beats generic state |

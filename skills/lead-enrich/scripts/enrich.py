@@ -790,15 +790,7 @@ def build_curl_command(query: str, config: dict[str, Any]) -> str:
     )
 
 
-def serper_search(query: str, config: dict[str, Any]) -> dict[str, Any]:
-    """Run one Serper search via stdlib HTTP. Raises ValueError on missing key or HTTP error."""
-    api_key = (config.get("serper_api_key") or "").strip()
-    if not api_key:
-        raise ValueError(
-            "serper_api_key not set — add SERPER_API_KEY to ~/.hermes/.env, "
-            "config.json, or export SERPER_API_KEY"
-        )
-
+def _serper_search_with_key(api_key: str, query: str, config: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps({
         "q": query,
         "num": config.get("serper_num_results", 10),
@@ -823,6 +815,41 @@ def serper_search(query: str, config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Serper HTTP {e.code}: {body}") from e
     except urllib.error.URLError as e:
         raise ValueError(f"Serper request failed: {e}") from e
+
+
+def serper_search(query: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Run one Serper search via stdlib HTTP. Raises ValueError on missing key or HTTP error."""
+    api_key = (config.get("serper_api_key") or os.environ.get("SERPER_API_KEY") or "").strip()
+    if not api_key and not os.environ.get("SERPER_API_KEY"):
+        raise ValueError(
+            "serper_api_key not set — add SERPER_API_KEY in Dashboard → API Keys, "
+            "~/.hermes/.env, or config.json"
+        )
+
+    scripts_dir = Path(__file__).resolve().parent.parent.parent / "outreachmagic" / "scripts"
+    if not (scripts_dir / "api_key_pool.py").is_file():
+        for base in (Path.home() / ".hermes" / "skills", Path.home() / ".cursor" / "skills", Path.home() / ".claude" / "skills"):
+            candidate = base / "outreachmagic" / "scripts"
+            if (candidate / "api_key_pool.py").is_file():
+                scripts_dir = candidate
+                break
+    if str(scripts_dir) not in sys.path and (scripts_dir / "api_key_pool.py").is_file():
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        from api_key_pool import api_key_pool, call_with_key_pool
+        if api_key_pool("SERPER_API_KEY"):
+            return call_with_key_pool(
+                "SERPER_API_KEY",
+                lambda key: _serper_search_with_key(key, query, config),
+                provider="serper",
+            )
+    except ImportError:
+        pass
+
+    key = api_key or (os.environ.get("SERPER_API_KEY") or "").strip()
+    if not key:
+        raise ValueError("SERPER_API_KEY not set")
+    return _serper_search_with_key(key, query, config)
 
 
 # ── Serper result formatting ─────────────────────────────────────────────────

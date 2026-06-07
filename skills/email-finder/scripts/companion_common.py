@@ -52,6 +52,7 @@ def parse_dotenv_line(line: str) -> Optional[tuple[str, str]]:
 
 
 _API_KEY_VARS = frozenset({
+    "SERPER_API_KEY",
     "TRYKITT_API_KEY",
     "ICYPEAS_API_KEY",
     "MILLIONVERIFIER_API_KEY",
@@ -68,7 +69,13 @@ def _env_value_empty(key: str) -> bool:
     return False
 
 
-def load_dotenv_file(path: Path, *, force_api_keys: bool = False) -> None:
+def load_dotenv_file(
+    path: Path,
+    *,
+    force_api_keys: bool = False,
+    override_existing: bool = False,
+    override_all: bool = False,
+) -> None:
     if not path.is_file():
         return
     try:
@@ -83,13 +90,17 @@ def load_dotenv_file(path: Path, *, force_api_keys: bool = False) -> None:
         if not parsed:
             continue
         key, value = parsed
+        if not value or value.strip() in ("***", "changeme", "your_key_here"):
+            continue
+        if override_all:
+            os.environ[key] = value
+            continue
         if force_api_keys and key in _API_KEY_VARS:
-            if (
-                value
-                and value.strip() not in ("***", "changeme", "your_key_here")
-                and _env_value_empty(key)
-            ):
+            if override_existing or _env_value_empty(key):
                 os.environ[key] = value
+            continue
+        if override_existing and key in _API_KEY_VARS:
+            os.environ[key] = value
             continue
         if key not in os.environ:
             os.environ[key] = value
@@ -115,6 +126,8 @@ def ensure_agent_env_loaded(skill_dir: Optional[Path] = None, *, reload: bool = 
     global _AGENT_ENV_LOADED
     if _AGENT_ENV_LOADED and not reload:
         return
+    # Dashboard-synced keys first; local .env files only fill gaps (force_api_keys skips set vars).
+    _load_synced_agent_secrets()
     home = agent_home()
     for name in (".env", "default.env"):
         load_dotenv_file(home / name, force_api_keys=True)
@@ -156,6 +169,36 @@ def find_outreachmagic(
         if (candidate / "scripts" / "pipeline.py").exists():
             return candidate
     return None
+
+
+def _load_synced_agent_secrets() -> None:
+    om_home = find_outreachmagic({})
+    if not om_home:
+        return
+    scripts = om_home / "scripts"
+    if not (scripts / "agent_secrets_cloud.py").is_file():
+        return
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    try:
+        import agent_secrets_cloud
+        from om_paths import get_data_root
+    except ImportError:
+        return
+    cfg_path = om_home / "config" / "outreachmagic_config.json"
+    cfg: dict[str, Any] = {}
+    if cfg_path.is_file():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cfg = {}
+    org_id = str(cfg.get("organization_id") or "").strip()
+    data_root = get_data_root()
+    primary = agent_secrets_cloud.agent_secrets_path(data_root, org_id)
+    legacy = data_root / "agent_secrets.env"
+    load_dotenv_file(primary, override_all=True)
+    if legacy != primary:
+        load_dotenv_file(legacy, override_all=True)
 
 
 def get_pipeline_path(om_dir: Path) -> Path:

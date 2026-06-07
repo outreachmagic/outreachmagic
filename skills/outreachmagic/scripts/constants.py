@@ -26,6 +26,7 @@ RELAY_PUSH_RETRY_BASE_SECONDS = 2
 
 BILLING_UPGRADE_URL = "https://app.outreachmagic.io/dashboard/billing"
 USAGE_WARNING_PERCENT = 80
+USAGE_CRITICAL_PERCENT = 95
 
 PIPELINE_STAGES = [
     "prospecting", "contacted", "replied", "interested",

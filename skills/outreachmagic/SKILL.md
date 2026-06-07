@@ -7,8 +7,8 @@ description: >
   views, client briefings, deliverability diagnostics, campaign breakdowns,
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
-  Free tier: local tracking plus 1,000 relay events/mo. Pro: sequencer sync.
-version: 1.25.15
+  Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
+version: 1.25.16
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -273,18 +273,27 @@ Tag-only (same tag data as summary): `pipeline.py tag list --workspace <slug>`.
 
 ## Free Tier
 
-- Unlimited agent-originated tracking and local pipeline queries
-- CLI pipeline view + web dashboard
-- Pipeline stages with auto-advancement
-- **1,000 relay events/month** (webhook sync from sequencers)
+- Unlimited local tracking, enrichment, queries, and exports
+- **1,000 relay events / period** (sequencer webhooks + cloud sync)
+- 1 sequencer connection, single workspace
 
 ## Pro Tier ($9/mo)
 
-- **50,000 relay events/month** (cap — covers most teams)
-- Smartlead, Heyreach, Instantly, PlusVibe, EmailBison sync
-- Multi-platform unified pipeline
+- **50,000 relay events / month**
+- All sequencers, multi-workspace routing
 
-Local import, export, dedup checks (lead-enrich), and `verify-email` recording do **not** count toward relay limits.
+## Agency Tier ($29/mo)
+
+- **250,000 relay events / month**
+- All sequencers, unlimited workspaces, priority support
+
+### What counts
+
+Only **relay-synced events**: sequencer webhooks and `pipeline.py sync` uploads to the cloud (**one event per sync batch**, not per lead). Local tracking (`log-event`, `add-lead`), enrichment dedup, email finding, queries, and exports do **not** count.
+
+### Over limit
+
+Sequencer webhooks are always accepted. Over-quota events are **buffered** and delivered on your next `pull` or when the quota resets. Events are only rejected if the **buffer cap** is reached. Check status with `pipeline.py status`.
 
 Sign up at https://outreachmagic.io
 

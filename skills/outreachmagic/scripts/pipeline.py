@@ -153,6 +153,7 @@ from constants import (
     SHARED_EMAIL_DOMAINS,
     STAGE_EMOJI,
     USAGE_WARNING_PERCENT,
+    USAGE_CRITICAL_PERCENT,
 )
 from db_conn import apply_bulk_pull_pragmas, end_bulk_pull_session, get_conn
 from formatters import (
@@ -5566,7 +5567,7 @@ def _relay_push_batches(
                 detail = f": {body_text}" if body_text else ""
                 last_error = f"relay push HTTP {exc.code}{hint}{detail}"
                 if throttled:
-                    last_error += f" — monthly event limit reached. Upgrade at {BILLING_UPGRADE_URL}"
+                    last_error += f" — buffer cap reached; events not stored. Upgrade at {BILLING_UPGRADE_URL}"
                 break
             except urllib.error.URLError as exc:
                 reason_text = str(exc.reason or exc).strip()
@@ -8300,6 +8301,11 @@ def cmd_status():
     plan = (data.get("plan") or "free").capitalize()
     events_used = int(data.get("eventsUsed", 0) or 0)
     events_limit = data.get("eventsLimit")
+    events_buffered = int(data.get("eventsBuffered", 0) or 0)
+    buffer_cap = data.get("bufferCap")
+    billing_notice = data.get("billingNotice")
+    usage_critical = data.get("usageCritical", False)
+    usage_exhausted = data.get("usageExhausted", False)
     resets_at = data.get("resetsAt", "")
     is_canceling = data.get("isCanceling", False)
     upgrade_url = data.get("upgradeUrl") or BILLING_UPGRADE_URL
@@ -8325,14 +8331,26 @@ def cmd_status():
     plan_suffix = ""
     if is_canceling:
         plan_suffix = " (canceling)"
-    print(f"Plan: {plan}{plan_suffix}  |  Events this month: {usage_str}  |  Resets: {resets_label}")
+    print(f"Plan: {plan}{plan_suffix}  |  Relay events: {usage_str}  |  Resets: {resets_label}")
 
-    if events_limit:
-        if events_used >= events_limit:
-            print(f"⚠  Monthly limit reached. New relay events are rejected (HTTP 429). Upgrade: {upgrade_url}")
+    if billing_notice:
+        print(f"⚠  {billing_notice}")
+        print(f"   {upgrade_url}")
+    elif events_limit:
+        pct = round((events_used / events_limit) * 100) if events_limit else 0
+        if usage_exhausted:
+            if events_buffered:
+                print(f"⚠  Quota reached. {events_buffered} buffered (cap {buffer_cap or '—'}). Run pull to deliver.")
+            else:
+                print(f"⚠  Quota reached. Over-limit events buffer until pull or reset.")
+            print(f"   {upgrade_url}")
+        elif usage_critical or pct >= USAGE_CRITICAL_PERCENT:
+            remaining = max(0, events_limit - events_used)
+            print(f"⚠  {pct}% used ({remaining} remaining). Consider upgrading.")
+            print(f"   {upgrade_url}")
         elif pct >= USAGE_WARNING_PERCENT:
             remaining = max(0, events_limit - events_used)
-            print(f"⚠  {pct}% of monthly limit used ({remaining} remaining). Upgrade: {upgrade_url}")
+            print(f"⚠  {pct}% used ({remaining} remaining).")
     print()
 
     connections = data.get("connections", [])

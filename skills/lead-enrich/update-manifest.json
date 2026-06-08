@@ -8,7 +8,7 @@
     "default.env": "ee560781a9ab44025bd3c238c98e24d4f37c6ad5c3d8e0e9ef5803e2ccec8d6b",
     ".gitignore": "745e5bfc6d53645da242479825e56d53fb2cffc0a88f26e47bb0fd06740b157b",
     "references/email-finder.md": "0d715131671229f9511fef4dd5a8ea4053962429cc46a3ce7d8442dae7a649cb",
-    "scripts/companion_common.py": "2699da69d55ddeeb24b281dbec20c0801f678d60f3ec5d248866ebb3fbe9cb4e",
+    "scripts/companion_common.py": "c01d6474d1e05bdddf945e51f027035c98e37bfb097b9dc15e08603658c2b84b",
     "scripts/enrich.py": "57234751ee24f246ff60e9d64ed2e79aa133511dafb50b617f9ce57a4916439a"
   }
 }

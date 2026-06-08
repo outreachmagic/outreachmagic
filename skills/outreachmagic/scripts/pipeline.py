@@ -99,6 +99,8 @@ import routing_cloud
 import agent_secrets_cloud
 import connections_cloud
 import db_health
+import pipeline_dedup
+import review_cloud
 import quarantine_resolutions as qres
 import workspace_archive
 import query_cli
@@ -9414,6 +9416,48 @@ def main():
     hist_p.add_argument("--name", help="Find lead by name (partial match)")
     hist_p.add_argument("--workspace", help="Filter lead lookup by workspace name or slug")
 
+    dedup_p = sub.add_parser("dedup", help="Find and batch-merge duplicate leads")
+    dedup_sub = dedup_p.add_subparsers(dest="dedup_command", required=True)
+
+    dedup_find_p = dedup_sub.add_parser("find", help="Scan workspace for duplicate leads")
+    dedup_find_p.add_argument("--workspace", required=True, help="Workspace slug")
+    dedup_find_p.add_argument("--tag", help="Tag filter (supports %% wildcards)")
+    dedup_find_p.add_argument("--output", help="Write candidates JSON (default stdout)")
+    dedup_find_p.add_argument(
+        "--min-confidence",
+        choices=pipeline_dedup.CONFIDENCE_ORDER,
+        default=pipeline_dedup.MIN_CONFIDENCE_DEFAULT_FIND,
+    )
+
+    dedup_merge_p = dedup_sub.add_parser("merge", help="Batch-merge from candidates JSON")
+    dedup_merge_p.add_argument("--candidates", required=True, help="JSON from dedup find")
+    dedup_merge_p.add_argument("--commit", action="store_true", help="Perform merges (default dry-run)")
+    dedup_merge_p.add_argument(
+        "--min-confidence",
+        choices=pipeline_dedup.CONFIDENCE_ORDER,
+        default=pipeline_dedup.MIN_CONFIDENCE_DEFAULT_MERGE,
+    )
+    dedup_merge_p.add_argument("--reason", default="dedup", help="Reason stored in lead_merges")
+
+    review_p = sub.add_parser("review", help="Hosted Google Sheets review (no local Google creds)")
+    review_sub = review_p.add_subparsers(dest="review_command", required=True)
+
+    review_templates_p = review_sub.add_parser("templates", help="List review templates")
+    review_templates_sub = review_templates_p.add_subparsers(dest="templates_command", required=True)
+    review_templates_sub.add_parser("list", help="List available templates")
+
+    review_export_p = review_sub.add_parser("export", help="Export candidates to a review sheet via OM API")
+    review_export_p.add_argument("--template", default="dedup-review")
+    review_export_p.add_argument("--input", required=True, help="candidates.json from dedup find")
+    review_export_p.add_argument("--title", default="Outreach Dedup Review")
+    review_export_p.add_argument("--share-email", help="Email to share sheet with (default: org owner)")
+
+    review_sync_p = review_sub.add_parser("sync", help="Read sheet approvals and merge locally")
+    review_sync_p.add_argument("--sheet-id", required=True)
+    review_sync_p.add_argument("--template", default="dedup-review")
+    review_sync_p.add_argument("--dry-run", action="store_true", help="Report approved rows only")
+    review_sync_p.add_argument("--commit", action="store_true", help="Merge approved rows and write results")
+
     merge_p = sub.add_parser("merge-leads", help="Merge two lead records into one")
     merge_p.add_argument("--keep", type=int, help="Lead ID to keep")
     merge_p.add_argument("--merge", type=int, help="Lead ID to merge into --keep and delete")
@@ -10374,6 +10418,160 @@ def main():
             conn.close()
             result["workspace"] = ws_row["slug"]
         print(json.dumps(result))
+    elif args.command == "review":
+        tok = get_agent_key()
+        if not tok:
+            print(json.dumps({"error": "login required — pipeline.py login"}))
+            sys.exit(1)
+        api_base = review_cloud.get_api_base(load_config)
+        if args.review_command == "templates" and args.templates_command == "list":
+            print(json.dumps({"templates": ["dedup-review"]}, indent=2))
+        elif args.review_command == "export":
+            try:
+                in_path = resolve_project_path(args.input, kind="input")
+                payload = pipeline_dedup.load_candidates_file(str(in_path))
+            except (OSError, ValueError, json.JSONDecodeError) as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+            candidates = payload.get("candidates") or []
+            if not candidates:
+                print(json.dumps({"error": "no candidates in input file"}))
+                sys.exit(1)
+            try:
+                result = review_cloud.export_review(
+                    api_base,
+                    tok,
+                    template=args.template,
+                    candidates=candidates,
+                    title=args.title,
+                    share_email=getattr(args, "share_email", None),
+                )
+            except RuntimeError as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+            print(json.dumps(result, indent=2))
+        elif args.review_command == "sync":
+            try:
+                read_result = review_cloud.sync_read(
+                    api_base, tok, sheet_id=args.sheet_id, template=args.template,
+                )
+            except RuntimeError as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+            approved = read_result.get("approved") or []
+            if not approved:
+                print(json.dumps({"status": "noop", "approved": 0, "message": "no rows to sync"}))
+                sys.exit(0)
+            merge_candidates = [
+                {"keep_id": int(row["keep_id"]), "merge_id": int(row["merge_id"])}
+                for row in approved
+            ]
+            if args.dry_run or not args.commit:
+                print(json.dumps({
+                    "status": "dry_run",
+                    "approved": len(merge_candidates),
+                    "approved_pairs": merge_candidates,
+                }, indent=2))
+                sys.exit(0)
+            conn = get_conn()
+            try:
+                merge_result = pipeline_dedup.batch_merge_candidates(
+                    conn,
+                    merge_candidates,
+                    commit=True,
+                    reason="dedup_review",
+                    merge_leads_fn=merge_leads,
+                )
+            finally:
+                conn.close()
+            failures = {
+                (int(f.get("keep_id")), int(f.get("merge_id"))): f.get("error", "failed")
+                for f in (merge_result.get("failures") or [])
+            }
+            sheet_results = []
+            for pair in merge_candidates:
+                key = (pair["keep_id"], pair["merge_id"])
+                if key in failures:
+                    text = f"✗ {failures[key]}"
+                else:
+                    text = "✓ Merged"
+                sheet_results.append({
+                    "keep_id": pair["keep_id"],
+                    "merge_id": pair["merge_id"],
+                    "result": text,
+                })
+            try:
+                write_result = review_cloud.sync_write_results(
+                    api_base,
+                    tok,
+                    sheet_id=args.sheet_id,
+                    results=sheet_results,
+                    template=args.template,
+                )
+            except RuntimeError as e:
+                merge_result["sheet_write_error"] = str(e)
+                print(json.dumps({
+                    "status": "completed_with_sheet_error",
+                    "merge": merge_result,
+                }, indent=2))
+                sys.exit(1)
+            print(json.dumps({
+                "status": "completed",
+                "merge": merge_result,
+                "sheet": write_result,
+            }, indent=2))
+        else:
+            print(json.dumps({"error": f"unknown review subcommand: {args.review_command}"}))
+            sys.exit(1)
+    elif args.command == "dedup":
+        if args.dedup_command == "find":
+            conn = get_conn()
+            try:
+                payload = pipeline_dedup.find_duplicates(
+                    conn,
+                    workspace_slug=args.workspace,
+                    tag_filter=args.tag,
+                    min_confidence=args.min_confidence,
+                    resolve_workspace_fn=resolve_workspace_identity,
+                    normalize_tag_fn=normalize_tag,
+                )
+            except ValueError as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+            finally:
+                conn.close()
+            text = json.dumps(payload, indent=2)
+            if args.output:
+                out = resolve_project_path(args.output, kind="export", for_write=True)
+                out.write_text(text + "\n", encoding="utf-8")
+                print(json.dumps({"status": "written", "file": str(out), "stats": payload["stats"]}))
+            else:
+                print(text)
+        elif args.dedup_command == "merge":
+            try:
+                cand_path = resolve_project_path(args.candidates, kind="input")
+                payload = pipeline_dedup.load_candidates_file(str(cand_path))
+            except (OSError, ValueError, json.JSONDecodeError) as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+            filtered = pipeline_dedup.filter_candidates(
+                payload, min_confidence=args.min_confidence,
+            )
+            conn = get_conn()
+            try:
+                result = pipeline_dedup.batch_merge_candidates(
+                    conn,
+                    filtered,
+                    commit=args.commit,
+                    reason=args.reason,
+                    merge_leads_fn=merge_leads,
+                )
+            finally:
+                conn.close()
+            print(json.dumps(result, indent=2))
+        else:
+            print(json.dumps({"error": f"unknown dedup subcommand: {args.dedup_command}"}))
+            sys.exit(1)
     elif args.command == "merge-leads":
         if args.keep and args.merge:
             result = merge_leads(args.keep, args.merge, reason="manual_cli")

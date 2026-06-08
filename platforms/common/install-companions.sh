@@ -18,7 +18,7 @@ _copy_companion_skill() {
   local name=$1
   local src=$2
   mkdir -p "$SKILLS_DIR/$name"
-  for item in SKILL.md README.md SECURITY.md config.example.json default.env .gitignore references scripts update-manifest.json; do
+  for item in SKILL.md README.md SECURITY.md config.example.json default.env .gitignore requirements.txt references scripts update-manifest.json; do
     if [[ -e "$src/$item" ]]; then
       rm -rf "$SKILLS_DIR/$name/$item"
       cp -a "$src/$item" "$SKILLS_DIR/$name/"

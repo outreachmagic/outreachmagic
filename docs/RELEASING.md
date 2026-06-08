@@ -68,6 +68,28 @@ For tag `v1.21.0`:
 - Push access to `magic-creators/outreachmagic-skill`
 - `PUBLISH_TOKEN` secret on the repo (GitHub PAT with `repo` scope for the `outreachmagic` org)
 
+### Dark factory gate (before tagging)
+
+Run agent + script tests on the isolated VPS instance **`dark-factory`** (not `magic` / `jonathan`). One-time setup: [dark-factory-setup.md](./dark-factory-setup.md).
+
+```bash
+cp test-config.example.json test-config.local.json   # once
+
+# Match the tag you are about to push:
+bash scripts/dark-factory/run.sh --release v_star           # before git tag v*
+bash scripts/dark-factory/run.sh --release lead_enrich      # before lead-enrich-v*
+bash scripts/dark-factory/run.sh --release email_finder     # before email-finder-v*
+bash scripts/dark-factory/run.sh --release companion_common # if companion_common.py changed
+bash scripts/dark-factory/run.sh --release dedup           # before v* when dedup/review changed
+
+# Or ad hoc:
+bash scripts/dark-factory/run.sh --layer 3 --tags smoke
+```
+
+Do **not** tag until the run reports **PASS** for the affected filter. If `platforms/overlays/cursor/outreachmagic.mdc` changed, also run manual Cursor smoke ([harness-cursor](../tests/dark-factory/harness-cursor/rules.md)).
+
+CI (`skill-scan.yml`) still runs pytest on every PR; dark factory is the pre-release integration gate.
+
 ### Steps
 
 ```bash

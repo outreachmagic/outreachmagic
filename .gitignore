@@ -1,5 +1,9 @@
 .DS_Store
 .env
+test-config.local.json
+test-config.local.yaml
+tests/dark-factory/results/*.json
+!tests/dark-factory/results/.gitkeep
 relay/
 dist/
 skills/outreachmagic/config/

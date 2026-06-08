@@ -1,0 +1,31 @@
+{
+  "workspace": "df-dedup",
+  "tag_filter": "dedup-test",
+  "generated_at": "2026-06-08T00:00:00Z",
+  "stats": {
+    "total_leads_scanned": 13,
+    "candidates_found": 1,
+    "high_confidence": 1,
+    "medium_confidence": 0,
+    "low_confidence": 0
+  },
+  "candidates": [
+    {
+      "keep_id": 1,
+      "merge_id": 2,
+      "keep_name": "Abby Schoenbeck",
+      "merge_name": "Abby Schoenbeck, MBA",
+      "keep_company": "Acme University",
+      "merge_company": "Acme University",
+      "keep_email": null,
+      "merge_email": null,
+      "keep_linkedin": null,
+      "merge_linkedin": null,
+      "keep_tags": ["dedup-test"],
+      "merge_tags": ["dedup-test"],
+      "confidence": "HIGH",
+      "match_method": "exact_company",
+      "name_variations": ["Abby Schoenbeck", "Abby Schoenbeck, MBA"]
+    }
+  ]
+}

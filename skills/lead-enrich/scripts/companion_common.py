@@ -144,7 +144,7 @@ def ensure_agent_env_loaded(skill_dir: Optional[Path] = None, *, reload: bool = 
     if _AGENT_ENV_LOADED and not reload:
         return
     # Dashboard-synced keys first; local .env files only fill gaps (force_api_keys skips set vars).
-    _load_synced_agent_secrets()
+    _load_synced_agent_secrets(skill_dir)
     home = agent_home()
     for name in (".env", "default.env"):
         load_dotenv_file(home / name, force_api_keys=True)
@@ -188,8 +188,8 @@ def find_outreachmagic(
     return None
 
 
-def _load_synced_agent_secrets() -> None:
-    om_home = find_outreachmagic({})
+def _load_synced_agent_secrets(skill_dir: Optional[Path] = None) -> None:
+    om_home = find_outreachmagic({}, skill_dir=skill_dir)
     if not om_home:
         return
     scripts = om_home / "scripts"

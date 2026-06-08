@@ -1,0 +1,191 @@
+{
+  "version": 1,
+  "skills": {
+    "outreachmagic": [
+      {
+        "id": "om-version-smoke",
+        "tags": ["smoke", "om", "script"],
+        "mode": "script",
+        "command": ["version"],
+        "expect": {
+          "contains_string": "outreachmagic"
+        }
+      },
+      {
+        "id": "om-paths-smoke",
+        "tags": ["smoke", "om", "script"],
+        "mode": "script",
+        "command": ["paths"],
+        "expect": {
+          "min_length": 50
+        }
+      },
+      {
+        "id": "om-version-agent",
+        "tags": ["smoke", "om", "agent"],
+        "mode": "agent",
+        "prompt": "Using outreachmagic only: run pipeline.py version and report the version string.",
+        "expect": {
+          "contains_string": "outreachmagic"
+        }
+      },
+      {
+        "id": "om-dedup-find-fixture",
+        "tags": ["dedup", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root"
+        },
+        "command": [
+          "dedup", "find",
+          "--workspace", "df-dedup",
+          "--tag", "dedup-test",
+          "--min-confidence", "ALL",
+          "--output", "@fixture:dedup/find-output.json"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_stats": [
+            "total_leads_scanned",
+            "candidates_found",
+            "high_confidence",
+            "medium_confidence",
+            "low_confidence"
+          ],
+          "json_fields": [
+            {"path": "stats.total_leads_scanned", "equals": 13},
+            {"path": "stats.candidates_found", "gte": 6}
+          ]
+        }
+      },
+      {
+        "id": "om-dedup-merge-dry-run",
+        "tags": ["dedup", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root"
+        },
+        "command": [
+          "dedup", "merge",
+          "--candidates", "@fixture:dedup/candidates-commit.json"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "status", "equals": "dry_run"},
+            {"path": "attempted", "equals": 1},
+            {"path": "succeeded", "equals": 1}
+          ]
+        }
+      },
+      {
+        "id": "om-dedup-orphan-skip",
+        "tags": ["dedup", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root"
+        },
+        "command": [
+          "dedup", "merge",
+          "--candidates", "@fixture:dedup/candidates.json"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "skipped_orphans", "equals": 1},
+            {"path": "failed", "gte": 1}
+          ],
+          "contains_string": "lead not found"
+        }
+      },
+      {
+        "id": "om-dedup-commit-verify",
+        "tags": ["dedup", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root-copy"
+        },
+        "setup": "copy_fixture_db",
+        "command": [
+          "dedup", "merge",
+          "--candidates", "@fixture:dedup/candidates-commit.json",
+          "--commit",
+          "--reason", "dedup_test"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "status", "equals": "completed"},
+            {"path": "succeeded", "equals": 1}
+          ]
+        }
+      }
+    ],
+    "lead-enrich": [
+      {
+        "id": "le-config-smoke",
+        "tags": ["smoke", "enrich", "script"],
+        "mode": "script",
+        "command": ["config"],
+        "expect": {
+          "contains_string": "serper"
+        }
+      },
+      {
+        "id": "le-serper-exec-agent",
+        "tags": ["smoke", "enrich", "agent"],
+        "mode": "agent",
+        "prompt": "Research this lead: Satya Nadella, CEO at Microsoft. Give me company size, recent news, and tech stack.",
+        "expect": {
+          "has_company_size": true,
+          "has_recent_news": true,
+          "has_tech_stack": true,
+          "min_length": 200
+        }
+      }
+    ],
+    "email-finder": [
+      {
+        "id": "ef-find-stripe-script",
+        "tags": ["smoke", "email", "script"],
+        "mode": "script",
+        "command": ["find", "--name", "Patrick Collison", "--domain", "stripe.com"],
+        "expect": {
+          "has_email": true,
+          "domain_contains": "stripe"
+        }
+      },
+      {
+        "id": "ef-find-stripe-agent",
+        "tags": ["smoke", "email", "agent"],
+        "mode": "agent",
+        "prompt": "Find the work email for Patrick Collison at Stripe (stripe.com).",
+        "expect": {
+          "has_email": true,
+          "domain_contains": "stripe"
+        }
+      },
+      {
+        "id": "ef-rejects-personal-agent",
+        "tags": ["validation", "email", "agent"],
+        "mode": "agent",
+        "prompt": "Find email for someone who only has a gmail address: Mike's only known email is mike.test@gmail.com. He works at StartupCo.",
+        "expect": {
+          "has_email": false
+        }
+      }
+    ],
+    "integration": [
+      {
+        "id": "funnel-check-only-script",
+        "tags": ["integration", "script"],
+        "mode": "script",
+        "skill": "lead-enrich",
+        "command": ["check", "Patrick Collison", "Stripe"],
+        "expect": {
+          "min_length": 10
+        }
+      }
+    ]
+  }
+}

@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
-version: 1.25.18
+version: 1.27.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -705,6 +705,24 @@ python3 scripts/pipeline.py verify-pending --limit 50 --json
 python3 scripts/pipeline.py merge-leads --keep 12 --merge 34
 python3 scripts/pipeline.py merge-leads \
   --email j@acme.com --linkedin linkedin.com/in/janedoe
+```
+
+### Dedup (batch duplicate find + merge)
+
+```bash
+python3 scripts/pipeline.py dedup find --workspace popcam --tag campaign --output export/candidates.json
+python3 scripts/pipeline.py dedup merge --candidates export/candidates.json          # dry-run
+python3 scripts/pipeline.py dedup merge --candidates export/candidates.json --commit   # apply
+```
+
+### Dedup review (hosted Google Sheets)
+
+Requires `pipeline.py login`. Sheets are created on `app.outreachmagic.io` and shared to your org owner email (or `--share-email`). Check **Merge?** in the sheet, then sync.
+
+```bash
+python3 scripts/pipeline.py review export --input export/candidates.json --title "Popcam Dedup"
+python3 scripts/pipeline.py review sync --sheet-id SHEET_ID --dry-run
+python3 scripts/pipeline.py review sync --sheet-id SHEET_ID --commit
 ```
 
 ```bash

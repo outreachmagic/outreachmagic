@@ -1,0 +1,37 @@
+{
+  "workspace": "df-dedup",
+  "tag_filter": "dedup-test",
+  "generated_at": "2026-06-08T03:36:00Z",
+  "stats": {
+    "total_leads_scanned": 13,
+    "candidates_found": 6,
+    "high_confidence": 1,
+    "medium_confidence": 4,
+    "low_confidence": 1
+  },
+  "candidates": [
+    {
+      "keep_id": 3,
+      "merge_id": 99999,
+      "keep_name": "Adam Sambrano",
+      "merge_name": "Phantom",
+      "keep_company": "Copper Mountain Community College",
+      "merge_company": "",
+      "keep_email": "adam.sambrano@example.edu",
+      "merge_email": null,
+      "keep_linkedin": null,
+      "merge_linkedin": null,
+      "keep_tags": [
+        "dedup-test"
+      ],
+      "merge_tags": [
+        "dedup-test"
+      ],
+      "confidence": "HIGH",
+      "match_method": "exact_company",
+      "name_variations": [
+        "Adam Sambrano"
+      ]
+    }
+  ]
+}

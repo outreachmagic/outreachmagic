@@ -1,0 +1,34 @@
+{
+  "vps": {
+    "ssh_host": "hermes-vps",
+    "ssh_key": "~/.ssh/id_ed25519",
+    "instance": "dark-factory",
+    "profile": "outreach-test",
+    "skills_path": "~/hermes/instances/dark-factory/data/skills",
+    "tests_data_path": "~/hermes/instances/dark-factory/data/dark-factory-tests",
+    "workspace_path": "~/hermes/instances/dark-factory/workspace",
+    "agent_container": "hermes-agent-dark-factory",
+    "stop_when_idle": true,
+    "start_wait_seconds": 15
+  },
+  "environments": {
+    "hermes": { "enabled": true },
+    "claude": { "enabled": false, "binary": "claude" },
+    "cursor": { "enabled": false }
+  },
+  "test_catalog": "tests/dark-factory/catalog.json",
+  "results_dir": "tests/dark-factory/results",
+  "timeout_seconds": 600,
+  "test_filter": {
+    "tags": [],
+    "ids": [],
+    "exclude": []
+  },
+  "release_filters": {
+    "v_star": { "skills": ["outreachmagic"], "tags": ["smoke"] },
+    "lead_enrich": { "skills": ["lead-enrich"], "tags": ["smoke"] },
+    "email_finder": { "skills": ["email-finder"], "tags": ["smoke"] },
+    "companion_common": { "skills": ["lead-enrich", "email-finder"], "tags": ["smoke"] },
+    "dedup": { "skills": ["outreachmagic"], "tags": ["dedup", "integration"] }
+  }
+}

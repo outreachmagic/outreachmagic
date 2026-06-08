@@ -1,0 +1,46 @@
+# Dark factory test configuration
+# Copy to test-config.local.yaml and edit (git-ignored).
+
+vps:
+  ssh_host: "hermes-vps"              # ~/.ssh/config alias, or deploy@84.247.188.189
+  ssh_key: "~/.ssh/id_ed25519"
+  instance: "dark-factory"
+  profile: "outreach-test"
+  skills_path: "~/hermes/instances/dark-factory/data/skills"
+  workspace_path: "~/hermes/instances/dark-factory/workspace"
+  agent_container: "hermes-agent-dark-factory"
+  stop_when_idle: true
+  start_wait_seconds: 15
+
+environments:
+  hermes:
+    enabled: true
+  claude:
+    enabled: false
+    binary: "claude"
+  cursor:
+    enabled: false
+
+test_catalog: "tests/dark-factory/catalog.json"
+results_dir: "tests/dark-factory/results"
+timeout_seconds: 600
+
+test_filter:
+  tags: []
+  ids: []
+  exclude: []
+
+# Maps to RELEASING.md tag families (used by: run.sh --release <name>)
+release_filters:
+  v_star:
+    skills: ["outreachmagic"]
+    tags: ["smoke"]
+  lead_enrich:
+    skills: ["lead-enrich"]
+    tags: ["smoke"]
+  email_finder:
+    skills: ["email-finder"]
+    tags: ["smoke"]
+  companion_common:
+    skills: ["lead-enrich", "email-finder"]
+    tags: ["smoke"]

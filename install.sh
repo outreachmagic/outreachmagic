@@ -301,7 +301,6 @@ fi
 if [[ $WITH_EMAIL_FINDER -eq 1 ]]; then
   install_email_finder
 fi
-
 if [[ "$PLATFORM" == "hermes" ]] && [[ ${#PROFILES[@]} -eq 0 ]] && [[ $ALL_PROFILES -eq 1 ]]; then
   while IFS= read -r profile; do
     PROFILES+=("$profile")

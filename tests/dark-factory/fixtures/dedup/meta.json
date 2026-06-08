@@ -1,0 +1,27 @@
+{
+  "workspace": "df-dedup",
+  "tag": "dedup-test",
+  "lead_ids": {
+    "abby_full": 1,
+    "abby_mba": 2,
+    "copper_keep": 3,
+    "copper_merge": 4,
+    "amd_short": 5,
+    "amd_long": 6,
+    "unf_short": 7,
+    "unf_long": 8,
+    "vanessa_first": 9,
+    "vanessa_full": 10,
+    "job_a": 11,
+    "job_b": 12,
+    "solo": 13
+  },
+  "find_stats": {
+    "total_leads_scanned": 13,
+    "candidates_found": 6,
+    "high_confidence": 1,
+    "medium_confidence": 4,
+    "low_confidence": 1
+  },
+  "candidates_found": 6
+}

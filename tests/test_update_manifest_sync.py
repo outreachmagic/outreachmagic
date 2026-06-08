@@ -1,50 +1,67 @@
-"""Ensure pipeline update downloads every file listed in update-manifest.json."""
+"""Ensure pipeline update installs every file listed in update-manifest.json."""
 
+import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
+MANIFEST = ROOT / "skills" / "outreachmagic" / "update-manifest.json"
+GEN = ROOT / "scripts" / "generate-update-manifest.py"
+
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import pipeline as om  # noqa: E402
 
-# Mirror scripts/generate-update-manifest.py MANIFEST_FILES (scripts only).
-MANIFEST_SCRIPT_FILES = {
-    "pipeline.py",
-    "constants.py",
-    "db_conn.py",
-    "formatters.py",
-    "bounces.py",
-    "activity_sync.py",
-    "event_classification.py",
-    "lead_sync.py",
-    "platform_registry.py",
-    "relay_ingest.py",
-    "quarantine_resolutions.py",
-    "relay_extractors.py",
-    "workspace_routing.py",
-    "workspace_archive.py",
-    "routing_cloud.py",
-    "agent_secrets_cloud.py",
-    "api_key_pool.py",
-    "connections_cloud.py",
-    "db_health.py",
-    "om_paths.py",
-    "device_login.py",
-    "read_queries.py",
-    "query_cli.py",
-    "data_freshness.py",
-    "schema.py",
-    "schema_views.py",
-}
+
+def _load_manifest_generator():
+    spec = importlib.util.spec_from_file_location("gen_update_manifest", GEN)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    return mod
 
 
 class UpdateManifestSyncTests(unittest.TestCase):
-    def test_update_script_files_match_manifest_generator(self):
-        self.assertEqual(set(om.UPDATE_SCRIPT_FILES), MANIFEST_SCRIPT_FILES)
+    def test_update_script_files_include_every_script_module(self):
+        all_py = {p.name for p in SCRIPTS.glob("*.py")}
+        self.assertEqual(set(om.UPDATE_SCRIPT_FILES), all_py)
+
+    def test_manifest_lists_every_script_module(self):
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        manifest_scripts = {
+            name for name in manifest.get("files", {})
+            if name.endswith(".py")
+        }
+        all_py = {p.name for p in SCRIPTS.glob("*.py")}
+        self.assertEqual(manifest_scripts, all_py)
+
+    def test_update_download_names_uses_manifest(self):
+        manifest = {
+            "files": {
+                "pipeline.py": "abc",
+                "pipeline_lead_review.py": "def",
+                "review_cloud.py": "ghi",
+                "pipeline_dedup.py": "jkl",
+                "VERSION": "mno",
+                "SKILL.md": "pqr",
+            },
+        }
+        names = om.update_download_names(manifest)
+        self.assertIn("pipeline_lead_review.py", names)
+        self.assertIn("review_cloud.py", names)
+        self.assertIn("pipeline_dedup.py", names)
+        self.assertNotIn("SKILL.md", names)
+
+    def test_manifest_generator_matches_on_disk(self):
+        gen = _load_manifest_generator()
+        self.assertEqual(
+            set(gen.manifest_file_names()),
+            set(json.loads(MANIFEST.read_text(encoding="utf-8")).get("files", {})),
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,9 @@
+{
+  "workspace": "df-domain",
+  "tag": "domain-test",
+  "leads": {
+    "professional": 1,
+    "gmail_control": 2,
+    "no_email_finder": 3
+  }
+}

@@ -104,6 +104,7 @@ import pipeline as om
 om.sync_skill_md_version()
 "
 python3 scripts/generate-update-manifest.py
+# Manifest auto-includes every scripts/*.py — do not maintain a hand-edited file list.
 
 # 3. Commit
 git add skills/outreachmagic/scripts/VERSION skills/outreachmagic/update-manifest.json
@@ -305,6 +306,8 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `ModuleNotFoundError: data_freshness` | Incomplete `pipeline.py update` | `pipeline.py update` (or `update --tag vX.Y.Z`) |
+| `ModuleNotFoundError: pipeline_lead_review` (or `pipeline_dedup` / `review_cloud`) | `update` downloaded `pipeline.py` but skipped new modules (fixed in ≥1.28.2) | `pipeline.py update --tag vX.Y.Z` after release, or copy all `scripts/*.py` from the release tarball |
+| `export_review() got an unexpected keyword argument 'detail'` | Stale `review_cloud.py` from partial update (same root cause) | Full `pipeline.py update` so `review_cloud.py` matches `pipeline.py` |
 | `Update failed: HTTP Error 404` | Release missing on public repo or wrong tag | `gh release view vX.Y.Z --repo outreachmagic/outreachmagic`; reinstall from `outreachmagic/outreachmagic` if scripts are corrupt |
 | `import-profiles` / batch save timeout | Large chunk under load | Re-run `import-to-om` or `pipeline.py import-profiles --file …` |
 | `No GitHub release found` | Checking private monorepo or release not on public repo | `gh release view vX.Y.Z --repo outreachmagic/outreachmagic`; fix CI / `PUBLISH_TOKEN` |

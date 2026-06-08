@@ -13,6 +13,7 @@ from activity_sync import (
     compute_lead_activity_from_events,
     _read_workspace_activity_row,
 )
+from constants import COMPANY_DOMAIN_SQL
 from db_conn import get_conn
 from workspace_routing import (
     DEFAULT_ORG_ID,
@@ -222,7 +223,7 @@ def _load_lead_sync_prefetch(
         r["id"]: r
         for r in conn.execute(
             f"""SELECT l.*,
-                       co.domain AS company_domain,
+                       {COMPANY_DOMAIN_SQL},
                        co.hq_city AS hq_city,
                        co.hq_state AS hq_state,
                        co.hq_country AS hq_country,
@@ -347,8 +348,8 @@ def _lead_row_for_sync(
     if prefetch is not None:
         return prefetch["leads"].get(lead_id)
     return conn.execute(
-        """SELECT l.*,
-                  co.domain AS company_domain,
+        f"""SELECT l.*,
+                  {COMPANY_DOMAIN_SQL},
                   co.hq_city AS hq_city,
                   co.hq_state AS hq_state,
                   co.hq_country AS hq_country,

@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import os
 import re
@@ -890,6 +891,34 @@ def format_serper_for_model(
 
 # ── Outreach Magic field mapping ─────────────────────────────────────────────
 
+_SHARED_EMAIL_DOMAINS_CACHE: frozenset[str] | None = None
+
+
+def _shared_email_domains() -> frozenset[str]:
+    global _SHARED_EMAIL_DOMAINS_CACHE
+    if _SHARED_EMAIL_DOMAINS_CACHE is not None:
+        return _SHARED_EMAIL_DOMAINS_CACHE
+    om_constants = _find_skill_dir().parent / "outreachmagic" / "scripts" / "constants.py"
+    if om_constants.exists():
+        spec = importlib.util.spec_from_file_location("_om_constants", om_constants)
+        if spec and spec.loader:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _SHARED_EMAIL_DOMAINS_CACHE = getattr(mod, "SHARED_EMAIL_DOMAINS", frozenset())
+            return _SHARED_EMAIL_DOMAINS_CACHE
+    _SHARED_EMAIL_DOMAINS_CACHE = frozenset()
+    return _SHARED_EMAIL_DOMAINS_CACHE
+
+
+def _professional_domain_from_email(email: str | None) -> str:
+    if not email or "@" not in email:
+        return ""
+    domain = email.split("@", 1)[1].strip().lower()
+    if not domain or domain in _shared_email_domains():
+        return ""
+    return domain
+
+
 def map_to_outreachmagic(
     person: dict[str, Any],
     enrichment: dict[str, Any],
@@ -909,7 +938,9 @@ def map_to_outreachmagic(
         notes_parts.append(f"[list_source: {list_source}]")
 
     # Enrichment details
-    domain = enrichment.get("company_domain", "")
+    domain = (enrichment.get("company_domain") or "").strip()
+    if not domain:
+        domain = _professional_domain_from_email(person.get("email"))
     website = enrichment.get("company_website", "")
     confidence = enrichment.get("confidence", "")
     note = enrichment.get("note", "")

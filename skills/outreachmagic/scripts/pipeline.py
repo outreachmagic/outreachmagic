@@ -153,8 +153,10 @@ from constants import (
     RELAY_PUSH_RETRY_BASE_SECONDS,
     RELAY_PUSH_ROUTINE_MAX,
     RELAY_PUSH_TIMEOUT_SECONDS,
+    COMPANY_DOMAIN_SQL,
     SHARED_EMAIL_DOMAINS,
     STAGE_EMOJI,
+    require_professional_domain_clause,
     USAGE_WARNING_PERCENT,
     USAGE_CRITICAL_PERCENT,
 )
@@ -232,34 +234,9 @@ SKILL_NAME = "outreachmagic"
 RELAY_URL = "https://api.outreachmagic.io"
 
 SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
-# Keep in sync with scripts/generate-update-manifest.py MANIFEST_FILES (minus VERSION/SKILL.md).
-UPDATE_SCRIPT_FILES = (
-    "pipeline.py",
-    "constants.py",
-    "db_conn.py",
-    "formatters.py",
-    "bounces.py",
-    "activity_sync.py",
-    "event_classification.py",
-    "lead_sync.py",
-    "platform_registry.py",
-    "relay_ingest.py",
-    "quarantine_resolutions.py",
-    "relay_extractors.py",
-    "workspace_routing.py",
-    "workspace_archive.py",
-    "routing_cloud.py",
-    "agent_secrets_cloud.py",
-    "api_key_pool.py",
-    "connections_cloud.py",
-    "db_health.py",
-    "om_paths.py",
-    "device_login.py",
-    "read_queries.py",
-    "query_cli.py",
-    "data_freshness.py",
-    "schema.py",
-    "schema_views.py",
+# Every scripts/*.py — auto-discovered so new modules are not skipped by update.
+UPDATE_SCRIPT_FILES = tuple(
+    sorted(p.name for p in Path(__file__).resolve().parent.glob("*.py"))
 )
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
 # Unified public release repo (skills/outreachmagic layout).
@@ -491,6 +468,14 @@ def fetch_update_manifest(repo_base: str, skill_repo_path: Optional[str] = None)
     return payload if isinstance(payload, dict) else None
 
 
+def update_download_names(manifest: Optional[dict] = None) -> list[str]:
+    """File names to install during update (scripts + VERSION; SKILL.md handled separately)."""
+    files = (manifest or {}).get("files") if isinstance(manifest, dict) else None
+    if isinstance(files, dict) and files:
+        return sorted(name for name in files if name != "SKILL.md")
+    return list(UPDATE_MANIFEST_FILES)
+
+
 def resolve_update_source(explicit_tag: Optional[str] = None) -> tuple[Optional[Path], str, str, str]:
     """
     Resolve where to download skill files from.
@@ -540,14 +525,30 @@ def update_skill(explicit_tag: Optional[str] = None) -> dict:
     local_src, scripts_base, repo_base, source_label = resolve_update_source(explicit_tag)
     updated: list[str] = []
     _, skill_path = effective_update_target()
-    manifest = None if local_src else fetch_update_manifest(repo_base, skill_path)
+    manifest: Optional[dict] = None
+    if local_src:
+        local_manifest = local_src.parent / "update-manifest.json"
+        if local_manifest.is_file():
+            try:
+                manifest = json.loads(local_manifest.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                manifest = None
+    else:
+        manifest = fetch_update_manifest(repo_base, skill_path)
+
+    download_names = update_download_names(manifest)
 
     if local_src:
-        for name in UPDATE_MANIFEST_FILES:
-            shutil.copy2(local_src / name, dest / name)
+        for name in download_names:
+            src = local_src / name
+            shutil.copy2(src, dest / name)
             updated.append(name)
+        skill_md_src = local_src.parent / "SKILL.md"
+        if skill_md_src.is_file():
+            shutil.copy2(skill_md_src, dest.parent / "SKILL.md")
+            updated.append("SKILL.md")
     else:
-        for name in UPDATE_MANIFEST_FILES:
+        for name in download_names:
             content = _fetch_url(f"{scripts_base}/{name}")
             expected = (manifest or {}).get("files", {}).get(name)
             if expected and _sha256_hex(content) != expected:
@@ -1704,7 +1705,13 @@ def link_lead_company(
     industry: Optional[str] = None,
     headcount: Optional[str] = None,
 ) -> Optional[int]:
-    domain = email_domain(email) if email else None
+    if email:
+        domain = email_domain(email)
+    else:
+        row = conn.execute(
+            "SELECT email_domain FROM leads WHERE id = ?", (lead_id,),
+        ).fetchone()
+        domain = (row["email_domain"] or "").strip().lower() or None if row else None
     cid = ensure_company(conn, name=company, domain=domain, industry=industry, headcount=headcount)
     if cid:
         conn.execute("UPDATE leads SET company_id = ? WHERE id = ?", (cid, lead_id))
@@ -4460,7 +4467,7 @@ def query_leads_for_export(
     query = f"""
         SELECT l.*,
                COALESCE(co.name, l.company) AS company_display,
-               co.domain AS company_domain,
+               {COMPANY_DOMAIN_SQL},
                co.hq_city AS hq_city,
                co.hq_state AS hq_state,
                co.hq_country AS hq_country,
@@ -4494,7 +4501,9 @@ def query_leads_for_export(
     if no_email:
         query += " AND (l.email IS NULL OR TRIM(l.email) = '')"
     if require_domain:
-        query += " AND co.domain IS NOT NULL AND TRIM(co.domain) != ''"
+        domain_clause, domain_params = require_professional_domain_clause()
+        query += f" {domain_clause}"
+        params.extend(domain_params)
     query += " ORDER BY l.updated_at DESC LIMIT ?"
     params.append(limit)
     rows = [dict(r) for r in conn.execute(query, params).fetchall()]

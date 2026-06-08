@@ -7,6 +7,7 @@ import re
 import sqlite3
 from typing import Any, Callable, Optional
 
+from constants import COMPANY_DOMAIN_SQL, require_professional_domain_clause
 from workspace_routing import resolve_workspace_identity
 
 
@@ -155,7 +156,7 @@ def load_workspace_leads_for_review(
     query = f"""
         SELECT l.*,
                COALESCE(co.name, l.company) AS company_display,
-               co.domain AS company_domain,
+               {COMPANY_DOMAIN_SQL},
                wl.status AS workspace_stage,
                wl.current_status_label AS lead_status,
                wl.current_status_sentiment AS lead_sentiment,
@@ -190,7 +191,9 @@ def load_workspace_leads_for_review(
     if no_email:
         query += " AND (l.email IS NULL OR TRIM(l.email) = '')"
     if require_domain:
-        query += " AND co.domain IS NOT NULL AND TRIM(co.domain) != ''"
+        domain_clause, domain_params = require_professional_domain_clause()
+        query += f" {domain_clause}"
+        params.extend(domain_params)
     query += " ORDER BY l.updated_at DESC LIMIT ?"
     params.append(limit)
 

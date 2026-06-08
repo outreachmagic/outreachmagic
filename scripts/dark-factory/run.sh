@@ -166,6 +166,12 @@ export EXCLUDE_FILTER="$EXCLUDE"
 export TIMESTAMP
 
 if [[ "$LAYER" == "2" || "$LAYER" == "all" ]]; then
+  echo "== Layer 2 pre-check: update manifest =="
+  if python3 "${ROOT}/scripts/dark-factory/validate-om-manifest.py"; then
+    :
+  else
+    EXIT_CODE=1
+  fi
   echo "== Layer 2: script tests =="
   SCRIPT_RESULT="${TESTS_DATA_PATH}/results/script-${TIMESTAMP}.json"
   ssh_cmd "mkdir -p ${TESTS_DATA_PATH}/results"

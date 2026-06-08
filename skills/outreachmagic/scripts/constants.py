@@ -57,6 +57,29 @@ SHARED_EMAIL_DOMAINS = frozenset({
     "windstream.net", "wp.pl", "yahoo.com", "yandex.com", "yandex.ru", "ymail.com",
 })
 
+# Shared SELECT fragment for lead+company joins (read path).
+_SHARED_DOMAIN_SQL_LIST = ", ".join(f"'{d}'" for d in sorted(SHARED_EMAIL_DOMAINS))
+COMPANY_DOMAIN_SQL = f"""CASE
+    WHEN co.domain IS NOT NULL AND TRIM(co.domain) != '' THEN co.domain
+    WHEN l.email_domain IS NOT NULL AND TRIM(l.email_domain) != ''
+         AND LOWER(l.email_domain) NOT IN ({_SHARED_DOMAIN_SQL_LIST}) THEN l.email_domain
+    ELSE NULL
+END AS company_domain"""
+
+
+def require_professional_domain_clause() -> tuple[str, tuple[str, ...]]:
+    """SQL AND-clause + bind values for leads with a professional company domain."""
+    placeholders = ",".join("?" * len(SHARED_EMAIL_DOMAINS))
+    clause = f"""AND (
+        (co.domain IS NOT NULL AND TRIM(co.domain) != '')
+        OR (
+            l.email_domain IS NOT NULL AND TRIM(l.email_domain) != ''
+            AND LOWER(l.email_domain) NOT IN ({placeholders})
+        )
+    )"""
+    return clause, tuple(SHARED_EMAIL_DOMAINS)
+
+
 PLUSVIBE_PLATFORMS = frozenset({"plusvibe"})
 
 AUTO_REPLY_LABELS = frozenset({

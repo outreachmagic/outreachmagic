@@ -150,6 +150,16 @@
         }
       },
       {
+        "id": "om-review-modules-import-smoke",
+        "tags": ["review", "smoke", "manifest", "script"],
+        "mode": "script",
+        "command": ["review", "templates", "list"],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "lead-review"
+        }
+      },
+      {
         "id": "om-export-never-contacted-fixture",
         "tags": ["export", "integration", "script"],
         "mode": "script",
@@ -167,6 +177,73 @@
           "contains_json": true,
           "json_fields": [
             {"path": "count", "gte": 0}
+          ]
+        }
+      },
+      {
+        "id": "om-export-company-domain-fallback",
+        "tags": ["export", "integration", "company-domain", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:company-domain/data-root"
+        },
+        "command": [
+          "export",
+          "--workspace", "df-domain",
+          "--tag", "domain-test",
+          "--format", "json",
+          "--limit", "10"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "purdueglobal.edu",
+          "json_fields": [
+            {"path": "count", "equals": 2}
+          ]
+        }
+      },
+      {
+        "id": "om-require-domain-email-fallback",
+        "tags": ["export", "integration", "company-domain", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:company-domain/data-root"
+        },
+        "command": [
+          "export",
+          "--workspace", "df-domain",
+          "--tag", "domain-test",
+          "--require-domain",
+          "--format", "json",
+          "--limit", "10"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "teresa.stock@purdueglobal.edu",
+          "json_fields": [
+            {"path": "count", "equals": 1}
+          ]
+        }
+      },
+      {
+        "id": "om-email-finder-candidates-domain-fallback",
+        "tags": ["email", "integration", "company-domain", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:company-domain/data-root"
+        },
+        "command": [
+          "email-finder-candidates",
+          "--workspace", "df-domain",
+          "--tag", "email-finder-test",
+          "--require-domain"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "purdueglobal.edu",
+          "json_fields": [
+            {"path": "status", "equals": "ok"},
+            {"path": "count", "equals": 1}
           ]
         }
       }

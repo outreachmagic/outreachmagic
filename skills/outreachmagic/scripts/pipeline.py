@@ -10640,6 +10640,7 @@ def main():
     elif args.command == "review":
         if args.review_command == "templates" and args.templates_command == "list":
             print(json.dumps({"templates": ["dedup-review", "lead-review"]}, indent=2))
+            sys.exit(0)
         elif args.review_command in ("export", "sync"):
             tok = get_agent_key()
             if not tok:

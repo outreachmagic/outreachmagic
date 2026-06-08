@@ -204,7 +204,7 @@ def main() -> None:
                 "skill": target_skill,
                 "status": status,
                 "prompt": " ".join(command),
-                "actual": output[:4000],
+                "actual": output[:100000],
                 "reason": reason,
             }
         )

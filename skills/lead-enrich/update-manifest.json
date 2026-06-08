@@ -9,6 +9,6 @@
     ".gitignore": "745e5bfc6d53645da242479825e56d53fb2cffc0a88f26e47bb0fd06740b157b",
     "references/email-finder.md": "0d715131671229f9511fef4dd5a8ea4053962429cc46a3ce7d8442dae7a649cb",
     "scripts/companion_common.py": "a8018b98563fd8d6282b87b2a66283f8ab7146d95c518bbbce35a513782359e5",
-    "scripts/enrich.py": "57234751ee24f246ff60e9d64ed2e79aa133511dafb50b617f9ce57a4916439a"
+    "scripts/enrich.py": "fa41878693b8fc437143252de32893bc0fb2c75de32c05b9a25c8c0cab4a0626"
   }
 }

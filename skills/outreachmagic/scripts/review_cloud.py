@@ -57,17 +57,28 @@ def export_review(
     token: str,
     *,
     template: str,
-    candidates: list[dict[str, Any]],
     title: str,
     share_email: Optional[str] = None,
+    candidates: Optional[list[dict[str, Any]]] = None,
+    detail: Optional[str] = None,
+    headers: Optional[list[str]] = None,
+    rows: Optional[list[list[Any]]] = None,
+    workspace: Optional[str] = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "template": template,
         "title": title,
-        "candidates": candidates,
     }
     if share_email:
         body["share_email"] = share_email
+    if template == "lead-review":
+        body["detail"] = detail or "standard"
+        body["headers"] = headers or []
+        body["rows"] = rows or []
+        if workspace:
+            body["workspace"] = workspace
+    else:
+        body["candidates"] = candidates or []
     return _request_json("POST", f"{api_base}/api/review/export", token, body=body)
 
 

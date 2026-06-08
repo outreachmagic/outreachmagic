@@ -119,6 +119,56 @@
             {"path": "succeeded", "equals": 1}
           ]
         }
+      },
+      {
+        "id": "om-email-finder-candidates-fixture",
+        "tags": ["email", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root"
+        },
+        "command": [
+          "email-finder-candidates",
+          "--workspace", "df-dedup",
+          "--tag", "dedup-test",
+          "--require-domain"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "status", "equals": "ok"}
+          ]
+        }
+      },
+      {
+        "id": "om-review-template-list",
+        "tags": ["review", "smoke", "script"],
+        "mode": "script",
+        "command": ["review", "templates", "list"],
+        "expect": {
+          "contains_string": "lead-review"
+        }
+      },
+      {
+        "id": "om-export-never-contacted-fixture",
+        "tags": ["export", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root"
+        },
+        "command": [
+          "export",
+          "--workspace", "df-dedup",
+          "--format", "json",
+          "--never-contacted",
+          "--limit", "5"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "count", "gte": 0}
+          ]
+        }
       }
     ],
     "lead-enrich": [
@@ -172,6 +222,15 @@
         "prompt": "Find email for someone who only has a gmail address: Mike's only known email is mike.test@gmail.com. He works at StartupCo.",
         "expect": {
           "has_email": false
+        }
+      },
+      {
+        "id": "ef-config-mv-key-script",
+        "tags": ["smoke", "email", "script"],
+        "mode": "script",
+        "command": ["config"],
+        "expect": {
+          "contains_string": "millionverifier_api_key_set"
         }
       }
     ],

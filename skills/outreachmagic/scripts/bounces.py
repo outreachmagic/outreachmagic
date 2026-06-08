@@ -595,6 +595,8 @@ def leads_needing_verification(
     max_age_days: int = 30,
     skip_mv_days: int = 7,
     limit: int = 5000,
+    never_contacted_only: bool = False,
+    skip_mv_attempted_tag: bool = True,
 ) -> dict:
     """Leads in a workspace whose emails need (re-)verification for MillionVerifier bulk."""
     from workspace_routing import resolve_workspace_identity
@@ -605,8 +607,25 @@ def leads_needing_verification(
         if not ws_row:
             return {"status": "error", "error": f"workspace not found: {workspace}"}
         ws_id = ws_row["id"]
+        contact_filter = ""
+        if never_contacted_only:
+            contact_filter = """
+                 AND COALESCE(wl.email_sent_count, 0) = 0
+                 AND COALESCE(wl.linkedin_sent_count, 0) = 0
+                 AND COALESCE(wl.total_replies_count, 0) = 0
+                 AND (wl.last_contacted_at IS NULL OR TRIM(wl.last_contacted_at) = '')
+                 AND NOT EXISTS (SELECT 1 FROM events e WHERE e.lead_id = l.id)
+            """
+        tag_filter = ""
+        if skip_mv_attempted_tag:
+            tag_filter = """
+                 AND l.id NOT IN (
+                     SELECT lead_id FROM workspace_lead_tags
+                     WHERE workspace_id = ? AND tag = 'mv_attempted'
+                 )
+            """
         rows = conn.execute(
-            """SELECT l.id AS lead_id, l.email, l.name, l.email_verified_at
+            f"""SELECT l.id AS lead_id, l.email, l.name, l.email_verified_at
                FROM leads l
                INNER JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?
                WHERE l.email IS NOT NULL AND TRIM(l.email) != ''
@@ -619,12 +638,15 @@ def leads_needing_verification(
                      WHERE source = 'millionverifier'
                        AND created_at > datetime('now', ?)
                  )
+                 {tag_filter}
+                 {contact_filter}
                ORDER BY l.updated_at DESC
                LIMIT ?""",
             (
                 ws_id,
                 f"-{max_age_days} days",
                 f"-{skip_mv_days} days",
+                *([ws_id] if skip_mv_attempted_tag else []),
                 limit,
             ),
         ).fetchall()

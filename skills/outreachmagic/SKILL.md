@@ -267,7 +267,7 @@ python3 scripts/pipeline.py workspace summary --workspace <slug> --json --tags-o
 
 Example JSON keys: `lead_count`, `last_pull`, `tags` (`tag`, `lead_count`), `linkedin_senders` (`sender_slug`, `connected`, `pending`), `linkedin_connected_leads`. With `--tags-only`, LinkedIn keys are empty arrays/zero.
 
-Companion attempt tags: **`serper_attempted`** (lead-enrich), **`trykitt_attempted`** / **`icypeas_attempted`** / **`email_found`** (email-finder).
+Companion attempt tags: **`serper_attempted`** (lead-enrich), **`trykitt_attempted`** / **`icypeas_attempted`** / **`email_found`** (email-finder), **`mv_attempted`** (MillionVerifier bulk — verification status still in `email_verification_status`).
 
 Tag-only (same tag data as summary): `pipeline.py tag list --workspace <slug>`.
 
@@ -724,6 +724,30 @@ python3 scripts/pipeline.py review export --input export/candidates.json --title
 python3 scripts/pipeline.py review sync --sheet-id SHEET_ID --dry-run
 python3 scripts/pipeline.py review sync --sheet-id SHEET_ID --commit
 ```
+
+### Lead review sheet (export → edit → sync)
+
+Export a workspace lead list to Google Sheets, edit stage/tags/notes/LinkedIn sender columns, then sync back. Detail levels: `--detail basic|standard|full|custom` (with `--fields` for custom).
+
+```bash
+python3 scripts/pipeline.py review export --template lead-review --workspace popcam \
+  --tag nace --detail standard --title "NACE Review"
+python3 scripts/pipeline.py review sync --template lead-review --workspace popcam \
+  --sheet-id SHEET_ID --dry-run
+python3 scripts/pipeline.py review sync --template lead-review --workspace popcam \
+  --sheet-id SHEET_ID --commit
+```
+
+### Email-finder candidates (safe domain export)
+
+Never use `COALESCE(domain, company)` — use this command to emit batch-find JSON with real `companies.domain` only:
+
+```bash
+python3 scripts/pipeline.py email-finder-candidates --workspace popcam --tag nace \
+  --no-email --require-domain --never-contacted
+```
+
+`export` also supports `--never-contacted`, `--no-email`, and `--require-domain`. Force large relay snapshot pages with `sync --bulk` (or `sync --no-bulk` for routine sizes).
 
 ```bash
 python3 scripts/pipeline.py history --linkedin linkedin.com/in/janedoe

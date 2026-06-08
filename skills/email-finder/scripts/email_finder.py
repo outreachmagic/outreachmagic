@@ -137,12 +137,15 @@ def cmd_config() -> None:
     om_dir = find_outreachmagic(cfg)
     key = cfg.get("trykitt_api_key", "")
     icypeas_key = cfg.get("icypeas_api_key", "")
+    mv_key = cfg.get("millionverifier_api_key") or ""
     out: dict[str, Any] = {
         "skill": SKILL_NAME,
         "trykitt_api_key_set": bool(key),
         "trykitt_api_key_preview": _mask_key(key) if key else None,
         "icypeas_api_key_set": bool(icypeas_key),
         "icypeas_api_key_preview": _mask_key(icypeas_key) if icypeas_key else None,
+        "millionverifier_api_key_set": bool(mv_key),
+        "millionverifier_api_key_preview": _mask_key(mv_key) if mv_key else None,
         "outreachmagic_found": om_dir is not None,
         "outreachmagic_home": str(om_dir) if om_dir else None,
         "max_per_run": cfg.get("max_people_per_run", 500),
@@ -553,6 +556,56 @@ def cmd_verify(email: str, workspace: str = "") -> None:
     print(json.dumps(result, indent=2))
 
 
+def _tag_mv_attempted(
+    om_dir: Optional[Path],
+    workspace: str,
+    lead_ids: list[int],
+) -> dict[str, Any]:
+    if not om_dir or not workspace or not lead_ids:
+        return {"status": "skipped", "tagged": 0}
+    try:
+        return cc.run_tag_bulk(
+            om_dir,
+            workspace,
+            list(dict.fromkeys(lead_ids)),
+            [cc.MV_ATTEMPTED_TAG],
+            skill_dir=_find_skill_dir(),
+        )
+    except RuntimeError as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+def _lead_ids_for_emails(om_dir: Path, workspace: str, emails: list[str]) -> list[int]:
+    lead_ids: list[int] = []
+    for email in emails:
+        em = (email or "").strip().lower()
+        if not em:
+            continue
+        try:
+            payload = cc.run_batch_lead_lookup(
+                om_dir,
+                [{"index": 0, "email": em}],
+                workspace=workspace,
+                skill_dir=_find_skill_dir(),
+            )
+        except RuntimeError:
+            continue
+        for row in payload.get("results") or []:
+            if row.get("status") == "found" and row.get("lead_id"):
+                lead_ids.append(int(row["lead_id"]))
+    return lead_ids
+
+
+def cmd_verify_credits() -> None:
+    cfg = load_config()
+    mv = _mv_provider(cfg)
+    if not str(cfg.get("millionverifier_api_key") or "").strip():
+        print(json.dumps({"error": "MILLIONVERIFIER_API_KEY not set"}))
+        sys.exit(1)
+    credits = mv.check_credits()
+    print(json.dumps(credits, indent=2))
+
+
 def cmd_verify_bulk(
     *,
     workspace: str = "",
@@ -637,6 +690,14 @@ def cmd_verify_bulk(
                 ]
                 vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=_find_skill_dir())
                 out["verify"] = vout
+                lead_ids = [
+                    int(lead["lead_id"])
+                    for lead in (candidate_meta.get("leads") or [])
+                    if lead.get("lead_id")
+                ]
+                if not lead_ids and workspace:
+                    lead_ids = _lead_ids_for_emails(om_dir, workspace, emails)
+                out["mv_tag"] = _tag_mv_attempted(om_dir, workspace, lead_ids)
     print(json.dumps(out, indent=2))
 
 
@@ -667,10 +728,17 @@ def cmd_verify_download(file_id: str, workspace: str = "") -> None:
     ]
     saved = 0
     om_dir = find_outreachmagic(cfg)
+    tag_result: dict[str, Any] = {"status": "skipped", "tagged": 0}
     if om_dir and workspace:
         vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=_find_skill_dir())
         saved = int(vout.get("recorded") or 0)
-    stats = {"downloaded": len(rows), "saved_to_om": saved}
+        lead_ids = _lead_ids_for_emails(
+            om_dir,
+            workspace,
+            [(r.get("email") or "").strip() for r in rows],
+        )
+        tag_result = _tag_mv_attempted(om_dir, workspace, lead_ids)
+    stats = {"downloaded": len(rows), "saved_to_om": saved, "mv_tag": tag_result}
     for st in ("valid", "catch_all", "invalid", "unknown"):
         stats[st] = sum(1 for v in verify_items if v["status"] == st)
     print_mv_summary(stats, title="MILLIONVERIFIER — VERIFICATION COMPLETE")
@@ -952,6 +1020,8 @@ def main() -> None:
             cmd_verify_status(file_id)
         elif cmd == "verify-list":
             cmd_verify_list()
+        elif cmd == "verify-credits":
+            cmd_verify_credits()
         elif cmd == "verify-download":
             file_id = workspace = ""
             args = sys.argv[2:]

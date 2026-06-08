@@ -701,6 +701,7 @@ def run_verification_candidates(
     max_age_days: int = 30,
     skip_mv_days: int = 7,
     limit: int = 5000,
+    never_contacted: bool = False,
     timeout: int = 120,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
@@ -717,6 +718,8 @@ def run_verification_candidates(
         "--limit",
         str(limit),
     ]
+    if never_contacted:
+        cmd.append("--never-contacted")
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -782,6 +785,7 @@ def run_verify_email_batch(
 
 
 SERPER_ATTEMPTED_TAG = "serper_attempted"
+MV_ATTEMPTED_TAG = "mv_attempted"
 TAG_BULK_CHUNK_SIZE = 500
 
 

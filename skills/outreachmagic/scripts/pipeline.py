@@ -100,6 +100,7 @@ import agent_secrets_cloud
 import connections_cloud
 import db_health
 import pipeline_dedup
+import pipeline_lead_review
 import review_cloud
 import quarantine_resolutions as qres
 import workspace_archive
@@ -628,12 +629,20 @@ def _cloud_snapshot_pending_count() -> int:
     return int(core) + int(ws) + int(companies)
 
 
-def _use_bulk_transport(pending_count: int) -> dict:
+def _use_bulk_transport(
+    pending_count: int,
+    *,
+    force_bulk: Optional[bool] = None,
+) -> dict:
     """Large backlog → 5k push batches and pull pages."""
-    bulk = pending_count >= RELAY_BULK_THRESHOLD
+    if force_bulk is not None:
+        bulk = force_bulk
+    else:
+        bulk = pending_count >= RELAY_BULK_THRESHOLD
+    batch_size = get_relay_push_settings(bulk=bulk, snapshot_bulk=True)["batch_size"]
     return {
         "bulk": bulk,
-        "push_batch_size": RELAY_PUSH_MAX_BULK if bulk else None,
+        "push_batch_size": batch_size,
         "pull_limit": RELAY_PULL_PAGE_SIZE,
     }
 
@@ -1122,6 +1131,14 @@ def migrate_db(conn=None):
         conn.execute("ALTER TABLE leads ADD COLUMN cloud_pending INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    for col, col_type in [
+        ("merge_entity_key", "TEXT"),
+        ("relay_delete_pushed", "INTEGER NOT NULL DEFAULT 0"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE lead_merges ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
     try:
         conn.execute("ALTER TABLE companies ADD COLUMN cloud_pending INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
@@ -1890,6 +1907,18 @@ def batch_lead_lookup(
             if lead:
                 lid = int(lead["id"])
                 lead_ids.append(lid)
+                domain_row = conn.execute(
+                    """SELECT c.domain AS company_domain
+                       FROM leads l
+                       LEFT JOIN companies c ON l.company_id = c.id
+                       WHERE l.id = ?""",
+                    (lid,),
+                ).fetchone()
+                company_domain = ""
+                if domain_row and domain_row["company_domain"]:
+                    company_domain = str(domain_row["company_domain"]).strip().lower().lstrip("@")
+                if not company_domain:
+                    company_domain = (lead.get("email_domain") or "").strip().lower().lstrip("@") or None
                 entry = {
                     "index": idx,
                     "status": "found",
@@ -1897,7 +1926,7 @@ def batch_lead_lookup(
                     "email": (lead.get("email") or "").strip() or None,
                     "name": lead.get("name"),
                     "company": lead.get("company_display") or lead.get("company"),
-                    "company_domain": (lead.get("email_domain") or "").strip() or None,
+                    "company_domain": company_domain,
                     "linkedin_url": lead.get("linkedin_url"),
                 }
             results.append(entry)
@@ -2025,9 +2054,11 @@ def merge_leads(
         industry = (keep["industry"] or "") or (other["industry"] or "") or None
         headcount = (keep["headcount"] or "") or (other["headcount"] or "") or None
         company_id = keep["company_id"] or other["company_id"]
+        merge_entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, merge_id)
         conn.execute(
-            "INSERT INTO lead_merges (keep_id, merge_id, reason) VALUES (?, ?, ?)",
-            (keep_id, merge_id, reason),
+            """INSERT INTO lead_merges (keep_id, merge_id, reason, merge_entity_key, relay_delete_pushed)
+               VALUES (?, ?, ?, ?, 0)""",
+            (keep_id, merge_id, reason, merge_entity_key or None),
         )
         conn.execute("DELETE FROM leads WHERE id = ?", (merge_id,))
 
@@ -4408,6 +4439,9 @@ def query_leads_for_export(
     stage: Optional[str] = None,
     since: Optional[str] = None,
     limit: int = 5000,
+    never_contacted: bool = False,
+    no_email: bool = False,
+    require_domain: bool = False,
 ) -> tuple[list[dict], bool]:
     """Load leads for export; returns (rows, truncated)."""
     conn = get_conn()
@@ -4455,6 +4489,12 @@ def query_leads_for_export(
             since_date = datetime.now().strftime("%Y-%m-%d")
         query += " AND (l.created_at >= ? OR l.updated_at >= ?)"
         params.extend([since_date, since_date])
+    if never_contacted:
+        query += f" AND {pipeline_lead_review._never_contacted_sql('wl')}"
+    if no_email:
+        query += " AND (l.email IS NULL OR TRIM(l.email) = '')"
+    if require_domain:
+        query += " AND co.domain IS NOT NULL AND TRIM(co.domain) != ''"
     query += " ORDER BY l.updated_at DESC LIMIT ?"
     params.append(limit)
     rows = [dict(r) for r in conn.execute(query, params).fetchall()]
@@ -4472,9 +4512,19 @@ def export_leads(
     limit: int = 5000,
     fmt: str = "csv",
     file_path: Optional[str] = None,
+    never_contacted: bool = False,
+    no_email: bool = False,
+    require_domain: bool = False,
 ) -> dict:
     rows, truncated = query_leads_for_export(
-        workspace=workspace, tag=tag, stage=stage, since=since, limit=limit,
+        workspace=workspace,
+        tag=tag,
+        stage=stage,
+        since=since,
+        limit=limit,
+        never_contacted=never_contacted,
+        no_email=no_email,
+        require_domain=require_domain,
     )
     enriched = enrich_lead_rows(rows, workspace=workspace)
     for row in enriched:
@@ -5260,7 +5310,12 @@ def format_local_sync_hint(counts: dict) -> str:
     return f"\n⚠ Not synced: {', '.join(parts)}. Run: pipeline.py sync"
 
 
-def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) -> dict:
+def sync_all(
+    org_id: str = DEFAULT_ORG_ID,
+    *,
+    no_health_report: bool = False,
+    force_bulk: Optional[bool] = None,
+) -> dict:
     """Push pending workspaces, rules, and lead snapshots to the cloud.
 
     Network push only runs when the user invokes `pipeline.py sync` (never on
@@ -5293,10 +5348,10 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
         status.get("cloud_pending_lead_core", 0)
         + status.get("cloud_pending_lead_workspaces", 0)
     )
-    transport = _use_bulk_transport(snapshot_pending)
+    transport = _use_bulk_transport(snapshot_pending, force_bulk=force_bulk)
     if transport["bulk"]:
         print(
-            f"Syncing to relay (large mode: {transport['push_batch_size']}/request) — "
+            f"Syncing to relay (bulk mode, {transport['push_batch_size']}/request) — "
             f"{snapshot_pending} snapshot(s) pending, "
             f"{status.get('local_agent_events', 0)} event(s) pending...",
             flush=True,
@@ -5413,7 +5468,12 @@ def sync_all(org_id: str = DEFAULT_ORG_ID, *, no_health_report: bool = False) ->
                 f"Synced {q_synced} quarantine resolution{'s' if q_synced != 1 else ''} to relay."
             )
 
-        lead_push = _push_pending_lead_snapshots(agent_key)
+        merge_delete_push = _push_pending_merge_deletes(agent_key, bulk=transport["bulk"])
+        results["merge_deletes_pushed"] = int(merge_delete_push.get("pushed", 0) or 0)
+        if merge_delete_push.get("error"):
+            results["merge_deletes_error"] = merge_delete_push["error"]
+
+        lead_push = _push_pending_lead_snapshots(agent_key, bulk=transport["bulk"])
         leads_pushed = int(lead_push.get("pushed", 0) or 0)
         results["lead_snapshots_pushed"] = leads_pushed
         if lead_push.get("timeouts"):
@@ -5716,7 +5776,57 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
     return result
 
 
-def _push_pending_lead_snapshots(agent_key: str) -> dict:
+def _push_pending_merge_deletes(agent_key: str, *, bulk: bool = False) -> dict:
+    """Push tombstones for merged leads so relay drops stale entity keys."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT id, merge_entity_key FROM lead_merges
+           WHERE merge_entity_key IS NOT NULL AND TRIM(merge_entity_key) != ''
+             AND COALESCE(relay_delete_pushed, 0) = 0"""
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return {"pushed": 0, "error": None}
+
+    client_id = get_or_create_client_id()
+    now_ts = datetime.now(timezone.utc).isoformat()
+    entries = [
+        {
+            "action": "lead_core_delete",
+            "entity_key": row["merge_entity_key"],
+            "timestamp": now_ts,
+            "payload": {"reason": "merge"},
+        }
+        for row in rows
+    ]
+    mark_ids = [row["id"] for row in rows]
+    conn.close()
+
+    def clear_merge_ids(ids: list) -> None:
+        if not ids:
+            return
+        mark_conn = get_conn()
+        ph = ",".join("?" for _ in ids)
+        mark_conn.execute(
+            f"UPDATE lead_merges SET relay_delete_pushed = 1 WHERE id IN ({ph})",
+            ids,
+        )
+        mark_conn.commit()
+        mark_conn.close()
+
+    return _relay_push_batches(
+        agent_key,
+        entries,
+        client_id,
+        stream_label="merge_delete",
+        bulk=bulk,
+        snapshot_bulk=True,
+        mark_ids=mark_ids,
+        on_mark_cleared=clear_merge_ids,
+    )
+
+
+def _push_pending_lead_snapshots(agent_key: str, *, bulk: Optional[bool] = None) -> dict:
     """Push pending lead core + workspace snapshots to relay /push."""
     conn = get_conn()
     core_rows = conn.execute(
@@ -5802,8 +5912,13 @@ def _push_pending_lead_snapshots(agent_key: str) -> dict:
     conn.close()
 
     pending_total = len(core_entries) + len(ws_entries)
-    bulk = pending_total >= RELAY_BULK_THRESHOLD
-    _relay_log(f"snapshots: pushing {pending_total:,} entries to relay (bulk={bulk}) ...")
+    if bulk is None:
+        bulk = pending_total >= RELAY_BULK_THRESHOLD
+    batch_sz = get_relay_push_settings(bulk=bulk, snapshot_bulk=True)["batch_size"]
+    _relay_log(
+        f"snapshots: pushing {pending_total:,} entries to relay "
+        f"(bulk={bulk}, batch_size={batch_sz}) ..."
+    )
     total_pushed = 0
     last_result: dict = {"pushed": 0, "error": None, "throttled": False}
 
@@ -9195,6 +9310,16 @@ def main():
     vc_p.add_argument("--max-age", type=int, default=30, dest="max_age")
     vc_p.add_argument("--skip-mv-days", type=int, default=7, dest="skip_mv_days")
     vc_p.add_argument("--limit", type=int, default=5000)
+    vc_p.add_argument(
+        "--never-contacted",
+        action="store_true",
+        help="Exclude leads with any outreach activity",
+    )
+    vc_p.add_argument(
+        "--include-mv-attempted",
+        action="store_true",
+        help="Include leads already tagged mv_attempted",
+    )
 
     bounce_p = sub.add_parser("bounce-list", help="List deduplicated platform bounce records")
     bounce_p.add_argument("--platform", help="Filter by platform (plusvibe, smartlead, etc.)")
@@ -9216,6 +9341,30 @@ def main():
     export_p.add_argument("--limit", type=int, default=5000)
     export_p.add_argument("--format", choices=("csv", "json"), default="csv")
     export_p.add_argument("--file", help="Output path under workspace export/ (default auto-named)")
+    export_p.add_argument(
+        "--never-contacted",
+        action="store_true",
+        help="Only leads with no email/LinkedIn sends, replies, or events",
+    )
+    export_p.add_argument("--no-email", action="store_true", help="Only leads missing email")
+    export_p.add_argument(
+        "--require-domain",
+        action="store_true",
+        help="Only leads with companies.domain set (never fall back to company name)",
+    )
+
+    efc_p = sub.add_parser(
+        "email-finder-candidates",
+        help="List workspace leads shaped for email-finder batch-find (real domains only)",
+    )
+    efc_p.add_argument("--workspace", required=True)
+    efc_p.add_argument("--tag")
+    efc_p.add_argument("--stage")
+    efc_p.add_argument("--since")
+    efc_p.add_argument("--limit", type=int, default=5000)
+    efc_p.add_argument("--never-contacted", action="store_true")
+    efc_p.add_argument("--no-email", action="store_true", default=True)
+    efc_p.add_argument("--require-domain", action="store_true", default=True)
 
     agent_export_p = sub.add_parser("agent-changes", help="Show agent-created leads and events not yet synced")
     agent_export_p.add_argument("--json", action="store_true", help="Output as JSON (default)")
@@ -9362,6 +9511,16 @@ def main():
         action="store_true",
         help="Mark all leads and workspace memberships pending, then push snapshot v2 to relay",
     )
+    sync_p.add_argument(
+        "--bulk",
+        action="store_true",
+        help="Force large snapshot batch sizes regardless of pending count",
+    )
+    sync_p.add_argument(
+        "--no-bulk",
+        action="store_true",
+        help="Force routine (smaller) snapshot batch sizes",
+    )
 
     activity_p = sub.add_parser("activity", help="Lead activity summary (last contacted, counts)")
     activity_sub = activity_p.add_subparsers(dest="activity_command", required=True)
@@ -9448,13 +9607,29 @@ def main():
 
     review_export_p = review_sub.add_parser("export", help="Export candidates to a review sheet via OM API")
     review_export_p.add_argument("--template", default="dedup-review")
-    review_export_p.add_argument("--input", required=True, help="candidates.json from dedup find")
+    review_export_p.add_argument("--input", help="candidates.json from dedup find (dedup-review)")
     review_export_p.add_argument("--title", default="Outreach Dedup Review")
     review_export_p.add_argument("--share-email", help="Email to share sheet with (default: org owner)")
+    review_export_p.add_argument("--workspace", help="Workspace slug (lead-review)")
+    review_export_p.add_argument(
+        "--detail",
+        choices=pipeline_lead_review.DETAIL_LEVELS,
+        default="standard",
+        help="Column set for lead-review template",
+    )
+    review_export_p.add_argument("--fields", help="Comma-separated columns for --detail custom")
+    review_export_p.add_argument("--tag", help="Filter workspace tag (lead-review)")
+    review_export_p.add_argument("--stage", help="Filter workspace stage (lead-review)")
+    review_export_p.add_argument("--since", help="Created/updated since (lead-review)")
+    review_export_p.add_argument("--limit", type=int, default=5000)
+    review_export_p.add_argument("--never-contacted", action="store_true")
+    review_export_p.add_argument("--no-email", action="store_true")
+    review_export_p.add_argument("--require-domain", action="store_true")
 
     review_sync_p = review_sub.add_parser("sync", help="Read sheet approvals and merge locally")
     review_sync_p.add_argument("--sheet-id", required=True)
     review_sync_p.add_argument("--template", default="dedup-review")
+    review_sync_p.add_argument("--workspace", help="Workspace slug (required for lead-review sync)")
     review_sync_p.add_argument("--dry-run", action="store_true", help="Report approved rows only")
     review_sync_p.add_argument("--commit", action="store_true", help="Merge approved rows and write results")
 
@@ -9738,7 +9913,18 @@ def main():
             if getattr(args, "full_snapshot_v2", False):
                 mark_all_lead_snapshots_pending()
                 print("Marked all leads and workspace memberships for snapshot v2 push.", flush=True)
-            result = sync_all(no_health_report=getattr(args, "no_health_report", False))
+            force_bulk = None
+            if getattr(args, "bulk", False) and getattr(args, "no_bulk", False):
+                print(json.dumps({"error": "Use --bulk or --no-bulk, not both"}))
+                sys.exit(1)
+            if getattr(args, "bulk", False):
+                force_bulk = True
+            elif getattr(args, "no_bulk", False):
+                force_bulk = False
+            result = sync_all(
+                no_health_report=getattr(args, "no_health_report", False),
+                force_bulk=force_bulk,
+            )
             print(json.dumps(result, indent=2))
         return
 
@@ -10060,6 +10246,34 @@ def main():
         )
     elif args.command == "query":
         query_cli.cmd_query(args)
+    elif args.command == "email-finder-candidates":
+        conn = get_conn()
+        try:
+            leads = pipeline_lead_review.load_workspace_leads_for_review(
+                conn,
+                args.workspace,
+                tag=getattr(args, "tag", None),
+                stage=getattr(args, "stage", None),
+                since=getattr(args, "since", None),
+                limit=args.limit,
+                never_contacted=getattr(args, "never_contacted", False),
+                no_email=getattr(args, "no_email", True),
+                require_domain=getattr(args, "require_domain", True),
+                enrich_fn=enrich_lead_rows,
+            )
+            candidates = pipeline_lead_review.email_finder_candidates_from_leads(leads)
+            print(json.dumps({
+                "status": "ok",
+                "workspace": args.workspace,
+                "scanned": len(leads),
+                "count": len(candidates),
+                "candidates": candidates,
+            }, indent=2))
+        except ValueError as e:
+            print(json.dumps({"error": str(e)}))
+            sys.exit(1)
+        finally:
+            conn.close()
     elif args.command == "export":
         try:
             result = export_leads(
@@ -10070,6 +10284,9 @@ def main():
                 limit=args.limit,
                 fmt=args.format,
                 file_path=getattr(args, "file", None),
+                never_contacted=getattr(args, "never_contacted", False),
+                no_email=getattr(args, "no_email", False),
+                require_domain=getattr(args, "require_domain", False),
             )
         except ValueError as e:
             print(json.dumps({"error": str(e)}))
@@ -10288,6 +10505,8 @@ def main():
                 max_age_days=getattr(args, "max_age", 30),
                 skip_mv_days=getattr(args, "skip_mv_days", 7),
                 limit=getattr(args, "limit", 5000),
+                never_contacted_only=getattr(args, "never_contacted", False),
+                skip_mv_attempted_tag=not getattr(args, "include_mv_attempted", False),
             ),
             indent=2,
         ))
@@ -10424,40 +10643,109 @@ def main():
             print(json.dumps({"error": "login required — pipeline.py login"}))
             sys.exit(1)
         api_base = review_cloud.get_api_base(load_config)
+        template = pipeline_lead_review.normalize_review_template(args.template)
         if args.review_command == "templates" and args.templates_command == "list":
-            print(json.dumps({"templates": ["dedup-review"]}, indent=2))
+            print(json.dumps({"templates": ["dedup-review", "lead-review"]}, indent=2))
         elif args.review_command == "export":
             try:
-                in_path = resolve_project_path(args.input, kind="input")
-                payload = pipeline_dedup.load_candidates_file(str(in_path))
-            except (OSError, ValueError, json.JSONDecodeError) as e:
-                print(json.dumps({"error": str(e)}))
-                sys.exit(1)
-            candidates = payload.get("candidates") or []
-            if not candidates:
-                print(json.dumps({"error": "no candidates in input file"}))
-                sys.exit(1)
-            try:
-                result = review_cloud.export_review(
-                    api_base,
-                    tok,
-                    template=args.template,
-                    candidates=candidates,
-                    title=args.title,
-                    share_email=getattr(args, "share_email", None),
-                )
-            except RuntimeError as e:
+                if template == "lead-review":
+                    if not getattr(args, "workspace", None):
+                        print(json.dumps({"error": "--workspace required for lead-review export"}))
+                        sys.exit(1)
+                    custom_fields = None
+                    if getattr(args, "fields", None):
+                        custom_fields = [f.strip() for f in args.fields.split(",") if f.strip()]
+                    conn = get_conn()
+                    try:
+                        payload = pipeline_lead_review.build_export_payload(
+                            conn,
+                            workspace=args.workspace,
+                            detail=getattr(args, "detail", "standard"),
+                            title=args.title,
+                            custom_fields=custom_fields,
+                            tag=getattr(args, "tag", None),
+                            stage=getattr(args, "stage", None),
+                            since=getattr(args, "since", None),
+                            limit=getattr(args, "limit", 5000),
+                            never_contacted=getattr(args, "never_contacted", False),
+                            no_email=getattr(args, "no_email", False),
+                            require_domain=getattr(args, "require_domain", False),
+                            enrich_fn=enrich_lead_rows,
+                        )
+                    finally:
+                        conn.close()
+                    if not payload.get("rows"):
+                        print(json.dumps({"error": "no leads matched export filters"}))
+                        sys.exit(1)
+                    result = review_cloud.export_review(
+                        api_base,
+                        tok,
+                        template=template,
+                        title=args.title,
+                        share_email=getattr(args, "share_email", None),
+                        detail=payload.get("detail"),
+                        headers=payload.get("headers"),
+                        rows=payload.get("rows"),
+                        workspace=args.workspace,
+                    )
+                else:
+                    if not getattr(args, "input", None):
+                        print(json.dumps({"error": "--input required for dedup-review export"}))
+                        sys.exit(1)
+                    in_path = resolve_project_path(args.input, kind="input")
+                    payload = pipeline_dedup.load_candidates_file(str(in_path))
+                    candidates = payload.get("candidates") or []
+                    if not candidates:
+                        print(json.dumps({"error": "no candidates in input file"}))
+                        sys.exit(1)
+                    result = review_cloud.export_review(
+                        api_base,
+                        tok,
+                        template=template,
+                        candidates=candidates,
+                        title=args.title,
+                        share_email=getattr(args, "share_email", None),
+                    )
+            except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as e:
                 print(json.dumps({"error": str(e)}))
                 sys.exit(1)
             print(json.dumps(result, indent=2))
         elif args.review_command == "sync":
             try:
                 read_result = review_cloud.sync_read(
-                    api_base, tok, sheet_id=args.sheet_id, template=args.template,
+                    api_base, tok, sheet_id=args.sheet_id, template=template,
                 )
             except RuntimeError as e:
                 print(json.dumps({"error": str(e)}))
                 sys.exit(1)
+            if template == "lead-review":
+                ws_slug = getattr(args, "workspace", None)
+                if not ws_slug:
+                    print(json.dumps({"error": "--workspace required for lead-review sync"}))
+                    sys.exit(1)
+                sheet_rows = read_result.get("rows") or []
+                if not sheet_rows:
+                    print(json.dumps({"status": "noop", "rows": 0, "message": "no rows in sheet"}))
+                    sys.exit(0)
+                conn = get_conn()
+                try:
+                    ws_row = resolve_workspace_identity(conn, ws_slug)
+                    if not ws_row:
+                        print(json.dumps({"error": f"workspace not found: {ws_slug}"}))
+                        sys.exit(1)
+                    summary = pipeline_lead_review.apply_lead_review_sync(
+                        conn,
+                        ws_row["id"],
+                        sheet_rows,
+                        upsert_workspace_lead_fn=upsert_workspace_lead,
+                        org_id=DEFAULT_ORG_ID,
+                        dry_run=args.dry_run or not args.commit,
+                    )
+                finally:
+                    conn.close()
+                print(json.dumps(summary, indent=2))
+                sys.exit(0)
+
             approved = read_result.get("approved") or []
             if not approved:
                 print(json.dumps({"status": "noop", "approved": 0, "message": "no rows to sync"}))
@@ -10506,7 +10794,7 @@ def main():
                     tok,
                     sheet_id=args.sheet_id,
                     results=sheet_results,
-                    template=args.template,
+                    template=template,
                 )
             except RuntimeError as e:
                 merge_result["sheet_write_error"] = str(e)

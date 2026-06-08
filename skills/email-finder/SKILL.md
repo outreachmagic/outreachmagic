@@ -63,7 +63,7 @@ Find work emails when you have **name + company domain**. **trykitt** first, **I
 1. Check OM first (`check` / `find`).
 2. Never fabricate emails.
 3. Waterfall: trykitt → Icypeas when both keys set.
-4. Tags: `trykitt_attempted` / `icypeas_attempted`; `email_found` when saved.
+4. Tags: `trykitt_attempted` / `icypeas_attempted`; `email_found` when saved; `mv_attempted` after MillionVerifier bulk (result lives in OM `email_verification_status`).
 5. Batch: `lead_id` on every row; `--workspace` required for OM save.
 6. `batch-find` re-checks OM immediately before each API call (skips leads resolved since batch start).
 7. `batch-find` writes `{output-base}.csv` / `.json` incrementally, then saves to OM (`apply-email-find-results` when all rows have `lead_id`).
@@ -90,7 +90,14 @@ python3 scripts/email_finder.py batch-find --workspace CLIENT --yes \
 python3 scripts/email_finder.py import-to-om --file ./export/emails.csv --workspace CLIENT
 
 python3 scripts/email_finder.py update --check
+
+# MillionVerifier (optional) — keys often come from OM agent_secrets, not local .env placeholders
+python3 scripts/email_finder.py config
+python3 scripts/email_finder.py verify-credits
+python3 scripts/email_finder.py verify-bulk --workspace CLIENT --poll --yes
 ```
+
+`MILLIONVERIFIER_API_KEY` in a local `.env` may show `***`; OM `agent_secrets.env` overrides via `ensure_env_loaded()`.
 
 Resume a crashed batch by re-running the same `batch-find` command (skips completed API rows).
 

@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS lead_merges (
     keep_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
     merge_id        INTEGER NOT NULL,
     reason          TEXT,
+    merge_entity_key TEXT,
+    relay_delete_pushed INTEGER NOT NULL DEFAULT 0,
     merged_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

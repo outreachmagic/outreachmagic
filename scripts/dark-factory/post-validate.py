@@ -39,7 +39,7 @@ def main() -> None:
         case = catalog.get(case_id)
         if case and case.get("mode") == "agent":
             agent_status = str(row.get("status") or "").lower()
-            if agent_status == "pass":
+            if agent_status in ("pass", "passed"):
                 passed += 1
             else:
                 failed += 1

@@ -37,6 +37,12 @@ def main() -> None:
     for row in results:
         case_id = row.get("id", "")
         case = catalog.get(case_id)
+        if case and case.get("mode") == "agent":
+            if row.get("status") == "pass":
+                passed += 1
+            else:
+                failed += 1
+            continue
         actual = row.get("actual") or row.get("output") or ""
         if not case:
             row["status"] = "fail"

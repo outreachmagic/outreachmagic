@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from om_paths import get_agent_secrets_path
+from om_paths import get_agent_secrets_path, get_data_root
 
 DEFAULT_API_BASE = "https://app.outreachmagic.io"
 CONFIG_API_BASE_KEY = "api_base_url"
@@ -108,6 +108,56 @@ def write_agent_secrets_env(
     return [k for k, _ in lines]
 
 
+def _is_catalog_env_var(key: str) -> bool:
+    parsed = _parse_pool_env_key(key)
+    if not parsed:
+        return False
+    base, _ = parsed
+    return base in CATALOG_ENV_KEYS
+
+
+def mirror_agent_secrets_to_data_env(secrets: dict[str, list[str]]) -> Path:
+    """Mirror synced companion keys into {data_root}/.env for Hermes shell/agent visibility."""
+    path = get_data_root() / ".env"
+    preserved: list[str] = []
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                preserved.append(line)
+                continue
+            key = stripped.partition("=")[0].strip()
+            if _is_catalog_env_var(key):
+                continue
+            preserved.append(line)
+
+    lines: list[str] = []
+    if preserved:
+        lines.extend(preserved)
+        if preserved[-1].strip():
+            lines.append("")
+    lines.extend(
+        [
+            "# Companion API keys — synced from dashboard (do not commit)",
+            "# Re-sync: python3 scripts/pipeline.py sync-secrets",
+        ]
+    )
+    for env_key in sorted(secrets.keys()):
+        values = [v.strip() for v in (secrets.get(env_key) or []) if v and str(v).strip()]
+        for idx, value in enumerate(values):
+            lines.append(f"{env_var_for_slot(env_key, idx)}={value}")
+    text = "\n".join(lines)
+    if lines:
+        text += "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return path
+
+
 def apply_secrets_to_environ(secrets: dict[str, list[str]], *, override: bool = True) -> None:
     for env_key in sorted(secrets.keys()):
         values = secrets.get(env_key) or []
@@ -182,6 +232,7 @@ def sync_agent_secrets_from_cloud(
 
     path = agent_secrets_path()
     keys_written = write_agent_secrets_env(path, secrets, version=version)
+    mirror_agent_secrets_to_data_env(secrets)
     apply_secrets_to_environ(secrets, override=True)
 
     cfg = load_config_fn()

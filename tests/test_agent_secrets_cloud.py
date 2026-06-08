@@ -53,6 +53,21 @@ class AgentSecretsCloudTests(unittest.TestCase):
         expected = self._root / "skills" / "outreachmagic" / "config" / "agent_secrets.env"
         self.assertEqual(agent_secrets_cloud.agent_secrets_path(), expected)
 
+    def test_mirror_agent_secrets_to_data_env_preserves_other_keys(self):
+        data_env = self._root / ".env"
+        data_env.write_text("OUTREACHMAGIC_AGENT_KEY=om_agent_test\nCUSTOM=keep\n", encoding="utf-8")
+        secrets = {
+            "TRYKITT_API_KEY": ["trykitt-primary"],
+            "ICYPEAS_API_KEY": ["icypeas-only"],
+        }
+        path = agent_secrets_cloud.mirror_agent_secrets_to_data_env(secrets)
+        self.assertEqual(path, data_env)
+        text = data_env.read_text()
+        self.assertIn("OUTREACHMAGIC_AGENT_KEY=om_agent_test", text)
+        self.assertIn("CUSTOM=keep", text)
+        self.assertIn("TRYKITT_API_KEY=trykitt-primary", text)
+        self.assertIn("ICYPEAS_API_KEY=icypeas-only", text)
+
     def test_load_local_includes_backup_slots(self):
         path = om_paths.get_agent_secrets_path()
         agent_secrets_cloud.write_agent_secrets_env(

@@ -79,7 +79,7 @@ ssh -i "$SSH_KEY" -o BatchMode=yes "$SSH_HOST" "mkdir -p ${TESTS_DATA_PATH}/resu
 scp -i "$SSH_KEY" -o BatchMode=yes "$PROMPT_FILE" "${SSH_HOST}:${REMOTE_PROMPT}"
 
 ssh -i "$SSH_KEY" -o BatchMode=yes "$SSH_HOST" bash -s \
-  "$CONTAINER" "$PROFILE" "$REMOTE_PROMPT" "$RESULTS_HOST" "$RESULTS_CONTAINER" "$TIMEOUT" <<'REMOTE'
+  "$CONTAINER" "$PROFILE" "$REMOTE_PROMPT" "$RESULTS_HOST" "$RESULTS_CONTAINER" "$TIMEOUT" "$(read_cfg vps.instance)" <<'REMOTE'
 set -euo pipefail
 CONTAINER="$1"
 PROFILE="$2"
@@ -87,17 +87,25 @@ PROMPT_HOST="$3"
 RESULTS_HOST="$4"
 RESULTS_CONTAINER="$5"
 TIMEOUT="$6"
+INSTANCE="$7"
 
 if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
   echo "ERROR: container $CONTAINER not running." >&2
   exit 1
 fi
 
-DATA_ENV="/home/deploy/hermes/instances/dark-factory/data/.env"
+DATA_ENV="/home/deploy/hermes/instances/${INSTANCE}/data/.env"
+AGENT_SECRETS="/home/deploy/hermes/instances/${INSTANCE}/data/skills/outreachmagic/config/agent_secrets.env"
 if [[ -f "$DATA_ENV" ]]; then
   set -a
   # shellcheck disable=SC1090
   source "$DATA_ENV"
+  set +a
+fi
+if [[ -f "$AGENT_SECRETS" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$AGENT_SECRETS"
   set +a
 fi
 
@@ -105,13 +113,17 @@ PROMPT="$(cat "$PROMPT_HOST")"
 mkdir -p "$(dirname "$RESULTS_HOST")"
 docker exec "$CONTAINER" mkdir -p "$(dirname "$RESULTS_CONTAINER")"
 
+# Source synced companion keys inside the container so Hermes agent shell sees them.
 docker exec \
   -e HERMES_PROFILE="$PROFILE" \
   -e OUTREACHMAGIC_AGENT_KEY="${OUTREACHMAGIC_AGENT_KEY:-}" \
+  -e TRYKITT_API_KEY="${TRYKITT_API_KEY:-}" \
+  -e ICYPEAS_API_KEY="${ICYPEAS_API_KEY:-}" \
+  -e SERPER_API_KEY="${SERPER_API_KEY:-}" \
+  -e MILLIONVERIFIER_API_KEY="${MILLIONVERIFIER_API_KEY:-}" \
   "$CONTAINER" \
-  timeout "$TIMEOUT" /opt/hermes/bin/hermes -z "$PROMPT" \
-    --skills test-harness,outreachmagic,lead-enrich,email-finder \
-    --yolo 2>&1 | tee "/tmp/dark-factory-hermes-${PROFILE}.log"
+  bash -lc 'set -a; [ -f /home/hermes/.hermes/skills/outreachmagic/config/agent_secrets.env ] && . /home/hermes/.hermes/skills/outreachmagic/config/agent_secrets.env; [ -f /home/hermes/.hermes/.env ] && . /home/hermes/.hermes/.env; set +a; exec timeout '"$TIMEOUT"' /opt/hermes/bin/hermes -z '"$(printf '%q' "$PROMPT")"' --skills test-harness,outreachmagic,lead-enrich,email-finder --yolo' \
+  2>&1 | tee "/tmp/dark-factory-hermes-${PROFILE}.log"
 
 if [[ -f "$RESULTS_HOST" ]]; then
   echo "Results (host): $RESULTS_HOST"

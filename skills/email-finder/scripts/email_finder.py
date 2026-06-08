@@ -47,8 +47,9 @@ from batch_runner import (
     should_tag_provider_attempt,
 )
 from normalize import load_people_json, normalize_linkedin, row_fields, validate_domain
+from credits import mv_credit_summary, verify_credits_used
 from millionverifier import MillionVerifierProvider, mv_to_om_status
-from progress import print_mv_summary, print_om_setup_box
+from progress import print_mv_summary, print_om_setup_box, print_verify_bulk_plan
 from providers import (
     icypeas_find,
     icypeas_poll_result,
@@ -72,6 +73,7 @@ UPDATE_FILES = (
     ".gitignore",
     "references/email-finding-research.md",
     "scripts/companion_common.py",
+    "scripts/credits.py",
     "scripts/email_finder.py",
     "scripts/normalize.py",
     "scripts/progress.py",
@@ -602,21 +604,28 @@ def cmd_verify_credits() -> None:
     if not str(cfg.get("millionverifier_api_key") or "").strip():
         print(json.dumps({"error": "MILLIONVERIFIER_API_KEY not set"}))
         sys.exit(1)
-    credits = mv.check_credits()
-    print(json.dumps(credits, indent=2))
+    remaining, err = mv.check_credits()
+    print(
+        json.dumps(
+            {
+                "credits_remaining": int(remaining),
+                "credits_per_email_verified": verify_credits_used(count=1),
+                "error": err,
+                "credit_model": "1 credit per email verified",
+            },
+            indent=2,
+        )
+    )
 
 
-def cmd_verify_bulk(
+def _collect_verify_emails(
     *,
     workspace: str = "",
     file_path: str = "",
-    output_path: str = "",
-    poll: bool = False,
     max_age_days: int = 30,
     skip_mv_days: int = 7,
-) -> None:
-    cfg = load_config()
-    mv = _mv_provider(cfg)
+    cfg: Optional[dict[str, Any]] = None,
+) -> tuple[list[str], dict[str, Any]]:
     emails: list[str] = []
     candidate_meta: dict[str, Any] = {}
     if file_path:
@@ -627,10 +636,9 @@ def cmd_verify_bulk(
                 if em:
                     emails.append(em)
     elif workspace:
-        om_dir = find_outreachmagic(cfg)
+        om_dir = find_outreachmagic(cfg or load_config())
         if not om_dir:
-            print(json.dumps({"error": "outreachmagic not found for --workspace"}))
-            sys.exit(1)
+            return [], {"error": "outreachmagic not found for --workspace"}
         try:
             candidate_meta = cc.run_verification_candidates(
                 om_dir,
@@ -640,22 +648,63 @@ def cmd_verify_bulk(
                 skill_dir=_find_skill_dir(),
             )
         except RuntimeError as e:
-            print(json.dumps({"error": str(e)}))
-            sys.exit(1)
+            return [], {"error": str(e)}
         if candidate_meta.get("status") == "error":
-            print(json.dumps(candidate_meta))
-            sys.exit(1)
+            return [], candidate_meta
         for lead in candidate_meta.get("leads") or []:
             em = (lead.get("email") or "").strip()
             if em:
                 emails.append(em)
     else:
-        print(json.dumps({"error": "provide --file or --workspace"}))
-        sys.exit(1)
+        return [], {"error": "provide --file or --workspace"}
     emails = list(dict.fromkeys(emails))
+    lead_ids = {
+        int(lead["lead_id"])
+        for lead in (candidate_meta.get("leads") or [])
+        if lead.get("lead_id")
+    }
+    candidate_meta["unique_lead_ids"] = len(lead_ids)
+    return emails, candidate_meta
+
+
+def cmd_verify_bulk(
+    *,
+    workspace: str = "",
+    file_path: str = "",
+    output_path: str = "",
+    poll: bool = False,
+    dry_run: bool = False,
+    max_age_days: int = 30,
+    skip_mv_days: int = 7,
+) -> None:
+    cfg = load_config()
+    mv = _mv_provider(cfg)
+    emails, candidate_meta = _collect_verify_emails(
+        workspace=workspace,
+        file_path=file_path,
+        max_age_days=max_age_days,
+        skip_mv_days=skip_mv_days,
+        cfg=cfg,
+    )
+    if candidate_meta.get("error"):
+        print(json.dumps({"error": candidate_meta["error"]}))
+        sys.exit(1)
     if not emails:
         print(json.dumps({"error": "no emails to verify"}))
         sys.exit(1)
+    if dry_run:
+        remaining, err = mv.check_credits()
+        plan = mv_credit_summary(
+            email_count=len(emails),
+            credits_remaining=remaining,
+            error=err,
+        )
+        plan["unique_lead_ids"] = candidate_meta.get("unique_lead_ids")
+        plan["status"] = "dry_run"
+        plan["candidates"] = candidate_meta.get("count")
+        print_verify_bulk_plan(plan)
+        print(json.dumps(plan, indent=2))
+        return
     created = mv.create_bulk(emails)
     file_id = str(created.get("file_id") or "")
     if not file_id:
@@ -667,6 +716,7 @@ def cmd_verify_bulk(
         "status": "submitted",
         "file_id": file_id,
         "total_emails": len(emails),
+        "credits_used": verify_credits_used(count=len(emails)),
         "output": output_path or None,
         "candidates": candidate_meta.get("count") if candidate_meta else None,
     }
@@ -738,7 +788,13 @@ def cmd_verify_download(file_id: str, workspace: str = "") -> None:
             [(r.get("email") or "").strip() for r in rows],
         )
         tag_result = _tag_mv_attempted(om_dir, workspace, lead_ids)
-    stats = {"downloaded": len(rows), "saved_to_om": saved, "mv_tag": tag_result}
+    stats = {
+        "downloaded": len(rows),
+        "emails_verified": len(verify_items),
+        "credits_used": verify_credits_used(count=len(verify_items)),
+        "saved_to_om": saved,
+        "mv_tag": tag_result,
+    }
     for st in ("valid", "catch_all", "invalid", "unknown"):
         stats[st] = sum(1 for v in verify_items if v["status"] == st)
     print_mv_summary(stats, title="MILLIONVERIFIER — VERIFICATION COMPLETE")
@@ -962,9 +1018,10 @@ def main() -> None:
         elif cmd == "verify-bulk":
             workspace = file_path = output_path = ""
             poll = "--poll" in sys.argv
+            dry_run = "--dry-run" in sys.argv
             max_age = 30
             skip_mv = 7
-            args = [a for a in sys.argv[2:] if a != "--poll"]
+            args = [a for a in sys.argv[2:] if a not in ("--poll", "--dry-run")]
             i = 0
             while i < len(args):
                 if args[i] == "--workspace" and i + 1 < len(args):
@@ -1004,6 +1061,7 @@ def main() -> None:
                 file_path=file_path,
                 output_path=output_path,
                 poll=poll,
+                dry_run=dry_run,
                 max_age_days=max_age,
                 skip_mv_days=skip_mv,
             )

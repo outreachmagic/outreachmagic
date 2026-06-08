@@ -9,13 +9,13 @@ import urllib.request
 from typing import Any, Optional
 
 import companion_common as cc
+from credits import find_credits_used, icypeas_credits_for_status
 from normalize import normalize_linkedin, validate_domain
 
 TRYKITT_FIND_URL = "https://api.trykitt.ai/job/find_email"
 ICYPEAS_FIND_URL = "https://app.icypeas.com/api/email-search"
 ICYPEAS_READ_URL = "https://app.icypeas.com/api/bulk-single-searchs/read"
 HTTP_TIMEOUT = 30
-ICYPEAS_CREDIT_COST = 0.003
 ICYPEAS_PROCESSING_STATUSES = frozenset(("", "NONE", "SCHEDULED", "IN_PROGRESS"))
 ICYPEAS_DEBITED_STATUSES = frozenset(("FOUND", "DEBITED", "DEBITED_NOT_FOUND"))
 
@@ -23,11 +23,6 @@ ICYPEAS_DEBITED_STATUSES = frozenset(("FOUND", "DEBITED", "DEBITED_NOT_FOUND"))
 def is_icypeas_rate_limited(message: str) -> bool:
     m = (message or "").lower()
     return "exceeded the max number of requests" in m or "rate limit" in m
-
-
-def icypeas_credits_for_status(status: str, *, cfg: Optional[dict[str, Any]] = None) -> float:
-    cost = float((cfg or {}).get("icypeas_credit_cost", ICYPEAS_CREDIT_COST))
-    return cost if (status or "").upper() in ICYPEAS_DEBITED_STATUSES else 0.0
 
 
 def icypeas_poll_wait_seconds(attempt: int, base_delay: float) -> float:
@@ -185,7 +180,6 @@ def _trykitt_find_with_key(
         return {"status": "error", "error": str(e), "provider": "trykitt"}
 
     credits = payload.get("credits") or {}
-    job_credits = float(credits.get("jobCredits") or 0)
     if credits:
         credits = dict(credits)
     email = (payload.get("email") or "").strip()
@@ -201,7 +195,7 @@ def _trykitt_find_with_key(
         "provider": "trykitt",
         "domain": domain,
         "full_name": full_name,
-        "credits_used": job_credits,
+        "credits_used": find_credits_used(found=bool(email)),
         "credits": credits,
     }
 
@@ -382,7 +376,6 @@ def icypeas_poll_result(
         first_email = emails[0] if emails and isinstance(emails[0], dict) else {}
         email = str(first_email.get("email") or "").strip()
         certainty = str(first_email.get("certainty") or "").strip()
-        credits = icypeas_credits_for_status(status, cfg=cfg)
         return {
             "status": "found" if email else "not_found",
             "email": email or None,
@@ -393,7 +386,7 @@ def icypeas_poll_result(
             "icypeas_status": status or None,
             "domain": domain,
             "full_name": full_name,
-            "credits_used": credits,
+            "credits_used": icypeas_credits_for_status(status, email=email),
         }
     return {
         "status": "error",

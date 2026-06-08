@@ -7,6 +7,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
 
+from credits import CREDIT_PER_EMAIL_FOUND, trykitt_findable_from_balance
+
 TRYKITT_FIND_URL = "https://api.trykitt.ai/job/find_email"
 
 
@@ -66,8 +68,8 @@ def probe_trykitt(
         return 0.0, 0, str(e)
     credits = payload.get("credits") or {}
     remaining = float(credits.get("remainingCredits") or 0)
-    job_cost = float(credits.get("jobCredits") or 0.005)
-    lookups = int(remaining / job_cost) if job_cost > 0 else 0
+    job_cost = float(credits.get("jobCredits") or 0)
+    lookups = trykitt_findable_from_balance(remaining, job_cost)
     return remaining, lookups, None
 
 
@@ -135,9 +137,15 @@ def run_health_check(
             elif live and remaining <= 0:
                 issues.append("trykitt: out of credits")
             elif live and lookups < batch_size:
-                issues.append(f"trykitt: only ~{lookups} lookups left (batch {batch_size})")
+                issues.append(
+                    f"trykitt: only ~{lookups} email finds left (batch {batch_size}, "
+                    f"{CREDIT_PER_EMAIL_FOUND} credit each)"
+                )
             elif live:
-                ok_msgs.append(f"trykitt: {remaining:.3f} credits (~{lookups} lookups)")
+                ok_msgs.append(
+                    f"trykitt: ~{lookups} email finds available "
+                    f"({CREDIT_PER_EMAIL_FOUND} credit per found email)"
+                )
             else:
                 ok_msgs.append("trykitt: API key configured (set trykitt_live_health_probe for live balance)")
         else:

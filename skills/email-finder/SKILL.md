@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas (waterfall). Checks Outreach Magic
   first to avoid duplicate API spend. Saves email and verification via outreachmagic.
   Optional MillionVerifier for bulk re-check.
-version: 2.2.15
+version: 2.2.16
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -70,6 +70,7 @@ Before find/batch, confirm keys: `python3 ~/.hermes/skills/outreachmagic/scripts
 6. `batch-find` re-checks OM immediately before each API call (skips leads resolved since batch start).
 7. `batch-find` writes `{output-base}.csv` / `.json` incrementally, then saves to OM (`apply-email-find-results` when all rows have `lead_id`).
 8. COMPLETE box always shows **IMPORT** status. If import was skipped or failed, run `import-to-om` with the checkpoint file.
+9. **Credits** — **1 credit per email found** (trykitt / IcyPeas) or **1 credit per email verified** (MillionVerifier). Not-found lookups cost **0** credits. Never multiply by provider `jobCredits` (e.g. 0.005) — use `verify-credits` or `verify-bulk --dry-run` for MV balance checks.
 
 ## Batch input
 
@@ -96,6 +97,7 @@ python3 scripts/email_finder.py update --check
 # MillionVerifier (optional) — keys often come from OM agent_secrets, not local .env placeholders
 python3 scripts/email_finder.py config
 python3 scripts/email_finder.py verify-credits
+python3 scripts/email_finder.py verify-bulk --workspace CLIENT --dry-run
 python3 scripts/email_finder.py verify-bulk --workspace CLIENT --poll --yes
 ```
 

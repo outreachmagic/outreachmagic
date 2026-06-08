@@ -11,6 +11,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
+from credits import verify_credits_used
+
 MV_SINGLE_BASE = "https://api.millionverifier.com/api/v3"
 MV_BULK_BASE = "https://bulkapi.millionverifier.com"
 HTTP_TIMEOUT = 60
@@ -179,12 +181,14 @@ class MillionVerifierProvider:
 
     def _normalize(self, raw: dict[str, Any]) -> dict[str, Any]:
         mv_status = str(raw.get("result") or raw.get("status") or "")
+        email = (raw.get("email") or "").strip()
         return {
-            "email": raw.get("email"),
+            "email": email or raw.get("email"),
             "status": mv_to_om_status(mv_status),
             "mv_status": mv_status,
             "substatus": raw.get("subresult") or raw.get("substatus"),
             "credits_remaining": raw.get("credits"),
+            "credits_used": verify_credits_used(count=1) if email else 0,
             "provider": "millionverifier",
         }
 

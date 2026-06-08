@@ -19,6 +19,7 @@ MANIFEST_FILES = (
     ".gitignore",
     "references/email-finding-research.md",
     "scripts/companion_common.py",
+    "scripts/credits.py",
     "scripts/email_finder.py",
     "scripts/normalize.py",
     "scripts/progress.py",

@@ -659,6 +659,7 @@ def run_batch(
             health_lines=health_lines,
             resume_done=resume_done,
             missing_om_match=missing_match,
+            credits_max=len(to_process),
         )
         return {
             "dry_run": True,
@@ -992,6 +993,9 @@ def _record_result(
         pass
     else:
         stats["not_found"] += 1
+    credits = int(result.get("credits_used") or 0)
+    if credits:
+        stats["credits_used"] = int(stats.get("credits_used", 0)) + credits
     record_api_calls(stats, result)
     if str(result.get("provider") or "") == "trykitt" and isinstance(result.get("credits"), dict):
         rem = result["credits"].get("remainingCredits")

@@ -845,5 +845,55 @@ class TestFreshOmDedup(unittest.TestCase):
         self.assertEqual(result["processed"], 0)
 
 
+class TestCreditAccounting(unittest.TestCase):
+    def test_find_credits_one_per_found(self):
+        import credits as cr
+
+        self.assertEqual(cr.find_credits_used(found=True), 1)
+        self.assertEqual(cr.find_credits_used(found=False), 0)
+
+    def test_icypeas_credits_only_when_email_returned(self):
+        import credits as cr
+
+        self.assertEqual(cr.icypeas_credits_for_status("DEBITED", email="a@b.com"), 1)
+        self.assertEqual(cr.icypeas_credits_for_status("DEBITED_NOT_FOUND"), 0)
+
+    def test_mv_credit_summary(self):
+        import credits as cr
+
+        plan = cr.mv_credit_summary(email_count=1691, credits_remaining=760404)
+        self.assertEqual(plan["credits_required"], 1691)
+        self.assertEqual(plan["credits_remaining"], 760404)
+        self.assertTrue(plan["sufficient_credits"])
+
+    @patch.object(lemail, "find_outreachmagic")
+    @patch.object(lemail.cc, "run_verification_candidates")
+    def test_verify_bulk_dry_run(self, mock_candidates, mock_om):
+        import io
+
+        mock_om.return_value = Path("/tmp/om")
+        mock_candidates.return_value = {
+            "count": 2,
+            "leads": [
+                {"lead_id": 1, "email": "a@b.com"},
+                {"lead_id": 2, "email": "b@c.com"},
+            ],
+        }
+        lemail.cc._AGENT_ENV_LOADED = False
+        with patch.object(lemail, "load_config", return_value={"millionverifier_api_key": "mvkey"}):
+            with patch.object(lemail, "_mv_provider") as mock_mv_provider:
+                mv = MagicMock()
+                mv.check_credits.return_value = (100.0, None)
+                mock_mv_provider.return_value = mv
+                buf = io.StringIO()
+                with patch("sys.stdout", buf):
+                    lemail.cmd_verify_bulk(workspace="ws", dry_run=True)
+                mv.create_bulk.assert_not_called()
+                payload = json.loads(buf.getvalue())
+                self.assertEqual(payload["status"], "dry_run")
+                self.assertEqual(payload["credits_required"], 2)
+                self.assertEqual(payload["credits_per_email"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,7 @@ def _init_stats(stats: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     base.setdefault("api_calls", {})
     base.setdefault("verify", {"valid": 0, "catch_all": 0, "invalid": 0, "unknown": 0})
     base.setdefault("waterfall", {})
+    base.setdefault("credits_used", 0)
     return base
 
 
@@ -210,9 +211,16 @@ def print_final_summary(
             print(f"║    {line:<58}║", file=file)
     if provider:
         print(f"║    mode:            {provider:<44}║", file=file)
+    credits_used = int(stats.get("credits_used", 0))
+    emails_verified = sum(int(verify.get(k, 0)) for k in ("valid", "catch_all", "invalid", "unknown"))
+    print(f"║{'':62}║", file=file)
+    print(f"║  CREDITS (1 per email found){'':33}║", file=file)
+    print(f"║    Found:          {stats.get('found', 0):<5}  → {credits_used:<5} credits{'':>22}║", file=file)
+    print(f"║    Not found:      {stats.get('not_found', 0):<5}  → 0 credits{'':>26}║", file=file)
     if found_n:
         print(f"║{'':62}║", file=file)
-        print(f"║  VERIFICATION (of found){'':37}║", file=file)
+        print(f"║  VERIFIED (of found){'':42}║", file=file)
+        print(f"║    Emails verified: {emails_verified:<44}║", file=file)
         for key in ("valid", "catch_all", "invalid", "unknown"):
             n = int(verify.get(key, 0))
             pct = n / found_n * 100 if found_n else 0
@@ -301,6 +309,7 @@ def print_dry_run_box(
     health_lines: Optional[list[str]] = None,
     resume_done: int = 0,
     missing_om_match: int = 0,
+    credits_max: Optional[int] = None,
     file=sys.stderr,
 ) -> None:
     print(file=file)
@@ -319,6 +328,8 @@ def print_dry_run_box(
             f"║  ⚠ No lead_id/linkedin: {missing_om_match} rows (may create dupes){'':>8}║",
             file=file,
         )
+    if credits_max is not None:
+        print(f"║  Credits (1/found):  up to {credits_max:<36}║", file=file)
     if health_lines:
         print(f"║{'':62}║", file=file)
         print(f"║  Health:{'':54}║", file=file)
@@ -335,6 +346,30 @@ def print_resume_banner(done: int, new_count: int, total: int, file=sys.stderr) 
     print(f"  Already done:  {done} leads (loaded from CSV/JSON)", file=file)
     print(f"  New:           {new_count} leads", file=file)
     print(f"  Total:         {total}", file=file)
+    print(file=file)
+
+
+def print_verify_bulk_plan(plan: dict[str, Any], *, file=sys.stderr) -> None:
+    """Human-readable MillionVerifier bulk plan (1 credit per email verified)."""
+    print(file=file)
+    print("═" * 60, file=file)
+    print(" MILLIONVERIFIER — VERIFY BULK (dry run)", file=file)
+    print("─" * 60, file=file)
+    print(f" Unique emails:       {plan.get('unique_emails', 0)}", file=file)
+    if plan.get("unique_lead_ids") is not None:
+        print(f" Unique lead_ids:     {plan.get('unique_lead_ids', 0)}", file=file)
+    print(f" Emails to verify:    {plan.get('emails_to_verify', 0)}", file=file)
+    print(f" Credits required:    {plan.get('credits_required', 0)} (1 per email)", file=file)
+    if plan.get("credits_remaining") is not None:
+        print(f" MV credits remaining:{plan.get('credits_remaining', 0):>6}", file=file)
+    sufficient = plan.get("sufficient_credits")
+    if sufficient is not None:
+        print(f" Sufficient credits:  {sufficient}", file=file)
+    if plan.get("error"):
+        print(f" Error:               {plan.get('error')}", file=file)
+    print("─" * 60, file=file)
+    print(" Run without --dry-run to upload to MV.", file=file)
+    print("═" * 60, file=file)
     print(file=file)
 
 

@@ -11,7 +11,6 @@
   "icypeas_poll_delay_seconds": 3,
   "icypeas_request_delay_seconds": 1.5,
   "icypeas_rate_limit_retry_seconds": 3,
-  "icypeas_credit_cost": 0.003,
   "trykitt_request_delay_seconds": 0.2,
   "batch_delay_seconds": 8,
   "outreachmagic_home": "",

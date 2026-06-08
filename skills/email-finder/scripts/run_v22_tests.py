@@ -18,8 +18,8 @@ if str(_SCRIPT_DIR) not in sys.path:
 from batch_runner import BatchOptions, count_rows_missing_om_match, run_batch
 from health import icypeas_batch_warnings
 from millionverifier import MillionVerifierProvider
+from credits import icypeas_credits_for_status
 from providers import (
-    icypeas_credits_for_status,
     icypeas_find,
     icypeas_poll_wait_seconds,
     is_icypeas_rate_limited,
@@ -46,8 +46,9 @@ def _skip(name: str, detail: str) -> dict[str, Any]:
 def run_unit_tests() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     try:
-        assert icypeas_credits_for_status("DEBITED_NOT_FOUND") == 0.003
-        assert icypeas_credits_for_status("NOT_FOUND") == 0.0
+        assert icypeas_credits_for_status("DEBITED_NOT_FOUND") == 0
+        assert icypeas_credits_for_status("DEBITED", email="a@b.com") == 1
+        assert icypeas_credits_for_status("NOT_FOUND") == 0
         assert icypeas_poll_wait_seconds(0, 3) == 3.0
         assert icypeas_poll_wait_seconds(5, 2) <= 30.0
         assert is_icypeas_rate_limited("exceeded the max number of requests")
@@ -114,8 +115,8 @@ def run_single_find(
         debited = icy in ("DEBITED_NOT_FOUND", "FOUND", "DEBITED")
         if debited and credits == 0:
             return _fail(label, f"debited status but credits_used=0 ({detail})")
-        if not debited and credits not in (0, 0.0, None) and credits != 0.003:
-            pass
+        if not debited and credits not in (0, 0.0, None) and credits != 1:
+            return _fail(label, f"unexpected credits_used={credits} ({detail})")
     return _ok(label, detail)
 
 

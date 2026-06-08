@@ -10638,15 +10638,16 @@ def main():
             result["workspace"] = ws_row["slug"]
         print(json.dumps(result))
     elif args.command == "review":
-        tok = get_agent_key()
-        if not tok:
-            print(json.dumps({"error": "login required — pipeline.py login"}))
-            sys.exit(1)
-        api_base = review_cloud.get_api_base(load_config)
-        template = pipeline_lead_review.normalize_review_template(args.template)
         if args.review_command == "templates" and args.templates_command == "list":
             print(json.dumps({"templates": ["dedup-review", "lead-review"]}, indent=2))
-        elif args.review_command == "export":
+        elif args.review_command in ("export", "sync"):
+            tok = get_agent_key()
+            if not tok:
+                print(json.dumps({"error": "login required — pipeline.py login"}))
+                sys.exit(1)
+            api_base = review_cloud.get_api_base(load_config)
+            template = pipeline_lead_review.normalize_review_template(args.template)
+        if args.review_command == "export":
             try:
                 if template == "lead-review":
                     if not getattr(args, "workspace", None):

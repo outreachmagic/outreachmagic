@@ -1,18 +1,17 @@
 # Maintainer ops scripts (not part of the skill install)
 
-One-off recovery, legacy import fixes, and VPS helpers. **Not** included in `update-manifest.json` or end-user installs.
+One-off recovery and VPS helpers. **Not** included in `update-manifest.json` or end-user installs.
 
 Run from repo root, e.g.:
 
 ```bash
 python3 scripts/ops/vps_advance_snapshot_cursors.py --help
-python3 scripts/ops/legacy_import_post_fix.py --help
+python3 scripts/ops/backfill-linkedin-url.py --dry-run
 ```
 
 | Script | Purpose |
 |--------|---------|
-| `legacy_import_post_fix.py` | Post-import attribution / Sales Nav identity fixes |
-| `legacy_import_may2026.py` | Batch legacy CSV import helper |
+| `backfill-linkedin-url.py` | Promote public `linkedin_url` from identities (skip Sales Nav hashes) |
 | `reset_workspaces_and_rules.py` | Reset local workspace routing state |
 | `reset_routing_rules_after_sync.py` | Reset routing after batch sync |
 | `vps_advance_snapshot_cursors.py` | Advance relay snapshot cursors on VPS |

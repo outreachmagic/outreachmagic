@@ -78,13 +78,17 @@ def _run_case_setup(setup: str | None, *, catalog_path: Path) -> str | None:
     if not setup:
         return None
     if setup == "copy_fixture_db":
-        src = _fixture_root(catalog_path) / "dedup/data-root"
-        dest = _fixture_root(catalog_path) / "dedup/data-root-copy"
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(src, dest)
-        return None
-    return f"unknown setup hook: {setup}"
+        rel = "dedup"
+    elif setup.startswith("copy_fixture_db:"):
+        rel = setup.split(":", 1)[1].strip("/")
+    else:
+        return f"unknown setup hook: {setup}"
+    src = _fixture_root(catalog_path) / rel / "data-root"
+    dest = _fixture_root(catalog_path) / rel / "data-root-copy"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest)
+    return None
 
 
 def _resolve_case_env(

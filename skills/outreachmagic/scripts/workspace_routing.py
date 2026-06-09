@@ -109,6 +109,23 @@ def normalize_email(email: Optional[str]) -> Optional[str]:
     return str(email).strip().lower()
 
 
+def is_sales_nav_hash_slug(slug: str) -> bool:
+    """True when a linkedin.com/in/ slug is a Sales Navigator member token, not a public handle."""
+    return bool(re.match(r"^acwaa[\w-]{20,}$", (slug or "").strip(), re.IGNORECASE))
+
+
+def linkedin_in_slug(url_or_slug: str) -> Optional[str]:
+    """Extract linkedin.com/in/<slug> segment from a URL or path."""
+    raw = (url_or_slug or "").strip().lower()
+    for prefix in ("https://", "http://"):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):]
+    if raw.startswith("www."):
+        raw = raw[4:]
+    m = re.search(r"linkedin\.com/in/([^/?#]+)", raw, re.IGNORECASE)
+    return m.group(1) if m else None
+
+
 def normalize_linkedin_sales_nav_id(value: str) -> Optional[str]:
     raw = (value or "").strip()
     if not raw:
@@ -158,10 +175,15 @@ def normalize_linkedin(url: Optional[str]) -> Optional[str]:
             norm = norm[len(prefix):]
     if norm.startswith("www."):
         norm = norm[4:]
-    match = re.match(r"(linkedin\.com/in/[^/?#]+)", norm)
+    match = re.match(r"(linkedin\.com/in/([^/?#]+))", norm)
     if match:
+        slug = match.group(2)
+        if is_sales_nav_hash_slug(slug):
+            return None
         return match.group(1)
     if re.match(r"^[a-z0-9][a-z0-9\-_%]*$", norm):
+        if is_sales_nav_hash_slug(norm):
+            return None
         return f"linkedin.com/in/{norm}"
     return norm.rstrip("/") or None
 
@@ -195,7 +217,8 @@ def parse_linkedin_value(raw: str) -> list[tuple[str, str]]:
         add("linkedin_sales_nav_id", sales_nav)
     public = normalize_linkedin(text)
     if public and "linkedin.com/in/" in public:
-        if not sales_nav or "linkedin.com/in/" in lower:
+        slug = linkedin_in_slug(public) or ""
+        if not is_sales_nav_hash_slug(slug):
             add("linkedin_url", public)
 
     order = {t: i for i, t in enumerate(IDENTITY_PRECEDENCE)}
@@ -339,6 +362,15 @@ def build_import_identities(
     if li:
         for itype, val in parse_linkedin_value(li):
             add(itype, val)
+    for extra_key in (
+        "member linkedin sales nav id",
+        "linkedin_sales_nav_id",
+        "sales_nav_id",
+    ):
+        sn_val = extra.get(extra_key)
+        if sn_val:
+            for itype, val in parse_linkedin_value(str(sn_val)):
+                add(itype, val)
     add("phone", profile.get("phone") or extra.get("phone"))
 
     norm_name = normalize_person_name(profile.get("name"))
@@ -385,6 +417,80 @@ def find_match_method_for_lead(
     return None
 
 
+def linkedin_url_is_hash(url: Optional[str]) -> bool:
+    slug = linkedin_in_slug(url or "")
+    return bool(slug and is_sales_nav_hash_slug(slug))
+
+
+def should_replace_linkedin_url(current: Optional[str], new_public: Optional[str]) -> bool:
+    """Replace when current is empty or a Sales Nav hash slug and new is a valid public URL."""
+    if not new_public or linkedin_url_is_hash(new_public):
+        return False
+    if not current or not str(current).strip():
+        return True
+    return linkedin_url_is_hash(current)
+
+
+def linkedin_url_field_conflict(
+    conn: sqlite3.Connection,
+    lead_id: int,
+    url: str,
+) -> Optional[dict]:
+    """Return conflict metadata when another lead already owns this linkedin_url."""
+    if not url or linkedin_url_is_hash(url):
+        return None
+    row = conn.execute(
+        "SELECT id FROM leads WHERE linkedin_url = ? AND id != ?",
+        (url, lead_id),
+    ).fetchone()
+    if not row:
+        return None
+    owner_id = int(row["id"])
+    return {
+        "type": "linkedin_url_conflict",
+        "linkedin_url": url,
+        "existing_lead_id": owner_id,
+        "message": (
+            f"linkedin_url {url} is already set on lead {owner_id}; "
+            "field left unchanged — consider dedup merge"
+        ),
+    }
+
+
+def promote_linkedin_url_from_identities(
+    conn: sqlite3.Connection,
+    org_id: str,
+    lead_id: int,
+) -> Optional[dict]:
+    """Promote best public linkedin_url identity to leads.linkedin_url.
+
+    Returns conflict metadata when the URL is already owned by another lead.
+    """
+    row = conn.execute("SELECT linkedin_url FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    current = (row["linkedin_url"] if row else None) or ""
+    if current and not linkedin_url_is_hash(current):
+        return None
+    candidates = conn.execute(
+        """SELECT identity_value_normalized FROM lead_identities
+           WHERE org_id = ? AND lead_id = ? AND identity_type = 'linkedin_url'
+           ORDER BY created_at DESC""",
+        (org_id, lead_id),
+    ).fetchall()
+    for c in candidates:
+        url = c["identity_value_normalized"]
+        if linkedin_url_is_hash(url):
+            continue
+        conflict = linkedin_url_field_conflict(conn, lead_id, url)
+        if conflict:
+            return conflict
+        conn.execute(
+            "UPDATE leads SET linkedin_url = ?, updated_at = datetime('now') WHERE id = ?",
+            (url, lead_id),
+        )
+        return None
+    return None
+
+
 def upsert_all_identities(
     conn: sqlite3.Connection,
     org_id: str,
@@ -392,12 +498,16 @@ def upsert_all_identities(
     identities: list[tuple[str, str]],
     *,
     source: Optional[str] = None,
-) -> list[dict]:
-    """Register all identities; return conflict records (does not raise)."""
+) -> tuple[list[dict], list[dict]]:
+    """Register all identities; return (identity conflicts, linkedin_url conflicts)."""
     conflicts: list[dict] = []
+    linkedin_conflicts: list[dict] = []
     for itype, val in identities:
         try:
-            upsert_identity_alias(conn, org_id, lead_id, itype, val, source=source)
+            upsert_identity_alias(
+                conn, org_id, lead_id, itype, val, source=source,
+                promote_linkedin=False,
+            )
         except ValueError:
             existing = conn.execute(
                 """SELECT lead_id FROM lead_identities
@@ -409,7 +519,10 @@ def upsert_all_identities(
                 "value": val,
                 "existing_lead_id": int(existing["lead_id"]) if existing else None,
             })
-    return conflicts
+    prom = promote_linkedin_url_from_identities(conn, org_id, lead_id)
+    if prom:
+        linkedin_conflicts.append(prom)
+    return conflicts, linkedin_conflicts
 
 
 def normalize_identity_value(identity_type: str, value: str) -> Optional[str]:
@@ -944,6 +1057,8 @@ def upsert_identity_alias(
     identity_type: str,
     value_normalized: str,
     source: Optional[str] = None,
+    *,
+    promote_linkedin: bool = True,
 ) -> None:
     existing = conn.execute(
         """SELECT lead_id FROM lead_identities
@@ -964,6 +1079,8 @@ def upsert_identity_alias(
            )""",
         (org_id, lead_id, identity_type, value_normalized, source),
     )
+    if identity_type == "linkedin_url" and promote_linkedin:
+        promote_linkedin_url_from_identities(conn, org_id, lead_id)
 
 
 def enqueue_identity_conflict_merge(

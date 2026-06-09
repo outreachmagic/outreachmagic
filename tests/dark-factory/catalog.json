@@ -395,6 +395,87 @@
             {"path": "count", "equals": 1}
           ]
         }
+      },
+      {
+        "id": "om-review-sync-personalization-emoji",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:review/data-root-copy"
+        },
+        "setup": "copy_fixture_db:review",
+        "command": [
+          "review", "apply-sync",
+          "--workspace", "df-review",
+          "--input", "@fixture:review/sheet-rows-personalization.json",
+          "--commit"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "status", "equals": "applied"},
+            {"path": "updated", "equals": 1}
+          ]
+        }
+      },
+      {
+        "id": "om-review-sync-linkedin-unchanged",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:review/data-root"
+        },
+        "command": [
+          "review", "apply-sync",
+          "--workspace", "df-review",
+          "--input", "@fixture:review/sheet-rows-linkedin-unchanged.json",
+          "--dry-run"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "updated", "equals": 0},
+            {"path": "skipped", "gte": 1}
+          ]
+        }
+      },
+      {
+        "id": "om-review-export-filter-source-detail",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:review/data-root"
+        },
+        "command": [
+          "review", "export-payload",
+          "--workspace", "df-review",
+          "--tag", "review-test",
+          "--original-source-detail", "DF Review Batch",
+          "--detail", "basic",
+          "--limit", "10"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "count", "equals": 1}
+          ],
+          "contains_string": "Pat Review"
+        }
+      },
+      {
+        "id": "om-import-salesnav-public-url",
+        "tags": ["import", "integration", "sales-nav", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:sales-nav/data-root"
+        },
+        "command": [
+          "query", "--sql", "SELECT linkedin_url FROM leads WHERE id=1", "--json"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "linkedin.com/in/sam-nav-handle"
+        }
       }
     ],
     "lead-enrich": [

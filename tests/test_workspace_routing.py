@@ -70,7 +70,7 @@ def test_parse_linkedin_value():
     assert parsed.get("linkedin_url") == "linkedin.com/in/jane"
     parsed = dict(parse_linkedin_value(f"linkedin.com/in/{sales}"))
     assert parsed.get("linkedin_sales_nav_id") == sales
-    assert parsed.get("linkedin_url") == f"linkedin.com/in/{sales.lower()}"
+    assert "linkedin_url" not in parsed
 
 
 def test_linkedin_sales_nav_then_public_slug_same_lead():

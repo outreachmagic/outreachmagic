@@ -29,6 +29,10 @@
     "lead_enrich": { "skills": ["lead-enrich"], "tags": ["smoke"] },
     "email_finder": { "skills": ["email-finder"], "tags": ["smoke"] },
     "companion_common": { "skills": ["lead-enrich", "email-finder"], "tags": ["smoke"] },
-    "dedup": { "skills": ["outreachmagic"], "tags": ["dedup", "integration"] }
+    "dedup": { "skills": ["outreachmagic"], "tags": ["dedup", "integration"] },
+    "review_import": {
+      "skills": ["outreachmagic"],
+      "tags": ["review", "import", "integration"]
+    }
   }
 }

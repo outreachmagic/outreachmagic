@@ -114,6 +114,30 @@ REVIEW_TEMPLATE_ALIASES = {
 }
 
 
+def review_export_filter_kwargs(args: Any) -> dict[str, Any]:
+    """Extract optional lead-review export filters from an argparse namespace."""
+    out: dict[str, Any] = {}
+    for key in (
+        "original_source",
+        "original_source_detail",
+        "latest_source",
+        "latest_source_detail",
+        "industry",
+        "location_city",
+        "location_state",
+        "email_domain",
+        "email_verification_status",
+    ):
+        val = getattr(args, key, None)
+        if val:
+            out[key] = val
+    for key in ("headcount_min", "headcount_max"):
+        val = getattr(args, key, None)
+        if val is not None:
+            out[key] = val
+    return out
+
+
 def normalize_review_template(template: str) -> str:
     key = (template or "").strip().lower()
     return REVIEW_TEMPLATE_ALIASES.get(key, template)
@@ -313,6 +337,17 @@ def load_workspace_leads_for_review(
     never_contacted: bool = False,
     no_email: bool = False,
     require_domain: bool = False,
+    original_source: Optional[str] = None,
+    original_source_detail: Optional[str] = None,
+    latest_source: Optional[str] = None,
+    latest_source_detail: Optional[str] = None,
+    industry: Optional[str] = None,
+    headcount_min: Optional[int] = None,
+    headcount_max: Optional[int] = None,
+    location_city: Optional[str] = None,
+    location_state: Optional[str] = None,
+    email_domain: Optional[str] = None,
+    email_verification_status: Optional[str] = None,
     enrich_fn: Callable[..., list[dict]],
 ) -> list[dict]:
     """Load enriched lead rows for review export."""
@@ -370,6 +405,39 @@ def load_workspace_leads_for_review(
         domain_clause, domain_params = require_professional_domain_clause()
         query += f" {domain_clause}"
         params.extend(domain_params)
+    if original_source:
+        query += " AND l.original_source = ?"
+        params.append(original_source.strip())
+    if original_source_detail:
+        query += " AND (l.original_source_detail = ? OR l.latest_source_detail = ?)"
+        params.extend([original_source_detail.strip(), original_source_detail.strip()])
+    if latest_source:
+        query += " AND l.latest_source = ?"
+        params.append(latest_source.strip())
+    if latest_source_detail:
+        query += " AND l.latest_source_detail = ?"
+        params.append(latest_source_detail.strip())
+    if industry:
+        query += " AND LOWER(l.industry) = LOWER(?)"
+        params.append(industry.strip())
+    if headcount_min is not None:
+        query += " AND l.headcount_numeric >= ?"
+        params.append(headcount_min)
+    if headcount_max is not None:
+        query += " AND l.headcount_numeric <= ?"
+        params.append(headcount_max)
+    if location_city:
+        query += " AND LOWER(l.location_city) = LOWER(?)"
+        params.append(location_city.strip())
+    if location_state:
+        query += " AND LOWER(l.location_state) = LOWER(?)"
+        params.append(location_state.strip())
+    if email_domain:
+        query += " AND LOWER(l.email_domain) = LOWER(?)"
+        params.append(email_domain.strip().lstrip("@"))
+    if email_verification_status:
+        query += " AND LOWER(l.email_verification_status) = LOWER(?)"
+        params.append(email_verification_status.strip())
     query += " ORDER BY l.updated_at DESC LIMIT ?"
     params.append(limit)
 
@@ -511,6 +579,17 @@ def build_export_payload(
     never_contacted: bool = False,
     no_email: bool = False,
     require_domain: bool = False,
+    original_source: Optional[str] = None,
+    original_source_detail: Optional[str] = None,
+    latest_source: Optional[str] = None,
+    latest_source_detail: Optional[str] = None,
+    industry: Optional[str] = None,
+    headcount_min: Optional[int] = None,
+    headcount_max: Optional[int] = None,
+    location_city: Optional[str] = None,
+    location_state: Optional[str] = None,
+    email_domain: Optional[str] = None,
+    email_verification_status: Optional[str] = None,
     enrich_fn: Optional[Callable[..., list[dict]]] = None,
 ) -> dict[str, Any]:
     if enrich_fn is None:
@@ -541,6 +620,17 @@ def build_export_payload(
         never_contacted=never_contacted,
         no_email=no_email,
         require_domain=require_domain,
+        original_source=original_source,
+        original_source_detail=original_source_detail,
+        latest_source=latest_source,
+        latest_source_detail=latest_source_detail,
+        industry=industry,
+        headcount_min=headcount_min,
+        headcount_max=headcount_max,
+        location_city=location_city,
+        location_state=location_state,
+        email_domain=email_domain,
+        email_verification_status=email_verification_status,
         enrich_fn=enrich_fn,
     )
     headers = [label for label, _key in columns]
@@ -567,6 +657,40 @@ def _normalize_header_key(header: str) -> str:
     text = str(header or "").strip()
     text = re.sub(r"^[^\w]+", "", text)
     return re.sub(r"\s+", "_", text.lower())
+
+
+def _resolve_personalization_key(norm: str) -> Optional[str]:
+    if norm.startswith("personalized_"):
+        return norm if norm in FIELD_DEFS else None
+    pers_key = f"personalized_{norm}"
+    if pers_key in FIELD_DEFS:
+        return pers_key
+    return None
+
+
+def _linkedin_status_map(
+    conn: sqlite3.Connection,
+    workspace_id: str,
+    lead_id: int,
+) -> dict[str, str]:
+    rows = conn.execute(
+        """SELECT sender_profile, is_connected, is_request_pending
+           FROM workspace_lead_linkedin_status
+           WHERE workspace_id = ? AND lead_id = ?""",
+        (workspace_id, lead_id),
+    ).fetchall()
+    out: dict[str, str] = {}
+    for row in rows:
+        sender = str(row["sender_profile"] or "").strip().lower()
+        if not sender:
+            continue
+        if row["is_connected"]:
+            out[sender] = "connected"
+        elif row["is_request_pending"]:
+            out[sender] = "pending"
+        else:
+            out[sender] = "none"
+    return out
 
 
 def _find_in_row(row: dict[str, Any], *keys: str) -> Any:
@@ -662,6 +786,7 @@ def _current_row_state(
         state[f"personalized_{key}"] = val or ""
     for key, val in company_pers.items():
         state[f"personalized_{key}"] = val or ""
+    state["linkedin_status"] = _linkedin_status_map(conn, workspace_id, lead_id)
     return state
 
 
@@ -790,14 +915,16 @@ def apply_lead_review_sync(
 
         for key, val in raw.items():
             norm = _normalize_header_key(key)
-            if not norm.startswith("personalized_"):
+            pers_key = _resolve_personalization_key(norm)
+            if not pers_key:
                 continue
             if val is None or not str(val).strip():
                 continue
             val = str(val).strip()
-            if not _sheet_value_equal(norm, current.get(norm), val):
-                row_changes[norm] = val
+            if not _sheet_value_equal(pers_key, current.get(pers_key), val):
+                row_changes[pers_key] = val
 
+        current_li = current.get("linkedin_status") or {}
         linkedin_updates: list[tuple[str, str]] = []
         for key, val in raw.items():
             norm = _normalize_header_key(key)
@@ -811,7 +938,10 @@ def apply_lead_review_sync(
                 sender = norm[len("linkedin_"):].replace("_", " ")
             elif "(" in key and ")" in key:
                 sender = key[key.find("(") + 1 : key.rfind(")")].strip()
-            linkedin_updates.append((sender, status))
+            sender_key = sender.strip().lower()
+            db_status = current_li.get(sender_key, "not_requested")
+            if status != db_status:
+                linkedin_updates.append((sender, status))
 
         syncable = {
             k: v

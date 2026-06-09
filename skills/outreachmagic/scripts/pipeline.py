@@ -91,6 +91,9 @@ from workspace_routing import (
     enqueue_identity_conflict_merge,
     normalize_linkedin,
     parse_linkedin_value,
+    linkedin_url_field_conflict,
+    linkedin_url_is_hash,
+    should_replace_linkedin_url,
     upsert_linkedin_status,
     upsert_workspace_lead,
 )
@@ -2271,6 +2274,13 @@ def resolve_lead(
     now_ts = datetime.now(timezone.utc).isoformat()
     mark_pending = _lead_should_cloud_pending(source, source_platform)
     pending_val = 1 if mark_pending else 0
+    linkedin_url_conflicts: list[dict] = []
+    insert_li_public = li_public
+    if li_public and created:
+        conflict = linkedin_url_field_conflict(conn, 0, li_public)
+        if conflict:
+            linkedin_url_conflicts.append(conflict)
+            insert_li_public = None
 
     if created:
         company_id = ensure_company(
@@ -2292,7 +2302,7 @@ def resolve_lead(
                        ?, ?, ?, ?)""",
             (
                 name, company_id, company, title, industry, headcount, parse_headcount_numeric(headcount),
-                email_norm, domain_from_email, li_public,
+                email_norm, domain_from_email, insert_li_public,
                 location_city, location_state, location_country,
                 channel, stage, notes, pending_val,
                 source, source_detail, source_platform, now_ts,
@@ -2309,8 +2319,19 @@ def resolve_lead(
             sets.extend(["email = COALESCE(email, ?)", "email_domain = COALESCE(email_domain, ?)"])
             params.extend([email_norm, domain_from_email])
         if li_public:
-            sets.append("linkedin_url = COALESCE(linkedin_url, ?)")
-            params.append(li_public)
+            cur_li = conn.execute(
+                "SELECT linkedin_url FROM leads WHERE id = ?", (lead_id,),
+            ).fetchone()
+            current_li = cur_li["linkedin_url"] if cur_li else None
+            conflict = linkedin_url_field_conflict(conn, lead_id, li_public)
+            if conflict:
+                linkedin_url_conflicts.append(conflict)
+            elif overwrite or should_replace_linkedin_url(current_li, li_public):
+                sets.append("linkedin_url = ?")
+                params.append(li_public)
+            else:
+                sets.append("linkedin_url = COALESCE(linkedin_url, ?)")
+                params.append(li_public)
         if source:
             sets.extend([
                 "latest_source = ?",
@@ -2344,9 +2365,10 @@ def resolve_lead(
         if own_conn:
             conn.commit()
 
-    id_conflicts = upsert_all_identities(
+    id_conflicts, promote_conflicts = upsert_all_identities(
         conn, DEFAULT_ORG_ID, int(lead_id), identities, source=source_platform,
     )
+    linkedin_url_conflicts.extend(promote_conflicts)
 
     name_for_enrich = enrich_name if enrich_name is not None else name
     filled = enrich_lead(
@@ -2377,6 +2399,7 @@ def resolve_lead(
         "match_method": method,
         "match_confidence": match_confidence_for_type(method),
         "identity_conflicts": id_conflicts,
+        "linkedin_url_conflicts": linkedin_url_conflicts,
     }
 
 
@@ -2469,7 +2492,7 @@ def add_lead(name, company=None, title=None, industry=None, headcount=None,
 # Canonical profile keys (CSV, JSON, relay → leads table)
 PROFILE_ALIASES: dict[str, tuple[str, ...]] = {
     "email": ("email", "lead_email", "work_email"),
-    "linkedin": ("linkedin", "linkedin_url", "lead_linkedin_url", "profile_url"),
+    "linkedin": ("linkedin url", "linkedin_url", "linkedin", "lead_linkedin_url", "profile_url"),
     "name": ("name", "full_name", "display_name"),
     "title": ("title", "job_title", "role"),
     "company": ("company", "company_name", "organization", "org"),
@@ -2492,11 +2515,33 @@ def _pick_profile_field(row: dict, keys: tuple[str, ...]) -> Optional[str]:
     return None
 
 
+def _best_linkedin_from_row(row: dict) -> Optional[str]:
+    """Prefer a public LinkedIn URL over a Sales Nav hash when multiple columns are present."""
+    public = None
+    fallback = None
+    for key in PROFILE_ALIASES["linkedin"]:
+        val = row.get(key)
+        if val is None:
+            continue
+        text = str(val).strip()
+        if not text:
+            continue
+        norm = normalize_linkedin(text)
+        if norm and not linkedin_url_is_hash(norm):
+            return text
+        if fallback is None:
+            fallback = text
+    return fallback
+
+
 def normalize_profile_row(row: dict) -> dict[str, str]:
     """Map CSV/JSON/webhook-shaped dicts to canonical profile fields."""
     out: dict[str, str] = {}
     for canonical, aliases in PROFILE_ALIASES.items():
-        val = _pick_profile_field(row, aliases)
+        if canonical == "linkedin":
+            val = _best_linkedin_from_row(row)
+        else:
+            val = _pick_profile_field(row, aliases)
         if val:
             out[canonical] = val
     first = _pick_profile_field(row, ("first_name",))
@@ -2680,6 +2725,7 @@ IMPORT_EXTRA_FIELDS = (
     "hq_city", "hq_state", "hq_country",
     "external_id", "notes",
     "last_message_sent", "last_message_received",
+    "member linkedin sales nav id", "linkedin_sales_nav_id", "sales_nav_id",
 )
 
 RESERVED_IMPORT_FIELDS = frozenset([
@@ -2687,6 +2733,7 @@ RESERVED_IMPORT_FIELDS = frozenset([
     "lead_status", "lead_sentiment", "import_name", "list_source",
     "tags", "contact_order", "hq_city", "hq_state", "hq_country",
     "external_id", "notes", "last_message_sent", "last_message_received",
+    "member linkedin sales nav id", "linkedin_sales_nav_id", "sales_nav_id",
 ])
 
 def csv_import_source_fields(
@@ -3112,6 +3159,7 @@ def import_profiles(
         "import_key_only_count": 0,
         "skipped_no_identity": 0,
         "identity_conflicts": [],
+        "linkedin_url_conflicts": [],
         "errors": [],
         "results": [],
         "skipped_features": [],
@@ -3224,6 +3272,12 @@ def import_profiles(
             summary["import_key_only_count"] += 1
         for ic in result.get("identity_conflicts") or []:
             summary["identity_conflicts"].append({"row": i + 1, **ic})
+        for lc in result.get("linkedin_url_conflicts") or []:
+            summary["linkedin_url_conflicts"].append({
+                "row": i + 1,
+                "lead_id": result.get("id"),
+                **lc,
+            })
 
         if dry_run:
             continue
@@ -9634,6 +9688,17 @@ def main():
     review_export_p.add_argument("--never-contacted", action="store_true")
     review_export_p.add_argument("--no-email", action="store_true")
     review_export_p.add_argument("--require-domain", action="store_true")
+    review_export_p.add_argument("--original-source", dest="original_source")
+    review_export_p.add_argument("--original-source-detail", dest="original_source_detail")
+    review_export_p.add_argument("--latest-source", dest="latest_source")
+    review_export_p.add_argument("--latest-source-detail", dest="latest_source_detail")
+    review_export_p.add_argument("--industry")
+    review_export_p.add_argument("--headcount-min", dest="headcount_min", type=int)
+    review_export_p.add_argument("--headcount-max", dest="headcount_max", type=int)
+    review_export_p.add_argument("--location-city", dest="location_city")
+    review_export_p.add_argument("--location-state", dest="location_state")
+    review_export_p.add_argument("--email-domain", dest="email_domain")
+    review_export_p.add_argument("--email-verified", dest="email_verification_status")
 
     review_sync_p = review_sub.add_parser("sync", help="Read sheet approvals and merge locally")
     review_sync_p.add_argument("--sheet-id", required=True)
@@ -9666,6 +9731,17 @@ def main():
     review_payload_p.add_argument("--never-contacted", action="store_true")
     review_payload_p.add_argument("--no-email", action="store_true")
     review_payload_p.add_argument("--require-domain", action="store_true")
+    review_payload_p.add_argument("--original-source", dest="original_source")
+    review_payload_p.add_argument("--original-source-detail", dest="original_source_detail")
+    review_payload_p.add_argument("--latest-source", dest="latest_source")
+    review_payload_p.add_argument("--latest-source-detail", dest="latest_source_detail")
+    review_payload_p.add_argument("--industry")
+    review_payload_p.add_argument("--headcount-min", dest="headcount_min", type=int)
+    review_payload_p.add_argument("--headcount-max", dest="headcount_max", type=int)
+    review_payload_p.add_argument("--location-city", dest="location_city")
+    review_payload_p.add_argument("--location-state", dest="location_state")
+    review_payload_p.add_argument("--email-domain", dest="email_domain")
+    review_payload_p.add_argument("--email-verified", dest="email_verification_status")
     review_payload_p.add_argument("--title", default="Lead Review")
 
     review_apply_p = review_sub.add_parser(
@@ -10723,6 +10799,7 @@ def main():
                     no_email=getattr(args, "no_email", False),
                     require_domain=getattr(args, "require_domain", False),
                     enrich_fn=enrich_lead_rows,
+                    **pipeline_lead_review.review_export_filter_kwargs(args),
                 )
             except (ValueError, OSError) as e:
                 print(json.dumps({"error": str(e)}))
@@ -10794,6 +10871,7 @@ def main():
                             no_email=getattr(args, "no_email", False),
                             require_domain=getattr(args, "require_domain", False),
                             enrich_fn=enrich_lead_rows,
+                            **pipeline_lead_review.review_export_filter_kwargs(args),
                         )
                     finally:
                         conn.close()

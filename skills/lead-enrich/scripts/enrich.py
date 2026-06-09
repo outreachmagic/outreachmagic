@@ -186,7 +186,24 @@ def load_config() -> dict[str, Any]:
     cfg.setdefault("dedup_before_search", True)
     cfg.setdefault("outreachmagic_home", "")
 
+    _promote_config_api_keys_to_environ(cfg)
     return cfg
+
+
+def _promote_config_api_keys_to_environ(cfg: dict[str, Any]) -> None:
+    """Expose config.json Serper keys to the pooled env vars api_key_pool reads."""
+    primary = (cfg.get("serper_api_key") or "").strip()
+    if primary and not os.environ.get("SERPER_API_KEY"):
+        os.environ["SERPER_API_KEY"] = primary
+    slot = 1
+    while True:
+        backup = (cfg.get(f"serper_api_key__{slot}") or "").strip()
+        if not backup:
+            break
+        env_name = f"SERPER_API_KEY__{slot}"
+        if not os.environ.get(env_name):
+            os.environ[env_name] = backup
+        slot += 1
 
 
 def find_outreachmagic(config: dict[str, Any]) -> Optional[Path]:

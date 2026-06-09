@@ -532,6 +532,51 @@
           "contains_json": true,
           "contains_string": "workspaces"
         }
+      },
+      {
+        "id": "om-export-help-mentions-sheets",
+        "tags": ["export", "smoke", "script"],
+        "mode": "script",
+        "command": ["export", "--help"],
+        "expect": {
+          "contains_string": "sheets"
+        }
+      },
+      {
+        "id": "om-sheets-export-help",
+        "tags": ["export", "review", "smoke", "script"],
+        "mode": "script",
+        "command": ["sheets", "--help"],
+        "expect": {
+          "contains_string": "Google Sheet"
+        }
+      },
+      {
+        "id": "om-review-help-sheets-wording",
+        "tags": ["review", "smoke", "script"],
+        "mode": "script",
+        "command": ["sheets", "--help"],
+        "expect": {
+          "contains_string": "hosted Google Sheet"
+        }
+      },
+      {
+        "id": "om-quarantine-skip-reason-help",
+        "tags": ["quarantine", "smoke", "script"],
+        "mode": "script",
+        "command": ["quarantine", "skip", "--help"],
+        "expect": {
+          "contains_string": "no_campaign_id"
+        }
+      },
+      {
+        "id": "om-version-1294",
+        "tags": ["smoke", "om", "script"],
+        "mode": "script",
+        "command": ["version"],
+        "expect": {
+          "contains_string": "1.29.4"
+        }
       }
     ],
     "lead-enrich": [
@@ -599,13 +644,30 @@
     ],
     "integration": [
       {
-        "id": "funnel-check-only-script",
+        "id": "le-serper-failover-integration",
+        "tags": ["integration", "serper", "script"],
+        "mode": "script",
+        "skill": "lead-enrich",
+        "command": [
+          "serper-search",
+          "--query",
+          "Stripe payments company official website",
+          "--label",
+          "dark_factory"
+        ],
+        "expect": {
+          "contains_string": "\"organic\""
+        }
+      },
+      {
+        "id": "le-check-dedup-integration",
         "tags": ["integration", "script"],
         "mode": "script",
         "skill": "lead-enrich",
         "command": ["check", "Patrick Collison", "Stripe"],
         "expect": {
-          "min_length": 10
+          "contains_json": true,
+          "contains_string": "status"
         }
       }
     ]

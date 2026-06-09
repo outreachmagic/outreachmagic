@@ -240,7 +240,8 @@ install_outreachmagic() {
 
   chmod +x "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" 2>/dev/null || true
   _log_step "Initializing database..."
-  python3 "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" init
+  local tag_label="${OM_TAG:-main}"
+  python3 "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" init --from-tag "$tag_label"
 }
 
 profile_skill_link() {

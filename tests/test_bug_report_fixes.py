@@ -47,20 +47,52 @@ def test_workspace_list_json_flag_parsed():
   assert args.json is True
 
 
-def test_quarantine_skip_all_and_campaign_id_parsed():
-  """Improvement 4: bulk quarantine skip flags exist."""
-  parser = argparse.ArgumentParser()
-  sub = parser.add_subparsers(dest="command")
-  q = sub.add_parser("quarantine")
-  q_sub = q.add_subparsers(dest="quarantine_cmd")
-  q_skip = q_sub.add_parser("skip")
-  q_skip.add_argument("--id")
-  q_skip.add_argument("--campaign-id")
-  q_skip.add_argument("--all", action="store_true")
-  args = parser.parse_args(["quarantine", "skip", "--all"])
-  assert args.all is True
-  args = parser.parse_args(["quarantine", "skip", "--campaign-id", "abc123"])
-  assert args.campaign_id == "abc123"
+def test_quarantine_skip_all_campaign_id_and_reason_parsed():
+    """Bulk quarantine skip flags: --all, --campaign-id, --reason."""
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    q = sub.add_parser("quarantine")
+    q_sub = q.add_subparsers(dest="quarantine_cmd")
+    q_skip = q_sub.add_parser("skip")
+    q_skip.add_argument("--id")
+    q_skip.add_argument("--campaign-id")
+    q_skip.add_argument("--reason")
+    q_skip.add_argument("--all", action="store_true")
+    args = parser.parse_args(["quarantine", "skip", "--all"])
+    assert args.all is True
+    args = parser.parse_args(["quarantine", "skip", "--campaign-id", "abc123"])
+    assert args.campaign_id == "abc123"
+    args = parser.parse_args(["quarantine", "skip", "--reason", "no_campaign_id"])
+    assert args.reason == "no_campaign_id"
+
+
+def test_export_format_includes_sheets():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    export_p = sub.add_parser("export")
+    export_p.add_argument("--workspace", required=True)
+    export_p.add_argument("--format", choices=("csv", "json", "sheets"), default="csv")
+    args = parser.parse_args(["export", "--workspace", "popcam", "--format", "sheets"])
+    assert args.format == "sheets"
+
+
+def test_record_install_source():
+    om.init_db()
+    result = om.record_install_source("v1.29.4")
+    assert result["installed_from_tag"] == "v1.29.4"
+    cfg = om.load_config()
+    assert cfg.get("installed_from_tag") == "v1.29.4"
+
+
+def test_sheets_export_parser_exists():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    sheets_p = sub.add_parser("sheets")
+    sheets_sub = sheets_p.add_subparsers(dest="sheets_command", required=True)
+    sheets_sub.add_parser("export").add_argument("--workspace", required=True)
+    args = parser.parse_args(["sheets", "export", "--workspace", "popcam"])
+    assert args.command == "sheets"
+    assert args.sheets_command == "export"
 
 
 def test_daily_digest_and_format():

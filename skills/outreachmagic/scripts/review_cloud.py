@@ -43,6 +43,11 @@ def _request_json(
             message = parsed.get("error") or parsed.get("message") or detail
         except json.JSONDecodeError:
             message = detail or exc.reason
+        if exc.code == 403 and "review:write" in str(message).lower():
+            message = (
+                f"{message}. Re-login to refresh scopes: pipeline.py login "
+                "(or revoke the key at app.outreachmagic.io/settings/agent and login again)."
+            )
         raise RuntimeError(f"Review API {exc.code}: {message}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Review API unreachable: {exc.reason}") from exc

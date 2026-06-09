@@ -108,6 +108,13 @@ def _resolve_case_env(
     return out
 
 
+def _companion_outreachmagic_home(skills_root: Path) -> str | None:
+    om = (skills_root / "outreachmagic").resolve()
+    if (om / "scripts" / "pipeline.py").is_file():
+        return str(om)
+    return None
+
+
 def run_skill_command(
     skills_root: Path,
     skill: str,
@@ -122,6 +129,10 @@ def run_skill_command(
     if not script.is_file():
         return 1, f"missing script: {script}"
     proc_env = os.environ.copy()
+    if skill in ("lead-enrich", "email-finder"):
+        om_home = _companion_outreachmagic_home(skills_root)
+        if om_home and not proc_env.get("OUTREACHMAGIC_HOME"):
+            proc_env["OUTREACHMAGIC_HOME"] = om_home
     if env:
         proc_env.update(env)
     proc = subprocess.run(

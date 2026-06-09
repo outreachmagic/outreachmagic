@@ -71,7 +71,11 @@ def test_login_claim_token_success_saves_key():
     with (
         patch.dict(sys.modules, {"device_login": fake_device_login}),
         patch.object(om.routing_cloud, "get_api_base", lambda *_args, **_kwargs: "https://api.test"),
-        patch.object(om, "_save_agent_key_and_validate", lambda key: saved.setdefault("key", key)),
+        patch.object(
+            om,
+            "_save_agent_key_and_validate",
+            lambda key, reconnect=False: saved.setdefault("key", key),
+        ),
     ):
         out = _capture_output(lambda: om.login(claim_token=True, device_code="dev_code", wait_seconds=0))
     assert saved["key"] == "om_agent_test"

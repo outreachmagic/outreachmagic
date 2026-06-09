@@ -172,11 +172,11 @@ def find_outreachmagic(
     config: dict[str, Any],
     skill_dir: Optional[Path] = None,
 ) -> Optional[Path]:
-    if config.get("outreachmagic_home"):
-        home = Path(config["outreachmagic_home"]).expanduser()
+    configured = (config.get("outreachmagic_home") or "").strip()
+    if configured:
+        home = Path(configured).expanduser()
         if (home / "scripts" / "pipeline.py").exists():
             return home
-        return None
     if skill_dir:
         sibling = skill_dir.parent / OUTREACHMAGIC_NAME
         if (sibling / "scripts" / "pipeline.py").exists():
@@ -201,7 +201,12 @@ def _load_synced_agent_secrets(skill_dir: Optional[Path] = None) -> None:
         import agent_secrets_cloud
     except ImportError:
         return
-    load_dotenv_file(agent_secrets_cloud.agent_secrets_path(), override_all=True)
+    secrets_path = om_home / "config" / "agent_secrets.env"
+    if secrets_path.is_file():
+        pools = agent_secrets_cloud.parse_agent_secrets_file(secrets_path)
+        agent_secrets_cloud.apply_secrets_to_environ(pools, override=True)
+    else:
+        agent_secrets_cloud.load_local_agent_secrets_to_environ(override=True)
 
 
 def get_pipeline_path(om_dir: Path) -> Path:

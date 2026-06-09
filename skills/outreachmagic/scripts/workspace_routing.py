@@ -677,6 +677,24 @@ MULTI_WORKSPACE_HOLD_MESSAGE = (
 )
 
 
+def format_no_campaign_event_message(ctx: CampaignContext) -> str:
+    """User-facing instructions when a relay event has no campaign metadata."""
+    platform = ctx.source_platform
+    return "\n".join([
+        f"Relay event from {platform} has no campaign id or name.",
+        "It was not processed and is waiting in the quarantine queue.",
+        "",
+        "To skip junk events permanently:",
+        "  pipeline.py quarantine skip --reason no_campaign_id",
+        "  pipeline.py sync",
+        "",
+        "Or skip one item:",
+        "  pipeline.py quarantine list",
+        "  pipeline.py quarantine skip --id QUEUE_ID",
+        "  pipeline.py sync",
+    ])
+
+
 def format_unmapped_campaign_message(ctx: CampaignContext) -> str:
     """User-facing instructions when multi-workspace routing cannot resolve a campaign."""
     label = campaign_display_label(ctx)
@@ -908,6 +926,15 @@ def quarantine_event(
     payload: dict,
     external_event_id: Optional[str] = None,
 ) -> str:
+    relay_id = (external_event_id or "").strip()
+    if relay_id:
+        existing = conn.execute(
+            """SELECT id FROM unmapped_campaign_queue
+               WHERE org_id = ? AND external_event_id = ? AND status = 'pending'""",
+            (org_id, relay_id),
+        ).fetchone()
+        if existing:
+            return existing["id"]
     qid = f"q_{datetime.now(timezone.utc).timestamp()}".replace(".", "")
     conn.execute(
         """INSERT INTO unmapped_campaign_queue (

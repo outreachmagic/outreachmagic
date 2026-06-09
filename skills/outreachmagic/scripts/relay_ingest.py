@@ -382,6 +382,26 @@ def ingest_relay_event(
     channel = CHANNEL_BY_PLATFORM.get(platform, "email")
 
     campaign_ctx = extract_campaign_context(platform, event_fields, raw)
+    if (
+        not force_workspace_id
+        and not campaign_ctx.campaign_id
+        and not campaign_ctx.campaign_name_raw
+    ):
+        om.quarantine_event(
+            conn,
+            DEFAULT_ORG_ID,
+            campaign_ctx,
+            reason="no_campaign_id",
+            payload=event,
+            external_event_id=str(event.get("relay_id") or ""),
+        )
+        if own_conn:
+            conn.commit()
+            conn.close()
+        if not quiet:
+            print(om.format_no_campaign_event_message(campaign_ctx), file=sys.stderr)
+        return None
+
     workspace_id = force_workspace_id
     if not workspace_id:
         routing = om.resolve_workspace_for_ingest(
@@ -516,6 +536,7 @@ def ingest_relay_event(
                 f"normalized_sentiment={normalized_sentiment or '-'}"
             )
 
+    campaign_name_for_event = event_fields.get("campaign") or campaign_ctx.campaign_name_raw
     event_id = om.log_event(
         lead_id=lead_id,
         event_type=local_type,
@@ -524,6 +545,7 @@ def ingest_relay_event(
         subject=subject,
         body_preview=body_preview,
         metadata=metadata,
+        campaign=campaign_name_for_event,
         event_at=received_at or None,
         sender=sender_norm,
         conn=conn,

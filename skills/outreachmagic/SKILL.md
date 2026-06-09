@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
-version: 1.29.3
+version: 1.29.4
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -371,6 +371,7 @@ python3 scripts/pipeline.py quarantine list --json
 python3 scripts/pipeline.py quarantine list --status all --json
 python3 scripts/pipeline.py quarantine skip --id QUEUE_ID
 python3 scripts/pipeline.py quarantine skip --campaign-id CAMPAIGN_ID
+python3 scripts/pipeline.py quarantine skip --reason no_campaign_id
 python3 scripts/pipeline.py quarantine skip --all
 python3 scripts/pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG
 python3 scripts/pipeline.py workspace list --json
@@ -492,6 +493,8 @@ python3 scripts/pipeline.py export --workspace acme_corp --since today --format 
 ```
 
 Writes to `export/` under your workspace by default. CSV uses `personalized_first_name`, `personalized_company_name`, plus lead fields, tags, HQ, and `latest_sender`.
+
+**Not for Google Sheets** — `export` writes local files only. For a hosted Google Sheet, use `sheets export` or `review export` (below).
 
 ### Reset local database (schema upgrade)
 
@@ -714,6 +717,21 @@ python3 scripts/pipeline.py dedup find --workspace popcam --tag campaign --outpu
 python3 scripts/pipeline.py dedup merge --candidates export/candidates.json          # dry-run
 python3 scripts/pipeline.py dedup merge --candidates export/candidates.json --commit   # apply
 ```
+
+### Google Sheets export (lead review)
+
+To export leads to an editable Google Sheet (two-way sync), use **`sheets export`** or **`review export`** — not `export --format csv`.
+
+Requires `pipeline.py login`. Sheets are created on `app.outreachmagic.io` (no local Google credentials).
+
+```bash
+python3 scripts/pipeline.py sheets export --workspace popcam --title "NACE Leads"
+# equivalent:
+python3 scripts/pipeline.py review export --template lead-review --workspace popcam \
+  --tag nace --detail standard --title "NACE Leads"
+```
+
+See **Lead review sheet** below for sync-back workflow.
 
 ### Dedup review (hosted Google Sheets)
 

@@ -74,6 +74,7 @@ from workspace_routing import (
     extract_campaign_context,
     find_lead_by_identity,
     find_match_method_for_lead,
+    format_no_campaign_event_message,
     format_unmapped_campaign_message,
     lead_entity_key,
     match_confidence_for_type,
@@ -588,6 +589,15 @@ def update_skill(explicit_tag: Optional[str] = None) -> dict:
         "source": source_label,
     }
 
+
+def record_install_source(source_label: str) -> dict:
+    """Record which release tag or branch installed this skill (install.sh / update)."""
+    label = (source_label or "").strip() or "main"
+    init_db()
+    cfg = load_config()
+    cfg["installed_from_tag"] = label
+    save_config(cfg)
+    return {"status": "ok", "installed_from_tag": label}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -6264,6 +6274,9 @@ def list_quarantine(
                 },
             )
             item["message"] = format_unmapped_campaign_message(ctx)
+        elif item.get("reason") == "no_campaign_id":
+            ctx = extract_campaign_context(item["source_platform"], {}, {})
+            item["message"] = format_no_campaign_event_message(ctx)
         out.append(item)
     return out
 
@@ -6374,6 +6387,8 @@ def format_quarantine_campaign_summary(
                 "4. Replay quarantined events:  pipeline.py quarantine replay",
                 "   (or skip junk: pipeline.py quarantine skip --id QUEUE_ID)",
                 "   (or skip campaign: pipeline.py quarantine skip --campaign-id ID)",
+                "   (or skip no-campaign events: pipeline.py quarantine skip --reason no_campaign_id)",
+                "   (then sync so skips persist across machines and pull --full)",
                 "   (or assign one: pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG; then sync + pull)",
             ]
         )
@@ -6429,12 +6444,13 @@ def skip_quarantine_bulk(
     *,
     campaign_id: Optional[str] = None,
     platform: Optional[str] = None,
+    reason: Optional[str] = None,
     all_pending: bool = False,
     org_id: str = DEFAULT_ORG_ID,
 ) -> dict:
-    """Skip multiple pending quarantine rows (by campaign or all pending)."""
-    if not all_pending and not campaign_id:
-        return {"status": "error", "error": "specify --campaign-id or --all"}
+    """Skip multiple pending quarantine rows (by campaign, reason, or all pending)."""
+    if not all_pending and not campaign_id and not reason:
+        return {"status": "error", "error": "specify --campaign-id, --reason, or --all"}
     conn = get_conn()
     sql = (
         "SELECT id, external_event_id FROM unmapped_campaign_queue "
@@ -6444,6 +6460,9 @@ def skip_quarantine_bulk(
     if campaign_id:
         sql += " AND campaign_id = ?"
         params.append(campaign_id)
+    if reason:
+        sql += " AND reason = ?"
+        params.append(reason)
     if platform:
         sql += " AND source_platform = ?"
         params.append(platform)
@@ -6472,6 +6491,8 @@ def skip_quarantine_bulk(
     out: dict = {"status": "ok", "skipped": len(skipped_ids), "ids": skipped_ids}
     if campaign_id:
         out["campaign_id"] = campaign_id
+    if reason:
+        out["reason"] = reason
     if platform:
         out["platform"] = platform
     if errors:
@@ -8503,7 +8524,12 @@ def login(
 
         status = str(claim.get("status") or "pending")
         if status == "success":
-            _save_agent_key_and_validate(str(claim.get("access_token") or ""))
+            cfg_before = load_config()
+            reconnect = bool(cfg_before.get("organization_id") or get_last_max_id())
+            _save_agent_key_and_validate(
+                str(claim.get("access_token") or ""),
+                reconnect=reconnect,
+            )
             print("STATUS=success")
             return
         if status == "pending":
@@ -8511,6 +8537,9 @@ def login(
             return
         print(f"STATUS={status}")
         sys.exit(1)
+
+    cfg_before = load_config()
+    reconnect = bool(cfg_before.get("organization_id") or get_last_max_id())
 
     try:
         agent_key = device_login.run_device_login(
@@ -8521,7 +8550,7 @@ def login(
     except RuntimeError as exc:
         print(f"\nLogin failed: {exc}")
         sys.exit(1)
-    _save_agent_key_and_validate(agent_key)
+    _save_agent_key_and_validate(agent_key, reconnect=reconnect)
 
 
 def logout():
@@ -8538,7 +8567,7 @@ def logout():
         print("No local agent credentials found.")
 
 
-def _save_agent_key_and_validate(agent_key: str):
+def _save_agent_key_and_validate(agent_key: str, *, reconnect: bool = False):
     if not agent_key.startswith("om_agent_"):
         print("Invalid key format. Agent keys start with 'om_agent_'.")
         sys.exit(1)
@@ -8590,10 +8619,13 @@ def _save_agent_key_and_validate(agent_key: str):
             print(f"Import warning: {e}")
             print("Your agent key is saved — run pull again later or use merge-leads for duplicates.")
         print()
-        leads = get_pipeline()
-        print(format_pipeline_table(leads))
-        print()
-        print(format_stats(get_stats()))
+        if reconnect:
+            print(format_stats(get_stats()))
+        else:
+            leads = get_pipeline()
+            print(format_pipeline_table(leads))
+            print()
+            print(format_stats(get_stats()))
 
     print()
     print(f"Working files: {get_working_root()}")
@@ -9344,11 +9376,41 @@ def cleanup_campaign_rules(dry_run: bool = False) -> dict:
 # CLI
 # ──────────────────────────────────────────────────────────────────────
 
+def _remap_to_lead_review_export(args) -> None:
+    """Route sheets export (or export --format sheets) to review export lead-review."""
+    args.command = "review"
+    args.review_command = "export"
+    args.template = "lead-review"
+    if not getattr(args, "title", None):
+        ws = getattr(args, "workspace", None) or "leads"
+        args.title = f"{ws} leads"
+    if not getattr(args, "detail", None):
+        args.detail = "standard"
+    for name, default in (
+        ("limit", 5000),
+        ("never_contacted", False),
+        ("no_email", False),
+        ("require_domain", False),
+        ("share_email", None),
+        ("fields", None),
+        ("tag", None),
+        ("stage", None),
+        ("since", None),
+    ):
+        if not hasattr(args, name):
+            setattr(args, name, default)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Outreach Magic — Pipeline visibility for Hermes")
     sub = parser.add_subparsers(dest="command", help="Commands")
 
-    sub.add_parser("init", help="Initialize the database")
+    init_p = sub.add_parser("init", help="Initialize the database")
+    init_p.add_argument(
+        "--from-tag",
+        dest="from_tag",
+        help=argparse.SUPPRESS,
+    )
     sub.add_parser("version", help="Print installed outreachmagic version")
     sub.add_parser(
         "paths",
@@ -9579,13 +9641,21 @@ def main():
     bounce_stats_p.add_argument("--since", help="Last seen on/after date (YYYY-MM-DD or today)")
     bounce_stats_p.add_argument("--json", action="store_true")
 
-    export_p = sub.add_parser("export", help="Export leads with personalization, tags, and sender")
+    export_p = sub.add_parser(
+        "export",
+        help="Export leads to local CSV or JSON (use sheets export for Google Sheets)",
+    )
     export_p.add_argument("--workspace", required=True, help="Workspace slug")
     export_p.add_argument("--tag", help="Filter by workspace tag")
     export_p.add_argument("--stage", help="Filter by workspace stage")
     export_p.add_argument("--since", help="Created/updated on or after date (YYYY-MM-DD or today)")
     export_p.add_argument("--limit", type=int, default=5000)
-    export_p.add_argument("--format", choices=("csv", "json"), default="csv")
+    export_p.add_argument(
+        "--format",
+        choices=("csv", "json", "sheets"),
+        default="csv",
+        help="csv/json write local files; sheets opens a hosted Google Sheet (see: pipeline.py sheets export)",
+    )
     export_p.add_argument("--file", help="Output path under workspace export/ (default auto-named)")
     export_p.add_argument(
         "--never-contacted",
@@ -9670,6 +9740,11 @@ def main():
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
     pull_p.add_argument("--full", action="store_true", help="Re-import all relay events (after DB reset)")
+    pull_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation prompt for pull --full",
+    )
     pull_p.add_argument(
         "--diagnose",
         action="store_true",
@@ -9844,14 +9919,20 @@ def main():
     )
     dedup_merge_p.add_argument("--reason", default="dedup", help="Reason stored in lead_merges")
 
-    review_p = sub.add_parser("review", help="Hosted Google Sheets review (no local Google creds)")
+    review_p = sub.add_parser(
+        "review",
+        help="Export leads to Google Sheets and sync edits back (two-way, no local Google creds)",
+    )
     review_sub = review_p.add_subparsers(dest="review_command", required=True)
 
     review_templates_p = review_sub.add_parser("templates", help="List review templates")
     review_templates_sub = review_templates_p.add_subparsers(dest="templates_command", required=True)
     review_templates_sub.add_parser("list", help="List available templates")
 
-    review_export_p = review_sub.add_parser("export", help="Export candidates to a review sheet via OM API")
+    review_export_p = review_sub.add_parser(
+        "export",
+        help="Export leads to a Google Sheet via OM API (dedup-review or lead-review)",
+    )
     review_export_p.add_argument("--template", default="dedup-review")
     review_export_p.add_argument("--input", help="candidates.json from dedup find (dedup-review)")
     review_export_p.add_argument("--title", default="Outreach Dedup Review")
@@ -9938,6 +10019,33 @@ def main():
 
     review_presets_p = review_sub.add_parser("presets", help="List lead-review field presets and groups")
     review_presets_p.add_argument("--template", default="lead-review")
+
+    sheets_p = sub.add_parser(
+        "sheets",
+        help="Export workspace leads to a hosted Google Sheet (alias for review export)",
+        description="Export workspace leads to a hosted Google Sheet via Outreach Magic (no local Google credentials).",
+    )
+    sheets_sub = sheets_p.add_subparsers(dest="sheets_command", required=True)
+    sheets_export_p = sheets_sub.add_parser(
+        "export",
+        help="Create a Google Sheet from workspace leads (no local Google credentials)",
+    )
+    sheets_export_p.add_argument("--workspace", required=True, help="Workspace slug")
+    sheets_export_p.add_argument("--title", help="Sheet title (default: <workspace> leads)")
+    sheets_export_p.add_argument("--share-email", help="Email to share sheet with (default: org owner)")
+    sheets_export_p.add_argument(
+        "--detail",
+        choices=pipeline_lead_review.DETAIL_LEVELS,
+        default="standard",
+    )
+    sheets_export_p.add_argument("--fields", help="Comma-separated columns for --detail custom")
+    sheets_export_p.add_argument("--tag")
+    sheets_export_p.add_argument("--stage")
+    sheets_export_p.add_argument("--since")
+    sheets_export_p.add_argument("--limit", type=int, default=5000)
+    sheets_export_p.add_argument("--never-contacted", action="store_true")
+    sheets_export_p.add_argument("--no-email", action="store_true")
+    sheets_export_p.add_argument("--require-domain", action="store_true")
 
     merge_p = sub.add_parser("merge-leads", help="Merge two lead records into one")
     merge_p.add_argument("--keep", type=int, help="Lead ID to keep")
@@ -10053,6 +10161,11 @@ def main():
         action="store_true",
         help="Skip all pending quarantine rows",
     )
+    q_skip.add_argument(
+        "--reason",
+        metavar="REASON",
+        help="Skip all pending rows with this reason (e.g. no_campaign_id); run sync after",
+    )
     q_assign = q_sub.add_parser("assign", help="Assign workspace (syncs to relay; ingested on next pull)")
     q_assign.add_argument("--id", required=True, help="Queue item id")
     q_assign.add_argument("--workspace", required=True, help="Workspace slug")
@@ -10116,6 +10229,11 @@ def main():
 
     args = parser.parse_args()
 
+    if args.command == "export" and getattr(args, "format", None) == "sheets":
+        _remap_to_lead_review_export(args)
+    elif args.command == "sheets" and getattr(args, "sheets_command", None) == "export":
+        _remap_to_lead_review_export(args)
+
     # Load synced API keys (primary + backup __N slots) before any command that may call vendors.
     if args.command not in (None, "update", "version"):
         try:
@@ -10167,6 +10285,9 @@ def main():
 
     if args.command == "init":
         init_db()
+        from_tag = getattr(args, "from_tag", None)
+        if from_tag:
+            record_install_source(from_tag)
         print(f"Outreach Magic v{__version__} installed.")
         print(f"Database initialized: {get_db_path()}")
         print(f"Working files (CSVs/exports): {get_working_root()}")
@@ -10441,6 +10562,30 @@ def main():
     if args.command == "pull":
         agent_key = _require_agent_key()
         pull_stats = {}
+
+        if (
+            args.full
+            and not args.cron
+            and not getattr(args, "yes", False)
+        ):
+            hint = "all relay events"
+            try:
+                probe = probe_relay_backlog(agent_key)
+                pending = (probe.get("events") or {}).get("pending")
+                if pending is not None:
+                    hint = f"~{int(pending):,} relay events"
+            except (RuntimeError, ValueError, TypeError):
+                pass
+            print(
+                f"This will replay {hint} from the relay (may take several minutes). "
+                "Continue? [Y/n] ",
+                end="",
+                flush=True,
+            )
+            answer = input().strip().lower()
+            if answer not in ("", "y", "yes"):
+                print("Aborted.")
+                sys.exit(0)
 
         if_stale = getattr(args, "if_stale", None)
         if getattr(args, "force", False):
@@ -11468,6 +11613,14 @@ def main():
         if args.quarantine_cmd == "skip":
             if getattr(args, "all", False):
                 print(json.dumps(skip_quarantine_bulk(all_pending=True), indent=2))
+            elif getattr(args, "reason", None):
+                print(json.dumps(
+                    skip_quarantine_bulk(
+                        reason=args.reason,
+                        platform=getattr(args, "platform", None),
+                    ),
+                    indent=2,
+                ))
             elif getattr(args, "campaign_id", None):
                 print(json.dumps(
                     skip_quarantine_bulk(
@@ -11479,7 +11632,7 @@ def main():
             elif getattr(args, "id", None):
                 print(json.dumps(skip_quarantine(args.id), indent=2))
             else:
-                print("Error: quarantine skip requires --id, --campaign-id, or --all")
+                print("Error: quarantine skip requires --id, --campaign-id, --reason, or --all")
                 sys.exit(1)
         elif args.quarantine_cmd == "assign":
             print(json.dumps(assign_quarantine(args.id, args.workspace), indent=2))

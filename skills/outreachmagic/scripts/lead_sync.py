@@ -149,6 +149,19 @@ def _assemble_lead_core_sync_payload(
         payload["list_source"] = row["latest_source_detail"]
     if row["original_source_detail"] and row["original_source_detail"] != row["latest_source_detail"]:
         payload["import_name"] = row["original_source_detail"]
+    for field in (
+        "original_source",
+        "original_source_detail",
+        "original_source_platform",
+        "original_source_at",
+        "latest_source",
+        "latest_source_detail",
+        "latest_source_platform",
+        "latest_source_at",
+    ):
+        val = row[field]
+        if val is not None and str(val).strip():
+            payload[field] = val
     if personalization_rows:
         pers = {
             r["field_name"]: {
@@ -471,6 +484,80 @@ def build_lead_sync_payload(
     return merged
 
 
+def _attribution_from_sync_payload(payload: dict) -> tuple[str, Optional[str], str]:
+    """Map relay lead_core snapshot fields to resolve_lead source attribution."""
+    source = (
+        (payload.get("original_source") or "").strip()
+        or (payload.get("latest_source") or "").strip()
+        or "agent_sync"
+    )
+    source_detail = (
+        (payload.get("original_source_detail") or "").strip()
+        or (payload.get("latest_source_detail") or "").strip()
+        or (payload.get("import_name") or "").strip()
+        or (payload.get("list_source") or "").strip()
+        or None
+    )
+    source_platform = (
+        (payload.get("original_source_platform") or "").strip()
+        or (payload.get("latest_source_platform") or "").strip()
+        or "relay"
+    )
+    return source, source_detail, source_platform
+
+
+_WEAK_ATTRIBUTION_SOURCES = frozenset({"agent_sync", "relay_sync", ""})
+
+
+def apply_attribution_from_sync_payload(
+    conn: sqlite3.Connection,
+    lead_id: int,
+    payload: dict,
+) -> None:
+    """Restore source attribution from relay lead_core snapshot."""
+    row = conn.execute(
+        "SELECT original_source, original_source_detail FROM leads WHERE id = ?",
+        (lead_id,),
+    ).fetchone()
+    current_source = (row["original_source"] or "").strip() if row else ""
+    payload_source = (payload.get("original_source") or "").strip()
+    upgrade_original = bool(payload_source) and current_source in _WEAK_ATTRIBUTION_SOURCES
+
+    sets: list[str] = []
+    params: list = []
+    for col in (
+        "original_source",
+        "original_source_detail",
+        "original_source_platform",
+        "original_source_at",
+    ):
+        val = payload.get(col)
+        if val is not None and str(val).strip():
+            if upgrade_original:
+                sets.append(f"{col} = ?")
+            else:
+                sets.append(f"{col} = COALESCE({col}, ?)")
+            params.append(val)
+    for col in (
+        "latest_source",
+        "latest_source_detail",
+        "latest_source_platform",
+        "latest_source_at",
+    ):
+        val = payload.get(col)
+        if val is not None and str(val).strip():
+            sets.append(f"{col} = ?")
+            params.append(val)
+    if not sets:
+        return
+    sets.append("updated_at = datetime('now')")
+    params.append(lead_id)
+    conn.execute(
+        f"UPDATE leads SET {', '.join(sets)} WHERE id = ?",
+        params,
+    )
+
+
 def resolve_lead_from_agent_sync(
     entity_key: str,
     payload: dict,
@@ -497,6 +584,7 @@ def resolve_lead_from_agent_sync(
     }
     if payload.get("linkedin"):
         profile["linkedin"] = payload["linkedin"]
+    source, source_detail, source_platform = _attribution_from_sync_payload(payload)
     return resolve_lead(
         email=payload.get("email"),
         linkedin_url=payload.get("linkedin"),
@@ -516,8 +604,9 @@ def resolve_lead_from_agent_sync(
         hq_country=payload.get("hq_country"),
         import_extra=extra,
         import_batch=payload.get("import_batch_id"),
-        source="agent_sync",
-        source_platform="relay",
+        source=source,
+        source_detail=source_detail,
+        source_platform=source_platform,
         overwrite=True,
         conn=conn,
     )
@@ -608,6 +697,8 @@ def apply_agent_lead_core_payload(
             "UPDATE leads SET notes = ?, updated_at = datetime('now') WHERE id = ?",
             (payload["notes"], lead_id),
         )
+
+    apply_attribution_from_sync_payload(conn, lead_id, payload)
 
     if own_conn:
         conn.commit()

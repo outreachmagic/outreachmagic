@@ -63,11 +63,13 @@ rsync -az --delete -e "$RSYNC_SSH" \
 echo "  dark-factory-tests → ${tests_remote_rsync}"
 rsync -az --chmod=Du=rwx,go=rx,Fu=rw,go=r -e "$RSYNC_SSH" \
   "${ROOT}/tests/dark-factory/catalog.json" \
-  "${ROOT}/tests/dark-factory/fixtures/" \
   "${ROOT}/scripts/dark-factory/run-script-tests.py" \
   "${ROOT}/scripts/dark-factory/validate.py" \
   "${ROOT}/scripts/dark-factory/post-validate.py" \
   "${REMOTE}:${tests_remote_rsync}/"
+rsync -az --delete --chmod=Du=rwx,go=rx,Fu=rw,go=r -e "$RSYNC_SSH" \
+  "${ROOT}/tests/dark-factory/fixtures/" \
+  "${REMOTE}:${tests_remote_rsync}/fixtures/"
 
 ssh -i "$SSH_KEY" -o BatchMode=yes "$REMOTE" bash -s "$SKILLS_PATH" "$TESTS_DATA_PATH" <<'REMOTE'
 set -euo pipefail

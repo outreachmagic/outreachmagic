@@ -7426,6 +7426,8 @@ _DB_OPTIONAL_COMMANDS = frozenset({
     "restore",
     "init",
     "refresh",
+    "sync-secrets",
+    "api-keys",
 })
 
 
@@ -10593,6 +10595,20 @@ def main():
         logout()
         return
 
+    if args.command == "sync-secrets":
+        result = sync_agent_secrets_cli(
+            check_only=getattr(args, "check", False),
+            as_json=getattr(args, "json", False),
+            quiet=getattr(args, "cron", False),
+        )
+        if not result.get("ok", True) and getattr(args, "check", False) is False:
+            sys.exit(1)
+        return
+
+    if args.command == "api-keys":
+        api_keys_cli(as_json=getattr(args, "json", False), push=getattr(args, "push", False))
+        return
+
     if args.command not in _DB_OPTIONAL_COMMANDS and not database_has_schema():
         print(format_database_recovery_message(), file=sys.stderr)
         sys.exit(1)
@@ -10814,20 +10830,6 @@ def main():
 
     if args.command == "disconnect-platform":
         cmd_disconnect_platform(args.platform, skip_confirm=getattr(args, "yes", False))
-        return
-
-    if args.command == "sync-secrets":
-        result = sync_agent_secrets_cli(
-            check_only=getattr(args, "check", False),
-            as_json=getattr(args, "json", False),
-            quiet=getattr(args, "cron", False),
-        )
-        if not result.get("ok", True) and getattr(args, "check", False) is False:
-            sys.exit(1)
-        return
-
-    if args.command == "api-keys":
-        api_keys_cli(as_json=getattr(args, "json", False), push=getattr(args, "push", False))
         return
 
     if not db_exists():

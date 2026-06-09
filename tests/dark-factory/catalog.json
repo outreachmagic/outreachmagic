@@ -570,12 +570,12 @@
         }
       },
       {
-        "id": "om-version-1295",
+        "id": "om-version-1296",
         "tags": ["smoke", "om", "script"],
         "mode": "script",
         "command": ["version"],
         "expect": {
-          "contains_string": "1.29.5"
+          "contains_string": "1.29.6"
         }
       },
       {

@@ -164,7 +164,13 @@ from constants import (
     USAGE_WARNING_PERCENT,
     USAGE_CRITICAL_PERCENT,
 )
-from db_conn import apply_bulk_pull_pragmas, end_bulk_pull_session, get_conn
+from db_conn import (
+    apply_bulk_pull_pragmas,
+    database_has_schema,
+    end_bulk_pull_session,
+    format_database_recovery_message,
+    get_conn,
+)
 from formatters import (
     format_campaign_stats,
     format_copy_insights,
@@ -232,6 +238,7 @@ from om_paths import (
     get_working_root,
     hermes_profile_copy_warning,
     resolve_project_path,
+    set_db_path_override,
 )
 
 SKILL_NAME = "outreachmagic"
@@ -7409,6 +7416,42 @@ def _format_pull_pending_banner(
     )
 
 
+_DB_OPTIONAL_COMMANDS = frozenset({
+    None,
+    "version",
+    "paths",
+    "update",
+    "login",
+    "logout",
+    "restore",
+    "init",
+    "refresh",
+})
+
+
+def _progress_eta_seconds(done: int, total: Optional[int], elapsed_seconds: float) -> Optional[float]:
+    if total is None or total <= 0 or done <= 0 or elapsed_seconds <= 0:
+        return None
+    remaining = max(0, total - done)
+    if remaining <= 0:
+        return 0.0
+    rate = done / elapsed_seconds
+    if rate <= 0:
+        return None
+    return remaining / rate
+
+
+def _format_duration(seconds: float) -> str:
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs}s" if secs else f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes}m"
+
+
 def _format_pull_progress(
     stream: str,
     *,
@@ -7419,6 +7462,7 @@ def _format_pull_progress(
     total: Optional[int] = None,
     more_follow: bool = False,
     total_only: bool = False,
+    eta_seconds: Optional[float] = None,
 ) -> str:
     page = _page_label(page_n, total_pages, more_follow=more_follow)
     if total is not None and total > 0:
@@ -7430,9 +7474,12 @@ def _format_pull_progress(
     else:
         counts = f"{seen:,}"
         pct = ""
+    eta = ""
+    if eta_seconds is not None and eta_seconds > 0:
+        eta = f", ~{_format_duration(eta_seconds)} left"
     return (
         f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: {page} — "
-        f"{page_len:,} this page, {counts}{pct} ..."
+        f"{page_len:,} this page, {counts}{pct}{eta} ..."
     )
 
 
@@ -7942,6 +7989,7 @@ def sync_from_relay_org(
     pull_routing_cache: Optional[CampaignRoutingCache] = None
 
     pull_phases = _relay_pull_phases(full, do_events, kinds)
+    event_pull_started_at: Optional[float] = None
     if not quiet and pull_phases and pull_phases[0] == "snapshots":
         print(
             f"[{_progress_clock()}] Full pull: lead snapshots before event replay...",
@@ -8000,6 +8048,15 @@ def sync_from_relay_org(
 
                     relay_events_seen += len(events)
                     if not quiet:
+                        if event_pull_started_at is None:
+                            event_pull_started_at = time.monotonic()
+                        eta_seconds = None
+                        if pending_events and pending_events > 0:
+                            eta_seconds = _progress_eta_seconds(
+                                relay_events_seen,
+                                pending_events,
+                                time.monotonic() - event_pull_started_at,
+                            )
                         print(
                             _format_pull_progress(
                                 _RELAY_STREAM_EVENT,
@@ -8009,6 +8066,7 @@ def sync_from_relay_org(
                                 seen=relay_events_seen,
                                 total=pending_events,
                                 more_follow=len(events) >= request_limit and not est_event_pages,
+                                eta_seconds=eta_seconds,
                             ),
                             flush=True,
                         )
@@ -8294,9 +8352,167 @@ pull --full alone does NOT refresh — it still skips rows already in relay_inge
 
 Re-run with: pipeline.py refresh --yes
 
-If refresh times out during the relay pull, the database may be partial. Run pull again —
-it resumes from saved cursors: pipeline.py pull --full
+If refresh times out during the relay pull, your previous database is kept intact
+(staging pull). Resume with: pipeline.py pull --full
+
+If the database is empty or corrupted after a failed refresh:
+  pipeline.py restore --latest
 """.strip()
+
+
+def _refresh_staging_path(db_path: Path) -> Path:
+    return db_path.with_name(f"{db_path.stem}.refresh-staging.db")
+
+
+def _remove_staging_db(staging_path: Path) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(str(staging_path) + suffix) if suffix else staging_path
+        if p.exists():
+            p.unlink()
+
+
+def list_database_backups(db_dir: Optional[Path] = None) -> list[Path]:
+    """Newest-first backup files created by refresh or restore."""
+    directory = db_dir or get_db_path().parent
+    if not directory.is_dir():
+        return []
+    seen: set[Path] = set()
+    ordered: list[tuple[float, Path]] = []
+    for pattern in ("*.backup-*.db", "*.pre-restore-*.db"):
+        for path in directory.glob(pattern):
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                ordered.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+    ordered.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in ordered]
+
+
+def restore_local_database(
+    *,
+    source: Optional[str] = None,
+    latest: bool = False,
+    yes: bool = False,
+) -> dict:
+    """Replace the live database from a backup file."""
+    db_path = get_db_path()
+    db_dir = db_path.parent
+    backups = list_database_backups(db_dir)
+
+    if latest:
+        if not backups:
+            return {
+                "status": "error",
+                "error": "no_backups",
+                "message": (
+                    f"No backup files found in {db_dir}. "
+                    "Refresh creates outreachmagic.backup-<timestamp>.db automatically."
+                ),
+            }
+        backup_path = backups[0]
+    elif source:
+        backup_path = Path(source).expanduser()
+        if not backup_path.is_file():
+            return {
+                "status": "error",
+                "error": "backup_not_found",
+                "message": f"Backup not found: {backup_path}",
+            }
+    else:
+        return {
+            "status": "error",
+            "error": "source_required",
+            "message": "Pass --latest or --from <backup.db>",
+            "backups": [str(p) for p in backups[:10]],
+        }
+
+    if not yes:
+        return {
+            "status": "error",
+            "error": "confirmation_required",
+            "message": (
+                f"This will replace {db_path} with backup:\n  {backup_path}\n"
+                "Re-run with: pipeline.py restore --latest --yes"
+            ),
+            "backup": str(backup_path),
+        }
+
+    db_dir.mkdir(parents=True, exist_ok=True)
+    pre_restore = db_path.with_name(
+        f"{db_path.stem}.pre-restore-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.db"
+    )
+    if db_path.exists():
+        shutil.copy2(db_path, pre_restore)
+
+    for suffix in ("", "-wal", "-shm"):
+        live = Path(str(db_path) + suffix) if suffix else db_path
+        if live.exists():
+            live.unlink()
+
+    shutil.copy2(backup_path, db_path)
+    _chmod_best_effort(db_path, 0o600)
+
+    if not database_has_schema():
+        return {
+            "status": "error",
+            "error": "backup_invalid",
+            "message": f"Backup restored but schema check failed: {backup_path}",
+            "pre_restore_copy": str(pre_restore) if pre_restore.exists() else None,
+        }
+
+    return {
+        "status": "ok",
+        "restored_from": str(backup_path),
+        "database": str(db_path),
+        "pre_restore_copy": str(pre_restore) if pre_restore.exists() else None,
+        "message": f"Restored database from {backup_path.name}",
+    }
+
+
+def cmd_restore(args) -> None:
+    result = restore_local_database(
+        source=getattr(args, "from_path", None),
+        latest=getattr(args, "latest", False),
+        yes=getattr(args, "yes", False),
+    )
+    if getattr(args, "list", False):
+        backups = list_database_backups()
+        payload = {
+            "database": str(get_db_path()),
+            "backups": [
+                {"path": str(p), "modified": datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc).isoformat()}
+                for p in backups
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return
+    if result.get("status") == "error" and result.get("error") == "confirmation_required":
+        print(result["message"], file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(result, indent=2))
+    if result.get("status") != "ok":
+        sys.exit(1)
+
+
+def _atomic_refresh_swap(live_path: Path, staging_path: Path) -> None:
+    """Replace live DB with a successfully pulled staging file."""
+    old_path = live_path.with_name(f"{live_path.stem}.pre-refresh.db")
+    if old_path.exists():
+        old_path.unlink()
+    if live_path.exists():
+        live_path.rename(old_path)
+    staging_path.rename(live_path)
+    for suffix in ("-wal", "-shm"):
+        for base in (old_path, staging_path):
+            sidecar = Path(str(base) + suffix)
+            if sidecar.exists():
+                sidecar.unlink()
+    if old_path.exists():
+        old_path.unlink()
 
 
 def _clear_pull_cursors() -> None:
@@ -8369,13 +8585,13 @@ def refresh_local_database(
             print(format_routing_refresh_summary(routing_summary), flush=True)
     except RuntimeError as exc:
         return {
+            **result,
             "status": "error",
             "error": "pre_wipe_routing_sync_failed",
             "message": (
                 f"Could not verify campaign maps from cloud before refresh: {exc}\n"
                 "Fix login/routing, or abort refresh."
             ),
-            **result,
         }
 
     db_path = get_db_path()
@@ -8387,62 +8603,91 @@ def refresh_local_database(
         shutil.copy2(db_path, backup_path)
         result["backup"] = str(backup_path)
         result["steps"].append("backup")
-        db_path.unlink()
-        result["steps"].append("delete_db")
     else:
         result["steps"].append("no_existing_db")
 
+    staging_path = _refresh_staging_path(db_path)
+    _remove_staging_db(staging_path)
+    result["staging"] = str(staging_path)
+    result["steps"].append("staging_prepare")
+
+    imported = 0
+    skipped = 0
+    staging_ready = False
+    set_db_path_override(staging_path)
+    try:
+        init_db()
+        result["steps"].append("staging_init")
+
+        try:
+            if maybe_sync_routing_from_cloud(quiet=quiet):
+                result["steps"].append("routing_sync")
+            else:
+                result["steps"].append("routing_sync_skipped")
+        except RuntimeError as exc:
+            return {
+                **result,
+                "status": "error",
+                "error": "routing_sync_failed",
+                "message": (
+                    f"Could not load campaign maps from cloud before re-import: {exc}\n"
+                    "Your previous database was not modified."
+                ),
+            }
+        try:
+            maybe_sync_agent_secrets_from_cloud(quiet=quiet)
+        except Exception:
+            pass
+
+        agent_key = get_agent_key()
+        if not agent_key:
+            return {
+                **result,
+                "status": "error",
+                "error": "no_agent_key",
+                "message": "No agent key to pull from relay. Run login, then pull --full.",
+            }
+
+        try:
+            imported, skipped = sync_from_relay_org(
+                agent_key,
+                full=True,
+                quiet=quiet,
+            )
+        except RuntimeError as exc:
+            return {
+                **result,
+                "status": "error",
+                "error": "pull_failed",
+                "message": (
+                    f"{exc}\n\nYour previous database was not modified. "
+                    f"Backup: {result.get('backup', '(none)')}\n"
+                    "To restore manually: pipeline.py restore --latest --yes"
+                ),
+            }
+        staging_ready = True
+    finally:
+        set_db_path_override(None)
+        if not staging_ready:
+            _remove_staging_db(staging_path)
+
+    try:
+        _atomic_refresh_swap(db_path, staging_path)
+        result["steps"].append("staging_swap")
+    except OSError as exc:
+        return {
+            **result,
+            "status": "error",
+            "error": "staging_swap_failed",
+            "message": (
+                f"Pull completed but could not swap databases: {exc}\n"
+                f"Staging file preserved at: {staging_path}\n"
+                f"Backup: {result.get('backup', '(none)')}"
+            ),
+        }
+
     _clear_pull_cursors()
     result["steps"].append("clear_pull_cursors")
-
-    init_db()
-    result["steps"].append("init")
-
-    try:
-        if maybe_sync_routing_from_cloud(quiet=quiet):
-            result["steps"].append("routing_sync")
-        else:
-            result["steps"].append("routing_sync_skipped")
-    except RuntimeError as exc:
-        return {
-            "status": "error",
-            "error": "routing_sync_failed",
-            "message": (
-                f"Could not load campaign maps from cloud before re-import: {exc}\n"
-                "Restore from backup or run login, then pull --full after fixing routing."
-            ),
-            **result,
-        }
-    try:
-        maybe_sync_agent_secrets_from_cloud(quiet=quiet)
-    except Exception:
-        pass
-
-    agent_key = get_agent_key()
-    if not agent_key:
-        return {
-            "status": "error",
-            "error": "no_agent_key",
-            "message": "Database wiped but no agent key to pull from relay. Run login, then pull --full.",
-            **result,
-        }
-
-    try:
-        imported, skipped = sync_from_relay_org(
-            agent_key,
-            full=True,
-            quiet=quiet,
-        )
-    except RuntimeError as exc:
-        return {
-            "status": "error",
-            "error": "pull_failed",
-            "message": (
-                f"{exc}\n\nDatabase may be partial. Resume with: pipeline.py pull --full "
-                "(continues from saved cursors)."
-            ),
-            **result,
-        }
 
     result["imported"] = imported
     result["skipped"] = skipped
@@ -9793,7 +10038,7 @@ def main():
 
     refresh_p = sub.add_parser(
         "refresh",
-        help="DANGER: sync, backup, wipe local DB, and pull --full from relay (rare)",
+        help="DANGER: sync, backup, staging pull --full, then swap DB (rare; keeps old DB until pull succeeds)",
     )
     refresh_p.add_argument(
         "--yes",
@@ -9808,6 +10053,31 @@ def main():
     refresh_p.add_argument(
         "--backup",
         help="Backup path for the current database (default: outreachmagic.db.backup-<timestamp>.db)",
+    )
+
+    restore_p = sub.add_parser(
+        "restore",
+        help="Restore local database from a refresh backup",
+    )
+    restore_p.add_argument(
+        "--list",
+        action="store_true",
+        help="List available backup files (newest first)",
+    )
+    restore_p.add_argument(
+        "--latest",
+        action="store_true",
+        help="Restore the newest backup in the databases folder",
+    )
+    restore_p.add_argument(
+        "--from",
+        dest="from_path",
+        help="Path to a specific backup .db file",
+    )
+    restore_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm restore (replaces the live database)",
     )
 
     sub.add_parser("status", help="Dashboard-style status: plan, connections, usage, routing")
@@ -10306,6 +10576,27 @@ def main():
         cmd_refresh(args)
         return
 
+    if args.command == "restore":
+        cmd_restore(args)
+        return
+
+    if args.command == "login":
+        login(
+            platform=getattr(args, "platform", None),
+            generate_url=getattr(args, "generate_url", False),
+            claim_token=getattr(args, "claim_token", False),
+            device_code=getattr(args, "device_code", None),
+            wait_seconds=getattr(args, "wait", 30),
+        )
+        return
+    if args.command == "logout":
+        logout()
+        return
+
+    if args.command not in _DB_OPTIONAL_COMMANDS and not database_has_schema():
+        print(format_database_recovery_message(), file=sys.stderr)
+        sys.exit(1)
+
     if args.command == "sync":
         if getattr(args, "inspect", None):
             if not getattr(args, "workspace", None):
@@ -10523,19 +10814,6 @@ def main():
 
     if args.command == "disconnect-platform":
         cmd_disconnect_platform(args.platform, skip_confirm=getattr(args, "yes", False))
-        return
-
-    if args.command == "login":
-        login(
-            platform=getattr(args, "platform", None),
-            generate_url=getattr(args, "generate_url", False),
-            claim_token=getattr(args, "claim_token", False),
-            device_code=getattr(args, "device_code", None),
-            wait_seconds=getattr(args, "wait", 30),
-        )
-        return
-    if args.command == "logout":
-        logout()
         return
 
     if args.command == "sync-secrets":

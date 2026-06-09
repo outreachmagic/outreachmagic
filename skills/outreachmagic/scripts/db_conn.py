@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 
 from om_paths import get_db_path
 
@@ -19,6 +20,51 @@ def get_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def database_has_schema(path: sqlite3.Connection | str | None = None) -> bool:
+    """True when the database file exists and has core outreachmagic tables."""
+    if path is None:
+        db_path = get_db_path()
+        if not db_path.is_file() or db_path.stat().st_size == 0:
+            return False
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=5.0)
+        except sqlite3.Error:
+            return False
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='leads' LIMIT 1"
+            ).fetchone()
+            return row is not None
+        except sqlite3.Error:
+            return False
+        finally:
+            conn.close()
+    conn = path if isinstance(path, sqlite3.Connection) else sqlite3.connect(str(path), timeout=5.0)
+    own = not isinstance(path, sqlite3.Connection)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='leads' LIMIT 1"
+        ).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        return False
+    finally:
+        if own:
+            conn.close()
+
+
+def format_database_recovery_message(db_path=None) -> str:
+    p = db_path or get_db_path()
+    return (
+        f"Database at {p} is missing or has no schema (no leads table).\n"
+        "To restore from your most recent automatic backup:\n"
+        "  pipeline.py restore --latest\n"
+        "To list backups:\n"
+        "  pipeline.py restore --list\n"
+        "If backups are unavailable, run login then pull --full (or refresh --yes)."
+    )
 
 
 def apply_bulk_pull_pragmas(conn: sqlite3.Connection) -> None:
@@ -52,6 +98,20 @@ def end_bulk_pull_session(conn: sqlite3.Connection) -> None:
         except sqlite3.Error:
             pass
     sync_val, cache_val, temp_val = saved
-    conn.execute(f"PRAGMA synchronous={sync_val}")
-    conn.execute(f"PRAGMA cache_size={cache_val}")
-    conn.execute(f"PRAGMA temp_store={temp_val}")
+    try:
+        conn.execute(f"PRAGMA synchronous={sync_val}")
+        conn.execute(f"PRAGMA cache_size={cache_val}")
+        conn.execute(f"PRAGMA temp_store={temp_val}")
+    except sqlite3.OperationalError as exc:
+        if "disk I/O error" in str(exc).lower() or "i/o error" in str(exc).lower():
+            print(
+                "[outreachmagic] Warning: disk I/O error while finalizing pull session. "
+                "Your data may be intact — run: pipeline.py db-health",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise RuntimeError(
+                "Disk I/O error while finalizing pull. "
+                "Run: pipeline.py restore --latest  (or pipeline.py db-health)"
+            ) from exc
+        raise

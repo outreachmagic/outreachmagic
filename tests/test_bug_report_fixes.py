@@ -97,6 +97,7 @@ def test_sheets_export_parser_exists():
 
 def test_daily_digest_and_format():
   om.init_db()
+  om.create_workspace("PopCam", "popcam", sync=False)
   result = om.resolve_lead(
     email="digest@example.com",
     name="Digest Lead",
@@ -116,7 +117,7 @@ def test_daily_digest_and_format():
     direction="inbound",
     campaign="popcam | headshot lounge",
   )
-  digest = rq.daily_digest(since="today", workspace="popcam")
+  digest = rq.daily_digest(workspace="popcam")
   assert digest["emails_sent"] >= 1
   assert digest["replies"] >= 1
   text = rq.format_daily_digest(digest)

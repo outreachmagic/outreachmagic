@@ -55,6 +55,7 @@ def hermes_profile_copy_warning() -> Optional[str]:
 DEFAULT_DATA_ROOT = _infer_data_root()
 
 _DATA_ROOT_OVERRIDE: Optional[Path] = None
+_DB_PATH_OVERRIDE: Optional[Path] = None
 
 
 def set_data_root_override(path: Optional[Path]) -> None:
@@ -72,6 +73,12 @@ def set_working_root_override(path: Optional[Path]) -> None:
 def set_project_root_override(path: Optional[Path]) -> None:
     """Tests only: alias for set_working_root_override."""
     set_working_root_override(path)
+
+
+def set_db_path_override(path: Optional[Path]) -> None:
+    """Redirect SQLite file (refresh staging pull, tests)."""
+    global _DB_PATH_OVERRIDE
+    _DB_PATH_OVERRIDE = path
 
 
 def _read_bootstrap_config(default_root: Path) -> dict:
@@ -113,6 +120,8 @@ def get_agent_secrets_path() -> Path:
 
 
 def get_db_path() -> Path:
+    if _DB_PATH_OVERRIDE is not None:
+        return _DB_PATH_OVERRIDE
     return get_skill_home() / "databases" / "outreachmagic.db"
 
 

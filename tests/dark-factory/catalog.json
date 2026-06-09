@@ -570,12 +570,21 @@
         }
       },
       {
-        "id": "om-version-1294",
+        "id": "om-version-1295",
         "tags": ["smoke", "om", "script"],
         "mode": "script",
         "command": ["version"],
         "expect": {
-          "contains_string": "1.29.4"
+          "contains_string": "1.29.5"
+        }
+      },
+      {
+        "id": "om-restore-help-smoke",
+        "tags": ["smoke", "om", "script"],
+        "mode": "script",
+        "command": ["restore", "--help"],
+        "expect": {
+          "contains_string": "--latest"
         }
       }
     ],

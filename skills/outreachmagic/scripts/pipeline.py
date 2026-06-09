@@ -9639,8 +9639,46 @@ def main():
     review_sync_p.add_argument("--sheet-id", required=True)
     review_sync_p.add_argument("--template", default="dedup-review")
     review_sync_p.add_argument("--workspace", help="Workspace slug (required for lead-review sync)")
+    review_sync_p.add_argument(
+        "--detail",
+        choices=pipeline_lead_review.DETAIL_LEVELS,
+        help="Rebuild field_keys for lead-review sync (default: standard)",
+    )
+    review_sync_p.add_argument("--fields", help="Comma-separated columns used at export (--detail custom)")
     review_sync_p.add_argument("--dry-run", action="store_true", help="Report approved rows only")
     review_sync_p.add_argument("--commit", action="store_true", help="Merge approved rows and write results")
+
+    review_payload_p = review_sub.add_parser(
+        "export-payload",
+        help="Build lead-review export payload locally (no API call)",
+    )
+    review_payload_p.add_argument("--workspace", required=True)
+    review_payload_p.add_argument(
+        "--detail",
+        choices=pipeline_lead_review.DETAIL_LEVELS,
+        default="standard",
+    )
+    review_payload_p.add_argument("--fields", help="Comma-separated columns for --detail custom")
+    review_payload_p.add_argument("--tag")
+    review_payload_p.add_argument("--stage")
+    review_payload_p.add_argument("--since")
+    review_payload_p.add_argument("--limit", type=int, default=5000)
+    review_payload_p.add_argument("--never-contacted", action="store_true")
+    review_payload_p.add_argument("--no-email", action="store_true")
+    review_payload_p.add_argument("--require-domain", action="store_true")
+    review_payload_p.add_argument("--title", default="Lead Review")
+
+    review_apply_p = review_sub.add_parser(
+        "apply-sync",
+        help="Apply lead-review sync from local JSON sheet rows (no API call)",
+    )
+    review_apply_p.add_argument("--workspace", required=True)
+    review_apply_p.add_argument("--input", required=True, help="JSON file: array of sheet row dicts")
+    review_apply_p.add_argument("--dry-run", action="store_true")
+    review_apply_p.add_argument("--commit", action="store_true")
+
+    review_presets_p = review_sub.add_parser("presets", help="List lead-review field presets and groups")
+    review_presets_p.add_argument("--template", default="lead-review")
 
     merge_p = sub.add_parser("merge-leads", help="Merge two lead records into one")
     merge_p.add_argument("--keep", type=int, help="Lead ID to keep")
@@ -10650,6 +10688,80 @@ def main():
         if args.review_command == "templates" and args.templates_command == "list":
             print(json.dumps({"templates": ["dedup-review", "lead-review"]}, indent=2))
             sys.exit(0)
+        elif args.review_command == "presets":
+            template = pipeline_lead_review.normalize_review_template(args.template)
+            tok = get_agent_key()
+            api_base = review_cloud.get_api_base(load_config)
+            if tok and review_cloud.review_enabled(load_config, get_agent_key):
+                try:
+                    print(json.dumps(review_cloud.list_presets(api_base, tok, template=template), indent=2))
+                except RuntimeError:
+                    print(json.dumps(pipeline_lead_review.list_presets(template), indent=2))
+            else:
+                print(json.dumps(pipeline_lead_review.list_presets(template), indent=2))
+            sys.exit(0)
+        elif args.review_command == "export-payload":
+            if not getattr(args, "workspace", None):
+                print(json.dumps({"error": "--workspace required"}))
+                sys.exit(1)
+            custom_fields = None
+            if getattr(args, "fields", None):
+                custom_fields = [f.strip() for f in args.fields.split(",") if f.strip()]
+            conn = get_conn()
+            try:
+                payload = pipeline_lead_review.build_export_payload(
+                    conn,
+                    workspace=args.workspace,
+                    detail=getattr(args, "detail", "standard"),
+                    title=args.title,
+                    custom_fields=custom_fields,
+                    tag=getattr(args, "tag", None),
+                    stage=getattr(args, "stage", None),
+                    since=getattr(args, "since", None),
+                    limit=getattr(args, "limit", 5000),
+                    never_contacted=getattr(args, "never_contacted", False),
+                    no_email=getattr(args, "no_email", False),
+                    require_domain=getattr(args, "require_domain", False),
+                    enrich_fn=enrich_lead_rows,
+                )
+            except (ValueError, OSError) as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+            finally:
+                conn.close()
+            print(json.dumps(payload, indent=2))
+            sys.exit(0)
+        elif args.review_command == "apply-sync":
+            if not getattr(args, "workspace", None):
+                print(json.dumps({"error": "--workspace required"}))
+                sys.exit(1)
+            in_path = resolve_project_path(args.input, kind="input")
+            try:
+                sheet_rows = json.loads(in_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as e:
+                print(json.dumps({"error": f"invalid --input JSON: {e}"}))
+                sys.exit(1)
+            if not isinstance(sheet_rows, list):
+                print(json.dumps({"error": "--input must be a JSON array of row objects"}))
+                sys.exit(1)
+            conn = get_conn()
+            try:
+                ws_row = resolve_workspace_identity(conn, args.workspace)
+                if not ws_row:
+                    print(json.dumps({"error": f"workspace not found: {args.workspace}"}))
+                    sys.exit(1)
+                summary = pipeline_lead_review.apply_lead_review_sync(
+                    conn,
+                    ws_row["id"],
+                    sheet_rows,
+                    upsert_workspace_lead_fn=upsert_workspace_lead,
+                    org_id=DEFAULT_ORG_ID,
+                    dry_run=args.dry_run or not args.commit,
+                )
+            finally:
+                conn.close()
+            print(json.dumps(summary, indent=2))
+            sys.exit(0)
         elif args.review_command in ("export", "sync"):
             tok = get_agent_key()
             if not tok:
@@ -10698,6 +10810,8 @@ def main():
                         headers=payload.get("headers"),
                         rows=payload.get("rows"),
                         workspace=args.workspace,
+                        columns=payload.get("columns"),
+                        freeze_header=payload.get("freeze_header"),
                     )
                 else:
                     if not getattr(args, "input", None):
@@ -10722,28 +10836,75 @@ def main():
                 sys.exit(1)
             print(json.dumps(result, indent=2))
         elif args.review_command == "sync":
-            try:
-                read_result = review_cloud.sync_read(
-                    api_base, tok, sheet_id=args.sheet_id, template=template,
-                )
-            except RuntimeError as e:
-                print(json.dumps({"error": str(e)}))
-                sys.exit(1)
+            field_keys = None
+            baseline_rows = None
             if template == "lead-review":
                 ws_slug = getattr(args, "workspace", None)
                 if not ws_slug:
                     print(json.dumps({"error": "--workspace required for lead-review sync"}))
                     sys.exit(1)
-                sheet_rows = read_result.get("rows") or []
-                if not sheet_rows:
-                    print(json.dumps({"status": "noop", "rows": 0, "message": "no rows in sheet"}))
-                    sys.exit(0)
+                detail = getattr(args, "detail", None) or "standard"
+                custom_fields = None
+                if getattr(args, "fields", None):
+                    custom_fields = [f.strip() for f in args.fields.split(",") if f.strip()]
                 conn = get_conn()
                 try:
                     ws_row = resolve_workspace_identity(conn, ws_slug)
                     if not ws_row:
                         print(json.dumps({"error": f"workspace not found: {ws_slug}"}))
                         sys.exit(1)
+                    senders = (
+                        pipeline_lead_review.list_workspace_senders(conn, ws_row["id"])
+                        if detail == "full"
+                        else []
+                    )
+                    columns = pipeline_lead_review.resolve_columns(
+                        detail, custom_fields=custom_fields, sender_profiles=senders,
+                    )
+                    field_keys = {label: key for label, key in columns}
+                    export_payload = pipeline_lead_review.build_export_payload(
+                        conn,
+                        workspace=ws_slug,
+                        detail=detail,
+                        title="baseline",
+                        custom_fields=custom_fields,
+                        limit=5000,
+                        enrich_fn=enrich_lead_rows,
+                    )
+                    baseline_rows = []
+                    for row in export_payload.get("rows") or []:
+                        obj: dict[str, Any] = {"lead_id": row[0] if row else ""}
+                        for i, (_label, key) in enumerate(columns):
+                            if i < len(row):
+                                obj[key] = row[i]
+                        baseline_rows.append(obj)
+                finally:
+                    conn.close()
+            try:
+                read_result = review_cloud.sync_read(
+                    api_base,
+                    tok,
+                    sheet_id=args.sheet_id,
+                    template=template,
+                    field_keys=field_keys,
+                    baseline_rows=baseline_rows,
+                )
+            except RuntimeError as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+            if template == "lead-review":
+                sheet_rows = read_result.get("rows") or []
+                if not sheet_rows:
+                    print(json.dumps({
+                        "status": "noop",
+                        "rows": 0,
+                        "changed_count": read_result.get("changed_count", 0),
+                        "message": "no rows to sync",
+                    }))
+                    sys.exit(0)
+                conn = get_conn()
+                try:
+                    ws_row = resolve_workspace_identity(conn, ws_slug)
                     summary = pipeline_lead_review.apply_lead_review_sync(
                         conn,
                         ws_row["id"],
@@ -10754,6 +10915,23 @@ def main():
                     )
                 finally:
                     conn.close()
+                if args.commit and summary.get("updated"):
+                    write_results = [
+                        {"lead_id": int(chg["lead_id"]), "result": "✓ Synced"}
+                        for chg in summary.get("changes") or []
+                        if chg.get("lead_id") is not None
+                    ]
+                    if write_results:
+                        try:
+                            review_cloud.sync_write_results(
+                                api_base,
+                                tok,
+                                sheet_id=args.sheet_id,
+                                template=template,
+                                results=write_results,
+                            )
+                        except RuntimeError:
+                            pass
                 print(json.dumps(summary, indent=2))
                 sys.exit(0)
 

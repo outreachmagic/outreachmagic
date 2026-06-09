@@ -1,0 +1,9 @@
+[
+  {
+    "lead_id": "1",
+    "name": "Abby Schoenbeck",
+    "company": "Acme University",
+    "tags": "dedup-test",
+    "workspace_stage": "prospecting"
+  }
+]

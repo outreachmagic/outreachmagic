@@ -52,6 +52,14 @@ def review_enabled(load_config_fn: Callable[[], dict], get_agent_key_fn: Callabl
     return bool(get_agent_key_fn() and get_api_base(load_config_fn))
 
 
+def list_presets(api_base: str, token: str, *, template: str = "lead-review") -> dict[str, Any]:
+    return _request_json(
+        "GET",
+        f"{api_base}/api/review/presets?template={template}",
+        token,
+    )
+
+
 def export_review(
     api_base: str,
     token: str,
@@ -64,6 +72,9 @@ def export_review(
     headers: Optional[list[str]] = None,
     rows: Optional[list[list[Any]]] = None,
     workspace: Optional[str] = None,
+    columns: Optional[list[dict[str, Any]]] = None,
+    freeze_header: Optional[bool] = None,
+    fields: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "template": template,
@@ -77,18 +88,36 @@ def export_review(
         body["rows"] = rows or []
         if workspace:
             body["workspace"] = workspace
+        if columns:
+            body["columns"] = columns
+        if freeze_header is not None:
+            body["freeze_header"] = freeze_header
+        if fields:
+            body["fields"] = fields
     else:
         body["candidates"] = candidates or []
     return _request_json("POST", f"{api_base}/api/review/export", token, body=body)
 
 
-def sync_read(api_base: str, token: str, *, sheet_id: str, template: str = "dedup-review") -> dict[str, Any]:
-    return _request_json(
-        "POST",
-        f"{api_base}/api/review/sync",
-        token,
-        body={"action": "read", "sheet_id": sheet_id, "template": template},
-    )
+def sync_read(
+    api_base: str,
+    token: str,
+    *,
+    sheet_id: str,
+    template: str = "dedup-review",
+    field_keys: Optional[dict[str, str]] = None,
+    baseline_rows: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "action": "read",
+        "sheet_id": sheet_id,
+        "template": template,
+    }
+    if field_keys:
+        body["field_keys"] = field_keys
+    if baseline_rows:
+        body["baseline_rows"] = baseline_rows
+    return _request_json("POST", f"{api_base}/api/review/sync", token, body=body)
 
 
 def sync_write_results(

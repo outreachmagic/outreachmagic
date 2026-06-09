@@ -160,6 +160,155 @@
         }
       },
       {
+        "id": "om-review-export-payload-basic",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root"
+        },
+        "command": [
+          "review", "export-payload",
+          "--workspace", "df-dedup",
+          "--tag", "dedup-test",
+          "--detail", "basic",
+          "--limit", "3"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "template", "equals": "lead-review"},
+            {"path": "count", "gte": 1}
+          ],
+          "contains_string": "lead_id"
+        }
+      },
+      {
+        "id": "om-review-export-payload-custom",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root"
+        },
+        "command": [
+          "review", "export-payload",
+          "--workspace", "df-dedup",
+          "--tag", "dedup-test",
+          "--detail", "custom",
+          "--fields", "lead_id,name,email,company",
+          "--limit", "2"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "lead_id",
+          "json_fields": [
+            {"path": "detail", "equals": "custom"},
+            {"path": "count", "gte": 1}
+          ]
+        }
+      },
+      {
+        "id": "om-review-apply-sync-emoji",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root-copy"
+        },
+        "setup": "copy_fixture_db",
+        "command": [
+          "review", "apply-sync",
+          "--workspace", "df-dedup",
+          "--input", "@fixture:dedup/sheet-rows-emoji.json",
+          "--commit"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "status", "equals": "applied"},
+            {"path": "updated", "equals": 1}
+          ]
+        }
+      },
+      {
+        "id": "om-review-presets-local",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "command": ["review", "presets", "--template", "lead-review"],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "column_groups",
+          "json_fields": [
+            {"path": "template", "equals": "lead-review"}
+          ]
+        }
+      },
+      {
+        "id": "om-review-export-payload-groups",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root"
+        },
+        "command": [
+          "review", "export-payload",
+          "--workspace", "df-dedup",
+          "--tag", "dedup-test",
+          "--detail", "custom",
+          "--fields", "lead_info,workspace_state",
+          "--limit", "2"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "workspace_stage",
+          "json_fields": [
+            {"path": "detail", "equals": "custom"},
+            {"path": "count", "gte": 1}
+          ]
+        }
+      },
+      {
+        "id": "om-review-export-payload-columns-meta",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root"
+        },
+        "command": [
+          "review", "export-payload",
+          "--workspace", "df-dedup",
+          "--tag", "dedup-test",
+          "--detail", "standard",
+          "--limit", "1"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "freeze_header",
+          "json_fields": [
+            {"path": "freeze_header", "equals": true}
+          ]
+        }
+      },
+      {
+        "id": "om-review-apply-sync-change-detect",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:dedup/data-root"
+        },
+        "command": [
+          "review", "apply-sync",
+          "--workspace", "df-dedup",
+          "--input", "@fixture:dedup/sheet-rows-unchanged.json",
+          "--dry-run"
+        ],
+        "expect": {
+          "contains_json": true,
+          "json_fields": [
+            {"path": "skipped", "gte": 1},
+            {"path": "updated", "equals": 0}
+          ]
+        }
+      },
+      {
         "id": "om-export-never-contacted-fixture",
         "tags": ["export", "integration", "script"],
         "mode": "script",

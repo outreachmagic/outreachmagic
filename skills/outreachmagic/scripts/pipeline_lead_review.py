@@ -16,54 +16,89 @@ def _normalize_tag(tag: str) -> str:
 
 DETAIL_LEVELS = ("basic", "standard", "full", "custom")
 
-BASIC_COLUMNS = [
-    ("lead_id", "lead_id"),
-    ("name", "name"),
-    ("email", "email"),
-    ("company", "company"),
-    ("title", "title"),
-    ("tags", "tags"),
-    ("notes_action", "notes_action"),
-]
+KEY_BG, KEY_TEXT = "#FFF3CD", "#856404"
+EDIT_BG, EDIT_TEXT = "#D4EDDA", "#155724"
+READ_BG, READ_TEXT = "#CCE5FF", "#004085"
 
-STANDARD_EXTRA = [
-    ("linkedin", "linkedin"),
-    ("location_city", "location_city"),
-    ("location_state", "location_state"),
-    ("location_country", "location_country"),
-    ("industry", "industry"),
-    ("headcount", "headcount"),
-    ("lead_status", "lead_status"),
-    ("lead_sentiment", "lead_sentiment"),
-    ("workspace_stage", "workspace_stage"),
-    ("channel", "channel"),
-    ("email_verification_status", "email_verification_status"),
-    ("original_source", "original_source"),
-    ("original_source_detail", "original_source_detail"),
-    ("created_at", "created_at"),
-    ("updated_at", "updated_at"),
-]
+COLUMN_GROUPS: dict[str, list[str]] = {
+    "lead_info": ["name", "title", "email", "linkedin", "company", "industry", "headcount"],
+    "location": ["location_city", "location_state", "location_country"],
+    "workspace_state": ["workspace_stage", "lead_status", "lead_sentiment", "contact_priority"],
+    "activity": [
+        "email_sent_count",
+        "linkedin_sent_count",
+        "total_replies_count",
+        "last_contacted_at",
+    ],
+    "personalization": ["personalized_first_name", "personalized_company_name"],
+    "attribution": ["original_source", "original_source_detail", "latest_sender"],
+    "timestamps": ["created_at", "updated_at"],
+    "messaging": [
+        "latest_outbound_subject",
+        "latest_outbound_preview",
+        "latest_inbound_subject",
+        "latest_inbound_preview",
+    ],
+}
 
-FULL_EXTRA = [
-    ("last_contacted_at", "last_contacted_at"),
-    ("latest_sender", "latest_sender"),
-    ("latest_outbound_subject", "latest_outbound_subject"),
-    ("latest_outbound_preview", "latest_outbound_preview"),
-    ("latest_inbound_subject", "latest_inbound_subject"),
-    ("latest_inbound_preview", "latest_inbound_preview"),
-]
+FIELD_DEFS: dict[str, dict[str, Any]] = {
+    "lead_id": {"type": "key", "editable": False, "presets": ("basic", "standard", "full")},
+    "name": {"type": "string", "editable": True, "scope": "lead", "presets": ("basic", "standard", "full")},
+    "email": {"type": "string", "editable": True, "scope": "lead", "presets": ("basic", "standard", "full")},
+    "company": {"type": "string", "editable": True, "scope": "lead", "presets": ("basic", "standard", "full")},
+    "title": {"type": "string", "editable": True, "scope": "lead", "presets": ("basic", "standard", "full")},
+    "tags": {"type": "tags", "editable": True, "scope": "tags", "presets": ("basic", "standard", "full")},
+    "notes": {"type": "string", "editable": True, "scope": "notes", "presets": ("basic", "standard", "full")},
+    "linkedin": {"type": "string", "editable": True, "scope": "lead", "presets": ("standard", "full")},
+    "location_city": {"type": "string", "editable": True, "scope": "lead", "presets": ("standard", "full")},
+    "location_state": {"type": "string", "editable": True, "scope": "lead", "presets": ("standard", "full")},
+    "location_country": {"type": "string", "editable": True, "scope": "lead", "presets": ("standard", "full")},
+    "industry": {"type": "string", "editable": True, "scope": "lead", "presets": ("standard", "full")},
+    "headcount": {"type": "string", "editable": True, "scope": "lead", "presets": ("standard", "full")},
+    "workspace_stage": {"type": "string", "editable": True, "scope": "workspace", "presets": ("standard", "full")},
+    "lead_status": {"type": "string", "editable": True, "scope": "workspace", "presets": ("standard", "full")},
+    "lead_sentiment": {"type": "string", "editable": True, "scope": "workspace", "presets": ("standard", "full")},
+    "contact_priority": {"type": "integer", "editable": True, "scope": "workspace", "presets": ("standard", "full")},
+    "email_verification_status": {"type": "string", "editable": False, "presets": ("standard", "full")},
+    "original_source": {"type": "string", "editable": False, "presets": ("standard", "full")},
+    "original_source_detail": {"type": "string", "editable": False, "presets": ("standard", "full")},
+    "created_at": {"type": "timestamp", "editable": False, "presets": ("standard", "full")},
+    "updated_at": {"type": "timestamp", "editable": False, "presets": ("standard", "full")},
+    "last_contacted_at": {"type": "timestamp", "editable": False, "presets": ("full",)},
+    "email_sent_count": {"type": "integer", "editable": False, "presets": ("full",)},
+    "linkedin_sent_count": {"type": "integer", "editable": False, "presets": ("full",)},
+    "total_replies_count": {"type": "integer", "editable": False, "presets": ("full",)},
+    "latest_sender": {"type": "string", "editable": False, "presets": ("full",)},
+    "personalized_first_name": {
+        "type": "string", "editable": True, "scope": "personalization_lead", "presets": ("full",),
+    },
+    "personalized_company_name": {
+        "type": "string", "editable": True, "scope": "personalization_company", "presets": ("full",),
+    },
+    "latest_outbound_subject": {"type": "string", "editable": False, "presets": ("full",)},
+    "latest_outbound_preview": {"type": "string", "editable": False, "presets": ("full",)},
+    "latest_inbound_subject": {"type": "string", "editable": False, "presets": ("full",)},
+    "latest_inbound_preview": {"type": "string", "editable": False, "presets": ("full",)},
+}
 
-SYNCABLE_FIELDS = frozenset({
-    "lead_status",
-    "workspace_stage",
-    "stage",
-    "lead_sentiment",
-    "tags",
-    "notes",
-    "notes_action",
-    "contact_order",
-    "contact_priority",
-})
+PRESET_KEYS: dict[str, list[str]] = {
+    "basic": ["lead_id", "name", "email", "company", "title", "tags", "notes"],
+    "standard": [
+        "lead_id", "name", "email", "company", "title", "tags", "notes",
+        "linkedin", "location_city", "location_state", "location_country", "industry", "headcount",
+        "workspace_stage", "lead_status", "lead_sentiment", "contact_priority",
+        "email_verification_status", "original_source", "original_source_detail", "created_at", "updated_at",
+    ],
+    "full": [
+        "lead_id", "name", "email", "company", "title", "tags", "notes",
+        "linkedin", "location_city", "location_state", "location_country", "industry", "headcount",
+        "workspace_stage", "lead_status", "lead_sentiment", "contact_priority",
+        "email_verification_status", "original_source", "original_source_detail", "created_at", "updated_at",
+        "last_contacted_at", "email_sent_count", "linkedin_sent_count", "total_replies_count", "latest_sender",
+        "personalized_first_name", "personalized_company_name",
+        "latest_outbound_subject", "latest_outbound_preview", "latest_inbound_subject", "latest_inbound_preview",
+    ],
+}
 
 LINKEDIN_STATUS_VALUES = frozenset({
     "connected",
@@ -89,6 +124,132 @@ def _sender_col(sender: str) -> str:
     return f"linkedin_{slug or 'sender'}"
 
 
+def _humanize_key(key: str) -> str:
+    text = key.replace("personalized_", "").replace("_", " ")
+    return " ".join(part.capitalize() for part in text.split())
+
+
+def _field_def(key: str) -> dict[str, Any]:
+    return FIELD_DEFS.get(key, {"type": "string", "editable": True, "scope": "lead", "presets": ()})
+
+
+def _default_label(key: str) -> str:
+    defn = _field_def(key)
+    if defn.get("type") == "key":
+        return key
+    title = _humanize_key(key)
+    if not defn.get("editable"):
+        return f"🔒 {title}"
+    return f"✏️ {title}"
+
+
+def _default_note(key: str) -> str:
+    defn = _field_def(key)
+    if defn.get("type") == "key":
+        return "Stable row key — do not edit or rename this column"
+    if not defn.get("editable"):
+        return "Read-only — computed from event data. Cannot be edited from the sheet."
+    scope = defn.get("scope")
+    if scope == "company":
+        return "Edits sync to the shared companies table for all leads linked to this company."
+    if scope == "workspace":
+        return "Edits sync back to workspace_leads for this lead in this workspace."
+    if scope in ("personalization_lead", "personalization_company"):
+        return "Edits sync back to personalization fields for this lead."
+    if scope == "tags":
+        return "Edits sync back as workspace tags for this lead."
+    return "Edits sync back to your OutreachMagic database for this lead. Do not rename this header."
+
+
+def _default_format(key: str) -> dict[str, Any]:
+    defn = _field_def(key)
+    if defn.get("type") == "key":
+        return {"backgroundColor": KEY_BG, "textColor": KEY_TEXT, "bold": False}
+    if defn.get("editable"):
+        return {"backgroundColor": EDIT_BG, "textColor": EDIT_TEXT, "bold": False}
+    return {"backgroundColor": READ_BG, "textColor": READ_TEXT, "bold": False}
+
+
+def expand_field_groups(tokens: list[str]) -> list[str]:
+    out: list[str] = []
+    for raw in tokens:
+        token = (raw or "").strip()
+        if not token:
+            continue
+        group = COLUMN_GROUPS.get(token.lower())
+        if group:
+            out.extend(group)
+        else:
+            out.append(token)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for key in ["lead_id", *out]:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return ordered or ["lead_id"]
+
+
+def build_column_metadata(field_keys: list[str]) -> list[dict[str, Any]]:
+    cols: list[dict[str, Any]] = []
+    for key in field_keys:
+        defn = _field_def(key)
+        editable = bool(defn.get("editable"))
+        label = key if defn.get("type") == "key" else (
+            f"🔒 {_humanize_key(key)}" if not editable else f"✏️ {_humanize_key(key)}"
+        )
+        meta: dict[str, Any] = {
+            "key": key,
+            "label": label,
+            "type": defn.get("type", "string"),
+            "editable": editable,
+            "note": _default_note(key),
+            "format": _default_format(key),
+        }
+        if defn.get("scope"):
+            meta["scope"] = defn["scope"]
+        cols.append(meta)
+    return cols
+
+
+def field_keys_for_sender(sender: str) -> str:
+    return _sender_col(sender)
+
+
+def build_sender_column_metadata(sender: str) -> dict[str, Any]:
+    key = _sender_col(sender)
+    return {
+        "key": key,
+        "label": f"🔒 LinkedIn ({sender})",
+        "type": "enum",
+        "editable": False,
+        "note": "Read-only per-sender LinkedIn connection status from workspace data.",
+        "format": _default_format("latest_sender"),
+    }
+
+
+def resolve_field_keys(
+    detail: str,
+    *,
+    custom_fields: Optional[list[str]] = None,
+    sender_profiles: Optional[list[str]] = None,
+) -> list[str]:
+    level = (detail or "standard").strip().lower()
+    if level == "custom":
+        fields = expand_field_groups([f.strip() for f in (custom_fields or []) if f and f.strip()])
+        if len(fields) <= 1 and fields == ["lead_id"]:
+            raise ValueError("custom detail requires --fields")
+        return fields
+    if level not in PRESET_KEYS:
+        raise ValueError(f"unknown detail level: {detail}")
+    keys = list(PRESET_KEYS[level])
+    if level == "full":
+        for sender in sender_profiles or []:
+            keys.append(_sender_col(sender))
+    return keys
+
+
 def resolve_columns(
     detail: str,
     *,
@@ -96,23 +257,38 @@ def resolve_columns(
     sender_profiles: Optional[list[str]] = None,
 ) -> list[tuple[str, str]]:
     """Return (header_label, field_key) pairs for the chosen detail level."""
-    level = (detail or "standard").strip().lower()
-    if level == "custom":
-        fields = [f.strip() for f in (custom_fields or []) if f and f.strip()]
-        if not fields:
-            raise ValueError("custom detail requires --fields")
-        return [(f, f) for f in fields]
-
-    cols = list(BASIC_COLUMNS)
-    if level in ("standard", "full"):
-        cols.extend(STANDARD_EXTRA)
-    if level == "full":
-        cols.extend(FULL_EXTRA)
-        for sender in sender_profiles or []:
-            cols.append((f"LinkedIn ({sender})", _sender_col(sender)))
-    elif level != "basic" and level != "standard":
-        raise ValueError(f"unknown detail level: {detail}")
+    keys = resolve_field_keys(detail, custom_fields=custom_fields, sender_profiles=sender_profiles)
+    meta = build_column_metadata([k for k in keys if not k.startswith("linkedin_") or k in FIELD_DEFS])
+    meta_by_key = {m["key"]: m["label"] for m in meta}
+    cols: list[tuple[str, str]] = []
+    for key in keys:
+        if key.startswith("linkedin_") and key not in FIELD_DEFS:
+            sender = key[len("linkedin_"):].replace("_", " ")
+            cols.append((f"🔒 LinkedIn ({sender})", key))
+        else:
+            cols.append((meta_by_key.get(key, _default_label(key)), key))
     return cols
+
+
+def list_presets(template: str = "lead-review") -> dict[str, Any]:
+    if template != "lead-review":
+        raise ValueError(f"unknown template: {template}")
+    all_fields = [
+        {
+            "key": key,
+            "type": defn.get("type", "string"),
+            "editable": bool(defn.get("editable")),
+            "scope": defn.get("scope"),
+            "in_presets": list(defn.get("presets", ())),
+        }
+        for key, defn in FIELD_DEFS.items()
+    ]
+    return {
+        "template": template,
+        "presets": list(PRESET_KEYS.keys()),
+        "column_groups": COLUMN_GROUPS,
+        "all_fields": all_fields,
+    }
 
 
 def _never_contacted_sql(alias: str = "wl") -> str:
@@ -271,7 +447,6 @@ def build_lead_row(
         "company": company,
         "title": lead.get("title") or "",
         "tags": tags_str,
-        "notes_action": lead.get("notes") or "",
         "notes": lead.get("notes") or "",
         "linkedin": lead.get("linkedin") or lead.get("linkedin_url") or "",
         "location_city": lead.get("location_city") or "",
@@ -294,6 +469,9 @@ def build_lead_row(
         "contact_order": lead.get("contact_order") if lead.get("contact_order") is not None else "",
         "contact_priority": lead.get("contact_order") if lead.get("contact_order") is not None else "",
         "company_domain": lead.get("company_domain") or "",
+        "email_sent_count": lead.get("email_sent_count") if lead.get("email_sent_count") is not None else "",
+        "linkedin_sent_count": lead.get("linkedin_sent_count") if lead.get("linkedin_sent_count") is not None else "",
+        "total_replies_count": lead.get("total_replies_count") if lead.get("total_replies_count") is not None else "",
         **previews,
     }
     for key, val in pers.items():
@@ -342,6 +520,17 @@ def build_export_payload(
         raise ValueError(f"workspace not found: {workspace}")
     senders = list_workspace_senders(conn, ws_row["id"]) if detail == "full" else []
     columns = resolve_columns(detail, custom_fields=custom_fields, sender_profiles=senders)
+    columns_meta: list[dict[str, Any]] = []
+    for label, key in columns:
+        if key.startswith("linkedin_") and key not in FIELD_DEFS:
+            sender = key[len("linkedin_"):].replace("_", " ")
+            meta = build_sender_column_metadata(sender)
+            meta["label"] = label
+            columns_meta.append(meta)
+        else:
+            meta = build_column_metadata([key])[0]
+            meta["label"] = label
+            columns_meta.append(meta)
     leads = load_workspace_leads_for_review(
         conn,
         workspace,
@@ -366,8 +555,30 @@ def build_export_payload(
         "workspace": workspace,
         "headers": headers,
         "rows": rows,
+        "columns": columns_meta,
+        "field_keys": {label: key for label, key in columns},
+        "freeze_header": True,
         "count": len(rows),
     }
+
+
+def _normalize_header_key(header: str) -> str:
+    """Strip emoji/markers, whitespace, lowercase — for sheet header matching."""
+    text = str(header or "").strip()
+    text = re.sub(r"^[^\w]+", "", text)
+    return re.sub(r"\s+", "_", text.lower())
+
+
+def _find_in_row(row: dict[str, Any], *keys: str) -> Any:
+    """Resolve a cell by machine key or human/emoji header label."""
+    by_norm = {_normalize_header_key(k): v for k, v in row.items()}
+    for key in keys:
+        norm = _normalize_header_key(key)
+        if norm in by_norm:
+            val = by_norm[norm]
+            if val is not None and str(val).strip() != "":
+                return val
+    return None
 
 
 def _parse_tags_cell(raw: Any) -> list[str]:
@@ -376,6 +587,82 @@ def _parse_tags_cell(raw: Any) -> list[str]:
         return []
     parts = re.split(r"[,;]", text)
     return [p.strip().lower().replace(" ", "_") for p in parts if p.strip()]
+
+
+def _sheet_value_equal(field: str, current: Any, new: Any) -> bool:
+    if field == "tags":
+        cur = current if isinstance(current, list) else _parse_tags_cell(current)
+        new_tags = new if isinstance(new, list) else _parse_tags_cell(new)
+        return set(cur) == set(new_tags)
+    if field == "contact_order":
+        try:
+            return int(current) == int(new)
+        except (TypeError, ValueError):
+            return str(current or "").strip() == str(new or "").strip()
+    return str(current or "").strip().casefold() == str(new or "").strip().casefold()
+
+
+def _current_row_state(
+    conn: sqlite3.Connection,
+    workspace_id: str,
+    lead_id: int,
+) -> dict[str, Any]:
+    lead = conn.execute(
+        """SELECT l.name, l.email, l.company, l.title, l.notes, l.linkedin_url,
+                  l.company_id, COALESCE(co.name, l.company) AS company_display
+           FROM leads l
+           LEFT JOIN companies co ON l.company_id = co.id
+           WHERE l.id = ?""",
+        (lead_id,),
+    ).fetchone()
+    wl = conn.execute(
+        """SELECT status, current_status_label, current_status_sentiment, contact_priority
+           FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?""",
+        (workspace_id, lead_id),
+    ).fetchone()
+    tags = [
+        str(r["tag"])
+        for r in conn.execute(
+            "SELECT tag FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ?",
+            (workspace_id, lead_id),
+        ).fetchall()
+    ]
+    pers = {
+        str(r["field_name"]): r["field_value"]
+        for r in conn.execute(
+            "SELECT field_name, field_value FROM lead_personalization WHERE lead_id = ?",
+            (lead_id,),
+        ).fetchall()
+    }
+    company_pers: dict[str, Any] = {}
+    if lead and lead["company_id"]:
+        company_pers = {
+            str(r["field_name"]): r["field_value"]
+            for r in conn.execute(
+                "SELECT field_name, field_value FROM company_personalization WHERE company_id = ?",
+                (lead["company_id"],),
+            ).fetchall()
+        }
+    state: dict[str, Any] = {
+        "name": (lead["name"] if lead else "") or "",
+        "email": (lead["email"] if lead else "") or "",
+        "company": (lead["company"] if lead else "") or "",
+        "company_display": (lead["company_display"] if lead else "") or "",
+        "company_id": lead["company_id"] if lead else None,
+        "title": (lead["title"] if lead else "") or "",
+        "linkedin": (lead["linkedin_url"] if lead else "") or "",
+        "notes": (lead["notes"] if lead else "") or "",
+        "workspace_stage": (wl["status"] if wl else "") or "",
+        "lead_status": (wl["current_status_label"] if wl else "") or "",
+        "lead_sentiment": (wl["current_status_sentiment"] if wl else "") or "",
+        "contact_order": wl["contact_priority"] if wl and wl["contact_priority"] is not None else "",
+        "tags": tags,
+    }
+    for key, val in pers.items():
+        state[f"personalized_{key}"] = val or ""
+    for key, val in company_pers.items():
+        state[f"personalized_{key}"] = val or ""
+    return state
 
 
 def _set_linkedin_status(
@@ -441,7 +728,7 @@ def apply_lead_review_sync(
     }
 
     for raw in sheet_rows:
-        lead_id_raw = raw.get("lead_id") or raw.get("Lead ID") or raw.get("lead id")
+        lead_id_raw = _find_in_row(raw, "lead_id")
         try:
             lead_id = int(lead_id_raw)
         except (TypeError, ValueError):
@@ -454,48 +741,84 @@ def apply_lead_review_sync(
             continue
 
         summary["processed"] += 1
+        current = _current_row_state(conn, workspace_id, lead_id)
         row_changes: dict[str, Any] = {"lead_id": lead_id}
 
-        stage_val = raw.get("workspace_stage") or raw.get("stage") or raw.get("Workspace Stage")
+        stage_val = _find_in_row(raw, "workspace_stage", "stage")
         if stage_val is not None and str(stage_val).strip():
-            row_changes["workspace_stage"] = str(stage_val).strip()
+            val = str(stage_val).strip()
+            if not _sheet_value_equal("workspace_stage", current.get("workspace_stage"), val):
+                row_changes["workspace_stage"] = val
+
         for field in ("lead_status", "lead_sentiment"):
-            val = raw.get(field)
+            val = _find_in_row(raw, field)
             if val is not None and str(val).strip():
-                row_changes[field] = str(val).strip()
+                val = str(val).strip()
+                if not _sheet_value_equal(field, current.get(field), val):
+                    row_changes[field] = val
 
-        notes = raw.get("notes_action") or raw.get("notes")
+        for field in ("name", "email", "company", "title", "linkedin"):
+            val = _find_in_row(raw, field)
+            if val is not None and str(val).strip():
+                val = str(val).strip()
+                compare_key = "company_display" if field == "company" and current.get("company_id") else field
+                if not _sheet_value_equal(field, current.get(compare_key), val):
+                    row_changes[field] = val
+                    if field == "company" and current.get("company_id"):
+                        row_changes["company_scope"] = True
+
+        notes = _find_in_row(raw, "notes")
         if notes is not None and str(notes).strip():
-            row_changes["notes"] = str(notes).strip()
+            val = str(notes).strip()
+            if not _sheet_value_equal("notes", current.get("notes"), val):
+                row_changes["notes"] = val
 
-        contact = raw.get("contact_order") or raw.get("contact_priority")
+        contact = _find_in_row(raw, "contact_order", "contact_priority")
         if contact is not None and str(contact).strip():
             try:
-                row_changes["contact_order"] = int(contact)
+                val = int(contact)
+                if not _sheet_value_equal("contact_order", current.get("contact_order"), val):
+                    row_changes["contact_order"] = val
             except ValueError:
                 pass
 
-        tags_cell = raw.get("tags")
+        tags_cell = _find_in_row(raw, "tags")
         if tags_cell is not None:
-            row_changes["tags"] = _parse_tags_cell(tags_cell)
+            parsed = _parse_tags_cell(tags_cell)
+            if not _sheet_value_equal("tags", current.get("tags"), parsed):
+                row_changes["tags"] = parsed
+
+        for key, val in raw.items():
+            norm = _normalize_header_key(key)
+            if not norm.startswith("personalized_"):
+                continue
+            if val is None or not str(val).strip():
+                continue
+            val = str(val).strip()
+            if not _sheet_value_equal(norm, current.get(norm), val):
+                row_changes[norm] = val
 
         linkedin_updates: list[tuple[str, str]] = []
         for key, val in raw.items():
-            if not str(key).startswith("linkedin_") and not str(key).lower().startswith("linkedin ("):
+            norm = _normalize_header_key(key)
+            if not norm.startswith("linkedin_") and not norm.startswith("linkedin("):
                 continue
             status = str(val or "").strip().lower()
             if status not in LINKEDIN_STATUS_VALUES:
                 continue
             sender = key
-            if key.startswith("linkedin_"):
-                sender = key[len("linkedin_"):].replace("_", " ")
-            elif key.lower().startswith("linkedin ("):
+            if norm.startswith("linkedin_"):
+                sender = norm[len("linkedin_"):].replace("_", " ")
+            elif "(" in key and ")" in key:
                 sender = key[key.find("(") + 1 : key.rfind(")")].strip()
             linkedin_updates.append((sender, status))
 
-        if not row_changes.get("workspace_stage") and not row_changes.get("lead_status") and not row_changes.get(
-            "lead_sentiment"
-        ) and "notes" not in row_changes and "tags" not in row_changes and "contact_order" not in row_changes and not linkedin_updates:
+        syncable = {
+            k: v
+            for k, v in row_changes.items()
+            if k != "lead_id"
+        }
+        if not syncable and not linkedin_updates:
             summary["skipped"] += 1
             continue
 
@@ -534,11 +857,71 @@ def apply_lead_review_sync(
             ).fetchone():
                 upsert_workspace_lead_fn(conn, org_id, workspace_id, lead_id)
 
-        if "notes" in row_changes:
+        lead_sets: list[str] = []
+        lead_params: list[Any] = []
+        for field, col in (
+            ("name", "name"),
+            ("email", "email"),
+            ("title", "title"),
+            ("linkedin", "linkedin_url"),
+            ("notes", "notes"),
+        ):
+            if field in row_changes:
+                lead_sets.append(f"{col} = ?")
+                lead_params.append(row_changes[field])
+        if "company" in row_changes and not row_changes.get("company_scope"):
+            lead_sets.append("company = ?")
+            lead_params.append(row_changes["company"])
+        if lead_sets:
+            lead_sets.extend(["updated_at = datetime('now')", "cloud_pending = 1"])
+            lead_params.append(lead_id)
             conn.execute(
-                "UPDATE leads SET notes = ?, updated_at = datetime('now'), cloud_pending = 1 WHERE id = ?",
-                (row_changes["notes"], lead_id),
+                f"UPDATE leads SET {', '.join(lead_sets)} WHERE id = ?",
+                lead_params,
             )
+
+        if row_changes.get("company") and row_changes.get("company_scope") and current.get("company_id"):
+            conn.execute(
+                "UPDATE companies SET name = ?, updated_at = datetime('now'), cloud_pending = 1 WHERE id = ?",
+                (row_changes["company"], current["company_id"]),
+            )
+            conn.execute(
+                "UPDATE leads SET company = ?, updated_at = datetime('now'), cloud_pending = 1 WHERE company_id = ?",
+                (row_changes["company"], current["company_id"]),
+            )
+        elif row_changes.get("company"):
+            conn.execute(
+                "UPDATE leads SET company = ?, updated_at = datetime('now'), cloud_pending = 1 WHERE id = ?",
+                (row_changes["company"], lead_id),
+            )
+
+        for field_key, field_val in row_changes.items():
+            if not field_key.startswith("personalized_"):
+                continue
+            pers_name = field_key[len("personalized_"):]
+            scope = _field_def(field_key).get("scope")
+            if scope == "personalization_company" and current.get("company_id"):
+                conn.execute(
+                    """INSERT INTO company_personalization
+                       (company_id, field_name, field_value, cloud_pending)
+                       VALUES (?, ?, ?, 1)
+                       ON CONFLICT (company_id, field_name) DO UPDATE SET
+                         field_value = excluded.field_value,
+                         processed_at = datetime('now'),
+                         cloud_pending = 1""",
+                    (current["company_id"], pers_name, field_val),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO lead_personalization
+                       (lead_id, field_name, field_value, cloud_pending)
+                       VALUES (?, ?, ?, 1)
+                       ON CONFLICT (lead_id, field_name) DO UPDATE SET
+                         field_value = excluded.field_value,
+                         processed_at = datetime('now'),
+                         cloud_pending = 1""",
+                    (lead_id, pers_name, field_val),
+                )
 
         if "tags" in row_changes:
             desired = [_normalize_tag(t) for t in row_changes["tags"] if t]

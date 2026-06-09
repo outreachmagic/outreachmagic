@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
-version: 1.28.2
+version: 1.28.3
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -727,15 +727,17 @@ python3 scripts/pipeline.py review sync --sheet-id SHEET_ID --commit
 
 ### Lead review sheet (export → edit → sync)
 
-Export a workspace lead list to Google Sheets, edit stage/tags/notes/LinkedIn sender columns, then sync back. Detail levels: `--detail basic|standard|full|custom` (with `--fields` for custom).
+Requires `pipeline.py login`. Sheets are created on `app.outreachmagic.io` with styled headers (editable=green, read-only=blue, key=yellow). Detail levels: `--detail basic|standard|full|custom`. Use `--fields` for custom columns or groups (`lead_info`, `workspace_state`, `personalization`, etc.).
 
 ```bash
+python3 scripts/pipeline.py review presets --template lead-review
+python3 scripts/pipeline.py review export-payload --workspace popcam --tag nace --detail standard
 python3 scripts/pipeline.py review export --template lead-review --workspace popcam \
   --tag nace --detail standard --title "NACE Review"
 python3 scripts/pipeline.py review sync --template lead-review --workspace popcam \
-  --sheet-id SHEET_ID --dry-run
+  --sheet-id SHEET_ID --detail standard --dry-run
 python3 scripts/pipeline.py review sync --template lead-review --workspace popcam \
-  --sheet-id SHEET_ID --commit
+  --sheet-id SHEET_ID --detail standard --commit
 ```
 
 ### Email-finder candidates (safe domain export)

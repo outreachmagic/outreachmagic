@@ -46,7 +46,7 @@ class TestLeadReview(unittest.TestCase):
         self.assertIn("notes", keys)
         self.assertNotIn("linkedin", keys)
         self.assertIn("✏️ Name", labels)
-        self.assertEqual(labels[0], "lead_id")
+        self.assertEqual(labels[0], "🔒 Lead Id")
 
     def test_expand_field_groups(self):
         keys = plr.expand_field_groups(["lead_info", "workspace_stage"])
@@ -57,6 +57,7 @@ class TestLeadReview(unittest.TestCase):
     def test_build_column_metadata_colors(self):
         cols = plr.build_column_metadata(["lead_id", "name", "email_sent_count"])
         self.assertEqual(cols[0]["type"], "key")
+        self.assertEqual(cols[0]["label"], "🔒 Lead Id")
         self.assertEqual(cols[1]["label"], "✏️ Name")
         self.assertTrue(cols[1]["label"].startswith("✏️"))
         self.assertTrue(cols[2]["label"].startswith("🔒"))
@@ -97,6 +98,7 @@ class TestLeadReview(unittest.TestCase):
         self.assertTrue(payload.get("freeze_header"))
         self.assertGreaterEqual(payload["count"], 1)
         self.assertIn("✏️ Name", payload["headers"])
+        self.assertEqual(payload["headers"][0], "🔒 Lead Id")
         conn.close()
 
     def test_company_scope_sync_updates_companies_table(self):
@@ -147,9 +149,12 @@ class TestLeadReview(unittest.TestCase):
         self.assertEqual(out[0]["lead_id"], 2)
 
     def test_find_in_row_emoji_headers(self):
-        row = {"🔑 lead_id": "42", "✏️ Name": "Jane", "🔒 Email Sent": "3"}
+        row = {"🔒 Lead Id": "42", "✏️ Name": "Jane", "🔒 Email Sent Count": "3"}
         self.assertEqual(plr._find_in_row(row, "lead_id"), "42")
-        self.assertEqual(plr._find_in_row(row, "name", "Name"), "Jane")
+        self.assertEqual(plr._find_in_row(row, "name"), "Jane")
+        self.assertEqual(plr._normalize_header_key("🔒 Lead Id"), "lead_id")
+        self.assertEqual(plr._normalize_header_key("✏️ Linkedin Url"), "linkedin_url")
+        self.assertEqual(plr._normalize_header_key("✏️ Linkedin"), "linkedin_url")
 
     def test_apply_sync_skips_unchanged_values(self):
         ws = om.create_workspace("Review Skip", slug="review-skip")
@@ -165,7 +170,7 @@ class TestLeadReview(unittest.TestCase):
         summary = plr.apply_lead_review_sync(
             conn,
             ws_id,
-            [{"🔑 lead_id": lead_id, "✏️ Name": "A", "workspace_stage": "prospecting"}],
+            [{"🔒 Lead Id": lead_id, "✏️ Name": "A", "workspace_stage": "prospecting"}],
             upsert_workspace_lead_fn=om.upsert_workspace_lead,
             org_id=om.DEFAULT_ORG_ID,
             dry_run=True,
@@ -188,7 +193,7 @@ class TestLeadReview(unittest.TestCase):
         summary = plr.apply_lead_review_sync(
             conn,
             ws_id,
-            [{"🔑 lead_id": lead_id, "✏️ Name": "Alice Updated"}],
+            [{"🔒 Lead Id": lead_id, "✏️ Name": "Alice Updated"}],
             upsert_workspace_lead_fn=om.upsert_workspace_lead,
             org_id=om.DEFAULT_ORG_ID,
             dry_run=False,

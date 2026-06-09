@@ -476,6 +476,62 @@
           "contains_json": true,
           "contains_string": "linkedin.com/in/sam-nav-handle"
         }
+      },
+      {
+        "id": "om-review-export-linkedin-fields",
+        "tags": ["review", "integration", "sales-nav", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:review/data-root"
+        },
+        "command": [
+          "review", "export-payload",
+          "--workspace", "df-review",
+          "--tag", "review-test",
+          "--detail", "custom",
+          "--fields", "lead_id,name,linkedin_url,linkedin_sales_nav_id",
+          "--limit", "1"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "linkedin_url",
+          "json_fields": [
+            {"path": "count", "gte": 1}
+          ]
+        }
+      },
+      {
+        "id": "om-review-export-field-key-headers",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:review/data-root"
+        },
+        "command": [
+          "review", "export-payload",
+          "--workspace", "df-review",
+          "--tag", "review-test",
+          "--detail", "custom",
+          "--fields", "lead_id,email,linkedin_url",
+          "--limit", "1"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "linkedin_url",
+          "json_fields": [
+            {"path": "headers", "equals": ["🔒 Lead Id", "✏️ Email", "✏️ Linkedin Url"]}
+          ]
+        }
+      },
+      {
+        "id": "om-workspace-list-json",
+        "tags": ["smoke", "workspace", "script"],
+        "mode": "script",
+        "command": ["workspace", "list", "--json"],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "workspaces"
+        }
       }
     ],
     "lead-enrich": [

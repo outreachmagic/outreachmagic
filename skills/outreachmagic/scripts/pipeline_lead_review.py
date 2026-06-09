@@ -20,8 +20,14 @@ KEY_BG, KEY_TEXT = "#FFF3CD", "#856404"
 EDIT_BG, EDIT_TEXT = "#D4EDDA", "#155724"
 READ_BG, READ_TEXT = "#CCE5FF", "#004085"
 
+# Map legacy field keys / sheet headers → canonical export column keys.
+FIELD_ALIASES: dict[str, str] = {
+    "linkedin": "linkedin_url",
+}
+
 COLUMN_GROUPS: dict[str, list[str]] = {
-    "lead_info": ["name", "title", "email", "linkedin", "company", "industry", "headcount"],
+    "lead_info": ["name", "title", "email", "linkedin_url", "company", "industry", "headcount"],
+    "identities": ["linkedin_url", "linkedin_sales_nav_id"],
     "location": ["location_city", "location_state", "location_country"],
     "workspace_state": ["workspace_stage", "lead_status", "lead_sentiment", "contact_priority"],
     "activity": [
@@ -50,6 +56,10 @@ FIELD_DEFS: dict[str, dict[str, Any]] = {
     "tags": {"type": "tags", "editable": True, "scope": "tags", "presets": ("basic", "standard", "full")},
     "notes": {"type": "string", "editable": True, "scope": "notes", "presets": ("basic", "standard", "full")},
     "linkedin": {"type": "string", "editable": True, "scope": "lead", "presets": ("standard", "full")},
+    "linkedin_url": {"type": "string", "editable": True, "scope": "lead", "presets": ()},
+    "linkedin_sales_nav_id": {
+        "type": "string", "editable": True, "scope": "identity", "presets": (),
+    },
     "location_city": {"type": "string", "editable": True, "scope": "lead", "presets": ("standard", "full")},
     "location_state": {"type": "string", "editable": True, "scope": "lead", "presets": ("standard", "full")},
     "location_country": {"type": "string", "editable": True, "scope": "lead", "presets": ("standard", "full")},
@@ -85,13 +95,13 @@ PRESET_KEYS: dict[str, list[str]] = {
     "basic": ["lead_id", "name", "email", "company", "title", "tags", "notes"],
     "standard": [
         "lead_id", "name", "email", "company", "title", "tags", "notes",
-        "linkedin", "location_city", "location_state", "location_country", "industry", "headcount",
+        "linkedin_url", "location_city", "location_state", "location_country", "industry", "headcount",
         "workspace_stage", "lead_status", "lead_sentiment", "contact_priority",
         "email_verification_status", "original_source", "original_source_detail", "created_at", "updated_at",
     ],
     "full": [
         "lead_id", "name", "email", "company", "title", "tags", "notes",
-        "linkedin", "location_city", "location_state", "location_country", "industry", "headcount",
+        "linkedin_url", "location_city", "location_state", "location_country", "industry", "headcount",
         "workspace_stage", "lead_status", "lead_sentiment", "contact_priority",
         "email_verification_status", "original_source", "original_source_detail", "created_at", "updated_at",
         "last_contacted_at", "email_sent_count", "linkedin_sent_count", "total_replies_count", "latest_sender",
@@ -148,23 +158,33 @@ def _sender_col(sender: str) -> str:
     return f"linkedin_{slug or 'sender'}"
 
 
-def _humanize_key(key: str) -> str:
+def _canonical_field_key(key: str) -> str:
+    return FIELD_ALIASES.get(key, key)
+
+
+def _field_def(key: str) -> dict[str, Any]:
+    key = _canonical_field_key(key)
+    return FIELD_DEFS.get(key, {"type": "string", "editable": True, "scope": "lead", "presets": ()})
+
+
+def _display_field_name(key: str) -> str:
+    """Title-case label for sheets (sync normalizes back to snake_case)."""
     text = key.replace("personalized_", "").replace("_", " ")
     return " ".join(part.capitalize() for part in text.split())
 
 
-def _field_def(key: str) -> dict[str, Any]:
-    return FIELD_DEFS.get(key, {"type": "string", "editable": True, "scope": "lead", "presets": ()})
+def _field_label(key: str, *, editable: Optional[bool] = None) -> str:
+    """Sheet header: title-case display name + edit/read emoji prefix."""
+    defn = _field_def(key)
+    display = _display_field_name(key)
+    is_editable = defn.get("editable") if editable is None else editable
+    if defn.get("type") == "key" or not is_editable:
+        return f"🔒 {display}"
+    return f"✏️ {display}"
 
 
 def _default_label(key: str) -> str:
-    defn = _field_def(key)
-    if defn.get("type") == "key":
-        return key
-    title = _humanize_key(key)
-    if not defn.get("editable"):
-        return f"🔒 {title}"
-    return f"✏️ {title}"
+    return _field_label(key)
 
 
 def _default_note(key: str) -> str:
@@ -220,9 +240,7 @@ def build_column_metadata(field_keys: list[str]) -> list[dict[str, Any]]:
     for key in field_keys:
         defn = _field_def(key)
         editable = bool(defn.get("editable"))
-        label = key if defn.get("type") == "key" else (
-            f"🔒 {_humanize_key(key)}" if not editable else f"✏️ {_humanize_key(key)}"
-        )
+        label = _field_label(key, editable=editable)
         meta: dict[str, Any] = {
             "key": key,
             "label": label,
@@ -245,7 +263,7 @@ def build_sender_column_metadata(sender: str) -> dict[str, Any]:
     key = _sender_col(sender)
     return {
         "key": key,
-        "label": f"🔒 LinkedIn ({sender})",
+        "label": _field_label(key, editable=False),
         "type": "enum",
         "editable": False,
         "note": "Read-only per-sender LinkedIn connection status from workspace data.",
@@ -282,13 +300,16 @@ def resolve_columns(
 ) -> list[tuple[str, str]]:
     """Return (header_label, field_key) pairs for the chosen detail level."""
     keys = resolve_field_keys(detail, custom_fields=custom_fields, sender_profiles=sender_profiles)
-    meta = build_column_metadata([k for k in keys if not k.startswith("linkedin_") or k in FIELD_DEFS])
+    meta = build_column_metadata(
+        [k for k in keys if not k.startswith("linkedin_") or k in FIELD_DEFS],
+    )
     meta_by_key = {m["key"]: m["label"] for m in meta}
     cols: list[tuple[str, str]] = []
     for key in keys:
         if key.startswith("linkedin_") and key not in FIELD_DEFS:
-            sender = key[len("linkedin_"):].replace("_", " ")
-            cols.append((f"🔒 LinkedIn ({sender})", key))
+            cols.append((build_sender_column_metadata(
+                key[len("linkedin_"):].replace("_", " "),
+            )["label"], key))
         else:
             cols.append((meta_by_key.get(key, _default_label(key)), key))
     return cols
@@ -311,6 +332,7 @@ def list_presets(template: str = "lead-review") -> dict[str, Any]:
         "template": template,
         "presets": list(PRESET_KEYS.keys()),
         "column_groups": COLUMN_GROUPS,
+        "field_aliases": FIELD_ALIASES,
         "all_fields": all_fields,
     }
 
@@ -517,6 +539,8 @@ def build_lead_row(
         "tags": tags_str,
         "notes": lead.get("notes") or "",
         "linkedin": lead.get("linkedin") or lead.get("linkedin_url") or "",
+        "linkedin_url": lead.get("linkedin_url") or lead.get("linkedin") or "",
+        "linkedin_sales_nav_id": lead.get("linkedin_sales_nav_id") or "",
         "location_city": lead.get("location_city") or "",
         "location_state": lead.get("location_state") or "",
         "location_country": lead.get("location_country") or "",
@@ -598,7 +622,11 @@ def build_export_payload(
     if not ws_row:
         raise ValueError(f"workspace not found: {workspace}")
     senders = list_workspace_senders(conn, ws_row["id"]) if detail == "full" else []
-    columns = resolve_columns(detail, custom_fields=custom_fields, sender_profiles=senders)
+    columns = resolve_columns(
+        detail,
+        custom_fields=custom_fields,
+        sender_profiles=senders,
+    )
     columns_meta: list[dict[str, Any]] = []
     for label, key in columns:
         if key.startswith("linkedin_") and key not in FIELD_DEFS:
@@ -656,7 +684,8 @@ def _normalize_header_key(header: str) -> str:
     """Strip emoji/markers, whitespace, lowercase — for sheet header matching."""
     text = str(header or "").strip()
     text = re.sub(r"^[^\w]+", "", text)
-    return re.sub(r"\s+", "_", text.lower())
+    norm = re.sub(r"\s+", "_", text.lower())
+    return FIELD_ALIASES.get(norm, norm)
 
 
 def _resolve_personalization_key(norm: str) -> Optional[str]:
@@ -767,6 +796,14 @@ def _current_row_state(
                 (lead["company_id"],),
             ).fetchall()
         }
+    sn_row = conn.execute(
+        """SELECT identity_value_normalized FROM lead_identities
+           WHERE lead_id = ? AND identity_type = 'linkedin_sales_nav_id'
+           ORDER BY CASE source
+             WHEN 'csv' THEN 0 WHEN 'review-sync' THEN 1 ELSE 2 END
+           LIMIT 1""",
+        (lead_id,),
+    ).fetchone()
     state: dict[str, Any] = {
         "name": (lead["name"] if lead else "") or "",
         "email": (lead["email"] if lead else "") or "",
@@ -775,6 +812,8 @@ def _current_row_state(
         "company_id": lead["company_id"] if lead else None,
         "title": (lead["title"] if lead else "") or "",
         "linkedin": (lead["linkedin_url"] if lead else "") or "",
+        "linkedin_url": (lead["linkedin_url"] if lead else "") or "",
+        "linkedin_sales_nav_id": (sn_row["identity_value_normalized"] if sn_row else "") or "",
         "notes": (lead["notes"] if lead else "") or "",
         "workspace_stage": (wl["status"] if wl else "") or "",
         "lead_status": (wl["current_status_label"] if wl else "") or "",
@@ -882,15 +921,28 @@ def apply_lead_review_sync(
                 if not _sheet_value_equal(field, current.get(field), val):
                     row_changes[field] = val
 
-        for field in ("name", "email", "company", "title", "linkedin"):
+        for field in ("name", "email", "company", "title", "linkedin", "linkedin_url"):
             val = _find_in_row(raw, field)
             if val is not None and str(val).strip():
                 val = str(val).strip()
                 compare_key = "company_display" if field == "company" and current.get("company_id") else field
+                if field == "linkedin_url":
+                    compare_key = "linkedin_url"
                 if not _sheet_value_equal(field, current.get(compare_key), val):
-                    row_changes[field] = val
+                    if field == "linkedin_url":
+                        row_changes["linkedin"] = val
+                    else:
+                        row_changes[field] = val
                     if field == "company" and current.get("company_id"):
                         row_changes["company_scope"] = True
+
+        sn_val = _find_in_row(raw, "linkedin_sales_nav_id")
+        if sn_val is not None and str(sn_val).strip():
+            sn_val = str(sn_val).strip()
+            if not _sheet_value_equal(
+                "linkedin_sales_nav_id", current.get("linkedin_sales_nav_id"), sn_val,
+            ):
+                row_changes["linkedin_sales_nav_id"] = sn_val
 
         notes = _find_in_row(raw, "notes")
         if notes is not None and str(notes).strip():
@@ -1009,6 +1061,24 @@ def apply_lead_review_sync(
                 f"UPDATE leads SET {', '.join(lead_sets)} WHERE id = ?",
                 lead_params,
             )
+
+        if row_changes.get("linkedin_sales_nav_id"):
+            from workspace_routing import normalize_linkedin_sales_nav_id, upsert_identity_alias
+
+            sn_norm = normalize_linkedin_sales_nav_id(row_changes["linkedin_sales_nav_id"])
+            if sn_norm:
+                try:
+                    upsert_identity_alias(
+                        conn,
+                        org_id,
+                        lead_id,
+                        "linkedin_sales_nav_id",
+                        sn_norm,
+                        source="review-sync",
+                        promote_linkedin=False,
+                    )
+                except ValueError as exc:
+                    summary["errors"].append({"lead_id": lead_id, "error": str(exc)})
 
         if row_changes.get("company") and row_changes.get("company_scope") and current.get("company_id"):
             conn.execute(

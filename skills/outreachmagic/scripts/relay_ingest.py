@@ -205,11 +205,37 @@ def prefetch_ws_idempotency_keys(
     return found
 
 
+def _coerce_relay_mark_lead_id(
+    conn: sqlite3.Connection,
+    lead_id: Optional[int],
+) -> Optional[int]:
+    """Ensure relay_ingested.lead_id satisfies FK (merged/deleted leads → keep_id or NULL)."""
+    if lead_id is None:
+        return None
+    try:
+        lid = int(lead_id)
+    except (TypeError, ValueError):
+        return None
+    if conn.execute("SELECT 1 FROM leads WHERE id = ?", (lid,)).fetchone():
+        return lid
+    merged = conn.execute(
+        """SELECT keep_id FROM lead_merges
+           WHERE merge_id = ? ORDER BY merged_at DESC LIMIT 1""",
+        (lid,),
+    ).fetchone()
+    if merged:
+        keep_id = int(merged["keep_id"])
+        if conn.execute("SELECT 1 FROM leads WHERE id = ?", (keep_id,)).fetchone():
+            return keep_id
+    return None
+
+
 def mark_relay_ingested(dedupe_key: str, lead_id: Optional[int]) -> None:
     conn = get_conn()
+    safe_lead_id = _coerce_relay_mark_lead_id(conn, lead_id)
     conn.execute(
         "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
-        (dedupe_key, lead_id),
+        (dedupe_key, safe_lead_id),
     )
     conn.commit()
     conn.close()
@@ -235,9 +261,13 @@ def mark_relay_ingested_many(
     if own_conn:
         conn = get_conn()
     try:
+        safe_rows = [
+            (key, _coerce_relay_mark_lead_id(conn, lead_id))
+            for key, lead_id in unique
+        ]
         conn.executemany(
             "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
-            unique,
+            safe_rows,
         )
         if commit:
             conn.commit()

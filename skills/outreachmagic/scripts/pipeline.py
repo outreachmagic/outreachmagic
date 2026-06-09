@@ -2529,9 +2529,7 @@ def _best_linkedin_from_row(row: dict) -> Optional[str]:
         norm = normalize_linkedin(text)
         if norm and not linkedin_url_is_hash(norm):
             return text
-        if fallback is None:
-            fallback = text
-    return fallback
+    return None
 
 
 def normalize_profile_row(row: dict) -> dict[str, str]:
@@ -4424,6 +4422,17 @@ def enrich_lead_rows(
                 row["total_replies_count"] = activity.get("total_replies_count", 0)
                 row["total_contacted_count"] = activity.get("total_contacted_count", 0)
             row["personalization"] = resolve_personalization(int(lead["id"]))
+            sn_row = conn.execute(
+                """SELECT identity_value_normalized FROM lead_identities
+                   WHERE lead_id = ? AND identity_type = 'linkedin_sales_nav_id'
+                   ORDER BY CASE source
+                     WHEN 'csv' THEN 0 WHEN 'review-sync' THEN 1 ELSE 2 END
+                   LIMIT 1""",
+                (int(lead["id"]),),
+            ).fetchone()
+            if sn_row:
+                row["linkedin_sales_nav_id"] = sn_row["identity_value_normalized"]
+            row["linkedin_url"] = row.get("linkedin_url") or row.get("linkedin") or ""
             if not row.get("latest_sender") and lead.get("latest_sender"):
                 row["latest_sender"] = lead["latest_sender"]
             if not row.get("latest_sender_platform") and lead.get("latest_sender_platform"):
@@ -8249,6 +8258,26 @@ def refresh_local_database(
     init_db()
     result["steps"].append("init")
 
+    try:
+        if maybe_sync_routing_from_cloud(quiet=quiet):
+            result["steps"].append("routing_sync")
+        else:
+            result["steps"].append("routing_sync_skipped")
+    except RuntimeError as exc:
+        return {
+            "status": "error",
+            "error": "routing_sync_failed",
+            "message": (
+                f"Could not load campaign maps from cloud before re-import: {exc}\n"
+                "Restore from backup or run login, then pull --full after fixing routing."
+            ),
+            **result,
+        }
+    try:
+        maybe_sync_agent_secrets_from_cloud(quiet=quiet)
+    except Exception:
+        pass
+
     agent_key = get_agent_key()
     if not agent_key:
         return {
@@ -11296,7 +11325,18 @@ def main():
                     indent=2,
                 ))
             elif status == "pending":
-                print(format_quarantine_campaign_summary(get_quarantine_campaign_summary()))
+                rows = list_quarantine(status=status, limit=50)
+                if not rows:
+                    print("No pending quarantined events.")
+                else:
+                    print(f"Pending quarantine ({len(rows)} row(s), showing up to 50):")
+                    for row in rows:
+                        campaign = row.get("campaign_name_raw") or row.get("campaign_id") or "unknown"
+                        print(
+                            f"  {row.get('id')}  {row.get('source_platform') or '-'}  {campaign}"
+                        )
+                    print()
+                    print(format_quarantine_campaign_summary(get_quarantine_campaign_summary()))
             else:
                 print(json.dumps(list_quarantine(status=status, limit=50), indent=2))
     elif args.command == "personalize-set":

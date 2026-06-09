@@ -19,6 +19,14 @@ LE_TAG=""
 EF_TAG=""
 PROFILES=()
 
+_install_ts() {
+  date "+%H:%M:%S"
+}
+
+_log_step() {
+  echo "[$(_install_ts)] → $*"
+}
+
 _install_root() {
   local src="${BASH_SOURCE[0]:-$0}"
   case "$src" in
@@ -91,14 +99,6 @@ _bootstrap_install_if_needed "$@"
 
 # shellcheck source=platforms/common/install-companions.sh
 source "$_here/platforms/common/install-companions.sh"
-
-_install_ts() {
-  date "+%H:%M:%S"
-}
-
-_log_step() {
-  echo "[$(_install_ts)] → $*"
-}
 
 usage() {
   cat <<'EOF'

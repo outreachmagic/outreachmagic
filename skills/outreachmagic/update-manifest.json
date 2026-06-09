@@ -1,5 +1,5 @@
 {
-  "version": "1.29.2",
+  "version": "1.29.3",
   "files": {
     "activity_sync.py": "a1d36da5b1b35863ecdff8e366d89601ef622729978b148ee1e1cba0da3a04d2",
     "agent_secrets_cloud.py": "fe478a2280b7799d7b7ae551149c38a43f1ec6f0ac05b6b9d3142f29293a56e3",
@@ -30,7 +30,7 @@
     "schema_views.py": "0307f3d44c157742dc1092c9914bd9bed2a1684180a73a9afc9dd6f41260ee08",
     "workspace_archive.py": "d150960581f33c365defed0ba8cf038d6c972ea53a33980d1d3062dd4ebf8934",
     "workspace_routing.py": "e438aa4bc72f5cee16057dc0a95bf728b869c79f620efee6bc50278dbe5ca3cb",
-    "VERSION": "dec4e2d90e051e5c87060cbd6adc3587d13341455a6da0e7b8006219d622f144",
-    "SKILL.md": "624a13d2d05d416c05918501155b18a120329421d96b7b45ef2c6f1aa0d5e6cf"
+    "VERSION": "b40709bf8afe2ff11917539e49632e2034af5033a547591f8e01d67e1ec0add8",
+    "SKILL.md": "67cd0e5d40a8a01cb34441dd9f9eb148183e0d7e64fadc5343e113a05ddfd03c"
   }
 }

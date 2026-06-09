@@ -1,0 +1,50 @@
+---
+description: Outreach pipeline tracking and lead management. Use when the user asks about pipeline, leads, outreach, campaigns, sequencer data, deliverability, or says show pipeline.
+globs:
+alwaysApply: false
+---
+
+# Outreach Magic — Pipeline Tracking
+
+All pipeline commands use `python3 scripts/pipeline.py` from the outreachmagic skill directory (`~/.cursor/skills/outreachmagic/`).
+
+## Reads vs refresh
+
+- **Analytics (counts, last 48h, by campaign):** `query` presets — no `pull` unless the user wants latest relay data.
+- **Live activity / timelines:** run `pull` when the user wants latest data (or `pull --if-stale 5m` in a busy session).
+- **Reads show freshness** on stderr; ask before pulling if data is only minutes old.
+
+```bash
+python3 scripts/pipeline.py query engagement --workspace SLUG --since 48h --json
+python3 scripts/pipeline.py pull --if-stale 5m
+```
+
+## Org-wide vs workspace-scoped
+
+**Org-wide:** `add-lead`, `query`, `stats`, `campaigns` (all-time), `history`
+
+**Workspace-scoped (multi-workspace mode):** `log-event`, `update-stage`, `show --workspace`, `workspace summary`
+
+## Commands
+
+| Command | What it does |
+|---------|-------------|
+| `query engagement` | Inbound engagement by campaign (time window) — **preferred for analytics** |
+| `query replies` / `query interested` | Reply counts / interested leads by campaign |
+| `pull` | Fetch latest events from relay |
+| `show` / `lead-table` | Lead list with filters |
+| `stats` / `campaigns` | All-time summaries (not time-window analytics) |
+| `history` | Full timeline for a lead |
+| `import-profiles` | Bulk import CSV/JSON (tiered identity match) |
+| `apply-email-find-results` | Fast batch save when every row has `lead_id` (email-finder) |
+| `workspace summary --json` | Tag counts, LinkedIn connection by sender (`--tags-only` on large workspaces) |
+
+## Rules
+
+- **Reads:** use `pipeline.py query` presets or `query --sql` (SELECT only). Max 2 query attempts.
+- **Writes:** only `pipeline.py` commands — never ad-hoc `INSERT`/`UPDATE`/`DELETE`.
+- Do not use `workspace_lead_events` for volume analytics — use **`events`**.
+- Use `import-profiles` for bulk enrichment, not repeated `add-lead`.
+- Never run `sync` unless the user asked.
+
+Full reference: `references/query-guide.md` in the skill directory.

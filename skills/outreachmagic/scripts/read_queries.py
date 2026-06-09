@@ -151,6 +151,150 @@ def replies_by_campaign(
     return _run_preset(sql, params, preset="replies")
 
 
+def daily_digest(
+    *,
+    since: Optional[str] = None,
+    workspace: Optional[str] = None,
+    campaign_prefix: Optional[str] = None,
+    reply_limit: int = 8,
+) -> dict[str, Any]:
+    """Lightweight counts and highlights for a date window (agent daily briefing)."""
+    prefix = workspace_campaign_prefix(workspace, campaign_prefix)
+    since_sql, since_params = _since_clause(since)
+    reply_where = reply_event_sql_condition()
+    params: list[Any] = [prefix, *since_params]
+
+    conn = get_conn()
+    try:
+        sends = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM events e
+            LEFT JOIN campaigns c ON e.campaign_id = c.id
+            WHERE c.name LIKE ?
+              AND lower(e.event_type) IN ('email_sent', 'email_sent_auto')
+              {since_sql}
+            """,
+            params,
+        ).fetchone()[0]
+
+        replies = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM events e
+            LEFT JOIN campaigns c ON e.campaign_id = c.id
+            WHERE c.name LIKE ?
+              AND ({reply_where})
+              {since_sql}
+            """,
+            params,
+        ).fetchone()[0]
+
+        interested = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM events e
+            LEFT JOIN campaigns c ON e.campaign_id = c.id
+            WHERE c.name LIKE ?
+              AND (
+                lower(json_extract(e.metadata_json, '$.lead_status_sentiment')) IN ('positive', 'interested')
+                OR lower(json_extract(e.metadata_json, '$.lead_status_raw')) IN ('interested', 'positive')
+                OR lower(e.event_type) LIKE '%interested%'
+              )
+              {since_sql}
+            """,
+            params,
+        ).fetchone()[0]
+
+        bounces = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM events e
+            LEFT JOIN campaigns c ON e.campaign_id = c.id
+            WHERE c.name LIKE ?
+              AND (
+                lower(e.event_type) IN ('email_bounce', 'bounced_email', 'email_bounced')
+                OR lower(json_extract(e.metadata_json, '$.lead_status_sentiment')) = 'invalid'
+              )
+              {since_sql}
+            """,
+            params,
+        ).fetchone()[0]
+
+        top_row = conn.execute(
+            f"""
+            SELECT c.name AS campaign, COUNT(*) AS sends
+            FROM events e
+            LEFT JOIN campaigns c ON e.campaign_id = c.id
+            WHERE c.name LIKE ?
+              AND lower(e.event_type) IN ('email_sent', 'email_sent_auto')
+              {since_sql}
+            GROUP BY c.name
+            ORDER BY sends DESC
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+
+        reply_rows = conn.execute(
+            f"""
+            SELECT l.name, l.company, c.name AS campaign
+            FROM events e
+            JOIN leads l ON l.id = e.lead_id
+            LEFT JOIN campaigns c ON e.campaign_id = c.id
+            WHERE c.name LIKE ?
+              AND ({reply_where})
+              {since_sql}
+            ORDER BY e.created_at DESC, e.id DESC
+            LIMIT ?
+            """,
+            [*params, max(1, int(reply_limit))],
+        ).fetchall()
+    finally:
+        conn.close()
+
+    since_label = normalize_since(since) or since or "all time"
+    if isinstance(since_label, str) and since_label.startswith("datetime("):
+        since_label = since or "recent"
+
+    highlights = []
+    for row in reply_rows:
+        name = (row["name"] or "").strip() or "Unknown"
+        company = (row["company"] or "").strip()
+        highlights.append(
+            f"{name} ({company})" if company else name
+        )
+
+    return {
+        "since": since,
+        "since_label": since_label,
+        "workspace": workspace,
+        "campaign_prefix": prefix,
+        "emails_sent": int(sends or 0),
+        "replies": int(replies or 0),
+        "interested": int(interested or 0),
+        "bounces": int(bounces or 0),
+        "top_campaign": dict(top_row) if top_row else None,
+        "new_replies": highlights,
+    }
+
+
+def format_daily_digest(data: dict[str, Any]) -> str:
+    since_label = data.get("since_label") or data.get("since") or "all time"
+    lines = [
+        f"Date: {since_label}",
+        (
+            f"Emails sent: {data.get('emails_sent', 0)}  |  "
+            f"Replies: {data.get('replies', 0)}  |  "
+            f"Interested: {data.get('interested', 0)}  |  "
+            f"Bounces: {data.get('bounces', 0)}"
+        ),
+    ]
+    top = data.get("top_campaign")
+    if top and top.get("campaign"):
+        lines.append(f"Top campaign: {top['campaign']} ({top.get('sends', 0)} sends)")
+    replies = data.get("new_replies") or []
+    if replies:
+        lines.append(f"New replies: {', '.join(replies)}")
+    return "\n".join(lines)
+
+
 def interested_by_campaign(
     *,
     workspace: Optional[str] = None,

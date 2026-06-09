@@ -49,7 +49,7 @@ def register_query_parser(sub) -> None:
     q.add_argument("--sql", help="Single SELECT/WITH statement (advanced)")
     q.add_argument(
         "--params",
-        help='JSON array of SQL bind parameters, e.g. \'["popcam |%%"]\'',
+        help='JSON array of SQL bind parameters (example: ["acme"])',
     )
     q.add_argument("--file", help="Read SQL from a file (workspace input/ or absolute path)")
     q.add_argument("--limit", type=int, default=read_queries.DEFAULT_ROW_LIMIT)

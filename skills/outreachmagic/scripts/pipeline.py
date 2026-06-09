@@ -4827,6 +4827,34 @@ def list_workspaces(org_id: str = DEFAULT_ORG_ID) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_routing_config_summary(org_id: str = DEFAULT_ORG_ID) -> dict:
+    """Workspace + campaign-map counts for refresh / status checks."""
+    routing = get_workspace_routing(org_id)
+    workspaces = list_workspaces(org_id)
+    maps = list_campaign_maps(org_id)
+    return {
+        "mode": routing.get("mode"),
+        "workspace_count": len(workspaces),
+        "campaign_map_count": len(maps),
+        "workspaces": [
+            {"slug": w.get("slug"), "name": w.get("name")}
+            for w in workspaces
+        ],
+        "pending_quarantine": int(routing.get("pending_quarantine") or 0),
+    }
+
+
+def format_routing_refresh_summary(summary: dict) -> str:
+    mode = summary.get("mode") or "unknown"
+    ws_n = int(summary.get("workspace_count") or 0)
+    map_n = int(summary.get("campaign_map_count") or 0)
+    q = int(summary.get("pending_quarantine") or 0)
+    line = f"Routing ready: {ws_n} workspace(s), {map_n} campaign map(s), mode={mode}"
+    if q:
+        line += f", {q} pending quarantine item(s)"
+    return line
+
+
 def get_workspace_routing(org_id: str = DEFAULT_ORG_ID) -> dict:
     conn = get_conn()
     config = get_org_routing_config(conn, org_id)
@@ -6622,6 +6650,27 @@ def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int =
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _agent_sync_payload_from_entity_key(
+    entity_key: str,
+    payload: Optional[dict] = None,
+) -> dict:
+    """Build minimal lead_sync payload from an agent entity_key (email, LinkedIn, etc.)."""
+    merged = dict(payload or {})
+    key = (entity_key or "").strip()
+    if not key:
+        return merged
+    if "@" in key and not merged.get("email"):
+        merged["email"] = key.lower()
+    elif not merged.get("linkedin") and (
+        "linkedin" in key.lower()
+        or key.startswith("http")
+        or key.startswith("ACwAA")
+        or key.lower().startswith("urn:li:")
+    ):
+        merged["linkedin"] = key
+    return merged
+
+
 def find_lead_by_identifier(conn: sqlite3.Connection, entity_key: str) -> Optional[int]:
     """Resolve entity_key (email, linkedin URL, or type:value identity) to a lead ID."""
     if not entity_key:
@@ -7092,7 +7141,25 @@ def ingest_agent_entry(
                     _record_mark(dedupe_key, None)
                     return None
                 lead_id = find_lead_by_identifier(conn, entity_key)
-                if own_conn:
+                if not lead_id and entity_key:
+                    bootstrap_payload = _agent_sync_payload_from_entity_key(
+                        entity_key, payload,
+                    )
+                    if own_conn:
+                        conn.close()
+                        conn = None
+                    result = resolve_lead_from_agent_sync(
+                        entity_key,
+                        bootstrap_payload,
+                        conn=None if own_conn else pull_conn,
+                    )
+                    if result.get("status") == "error":
+                        _record_mark(dedupe_key, None)
+                        return None
+                    lead_id = result.get("id")
+                    if not own_conn:
+                        conn = pull_conn
+                if own_conn and conn is not None:
                     conn.close()
                     conn = None
                 if lead_id:
@@ -7752,6 +7819,23 @@ def _begin_pull_ingest_session(
     return session, routing_config, ws_slug_map, routing_cache
 
 
+def _relay_pull_phases(full: bool, do_events: bool, kinds: frozenset) -> tuple[str, ...]:
+    """Order relay pull phases.
+
+    Full rebuild pulls snapshots before events so agent event_log replay can attach
+    to leads that only exist after lead_core / lead_workspace snapshots ingest.
+    """
+    has_snapshots = bool(kinds & {"core", "workspace", "company"})
+    if full and do_events and has_snapshots:
+        return ("snapshots", "events")
+    phases: list[str] = []
+    if do_events:
+        phases.append("events")
+    if has_snapshots:
+        phases.append("snapshots")
+    return tuple(phases)
+
+
 def sync_from_relay_org(
     agent_key: str,
     after_id: Optional[int] = None,
@@ -7769,7 +7853,9 @@ def sync_from_relay_org(
     if skip_snapshots:
         kinds = frozenset(k for k in kinds if k == "events")
     do_events = "events" in kinds
-    if not skip_routing_sync and do_events:
+    do_snapshots = bool(kinds & {"core", "workspace", "company"})
+    needs_routing_sync = do_events or (full and do_snapshots)
+    if not skip_routing_sync and needs_routing_sync:
         try:
             maybe_sync_routing_from_cloud(quiet=quiet)
         except RuntimeError as exc:
@@ -7779,7 +7865,7 @@ def sync_from_relay_org(
         except Exception:
             if not quiet:
                 print("API key sync skipped (non-fatal).", flush=True)
-    elif not quiet and do_events:
+    elif not quiet and needs_routing_sync:
         print("Skipped routing config sync (--skip-routing-sync).", flush=True)
     if not quiet:
         if do_events:
@@ -7834,276 +7920,286 @@ def sync_from_relay_org(
     pull_ws_slug_map: dict[str, str] = {}
     pull_routing_cache: Optional[CampaignRoutingCache] = None
 
+    pull_phases = _relay_pull_phases(full, do_events, kinds)
+    if not quiet and pull_phases and pull_phases[0] == "snapshots":
+        print(
+            f"[{_progress_clock()}] Full pull: lead snapshots before event replay...",
+            flush=True,
+        )
+
     try:
-        while do_events:
-            event_pages += 1
-            request_limit = event_pull_limit
-            result = pull_events_org(
-                agent_key,
-                after_id=page_after_id or None,
-                include_pending=event_pages == 1,
-                include_queue_resolutions=event_pages == 1,
-                limit=request_limit,
-                timeout=pull_timeout,
-            )
-            if result.get("error"):
-                raise RuntimeError(result.get("message", "pull failed"))
-
-            if event_pages == 1:
-                resolution_map = qres.parse_queue_resolutions(result.get("queue_resolutions"))
-
-            events = result.get("events") or []
-            if not events:
-                break
-
-            if event_pages == 1 and result.get("pending_event_count") is not None:
-                pending_events = int(result["pending_event_count"])
-                est_event_pages = _estimate_relay_pages(pending_events, event_pull_limit)
-                if not quiet and pending_events > 0:
-                    print(
-                        _format_pull_pending_banner(
-                            _RELAY_STREAM_EVENT,
-                            pending_events,
-                            est_event_pages,
-                            event_pull_limit,
-                        ),
-                        flush=True,
+        for _pull_phase in pull_phases:
+            if _pull_phase == "events":
+                while True:
+                    event_pages += 1
+                    request_limit = event_pull_limit
+                    result = pull_events_org(
+                        agent_key,
+                        after_id=page_after_id or None,
+                        include_pending=event_pages == 1,
+                        include_queue_resolutions=event_pages == 1,
+                        limit=request_limit,
+                        timeout=pull_timeout,
                     )
-            elif (
-                event_pages == 1
-                and pending_events is None
-                and not quiet
-                and len(events) >= event_pull_limit
-            ):
-                print(
-                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(_RELAY_STREAM_EVENT)}: "
-                    f"first page has {len(events):,} records "
-                    f"(@ {event_pull_limit}/page — more pages follow)...",
-                    flush=True,
-                )
+                    if result.get("error"):
+                        raise RuntimeError(result.get("message", "pull failed"))
 
-            relay_events_seen += len(events)
-            if not quiet:
-                print(
-                    _format_pull_progress(
-                        _RELAY_STREAM_EVENT,
-                        page_n=event_pages,
-                        total_pages=est_event_pages,
-                        page_len=len(events),
-                        seen=relay_events_seen,
-                        total=pending_events,
-                        more_follow=len(events) >= request_limit and not est_event_pages,
-                    ),
-                    flush=True,
-                )
+                    if event_pages == 1:
+                        resolution_map = qres.parse_queue_resolutions(result.get("queue_resolutions"))
 
-            pull_session, pull_routing_config, pull_ws_slug_map, pull_routing_cache = (
-                _begin_pull_ingest_session(
-                    pull_session,
-                    pull_routing_config,
-                    pull_ws_slug_map,
-                    pull_routing_cache,
-                )
-            )
+                    events = result.get("events") or []
+                    if not events:
+                        break
 
-            ingest_started = time.monotonic()
-            batch = _ingest_relay_page(
-                events,
-                debug_sentiment=debug_sentiment,
-                quiet=quiet,
-                resolution_map=resolution_map,
-                slug_cache=slug_cache,
-                pull_conn=pull_session,
-                routing_config=pull_routing_config,
-                ws_slug_map=pull_ws_slug_map,
-                routing_cache=pull_routing_cache,
-            )
-            ingest_elapsed = time.monotonic() - ingest_started
-            if not quiet:
-                print(
-                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(_RELAY_STREAM_EVENT)}: "
-                    f"ingest {ingest_elapsed:.1f}s "
-                    f"(+{batch['imported']} new, {batch['skipped_duplicates']} dupes, "
-                    f"{batch['skipped_filtered']} filtered, {batch['skipped_errors']} errors)",
-                    flush=True,
-                )
-            imported += batch["imported"]
-            skipped += batch["skipped"]
-            skipped_duplicates += batch["skipped_duplicates"]
-            skipped_filtered += batch["skipped_filtered"]
-            skipped_errors += batch["skipped_errors"]
-            skipped_resolved += batch.get("skipped_resolved", 0)
-            assigned_resolved += batch.get("assigned_resolved", 0)
-            newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
-
-            next_after_id = int(result.get("max_id") or page_after_id)
-            if len(events) >= request_limit and next_after_id <= page_after_id:
-                cursor_stalled = True
-                break
-            page_after_id = next_after_id
-            if page_after_id:
-                set_last_max_id(page_after_id)
-            has_more = result.get("has_more_events")
-            effective_limit = int(result.get("pull_limit") or request_limit)
-            if (
-                has_more is False
-                and len(events) >= effective_limit
-                and effective_limit < request_limit
-            ):
-                # Old clients may request 5k; worker caps events at RELAY_PULL_EVENT_MAX.
-                has_more = True
-            if len(events) < effective_limit or has_more is False:
-                break
-
-        pending_snapshots: Optional[int] = None
-        est_snap_pages: Optional[int] = None
-        for snap_kind in ("core", "workspace", "company"):
-            if snap_kind not in kinds:
-                continue
-            kind_pages = 0
-            kind_seen = 0
-            stream = _snapshot_kind_stream(snap_kind)
-            pending_snapshots = None
-            est_snap_pages = None
-            kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
-            if not quiet:
-                pending_snapshots = _snapshot_pending_count(
-                    agent_key,
-                    snap_kind,
-                    int(snapshot_cursors[snap_kind] or 0),
-                    timeout=snapshot_pull_timeout,
-                )
-                if pending_snapshots is not None and pending_snapshots > 0:
-                    if pending_snapshots >= RELAY_BULK_THRESHOLD:
-                        snap_pull_limit = RELAY_PULL_SNAPSHOT_MAX
-                        kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
-                    est_snap_pages = _estimate_relay_pages(pending_snapshots, kind_limit)
-                    print(
-                        _format_pull_pending_banner(
-                            stream,
-                            pending_snapshots,
-                            est_snap_pages,
-                            kind_limit,
-                        ),
-                        flush=True,
-                    )
-            while True:
-                snap_pages += 1
-                kind_pages += 1
-                if not quiet:
-                    print(
-                        f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
-                        f"fetching p{kind_pages} (@ {kind_limit}/p)...",
-                        flush=True,
-                    )
-                snap_result = pull_events_org(
-                    agent_key,
-                    snapshot_after_id=snapshot_cursors[snap_kind] or None,
-                    snapshot_kind=snap_kind,
-                    snapshots_only=True,
-                    include_pending=False,
-                    limit=kind_limit,
-                    timeout=snapshot_pull_timeout,
-                )
-                if snap_result.get("error"):
-                    raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
-                snap_events = snap_result.get("events") or []
-                if not snap_events:
-                    snap_pages -= 1
-                    kind_pages -= 1
-                    break
-
-                kind_seen += len(snap_events)
-                snap_total += len(snap_events)
-                if not quiet:
-                    if pending_snapshots and pending_snapshots > 0:
+                    if event_pages == 1 and result.get("pending_event_count") is not None:
+                        pending_events = int(result["pending_event_count"])
+                        est_event_pages = _estimate_relay_pages(pending_events, event_pull_limit)
+                        if not quiet and pending_events > 0:
+                            print(
+                                _format_pull_pending_banner(
+                                    _RELAY_STREAM_EVENT,
+                                    pending_events,
+                                    est_event_pages,
+                                    event_pull_limit,
+                                ),
+                                flush=True,
+                            )
+                    elif (
+                        event_pages == 1
+                        and pending_events is None
+                        and not quiet
+                        and len(events) >= event_pull_limit
+                    ):
                         print(
-                            _format_pull_progress(
-                                stream,
-                                page_n=kind_pages,
-                                total_pages=est_snap_pages,
-                                page_len=len(snap_events),
-                                seen=kind_seen,
-                                total=pending_snapshots,
-                                more_follow=len(snap_events) >= kind_limit and not est_snap_pages,
-                            ),
+                            f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+                            f"first page has {len(events):,} records "
+                            f"(@ {event_pull_limit}/page — more pages follow)...",
                             flush=True,
                         )
-                    elif kind_seen > 0:
-                        print(
-                            _format_pull_progress(
-                                stream,
-                                page_n=kind_pages,
-                                page_len=len(snap_events),
-                                seen=kind_seen,
-                                more_follow=len(snap_events) >= kind_limit,
-                                total_only=True,
-                            ),
-                            flush=True,
-                        )
-                pull_session, pull_routing_config, pull_ws_slug_map, pull_routing_cache = (
-                    _begin_pull_ingest_session(
-                        pull_session,
-                        pull_routing_config,
-                        pull_ws_slug_map,
-                        pull_routing_cache,
-                    )
-                )
-                ingest_started = time.monotonic()
-                batch = _ingest_relay_page(
-                    snap_events,
-                    debug_sentiment=debug_sentiment,
-                    quiet=quiet,
-                    pull_conn=pull_session,
-                    routing_config=pull_routing_config,
-                    ws_slug_map=pull_ws_slug_map,
-                    routing_cache=pull_routing_cache,
-                )
-                ingest_elapsed = time.monotonic() - ingest_started
-                imported += batch["imported"]
-                skipped += batch["skipped"]
-                skipped_duplicates += batch["skipped_duplicates"]
-                skipped_filtered += batch["skipped_filtered"]
-                skipped_errors += batch["skipped_errors"]
-                newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
-                prev_snap_cursor = snapshot_cursors[snap_kind]
-                next_snap_cursor = int(snap_result.get("max_snapshot_id") or 0)
-                if (
-                    len(snap_events) >= kind_limit
-                    and next_snap_cursor <= prev_snap_cursor
-                ):
-                    cursor_stalled = True
+
+                    relay_events_seen += len(events)
                     if not quiet:
                         print(
-                            f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
-                            f"cursor stalled at snapshot_id={prev_snap_cursor} — stopping",
+                            _format_pull_progress(
+                                _RELAY_STREAM_EVENT,
+                                page_n=event_pages,
+                                total_pages=est_event_pages,
+                                page_len=len(events),
+                                seen=relay_events_seen,
+                                total=pending_events,
+                                more_follow=len(events) >= request_limit and not est_event_pages,
+                            ),
                             flush=True,
                         )
-                    break
-                snapshot_cursors[snap_kind] = next_snap_cursor
-                if snapshot_cursors[snap_kind]:
-                    set_snapshot_cursor(snapshot_cursors[snap_kind], snap_kind)
-                if (
-                    not quiet
-                    and batch["imported"] == 0
-                    and batch["skipped_duplicates"] == len(snap_events)
-                    and len(snap_events) > 0
-                ):
-                    print(
-                        f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
-                        f"page all duplicates locally — cursor still advanced to {next_snap_cursor}",
-                        flush=True,
+
+                    pull_session, pull_routing_config, pull_ws_slug_map, pull_routing_cache = (
+                        _begin_pull_ingest_session(
+                            pull_session,
+                            pull_routing_config,
+                            pull_ws_slug_map,
+                            pull_routing_cache,
+                        )
                     )
-                if not quiet:
-                    print(
-                        f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
-                        f"ingest {ingest_elapsed:.1f}s "
-                        f"(+{batch['imported']} new, {batch['skipped_duplicates']} dupes, "
-                        f"{batch['skipped_filtered']} filtered, {batch['skipped_errors']} errors)",
-                        flush=True,
+
+                    ingest_started = time.monotonic()
+                    batch = _ingest_relay_page(
+                        events,
+                        debug_sentiment=debug_sentiment,
+                        quiet=quiet,
+                        resolution_map=resolution_map,
+                        slug_cache=slug_cache,
+                        pull_conn=pull_session,
+                        routing_config=pull_routing_config,
+                        ws_slug_map=pull_ws_slug_map,
+                        routing_cache=pull_routing_cache,
                     )
-                if not snap_result.get("has_more_snapshots"):
-                    break
+                    ingest_elapsed = time.monotonic() - ingest_started
+                    if not quiet:
+                        print(
+                            f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+                            f"ingest {ingest_elapsed:.1f}s "
+                            f"(+{batch['imported']} new, {batch['skipped_duplicates']} dupes, "
+                            f"{batch['skipped_filtered']} filtered, {batch['skipped_errors']} errors)",
+                            flush=True,
+                        )
+                    imported += batch["imported"]
+                    skipped += batch["skipped"]
+                    skipped_duplicates += batch["skipped_duplicates"]
+                    skipped_filtered += batch["skipped_filtered"]
+                    skipped_errors += batch["skipped_errors"]
+                    skipped_resolved += batch.get("skipped_resolved", 0)
+                    assigned_resolved += batch.get("assigned_resolved", 0)
+                    newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
+
+                    next_after_id = int(result.get("max_id") or page_after_id)
+                    if len(events) >= request_limit and next_after_id <= page_after_id:
+                        cursor_stalled = True
+                        break
+                    page_after_id = next_after_id
+                    if page_after_id:
+                        set_last_max_id(page_after_id)
+                    has_more = result.get("has_more_events")
+                    effective_limit = int(result.get("pull_limit") or request_limit)
+                    if (
+                        has_more is False
+                        and len(events) >= effective_limit
+                        and effective_limit < request_limit
+                    ):
+                        # Old clients may request 5k; worker caps events at RELAY_PULL_EVENT_MAX.
+                        has_more = True
+                    if len(events) < effective_limit or has_more is False:
+                        break
+
+            elif _pull_phase == "snapshots":
+                pending_snapshots: Optional[int] = None
+                est_snap_pages: Optional[int] = None
+                for snap_kind in ("core", "workspace", "company"):
+                    if snap_kind not in kinds:
+                        continue
+                    kind_pages = 0
+                    kind_seen = 0
+                    stream = _snapshot_kind_stream(snap_kind)
+                    pending_snapshots = None
+                    est_snap_pages = None
+                    kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
+                    if not quiet:
+                        pending_snapshots = _snapshot_pending_count(
+                            agent_key,
+                            snap_kind,
+                            int(snapshot_cursors[snap_kind] or 0),
+                            timeout=snapshot_pull_timeout,
+                        )
+                        if pending_snapshots is not None and pending_snapshots > 0:
+                            if pending_snapshots >= RELAY_BULK_THRESHOLD:
+                                snap_pull_limit = RELAY_PULL_SNAPSHOT_MAX
+                                kind_limit = _snapshot_pull_limit_for_kind(snap_kind, snap_pull_limit)
+                            est_snap_pages = _estimate_relay_pages(pending_snapshots, kind_limit)
+                            print(
+                                _format_pull_pending_banner(
+                                    stream,
+                                    pending_snapshots,
+                                    est_snap_pages,
+                                    kind_limit,
+                                ),
+                                flush=True,
+                            )
+                    while True:
+                        snap_pages += 1
+                        kind_pages += 1
+                        if not quiet:
+                            print(
+                                f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                                f"fetching p{kind_pages} (@ {kind_limit}/p)...",
+                                flush=True,
+                            )
+                        snap_result = pull_events_org(
+                            agent_key,
+                            snapshot_after_id=snapshot_cursors[snap_kind] or None,
+                            snapshot_kind=snap_kind,
+                            snapshots_only=True,
+                            include_pending=False,
+                            limit=kind_limit,
+                            timeout=snapshot_pull_timeout,
+                        )
+                        if snap_result.get("error"):
+                            raise RuntimeError(snap_result.get("message", "snapshot pull failed"))
+                        snap_events = snap_result.get("events") or []
+                        if not snap_events:
+                            snap_pages -= 1
+                            kind_pages -= 1
+                            break
+
+                        kind_seen += len(snap_events)
+                        snap_total += len(snap_events)
+                        if not quiet:
+                            if pending_snapshots and pending_snapshots > 0:
+                                print(
+                                    _format_pull_progress(
+                                        stream,
+                                        page_n=kind_pages,
+                                        total_pages=est_snap_pages,
+                                        page_len=len(snap_events),
+                                        seen=kind_seen,
+                                        total=pending_snapshots,
+                                        more_follow=len(snap_events) >= kind_limit and not est_snap_pages,
+                                    ),
+                                    flush=True,
+                                )
+                            elif kind_seen > 0:
+                                print(
+                                    _format_pull_progress(
+                                        stream,
+                                        page_n=kind_pages,
+                                        page_len=len(snap_events),
+                                        seen=kind_seen,
+                                        more_follow=len(snap_events) >= kind_limit,
+                                        total_only=True,
+                                    ),
+                                    flush=True,
+                                )
+                        pull_session, pull_routing_config, pull_ws_slug_map, pull_routing_cache = (
+                            _begin_pull_ingest_session(
+                                pull_session,
+                                pull_routing_config,
+                                pull_ws_slug_map,
+                                pull_routing_cache,
+                            )
+                        )
+                        ingest_started = time.monotonic()
+                        batch = _ingest_relay_page(
+                            snap_events,
+                            debug_sentiment=debug_sentiment,
+                            quiet=quiet,
+                            pull_conn=pull_session,
+                            routing_config=pull_routing_config,
+                            ws_slug_map=pull_ws_slug_map,
+                            routing_cache=pull_routing_cache,
+                        )
+                        ingest_elapsed = time.monotonic() - ingest_started
+                        imported += batch["imported"]
+                        skipped += batch["skipped"]
+                        skipped_duplicates += batch["skipped_duplicates"]
+                        skipped_filtered += batch["skipped_filtered"]
+                        skipped_errors += batch["skipped_errors"]
+                        newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
+                        prev_snap_cursor = snapshot_cursors[snap_kind]
+                        next_snap_cursor = int(snap_result.get("max_snapshot_id") or 0)
+                        if (
+                            len(snap_events) >= kind_limit
+                            and next_snap_cursor <= prev_snap_cursor
+                        ):
+                            cursor_stalled = True
+                            if not quiet:
+                                print(
+                                    f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                                    f"cursor stalled at snapshot_id={prev_snap_cursor} — stopping",
+                                    flush=True,
+                                )
+                            break
+                        snapshot_cursors[snap_kind] = next_snap_cursor
+                        if snapshot_cursors[snap_kind]:
+                            set_snapshot_cursor(snapshot_cursors[snap_kind], snap_kind)
+                        if (
+                            not quiet
+                            and batch["imported"] == 0
+                            and batch["skipped_duplicates"] == len(snap_events)
+                            and len(snap_events) > 0
+                        ):
+                            print(
+                                f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                                f"page all duplicates locally — cursor still advanced to {next_snap_cursor}",
+                                flush=True,
+                            )
+                        if not quiet:
+                            print(
+                                f"[{_progress_clock()}] {_ARROW_PULL} {_stream_pad(stream)}: "
+                                f"ingest {ingest_elapsed:.1f}s "
+                                f"(+{batch['imported']} new, {batch['skipped_duplicates']} dupes, "
+                                f"{batch['skipped_filtered']} filtered, {batch['skipped_errors']} errors)",
+                                flush=True,
+                            )
+                        if not snap_result.get("has_more_snapshots"):
+                            break
     finally:
         if pull_session is not None:
             end_bulk_pull_session(pull_session)
@@ -8124,6 +8220,7 @@ def sync_from_relay_org(
     if stats is not None:
         stats.update({
             "mode": "full" if full else "incremental",
+            "pull_phases": list(pull_phases),
             "config_last_max_id_before": after_id,
             "pull_after_id_start": initial_after_id,
             "pull_after_id_end": page_after_id,
@@ -8166,8 +8263,10 @@ REFRESH_WARNING = """
 
 This will:
   1. Push pending local changes to the relay (sync) unless you pass --skip-sync
-  2. Back up your local SQLite file
-  3. Delete the local database and re-import everything from api.outreachmagic.io
+  2. Sync workspace + campaign routing from the cloud and print a routing summary
+  3. Back up your local SQLite file
+  4. Delete the local database and re-import from api.outreachmagic.io
+     (lead snapshots first, then events — so event history can replay)
 
 You will lose any local-only data that was NOT synced to the relay.
 pull --full alone does NOT refresh — it still skips rows already in relay_ingested.
@@ -8237,6 +8336,26 @@ def refresh_local_database(
             }
     else:
         result["steps"].append("sync_skipped")
+
+    try:
+        if maybe_sync_routing_from_cloud(quiet=quiet):
+            result["steps"].append("pre_wipe_routing_sync")
+        else:
+            result["steps"].append("pre_wipe_routing_sync_skipped")
+        routing_summary = get_routing_config_summary(org_id)
+        result["routing_summary"] = routing_summary
+        if not quiet:
+            print(format_routing_refresh_summary(routing_summary), flush=True)
+    except RuntimeError as exc:
+        return {
+            "status": "error",
+            "error": "pre_wipe_routing_sync_failed",
+            "message": (
+                f"Could not verify campaign maps from cloud before refresh: {exc}\n"
+                "Fix login/routing, or abort refresh."
+            ),
+            **result,
+        }
 
     db_path = get_db_path()
     backup_path = Path(backup).expanduser() if backup else db_path.with_suffix(
@@ -9245,6 +9364,11 @@ def main():
 
     show_p = sub.add_parser("show", help="Show pipeline")
     show_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
+    show_p.add_argument(
+        "--force-pull",
+        action="store_true",
+        help="With --pull, always contact relay (ignore 5m freshness cache)",
+    )
     show_p.add_argument("--stage")
     show_p.add_argument("--sentiment", choices=("positive", "negative", "neutral", "invalid"),
                         help="Filter by current lead status sentiment (latest status event)")
@@ -9264,6 +9388,11 @@ def main():
 
     lead_table_p = sub.add_parser("lead-table", help="Show canonical lead information table")
     lead_table_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
+    lead_table_p.add_argument(
+        "--force-pull",
+        action="store_true",
+        help="With --pull, always contact relay (ignore 5m freshness cache)",
+    )
     lead_table_p.add_argument("--stage")
     lead_table_p.add_argument("--sentiment", choices=("positive", "negative", "neutral", "invalid"),
                               help="Filter by current lead status sentiment (latest status event)")
@@ -9284,11 +9413,36 @@ def main():
 
     stats_p = sub.add_parser("stats", help="Pipeline statistics")
     stats_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
+    stats_p.add_argument(
+        "--force-pull",
+        action="store_true",
+        help="With --pull, always contact relay (ignore 5m freshness cache)",
+    )
     stats_p.add_argument("--json", action="store_true")
 
     camp_p = sub.add_parser("campaigns", help="Event and lead counts by campaign name")
     camp_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
+    camp_p.add_argument(
+        "--force-pull",
+        action="store_true",
+        help="With --pull, always contact relay (ignore 5m freshness cache)",
+    )
     camp_p.add_argument("--json", action="store_true")
+
+    summary_p = sub.add_parser(
+        "summary",
+        help="Lightweight daily digest (counts and reply highlights)",
+    )
+    summary_p.add_argument("--since", help="Date or window: today, YYYY-MM-DD, 48h, 7d")
+    summary_p.add_argument("--workspace", help="Workspace slug (campaign prefix filter)")
+    summary_p.add_argument("--campaign-prefix", help="Override campaign name LIKE prefix")
+    summary_p.add_argument("--pull", action="store_true", help="Pull before summarizing")
+    summary_p.add_argument(
+        "--force-pull",
+        action="store_true",
+        help="With --pull, always contact relay (ignore 5m freshness cache)",
+    )
+    summary_p.add_argument("--json", action="store_true")
 
     pmap_p = sub.add_parser(
         "platform-map",
@@ -10365,11 +10519,15 @@ def main():
             print("Run 'pipeline.py show' to see your updated pipeline.")
         return
 
-    if args.command in ("show", "lead-table", "stats", "campaigns") and getattr(args, "pull", False):
+    pull_before_commands = ("show", "lead-table", "stats", "campaigns", "summary")
+    if args.command in pull_before_commands and getattr(args, "pull", False):
         agent_key = get_agent_key()
         if agent_key:
             try:
-                skip_payload = pull_if_stale_skip_result("5m", force=False)
+                skip_payload = pull_if_stale_skip_result(
+                    "5m",
+                    force=getattr(args, "force_pull", False),
+                )
                 if skip_payload:
                     print(skip_payload.get("freshness_message", "Pull skipped (fresh)."))
                 else:
@@ -10447,6 +10605,20 @@ def main():
             print(json.dumps(result, indent=2))
         else:
             print(json.dumps(result))
+    elif args.command == "summary":
+        import read_queries as rq
+
+        digest = rq.daily_digest(
+            since=getattr(args, "since", None) or "today",
+            workspace=getattr(args, "workspace", None),
+            campaign_prefix=getattr(args, "campaign_prefix", None),
+        )
+        digest = attach_freshness(digest, last_pull=get_last_pull())
+        if getattr(args, "json", False):
+            print(json.dumps(digest, indent=2))
+        else:
+            print_freshness_stderr(get_last_pull())
+            print(rq.format_daily_digest(digest))
     elif args.command == "stats":
         print_freshness_stderr(get_last_pull())
         stats = attach_freshness(get_stats(), last_pull=get_last_pull())

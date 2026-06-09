@@ -72,11 +72,11 @@ _bootstrap_install_if_needed() {
 
   local tmp
   tmp="$(mktemp -d -t om-install-bootstrap-XXXXXX)"
-  echo "→ Fetching installer bundle from $OM_REPO${tag:+ @ $tag}"
+  _log_step "Fetching installer bundle from $OM_REPO${tag:+ @ $tag}"
   if [[ -n "$tag" ]]; then
-    git clone --depth 1 --branch "$tag" "$OM_REPO" "$tmp"
+    git clone --depth 1 --progress --branch "$tag" "$OM_REPO" "$tmp"
   else
-    git clone --depth 1 "$OM_REPO" "$tmp"
+    git clone --depth 1 --progress "$OM_REPO" "$tmp"
   fi
   if [[ ! -f "$tmp/platforms/common/install-companions.sh" ]]; then
     echo "error: cloned repo missing platforms/common/install-companions.sh" >&2
@@ -91,6 +91,14 @@ _bootstrap_install_if_needed "$@"
 
 # shellcheck source=platforms/common/install-companions.sh
 source "$_here/platforms/common/install-companions.sh"
+
+_install_ts() {
+  date "+%H:%M:%S"
+}
+
+_log_step() {
+  echo "[$(_install_ts)] → $*"
+}
 
 usage() {
   cat <<'EOF'
@@ -162,25 +170,34 @@ clone_repo() {
   local repo=$1
   local tag=$2
   local dest=$3
+  local started=$SECONDS
   rm -rf "$dest"
   mkdir -p "$dest"
   if [[ -n "$tag" ]]; then
-    git clone --depth 1 --branch "$tag" "$repo" "$dest"
+    git clone --depth 1 --progress --branch "$tag" "$repo" "$dest"
   else
-    git clone --depth 1 "$repo" "$dest"
+    git clone --depth 1 --progress "$repo" "$dest"
   fi
+  _log_step "Clone complete ($((SECONDS - started))s)"
 }
 
 copy_skill_tree() {
   local src=$1
   local dest=$2
+  local count=0
   mkdir -p "$dest"
   for item in SKILL.md README.md LICENSE SECURITY.md update-manifest.json scripts references; do
     if [[ -e "$src/$item" ]]; then
       rm -rf "$dest/$item"
       cp -a "$src/$item" "$dest/"
+      if [[ -d "$src/$item" ]]; then
+        count=$((count + $(find "$src/$item" -type f | wc -l | tr -d ' ')))
+      else
+        count=$((count + 1))
+      fi
     fi
   done
+  _log_step "Copied ${count} file(s) to $dest"
 }
 
 install_outreachmagic() {
@@ -195,7 +212,7 @@ install_outreachmagic() {
   else
     tmp="$(mktemp -d -t om-install-XXXXXX)"
     trap 'rm -rf "$tmp"' RETURN
-    echo "→ Cloning outreachmagic from $OM_REPO${OM_TAG:+ @ $OM_TAG}"
+    _log_step "Cloning outreachmagic from $OM_REPO${OM_TAG:+ @ $OM_TAG} (may take 15-30s)"
     clone_repo "$OM_REPO" "$OM_TAG" "$tmp"
     skill_src="$tmp/skills/outreachmagic"
     if [[ ! -d "$skill_src/scripts" ]]; then
@@ -204,7 +221,7 @@ install_outreachmagic() {
     fi
   fi
 
-  echo "→ Installing outreachmagic to $SKILLS_DIR/outreachmagic"
+  _log_step "Installing outreachmagic to $SKILLS_DIR/outreachmagic"
   copy_skill_tree "$skill_src" "$SKILLS_DIR/outreachmagic"
 
   if [[ "$PLATFORM" == "cursor" ]]; then
@@ -222,7 +239,7 @@ install_outreachmagic() {
   fi
 
   chmod +x "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" 2>/dev/null || true
-  echo "→ Initializing database..."
+  _log_step "Initializing database..."
   python3 "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" init
 }
 
@@ -319,7 +336,7 @@ if [[ "$PLATFORM" == "hermes" ]] && [[ ${#PROFILES[@]} -gt 0 ]]; then
 fi
 
 echo ""
-echo "✓ Done."
+echo "✓ Installation complete. Login step is ready — ask your agent to connect."
 echo "  outreachmagic: $SKILLS_DIR/outreachmagic"
 if [[ $WITH_LEAD_ENRICH -eq 1 ]]; then
   echo "  lead-enrich:   $SKILLS_DIR/lead-enrich"
@@ -327,7 +344,6 @@ fi
 if [[ $WITH_EMAIL_FINDER -eq 1 ]]; then
   echo "  email-finder:  $SKILLS_DIR/email-finder"
 fi
-echo "  Connect: python3 $SKILLS_DIR/outreachmagic/scripts/pipeline.py login"
 echo "  Paths:   python3 $SKILLS_DIR/outreachmagic/scripts/pipeline.py paths"
 if [[ "$PLATFORM" == "hermes" ]] && [[ ${#PROFILES[@]} -eq 0 ]]; then
   echo ""

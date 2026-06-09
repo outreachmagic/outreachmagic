@@ -8,9 +8,9 @@ clone_companion_repo() {
   rm -rf "$dest"
   mkdir -p "$dest"
   if [[ -n "$tag" ]]; then
-    git clone --depth 1 --branch "$tag" "$repo" "$dest"
+    git clone --depth 1 --progress --branch "$tag" "$repo" "$dest"
   else
-    git clone --depth 1 "$repo" "$dest"
+    git clone --depth 1 --progress "$repo" "$dest"
   fi
 }
 

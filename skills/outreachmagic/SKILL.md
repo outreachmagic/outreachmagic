@@ -440,10 +440,14 @@ python3 scripts/pipeline.py campaigns --json
 
 ### PlusVibe webhooks (status + sentiment)
 
-Point PlusVibe webhooks at your relay URL (`…/plusvibe/{token}`). Subscribe separately to:
+Point PlusVibe webhooks at your relay URL (`…/plusvibe/{token}`). Enable:
 
-- **Reply events:** `ALL_EMAIL_REPLIES` (and optional `FIRST_EMAIL_REPLIES`, `ALL_POSITIVE_REPLIES`)
-- **Label/status events:** `LEAD_MARKED_AS_INTERESTED`, `LEAD_MARKED_AS_NOT_INTERESTED`, `LEAD_MARKED_AS_OUT_OF_OFFICE`, plus any custom `LEAD_MARKED_AS_*` labels
+- `EMAIL_SENT`, `ALL_EMAIL_REPLIES`, `BOUNCED_EMAIL`
+- `LEAD_MARKED_AS_INTERESTED`, `LEAD_MARKED_AS_NOT_INTERESTED`, `LEAD_MARKED_AS_OUT_OF_OFFICE`, `LEAD_MARKED_AS_AUTOMATIC_REPLY`
+- `LEAD_MARKED_AS_MEETING_BOOKED`, `LEAD_MARKED_AS_MEETING_COMPLETED`, `LEAD_MARKED_AS_WRONG_PERSON`, `LEAD_MARKED_AS_CLOSED`
+- `LEAD_MARKED_AS_QC_INTERESTED`, `LEAD_MARKED_AS_QC_CRM_ONLY`
+
+**Do not enable** `ALL_POSITIVE_REPLIES` (always duplicates `ALL_EMAIL_REPLIES`) or `FIRST_EMAIL_REPLIES` (subset of `ALL_EMAIL_REPLIES`). Leave “Skip out of office replies” and “Skip autoreplies” **unchecked**.
 
 Each webhook is stored as an event. **Interested / not interested / sentiment come from label webhooks**, not from reply webhooks alone. OOO is classified as **auto-reply** (metadata flag, query with `--auto-reply true`). Bounces set event sentiment `invalid` but **do not** auto-move the lead to stage `lost` (use `--sentiment invalid` to find them).
 

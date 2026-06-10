@@ -66,6 +66,7 @@ rsync -az --chmod=Du=rwx,go=rx,Fu=rw,go=r -e "$RSYNC_SSH" \
   "${ROOT}/scripts/dark-factory/run-script-tests.py" \
   "${ROOT}/scripts/dark-factory/validate.py" \
   "${ROOT}/scripts/dark-factory/post-validate.py" \
+  "${ROOT}/scripts/dark-factory/migrate-lock-stress.py" \
   "${REMOTE}:${tests_remote_rsync}/"
 rsync -az --delete --chmod=Du=rwx,go=rx,Fu=rw,go=r -e "$RSYNC_SSH" \
   "${ROOT}/tests/dark-factory/fixtures/" \

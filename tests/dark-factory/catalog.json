@@ -12,6 +12,56 @@
         }
       },
       {
+        "id": "om-plusvibe-platform-map",
+        "tags": ["smoke", "plusvibe", "script"],
+        "mode": "script",
+        "command": ["platform-map", "--json"],
+        "expect": {
+          "contains_string": "meeting_booked"
+        }
+      },
+      {
+        "id": "om-migrate-upgrade-init",
+        "tags": ["migrate", "integration", "script"],
+        "mode": "script",
+        "setup": "copy_fixture_db:migrate",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:migrate/data-root-copy"
+        },
+        "command": ["show", "--limit", "3"],
+        "expect": {
+          "not_contains_string": "database is locked"
+        }
+      },
+      {
+        "id": "om-migrate-upgrade-paths",
+        "tags": ["migrate", "integration", "script"],
+        "mode": "script",
+        "setup": "copy_fixture_db:migrate",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:migrate/data-root-copy"
+        },
+        "command": ["paths"],
+        "expect": {
+          "not_contains_string": "database is locked",
+          "contains_string": "outreachmagic"
+        }
+      },
+      {
+        "id": "om-plusvibe-triple-replay",
+        "tags": ["plusvibe", "migrate", "integration", "script"],
+        "mode": "script",
+        "setup": "copy_fixture_db:plusvibe",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:plusvibe/data-root-copy"
+        },
+        "external": "python3 @fixture:plusvibe/replay_events.py @fixture:plusvibe/data-root-copy",
+        "expect": {
+          "contains_string": "\"email_reply_count\": 1",
+          "not_contains_string": "database is locked"
+        }
+      },
+      {
         "id": "om-paths-smoke",
         "tags": ["smoke", "om", "script"],
         "mode": "script",

@@ -202,7 +202,28 @@ def main() -> None:
         ]
         target_skill = case.get("skill") or skill_name
         case_env = _resolve_case_env(case.get("env"), catalog_path=catalog_path)
-        rc, output = run_skill_command(skills_root, target_skill, command, env=case_env)
+        external = case.get("external")
+        if external:
+            parts = external.split()
+            ext_cmd = " ".join(
+                _resolve_case_path(part, catalog_path=catalog_path)
+                if part.startswith("@fixture:") or part.startswith("@")
+                else part
+                for part in parts
+            )
+            proc_env = os.environ.copy()
+            proc_env.update(case_env)
+            proc = subprocess.run(
+                ext_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                env=proc_env,
+            )
+            rc, output = proc.returncode, ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+        else:
+            rc, output = run_skill_command(skills_root, target_skill, command, env=case_env)
         if rc != 0 and not output:
             output = f"exit code {rc}"
         ok, reason = validate_expect(output, case.get("expect") or {})

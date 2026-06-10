@@ -33,6 +33,10 @@
     "review_import": {
       "skills": ["outreachmagic"],
       "tags": ["review", "import", "integration"]
+    },
+    "migrate": {
+      "skills": ["outreachmagic"],
+      "tags": ["migrate", "integration", "plusvibe"]
     }
   }
 }

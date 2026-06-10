@@ -195,6 +195,21 @@ if [[ "$LAYER" == "2" || "$LAYER" == "all" ]]; then
     "${SSH_HOST}:${SCRIPT_RESULT}" \
     "${ROOT}/tests/dark-factory/results/script-${TIMESTAMP}.json" 2>/dev/null || EXIT_CODE=1
   RESULT_FILES+=("${ROOT}/tests/dark-factory/results/script-${TIMESTAMP}.json")
+
+  echo "== Layer 2: migrate lock stress =="
+  STRESS_RESULT="${TESTS_DATA_PATH}/results/migrate-stress-${TIMESTAMP}.json"
+  if ssh_cmd "python3 ${TESTS_DATA_PATH}/migrate-lock-stress.py \
+      --data-root ${TESTS_DATA_PATH}/fixtures/migrate/data-root" > /tmp/df-migrate-stress.log 2>&1; then
+    ssh_cmd "python3 -c \"import json,datetime; print(json.dumps({'environment':'migrate-stress','timestamp':datetime.datetime.now(datetime.timezone.utc).isoformat(),'passed':1,'failed':0,'results':[{'id':'migrate-lock-stress','status':'pass'}]}))\" > ${STRESS_RESULT}"
+  else
+    EXIT_CODE=1
+    ssh_cmd "cat /tmp/df-migrate-stress.log" || true
+    ssh_cmd "python3 -c \"import json,datetime; print(json.dumps({'environment':'migrate-stress','timestamp':datetime.datetime.now(datetime.timezone.utc).isoformat(),'passed':0,'failed':1,'results':[{'id':'migrate-lock-stress','status':'fail'}]}))\" > ${STRESS_RESULT}" || true
+  fi
+  scp -i "$SSH_KEY" -o BatchMode=yes \
+    "${SSH_HOST}:${STRESS_RESULT}" \
+    "${ROOT}/tests/dark-factory/results/migrate-stress-${TIMESTAMP}.json" 2>/dev/null || true
+  RESULT_FILES+=("${ROOT}/tests/dark-factory/results/migrate-stress-${TIMESTAMP}.json")
 fi
 
 if [[ "$LAYER" == "3" || "$LAYER" == "all" ]]; then

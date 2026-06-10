@@ -1,0 +1,38 @@
+[
+  {
+    "relay_id": 501,
+    "platform": "plusvibe",
+    "event_type": "all_email_replies",
+    "lead": "lead@fixture.test",
+    "received_at": "2026-06-10T12:00:01Z",
+    "raw": {
+      "campaign_name": "Test Campaign",
+      "campaign_id": "camp-1",
+      "text_body": "Yes, let's schedule a call next week."
+    }
+  },
+  {
+    "relay_id": 502,
+    "platform": "plusvibe",
+    "event_type": "lead_marked_as_interested",
+    "lead": "lead@fixture.test",
+    "received_at": "2026-06-10T12:00:02Z",
+    "raw": {
+      "campaign_name": "Test Campaign",
+      "campaign_id": "camp-1",
+      "label": "interested"
+    }
+  },
+  {
+    "relay_id": 503,
+    "platform": "plusvibe",
+    "event_type": "all_positive_replies",
+    "lead": "lead@fixture.test",
+    "received_at": "2026-06-10T12:00:03Z",
+    "raw": {
+      "campaign_name": "Test Campaign",
+      "campaign_id": "camp-1",
+      "text_body": "Yes, let's schedule a call next week."
+    }
+  }
+]

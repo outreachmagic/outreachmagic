@@ -169,6 +169,30 @@ PLUSVIBE_REPLY_EVENTS = frozenset({
 })
 PLUSVIBE_SENT_EVENTS = frozenset({"email_sent"})
 PLUSVIBE_BOUNCE_EVENTS = frozenset({"bounced_email"})
+PLUSVIBE_INTERESTED_STAGE_EVENTS = frozenset({
+    "lead_marked_as_interested",
+    "lead_marked_as_meeting_booked",
+    "lead_marked_as_meeting_completed",
+    "lead_marked_as_qc_interested",
+    "lead_marked_as_qc_crm_only",
+})
+PLUSVIBE_LOST_STAGE_EVENTS = frozenset({
+    "lead_marked_as_not_interested",
+    "lead_marked_as_wrong_person",
+    "lead_marked_as_closed",
+})
+PLUSVIBE_STATUS_EVENTS = frozenset({
+    "lead_marked_as_interested",
+    "lead_marked_as_not_interested",
+    "lead_marked_as_out_of_office",
+    "lead_marked_as_automatic_reply",
+    "lead_marked_as_meeting_booked",
+    "lead_marked_as_meeting_completed",
+    "lead_marked_as_wrong_person",
+    "lead_marked_as_closed",
+    "lead_marked_as_qc_interested",
+    "lead_marked_as_qc_crm_only",
+})
 
 # Generic email event aliases (all non-PlusVibe platforms)
 _GENERIC_EMAIL_MAP: dict[str, tuple[str, str, Optional[str], str]] = {
@@ -297,10 +321,19 @@ def _heyreach_mappings() -> tuple[EventMapping, ...]:
 def _plusvibe_mappings() -> tuple[EventMapping, ...]:
     return (
         _em("all_email_replies", "email_reply", "inbound", "replied", "email_reply"),
-        _em("first_email_replies", "email_reply", "inbound", "replied", "email_reply"),
-        _em("all_positive_replies", "email_reply", "inbound", "replied", "email_reply"),
+        _em("first_email_replies", "email_reply", "inbound", "replied", "email_reply",
+            notes="Subset of all_email_replies — do not enable both"),
+        _em("all_positive_replies", "email_reply", "inbound", "replied", "email_reply",
+            notes="Always co-fires with all_email_replies — do not enable"),
         _em("email_sent", "email_sent", "outbound", "contacted", "email_sent"),
         _em("bounced_email", "email_bounce", "outbound", None, "email_bounce"),
+        _em("lead_marked_as_meeting_booked", "meeting_booked", "inbound", "interested", "meeting_booked"),
+        _em("lead_marked_as_meeting_completed", "meeting_completed", "inbound", "interested", "meeting_completed"),
+        _em("lead_marked_as_qc_interested", "lead_status_updated", "inbound", "interested", "lead_status_updated",
+            notes="Treat same as lead_marked_as_interested"),
+        _em("lead_marked_as_qc_crm_only", "lead_disposition", "inbound", "interested", "lead_disposition"),
+        _em("lead_marked_as_wrong_person", "lead_status_updated", "inbound", "lost", "lead_status_updated"),
+        _em("lead_marked_as_closed", "lead_status_updated", "inbound", "lost", "lead_status_updated"),
     )
 
 
@@ -336,8 +369,13 @@ PLATFORMS: dict[str, PlatformDef] = {
         channel="email",
         category="sequencer",
         setup_hint=(
-            "In PlusVibe → Settings → Webhooks, paste the URL. Subscribe to: ALL_EMAIL_REPLIES, "
-            "LEAD_MARKED_AS_INTERESTED, LEAD_MARKED_AS_NOT_INTERESTED, LEAD_MARKED_AS_OUT_OF_OFFICE."
+            "In PlusVibe → Settings → Webhooks, paste the URL. Enable: EMAIL_SENT, ALL_EMAIL_REPLIES, "
+            "LEAD_MARKED_AS_INTERESTED, LEAD_MARKED_AS_NOT_INTERESTED, LEAD_MARKED_AS_OUT_OF_OFFICE, "
+            "LEAD_MARKED_AS_AUTOMATIC_REPLY, BOUNCED_EMAIL, LEAD_MARKED_AS_MEETING_BOOKED, "
+            "LEAD_MARKED_AS_MEETING_COMPLETED, LEAD_MARKED_AS_WRONG_PERSON, LEAD_MARKED_AS_CLOSED, "
+            "LEAD_MARKED_AS_QC_INTERESTED, LEAD_MARKED_AS_QC_CRM_ONLY. "
+            "Do NOT enable ALL_POSITIVE_REPLIES (duplicates ALL_EMAIL_REPLIES) or FIRST_EMAIL_REPLIES. "
+            "Leave 'Skip out of office replies' and 'Skip autoreplies' unchecked."
         ),
         linkedin_platform=False,
         extractor_spec={**_PLUSVIBE_SPEC, "identity": _IDENTITY_DEFAULT},
@@ -492,6 +530,18 @@ def resolve_event(platform: str, vendor_type: str, raw: Optional[dict] = None) -
             return ResolvedEvent("email_sent", "outbound", "contacted", "email_sent", et)
         if et in PLUSVIBE_BOUNCE_EVENTS:
             return ResolvedEvent("email_bounce", "outbound", None, "email_bounce", et)
+        if et == "lead_marked_as_meeting_booked":
+            return ResolvedEvent("meeting_booked", "inbound", "interested", "meeting_booked", et)
+        if et == "lead_marked_as_meeting_completed":
+            return ResolvedEvent("meeting_completed", "inbound", "interested", "meeting_completed", et)
+        if et == "lead_marked_as_qc_interested":
+            return ResolvedEvent("lead_status_updated", "inbound", "interested", "lead_status_updated", et)
+        if et == "lead_marked_as_qc_crm_only":
+            return ResolvedEvent("lead_disposition", "inbound", "interested", "lead_disposition", et)
+        if et in PLUSVIBE_LOST_STAGE_EVENTS:
+            return ResolvedEvent("lead_status_updated", "inbound", "lost", "lead_status_updated", et)
+        if et in PLUSVIBE_INTERESTED_STAGE_EVENTS:
+            return ResolvedEvent("lead_status_updated", "inbound", "interested", "lead_status_updated", et)
         if et.startswith("lead_marked_as_") or et.startswith("marked_as_"):
             return ResolvedEvent("lead_status_updated", "inbound", None, "lead_status_updated", et)
         if label in ("interested", "not_interested", "out_of_office"):

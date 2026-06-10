@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from bounces import build_bounce_event_metadata
@@ -19,6 +20,8 @@ from constants import (
 from db_conn import get_conn
 from platform_registry import (
     CHANNEL_BY_PLATFORM,
+    PLUSVIBE_INTERESTED_STAGE_EVENTS,
+    PLUSVIBE_LOST_STAGE_EVENTS,
     extract_reply_body,
     resolve_event,
 )
@@ -63,9 +66,11 @@ def build_plusvibe_status_metadata(
 
     payload_sentiment = (signals.get("sentiment") or raw.get("sentiment") or "").strip().lower()
     sentiment = payload_sentiment
-    if forced_label == "interested":
+    if forced_label in ("interested", "qc_interested", "meeting_booked", "meeting_completed"):
         sentiment = "positive"
-    elif forced_label in ("not_interested", "not interested"):
+    elif et == "lead_marked_as_qc_crm_only":
+        sentiment = "positive"
+    elif forced_label in ("not_interested", "not interested", "wrong_person", "closed"):
         sentiment = "negative"
     if not sentiment and label == "email_bounced":
         sentiment = "invalid"
@@ -110,14 +115,17 @@ def relay_target_stage(
         if metadata.get("is_auto_reply") or is_auto_reply_label(label):
             return None
         if (
-            "not_interested" in et
-            or label in ("not_interested", "not interested")
-            or sentiment == "negative"
+            et in PLUSVIBE_LOST_STAGE_EVENTS
+            or "not_interested" in et
+            or label in ("not_interested", "not interested", "wrong_person", "closed")
+            or (sentiment == "negative" and label not in ("out_of_office", "automatic_reply"))
         ):
             return "lost"
         if (
-            "interested" in et
-            or label == "interested"
+            et in PLUSVIBE_INTERESTED_STAGE_EVENTS
+            or local_type in ("meeting_booked", "meeting_completed", "lead_disposition")
+            or "interested" in et
+            or label in ("interested", "qc_interested", "meeting_booked", "meeting_completed", "qc_crm_only")
             or sentiment == "positive"
         ):
             return "interested"
@@ -147,6 +155,102 @@ def relay_dedupe_key(event: dict) -> str:
 
 
 RELAY_INGESTED_PREFETCH_CHUNK = 500
+PLUSVIBE_POSITIVE_REPLY_DEDUP_SECONDS = 60
+
+
+def _plusvibe_body_fingerprint(body: str) -> str:
+    normalized = (body or "").strip().lower()
+    if not normalized:
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def plusvibe_positive_reply_is_duplicate(
+    conn: sqlite3.Connection,
+    *,
+    email: str,
+    campaign: str,
+    body: str,
+    received_at: str,
+    window_seconds: int = PLUSVIBE_POSITIVE_REPLY_DEDUP_SECONDS,
+) -> bool:
+    """Skip all_positive_replies when ALL_EMAIL_REPLIES already captured the same reply."""
+    fingerprint = _plusvibe_body_fingerprint(body)
+    if not email or not fingerprint:
+        return False
+    email_norm = email.strip().lower()
+    campaign_norm = (campaign or "").strip()
+    since = received_at
+    if since:
+        try:
+            ts = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            since = (ts - timedelta(seconds=window_seconds)).isoformat()
+        except ValueError:
+            since = None
+    params: list = [email_norm]
+    time_clause = ""
+    if since:
+        time_clause = " AND e.created_at >= ?"
+        params.append(since)
+    campaign_clause = ""
+    if campaign_norm:
+        campaign_clause = (
+            " AND (json_extract(e.metadata_json, '$.campaign') = ?"
+            " OR c.name = ?)"
+        )
+        params.extend([campaign_norm, campaign_norm])
+    row = conn.execute(
+        f"""SELECT 1
+            FROM events e
+            JOIN leads l ON l.id = e.lead_id
+            LEFT JOIN campaigns c ON c.id = e.campaign_id
+            WHERE lower(l.email) = ?
+              AND e.event_type = 'email_reply'
+              AND lower(json_extract(e.metadata_json, '$.platform')) = 'plusvibe'
+              AND (
+                json_extract(e.metadata_json, '$.plusvibe_positive_reply_skipped') IS NULL
+                OR json_extract(e.metadata_json, '$.plusvibe_positive_reply_skipped') = 0
+              )
+              {time_clause}
+              {campaign_clause}
+              AND (
+                substr(lower(coalesce(json_extract(e.metadata_json, '$.body'), '')), 1, 200)
+                  = substr(lower(?), 1, 200)
+                OR lower(coalesce(e.body_preview, '')) = substr(lower(?), 1, 200)
+              )
+            LIMIT 1""",
+        [*params, body or "", body or ""],
+    ).fetchone()
+    return row is not None
+
+
+def _skip_plusvibe_positive_reply_duplicate(
+    dedupe_key: str,
+    *,
+    defer_mark: bool,
+    pending_marks: Optional[list],
+    pull_conn: Optional[sqlite3.Connection],
+    own_conn: bool,
+    conn: sqlite3.Connection,
+    quiet: bool,
+) -> None:
+    if defer_mark and pending_marks is not None:
+        pending_marks.append((dedupe_key, None))
+    elif pull_conn is not None:
+        pull_conn.execute(
+            "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
+            (dedupe_key, None),
+        )
+    else:
+        mark_relay_ingested(dedupe_key, None)
+    if own_conn:
+        conn.close()
+    if not quiet:
+        print(
+            "[relay] skipped plusvibe all_positive_replies duplicate "
+            f"(dedupe_key={dedupe_key})",
+            file=sys.stderr,
+        )
 
 
 def relay_already_ingested(dedupe_key: str) -> bool:
@@ -382,6 +486,36 @@ def ingest_relay_event(
     channel = CHANNEL_BY_PLATFORM.get(platform, "email")
 
     campaign_ctx = extract_campaign_context(platform, event_fields, raw)
+    if (
+        platform in PLUSVIBE_PLATFORMS
+        and envelope_event_type == "all_positive_replies"
+    ):
+        dup_body = (
+            event_fields.get("body")
+            or raw.get("text_body")
+            or raw.get("body")
+            or raw.get("last_lead_reply")
+            or ""
+        )
+        dup_campaign = event_fields.get("campaign") or campaign_ctx.campaign_name_raw or ""
+        dup_email = email_hint or (envelope_lead if "@" in str(envelope_lead) else "")
+        if plusvibe_positive_reply_is_duplicate(
+            conn,
+            email=str(dup_email or ""),
+            campaign=str(dup_campaign or ""),
+            body=str(dup_body or ""),
+            received_at=received_at,
+        ):
+            _skip_plusvibe_positive_reply_duplicate(
+                dedupe_key,
+                defer_mark=defer_mark,
+                pending_marks=pending_marks,
+                pull_conn=pull_conn,
+                own_conn=own_conn,
+                conn=conn,
+                quiet=quiet,
+            )
+            return None
     if (
         not force_workspace_id
         and not campaign_ctx.campaign_id

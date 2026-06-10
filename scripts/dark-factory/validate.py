@@ -106,6 +106,9 @@ def validate_expect(output: str, expect: dict[str, Any]) -> tuple[bool, str | No
         elif key == "contains_string":
             if str(value).lower() not in text.lower():
                 return False, f"expected output to contain '{value}'"
+        elif key in ("not_contains_string", "no_string"):
+            if str(value).lower() in text.lower():
+                return False, f"expected output NOT to contain '{value}'"
         elif key == "min_length":
             if len(text) < int(value):
                 return False, f"expected at least {value} characters, got {len(text)}"

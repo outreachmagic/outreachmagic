@@ -4,9 +4,16 @@ test-config.local.json
 test-config.local.yaml
 tests/dark-factory/results/*.json
 !tests/dark-factory/results/.gitkeep
+tests/dark-factory/fixtures/**/data-root-copy/
+tests/dark-factory/fixtures/**/*.db-wal
+tests/dark-factory/fixtures/**/*.db-shm
 relay/
 dist/
 skills/outreachmagic/config/
 skills/outreachmagic/databases/
 skills/outreachmagic/export/batch_sync.log
 skills/outreachmagic/export/*.log
+skills/outreachmagic/export/*.db
+*-email-results.json
+*-email-results.csv
+.wrangler/

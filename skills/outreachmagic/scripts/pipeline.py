@@ -1278,7 +1278,7 @@ def migrate_db(conn=None):
     )
     repair_malformed_tags(conn)
     backfill_bounce_events_from_events(conn)
-    maybe_backfill_null_campaign_quarantine(quiet=True)
+    maybe_backfill_null_campaign_quarantine(quiet=True, conn=conn)
     conn.execute(
         """UPDATE leads SET cloud_pending = 0
            WHERE cloud_pending = 1
@@ -4417,11 +4417,30 @@ def enrich_lead_rows(
         if workspace:
             ws_row = resolve_workspace_identity(conn, workspace)
             ws_slug = ws_row["slug"] if ws_row else workspace
+        lead_ids = [int(lead["id"]) for lead in leads if lead.get("id") is not None]
+        prefetch = _load_lead_sync_prefetch(conn, DEFAULT_ORG_ID, lead_ids)
+        company_ids = sorted({
+            int(row["company_id"])
+            for lid in lead_ids
+            if (row := prefetch["leads"].get(lid)) and row["company_id"]
+        })
+        company_pers: dict[int, dict] = {}
+        if company_ids:
+            placeholders = ",".join("?" * len(company_ids))
+            for row in conn.execute(
+                f"""SELECT company_id, field_name, field_value, field_date, processed_at
+                    FROM company_personalization
+                    WHERE company_id IN ({placeholders})""",
+                company_ids,
+            ).fetchall():
+                company_pers.setdefault(int(row["company_id"]), {})[row["field_name"]] = dict(row)
+
         enriched: list[dict] = []
         for lead in leads:
             row = dict(lead)
+            lead_id = int(lead["id"])
             snap = build_lead_sync_payload(
-                conn, DEFAULT_ORG_ID, int(lead["id"]), workspace_slug=ws_slug,
+                conn, DEFAULT_ORG_ID, lead_id, workspace_slug=ws_slug, prefetch=prefetch,
             )
             for key in (
                 "tags", "linkedin_status",
@@ -4439,17 +4458,27 @@ def enrich_lead_rows(
                 row["linkedin_sent_count"] = activity.get("linkedin_sent_count", 0)
                 row["total_replies_count"] = activity.get("total_replies_count", 0)
                 row["total_contacted_count"] = activity.get("total_contacted_count", 0)
-            row["personalization"] = resolve_personalization(int(lead["id"]))
-            sn_row = conn.execute(
-                """SELECT identity_value_normalized FROM lead_identities
-                   WHERE lead_id = ? AND identity_type = 'linkedin_sales_nav_id'
-                   ORDER BY CASE source
-                     WHEN 'csv' THEN 0 WHEN 'review-sync' THEN 1 ELSE 2 END
-                   LIMIT 1""",
-                (int(lead["id"]),),
-            ).fetchone()
-            if sn_row:
-                row["linkedin_sales_nav_id"] = sn_row["identity_value_normalized"]
+            merged: dict = {}
+            lead_row = prefetch["leads"].get(lead_id)
+            if lead_row and lead_row["company_id"]:
+                cid = int(lead_row["company_id"])
+                for fname, rec in (company_pers.get(cid) or {}).items():
+                    merged[fname] = rec["field_value"]
+                    if rec.get("field_date"):
+                        merged[f"{fname}_date"] = rec["field_date"]
+            for pers_row in prefetch["personalization"].get(lead_id) or []:
+                fname = pers_row["field_name"]
+                merged[fname] = pers_row["field_value"]
+                if pers_row.get("field_date"):
+                    merged[f"{fname}_date"] = pers_row["field_date"]
+                elif f"{fname}_date" in merged:
+                    del merged[f"{fname}_date"]
+            row["personalization"] = merged
+            id_rows = prefetch["identities"].get(lead_id) or []
+            for ident in id_rows:
+                if ident["identity_type"] == "linkedin_sales_nav_id":
+                    row["linkedin_sales_nav_id"] = ident["identity_value_normalized"]
+                    break
             row["linkedin_url"] = row.get("linkedin_url") or row.get("linkedin") or ""
             if not row.get("latest_sender") and lead.get("latest_sender"):
                 row["latest_sender"] = lead["latest_sender"]
@@ -6478,9 +6507,12 @@ def backfill_null_campaign_quarantine(
     org_id: str = DEFAULT_ORG_ID,
     auto_skip: bool = True,
     quiet: bool = False,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
     """Move historical events with campaign_id IS NULL into quarantine (skipped by default)."""
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     rows = conn.execute(
         """SELECT e.id, e.lead_id, e.event_type, e.direction, e.channel, e.subject,
                   e.body_preview, e.metadata_json, e.sender, e.created_at,
@@ -6491,7 +6523,8 @@ def backfill_null_campaign_quarantine(
            ORDER BY e.id""",
     ).fetchall()
     if not rows:
-        conn.close()
+        if own_conn:
+            conn.close()
         return {"status": "ok", "found": 0, "quarantined": 0, "skipped": 0}
 
     now = datetime.now(timezone.utc).isoformat()
@@ -6551,8 +6584,11 @@ def backfill_null_campaign_quarantine(
             )
             skipped += 1
 
-    conn.commit()
-    conn.close()
+    if own_conn:
+        conn.commit()
+        conn.close()
+    elif quarantined or skipped:
+        pass  # caller owns transaction (e.g. migrate_db)
     result = {
         "status": "ok",
         "found": len(rows),
@@ -6572,12 +6608,16 @@ def backfill_null_campaign_quarantine(
     return result
 
 
-def maybe_backfill_null_campaign_quarantine(*, quiet: bool = True) -> dict:
+def maybe_backfill_null_campaign_quarantine(
+    *,
+    quiet: bool = True,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict:
     """Run one-time backfill for legacy null-campaign events."""
     cfg = load_config()
     if cfg.get("null_campaign_backfill_at"):
         return {"status": "skipped", "reason": "already_backfilled"}
-    result = backfill_null_campaign_quarantine(quiet=quiet)
+    result = backfill_null_campaign_quarantine(quiet=quiet, conn=conn)
     if result.get("quarantined", 0) > 0 or result.get("found", 0) == 0:
         cfg = load_config()
         cfg["null_campaign_backfill_at"] = datetime.now(timezone.utc).isoformat()
@@ -8271,16 +8311,23 @@ def sync_from_relay_org(
                         kind_seen += len(snap_events)
                         snap_total += len(snap_events)
                         if not quiet:
+                            snap_total_pages = est_snap_pages
+                            if snap_total_pages is None and pending_snapshots and pending_snapshots > 0:
+                                snap_total_pages = _estimate_relay_pages(pending_snapshots, kind_limit)
+                            elif snap_total_pages is None and len(snap_events) >= kind_limit:
+                                snap_total_pages = kind_pages + 1
+                            elif snap_total_pages is not None and len(snap_events) >= kind_limit:
+                                snap_total_pages = max(snap_total_pages, kind_pages + 1)
                             if pending_snapshots and pending_snapshots > 0:
                                 print(
                                     _format_pull_progress(
                                         stream,
                                         page_n=kind_pages,
-                                        total_pages=est_snap_pages,
+                                        total_pages=snap_total_pages,
                                         page_len=len(snap_events),
                                         seen=kind_seen,
                                         total=pending_snapshots,
-                                        more_follow=len(snap_events) >= kind_limit and not est_snap_pages,
+                                        more_follow=len(snap_events) >= kind_limit and not snap_total_pages,
                                     ),
                                     flush=True,
                                 )
@@ -8289,10 +8336,11 @@ def sync_from_relay_org(
                                     _format_pull_progress(
                                         stream,
                                         page_n=kind_pages,
+                                        total_pages=snap_total_pages,
                                         page_len=len(snap_events),
                                         seen=kind_seen,
-                                        more_follow=len(snap_events) >= kind_limit,
-                                        total_only=True,
+                                        more_follow=len(snap_events) >= kind_limit and not snap_total_pages,
+                                        total_only=not snap_total_pages,
                                     ),
                                     flush=True,
                                 )
@@ -8805,8 +8853,26 @@ def login(
     claim_token: bool = False,
     device_code: Optional[str] = None,
     wait_seconds: int = 30,
+    force: bool = False,
 ):
     """Connect this machine via browser device authorization (GitHub CLI-style)."""
+    if not force and not generate_url and not claim_token:
+        existing = get_agent_key()
+        if existing and existing.startswith("om_agent_"):
+            print("Agent key already configured — validating...")
+            result = pull_events_org(existing)
+            if not result.get("error"):
+                org_id = result.get("organization_id", "")
+                count = result.get("count", 0)
+                print(f"Already connected to org {org_id} — {count} events available.")
+                print("Use `pipeline.py login --force` to re-authenticate via browser.")
+                return
+            status = str(result.get("status", ""))
+            message = str(result.get("message", ""))
+            if "401" not in status and "Invalid" not in message and "revoked" not in message.lower():
+                print(f"Warning: could not reach relay ({message}). Key kept — will retry on pull.")
+                return
+            print("Stored agent key is invalid — starting device login...")
     try:
         import device_login
     except ModuleNotFoundError:
@@ -10098,6 +10164,11 @@ def main():
         default=30,
         help="Seconds to wait while polling in --claim-token mode (0 = single attempt)",
     )
+    login_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Run browser device login even when a valid agent key is already configured",
+    )
     sub.add_parser("logout", help="Clear local agent credentials")
 
     sync_secrets_p = sub.add_parser(
@@ -10733,6 +10804,7 @@ def main():
             claim_token=getattr(args, "claim_token", False),
             device_code=getattr(args, "device_code", None),
             wait_seconds=getattr(args, "wait", 30),
+            force=getattr(args, "force", False),
         )
         return
     if args.command == "logout":

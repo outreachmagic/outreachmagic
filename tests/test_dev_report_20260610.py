@@ -114,7 +114,8 @@ def test_full_export_columns_include_new_fields():
 def test_linkedin_sender_column_naming():
     meta = plr.build_sender_column_metadata("https://www.linkedin.com/in/dremmanuela")
     assert meta["key"] == "linkedin_sender_dremmanuela"
-    assert meta["label"] == "🔒 Linkedin Sender Dremmanuela"
+    assert meta["label"] == "🔒 Dremmanuela LI 1st Degree"
+    assert meta["type"] == "string"
 
 
 def test_dropdown_metadata_on_workspace_fields():

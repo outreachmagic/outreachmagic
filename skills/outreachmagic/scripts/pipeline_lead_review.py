@@ -141,11 +141,11 @@ PRESET_KEYS: dict[str, list[str]] = {
         "lead_id", "name", "email", "company", "title", "tags", "notes",
         "linkedin_url", "location_city", "location_state", "location_country", "industry", "headcount",
         "workspace_stage", "lead_status", "lead_sentiment", "contact_priority",
+        "personalized_first_name", "personalized_company_name",
         "email_verification_status", "lev_source", "lev_verified_at",
         "original_source", "original_source_detail", "latest_source", "latest_source_detail",
         "created_at", "updated_at",
         "last_contacted_at", "email_sent_count", "linkedin_sent_count", "total_replies_count", "latest_sender",
-        "personalized_first_name", "personalized_company_name",
         "latest_outbound_subject", "latest_outbound_preview", "latest_inbound_subject", "latest_inbound_preview",
         "be_platform", "be_bounce_message", "be_last_seen_at",
     ],
@@ -153,7 +153,7 @@ PRESET_KEYS: dict[str, list[str]] = {
 
 LINKEDIN_STATUS_VALUES = frozenset({
     "connected",
-    "pending",
+    "request_pending",
     "none",
     "not_requested",
 })
@@ -303,8 +303,8 @@ def build_sender_column_metadata(sender: str) -> dict[str, Any]:
     handle = _linkedin_sender_handle(sender).replace("_", " ").title()
     return {
         "key": key,
-        "label": f"🔒 Linkedin Sender {handle}",
-        "type": "enum",
+        "label": f"🔒 {handle} LI 1st Degree",
+        "type": "string",
         "editable": False,
     }
 
@@ -519,7 +519,7 @@ def _linkedin_cell(lead: dict, sender: str) -> str:
             if entry.get("is_connected"):
                 return "connected"
             if entry.get("is_request_pending"):
-                return "pending"
+                return "request_pending"
             return "none"
     return "not_requested"
 
@@ -562,6 +562,58 @@ def _load_lead_supplements(
         out[lid]["be_bounce_message"] = row["bounce_message"] or ""
         out[lid]["be_last_seen_at"] = row["last_seen_at"] or ""
 
+    return out
+
+
+def _normalize_linkedin_status_value(status: str) -> str:
+    normalized = (status or "").strip().lower()
+    if normalized == "pending":
+        return "request_pending"
+    return normalized
+
+
+def _load_message_previews_batch(
+    conn: sqlite3.Connection,
+    lead_ids: list[int],
+) -> dict[int, dict[str, str]]:
+    if not lead_ids:
+        return {}
+    placeholders = ",".join("?" * len(lead_ids))
+    rows = conn.execute(
+        f"""SELECT lead_id, direction, subject, body_preview, created_at
+            FROM events
+            WHERE lead_id IN ({placeholders})
+            ORDER BY lead_id, created_at DESC""",
+        lead_ids,
+    ).fetchall()
+    out: dict[int, dict[str, str]] = {
+        lid: {
+            "latest_outbound_subject": "",
+            "latest_outbound_preview": "",
+            "latest_inbound_subject": "",
+            "latest_inbound_preview": "",
+        }
+        for lid in lead_ids
+    }
+    done: dict[int, set[str]] = {lid: set() for lid in lead_ids}
+    for row in rows:
+        lid = int(row["lead_id"])
+        bucket = out.get(lid)
+        if bucket is None:
+            continue
+        direction = (row["direction"] or "").lower()
+        if direction == "outbound":
+            if "outbound" not in done[lid]:
+                bucket["latest_outbound_subject"] = row["subject"] or ""
+                bucket["latest_outbound_preview"] = (row["body_preview"] or "")[:300]
+                done[lid].add("outbound")
+        elif direction == "inbound":
+            if "inbound" not in done[lid]:
+                bucket["latest_inbound_subject"] = row["subject"] or ""
+                bucket["latest_inbound_preview"] = (row["body_preview"] or "")[:300]
+                done[lid].add("inbound")
+        if len(done[lid]) >= 2:
+            continue
     return out
 
 
@@ -612,8 +664,8 @@ def build_lead_row(
     if not isinstance(pers, dict):
         pers = {}
 
-    previews = {}
-    if conn is not None and any(k in dict(columns) for _, k in columns):
+    previews = lead.get("_message_previews") or {}
+    if conn is not None and not previews and any(k in dict(columns) for _, k in columns):
         previews = _message_previews(conn, int(lead["id"]))
 
     values: dict[str, Any] = {
@@ -761,11 +813,21 @@ def build_export_payload(
     )
     lead_ids = [int(lead["id"]) for lead in leads if lead.get("id") is not None]
     supplements = _load_lead_supplements(conn, lead_ids)
+    preview_fields = {
+        "latest_outbound_subject",
+        "latest_outbound_preview",
+        "latest_inbound_subject",
+        "latest_inbound_preview",
+    }
+    need_previews = any(key in preview_fields for _label, key in columns)
+    preview_batch = _load_message_previews_batch(conn, lead_ids) if need_previews else {}
     for lead in leads:
         lid = lead.get("id")
         if lid is None:
             continue
         lead.update(supplements.get(int(lid), {}))
+        if need_previews:
+            lead["_message_previews"] = preview_batch.get(int(lid), {})
 
     headers = [label for label, _key in columns]
     total = len(leads)
@@ -824,7 +886,7 @@ def _linkedin_status_map(
         if row["is_connected"]:
             out[sender] = "connected"
         elif row["is_request_pending"]:
-            out[sender] = "pending"
+            out[sender] = "request_pending"
         else:
             out[sender] = "none"
     return out
@@ -951,8 +1013,9 @@ def _set_linkedin_status(
     if not sender_norm:
         return
     now = datetime.now(timezone.utc).isoformat()
+    status = _normalize_linkedin_status_value(status)
     is_connected = 1 if status == "connected" else 0
-    is_pending = 1 if status == "pending" else 0
+    is_pending = 1 if status == "request_pending" else 0
     row_id = f"lis_{workspace_id}_{lead_id}_{sender_norm[:20]}"
     conn.execute(
         """INSERT INTO workspace_lead_linkedin_status
@@ -1090,7 +1153,7 @@ def apply_lead_review_sync(
             norm = _normalize_header_key(key)
             if not norm.startswith("linkedin_") and not norm.startswith("linkedin("):
                 continue
-            status = str(val or "").strip().lower()
+            status = _normalize_linkedin_status_value(str(val or ""))
             if status not in LINKEDIN_STATUS_VALUES:
                 continue
             sender = key

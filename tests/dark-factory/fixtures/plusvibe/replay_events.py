@@ -8,8 +8,22 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[4]
-SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
+def _find_scripts_dir() -> Path:
+    env = os.environ.get("OUTREACHMAGIC_SCRIPTS")
+    if env:
+        return Path(env).expanduser().resolve()
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "skills" / "outreachmagic" / "scripts"
+        if (candidate / "pipeline.py").is_file():
+            return candidate
+    vps_default = Path.home() / "hermes/instances/dark-factory/data/skills/outreachmagic/scripts"
+    if (vps_default / "pipeline.py").is_file():
+        return vps_default
+    raise RuntimeError("cannot locate outreachmagic scripts (set OUTREACHMAGIC_SCRIPTS)")
+
+
+SCRIPTS = _find_scripts_dir()
 sys.path.insert(0, str(SCRIPTS))
 
 EVENTS_NAME = "relay_events.json"

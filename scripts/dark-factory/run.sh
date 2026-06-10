@@ -198,12 +198,15 @@ if [[ "$LAYER" == "2" || "$LAYER" == "all" ]]; then
 
   echo "== Layer 2: migrate lock stress =="
   STRESS_RESULT="${TESTS_DATA_PATH}/results/migrate-stress-${TIMESTAMP}.json"
-  if ssh_cmd "python3 ${TESTS_DATA_PATH}/migrate-lock-stress.py \
-      --data-root ${TESTS_DATA_PATH}/fixtures/migrate/data-root" > /tmp/df-migrate-stress.log 2>&1; then
+  STRESS_LOG="/tmp/df-migrate-stress-${TIMESTAMP}.log"
+  if ssh_cmd "OUTREACHMAGIC_SCRIPTS=${SKILLS_PATH}/outreachmagic/scripts python3 ${TESTS_DATA_PATH}/migrate-lock-stress.py \
+      --data-root ${TESTS_DATA_PATH}/fixtures/migrate/data-root" > "${STRESS_LOG}" 2>&1; then
+    python3 -c "import json,datetime; print(json.dumps({'environment':'migrate-stress','timestamp':datetime.datetime.now(datetime.timezone.utc).isoformat(),'passed':1,'failed':0,'results':[{'id':'migrate-lock-stress','status':'pass'}]}))" > "${ROOT}/tests/dark-factory/results/migrate-stress-${TIMESTAMP}.json"
     ssh_cmd "python3 -c \"import json,datetime; print(json.dumps({'environment':'migrate-stress','timestamp':datetime.datetime.now(datetime.timezone.utc).isoformat(),'passed':1,'failed':0,'results':[{'id':'migrate-lock-stress','status':'pass'}]}))\" > ${STRESS_RESULT}"
   else
     EXIT_CODE=1
-    ssh_cmd "cat /tmp/df-migrate-stress.log" || true
+    tail -30 "${STRESS_LOG}" || true
+    python3 -c "import json,datetime; print(json.dumps({'environment':'migrate-stress','timestamp':datetime.datetime.now(datetime.timezone.utc).isoformat(),'passed':0,'failed':1,'results':[{'id':'migrate-lock-stress','status':'fail'}]}))" > "${ROOT}/tests/dark-factory/results/migrate-stress-${TIMESTAMP}.json"
     ssh_cmd "python3 -c \"import json,datetime; print(json.dumps({'environment':'migrate-stress','timestamp':datetime.datetime.now(datetime.timezone.utc).isoformat(),'passed':0,'failed':1,'results':[{'id':'migrate-lock-stress','status':'fail'}]}))\" > ${STRESS_RESULT}" || true
   fi
   scp -i "$SSH_KEY" -o BatchMode=yes \

@@ -95,6 +95,7 @@ def _resolve_case_env(
     env: dict[str, str] | None,
     *,
     catalog_path: Path,
+    skills_root: Path,
 ) -> dict[str, str]:
     if not env:
         return {}
@@ -103,6 +104,9 @@ def _resolve_case_env(
         if isinstance(value, str) and value.startswith("@fixture:"):
             rel = value[len("@fixture:") :]
             out[key] = str((_fixture_root(catalog_path) / rel).resolve())
+        elif isinstance(value, str) and value.startswith("@skills:"):
+            rel = value[len("@skills:") :]
+            out[key] = str((skills_root / rel).resolve())
         else:
             out[key] = str(value)
     return out
@@ -201,7 +205,7 @@ def main() -> None:
             for part in (case.get("command") or [])
         ]
         target_skill = case.get("skill") or skill_name
-        case_env = _resolve_case_env(case.get("env"), catalog_path=catalog_path)
+        case_env = _resolve_case_env(case.get("env"), catalog_path=catalog_path, skills_root=skills_root)
         external = case.get("external")
         if external:
             parts = external.split()

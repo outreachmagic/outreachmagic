@@ -13,9 +13,24 @@ import tempfile
 import threading
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
+def _find_scripts_dir() -> Path:
+    env = os.environ.get("OUTREACHMAGIC_SCRIPTS")
+    if env:
+        return Path(env).expanduser().resolve()
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "skills" / "outreachmagic" / "scripts"
+        if (candidate / "pipeline.py").is_file():
+            return candidate
+    vps_default = Path.home() / "hermes/instances/dark-factory/data/skills/outreachmagic/scripts"
+    if (vps_default / "pipeline.py").is_file():
+        return vps_default
+    raise RuntimeError("cannot locate outreachmagic scripts (set OUTREACHMAGIC_SCRIPTS)")
+
+
+SCRIPTS = _find_scripts_dir()
 sys.path.insert(0, str(SCRIPTS))
+ROOT = SCRIPTS.parents[2]
 
 
 def _fail(msg: str) -> int:
@@ -148,7 +163,9 @@ def main() -> int:
     if args.data_root:
         return run_stress(Path(args.data_root).expanduser().resolve())
 
-    fixture = ROOT / "tests/dark-factory/fixtures/migrate/data-root"
+    fixture = Path(__file__).resolve().parent.parent / "tests/dark-factory/fixtures/migrate/data-root"
+    if not fixture.is_dir():
+        fixture = Path.home() / "hermes/instances/dark-factory/data/dark-factory-tests/fixtures/migrate/data-root"
     if not fixture.is_dir():
         print("Building migrate fixture...", file=sys.stderr)
         build = ROOT / "tests/dark-factory/fixtures/migrate/build_fixture.py"

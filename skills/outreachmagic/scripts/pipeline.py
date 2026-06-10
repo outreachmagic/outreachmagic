@@ -435,7 +435,7 @@ def notify_update_available(quiet: bool = False) -> None:
         return
     print(
         f"outreachmagic: update available {__version__} → {remote} "
-        "(run: pipeline.py update  or  hermes skills update)",
+        "(ask Outreach Magic to update)",
         file=sys.stderr,
     )
 
@@ -448,7 +448,7 @@ def check_skill_update(quiet: bool = False) -> bool:
     if not quiet:
         print(
             f"Update available: {__version__} → {remote} "
-            "(run: pipeline.py update  or  hermes skills update)"
+            "(ask Outreach Magic to update)"
         )
     return False
 
@@ -1278,6 +1278,7 @@ def migrate_db(conn=None):
     )
     repair_malformed_tags(conn)
     backfill_bounce_events_from_events(conn)
+    maybe_backfill_null_campaign_quarantine(quiet=True)
     conn.execute(
         """UPDATE leads SET cloud_pending = 0
            WHERE cloud_pending = 1
@@ -4961,7 +4962,7 @@ def sync_agent_secrets_cli(
 
     tok = get_agent_key()
     if not agent_secrets_cloud.cloud_secrets_enabled(load_config, tok):
-        err = {"ok": False, "error": "Not logged in. Run: pipeline.py login"}
+        err = {"ok": False, "error": "Not logged in. Ask Outreach Magic to log in."}
         if as_json:
             print(json.dumps(err))
         else:
@@ -5148,7 +5149,7 @@ def create_workspace(name: str, slug: Optional[str] = None, org_id: str = DEFAUL
         result["synced"] = False
         result["sync_hint"] = (
             f"Workspace '{name}' created locally. To make it visible in the webapp, "
-            f"run: pipeline.py workspace sync"
+            "Ask Outreach Magic to sync workspace routing"
         )
     else:
         result["synced"] = False
@@ -5347,7 +5348,7 @@ def format_sync_status(status: dict) -> str:
         )
     out = ""
     if parts:
-        out = f"\n⚠ Not synced to cloud: {', '.join(parts)}. Run pipeline.py sync."
+        out = f"\n⚠ Not synced to cloud: {', '.join(parts)}. Ask Outreach Magic to sync."
     if relay_untracked:
         out += (
             f"\nℹ relay_untracked_leads={relay_untracked}: imported/local leads with no relay "
@@ -5424,7 +5425,7 @@ def format_local_sync_hint(counts: dict) -> str:
     if counts.get("cloud_pending_leads"):
         n = counts["cloud_pending_leads"]
         parts.append(f"{n} lead snapshot{'s' if n != 1 else ''}")
-    return f"\n⚠ Not synced: {', '.join(parts)}. Run: pipeline.py sync"
+    return f"\n⚠ Not synced: {', '.join(parts)}. Ask Outreach Magic to sync."
 
 
 def sync_all(
@@ -6361,44 +6362,9 @@ def format_quarantine_campaign_summary(
         )
 
     if include_steps:
-        lines.extend(
-            [
-                "",
-                "Next steps to map campaigns to a workspace:",
-                '1. Create one or more workspaces (if needed):  pipeline.py workspace create --name "Team Name"',
-                "2. Ensure every campaign is covered by either a campaign rule or a manual mapping.",
-                "3. Add campaign mappings (replace WORKSPACE_SLUG):",
-            ]
-        )
-        seen_commands: set[str] = set()
-        for row in campaigns:
-            campaign_id = str(row.get("campaign_id") or "").strip()
-            campaign_name = str(row.get("campaign") or "unknown").strip() or "unknown"
-            if campaign_id:
-                cmd = (
-                    "   pipeline.py campaign-map add "
-                    f"--workspace WORKSPACE_SLUG --campaign-id {campaign_id}"
-                )
-            else:
-                escaped = campaign_name.replace('"', '\\"')
-                cmd = (
-                    "   pipeline.py campaign-map add "
-                    f'--workspace WORKSPACE_SLUG --campaign-name "{escaped}"'
-                )
-            if cmd in seen_commands:
-                continue
-            seen_commands.add(cmd)
-            lines.append(cmd)
-        lines.extend(
-            [
-                "4. Replay quarantined events:  pipeline.py quarantine replay",
-                "   (or skip junk: pipeline.py quarantine skip --id QUEUE_ID)",
-                "   (or skip campaign: pipeline.py quarantine skip --campaign-id ID)",
-                "   (or skip no-campaign events: pipeline.py quarantine skip --reason no_campaign_id)",
-                "   (then sync so skips persist across machines and pull --full)",
-                "   (or assign one: pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG; then sync + pull)",
-            ]
-        )
+        from user_messages import quarantine_summary_steps
+
+        lines.extend(quarantine_summary_steps())
 
     return "\n".join(lines)
 
@@ -6505,6 +6471,118 @@ def skip_quarantine_bulk(
     if errors:
         out["errors"] = errors
     return out
+
+
+def backfill_null_campaign_quarantine(
+    *,
+    org_id: str = DEFAULT_ORG_ID,
+    auto_skip: bool = True,
+    quiet: bool = False,
+) -> dict:
+    """Move historical events with campaign_id IS NULL into quarantine (skipped by default)."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT e.id, e.lead_id, e.event_type, e.direction, e.channel, e.subject,
+                  e.body_preview, e.metadata_json, e.sender, e.created_at,
+                  l.email
+           FROM events e
+           LEFT JOIN leads l ON l.id = e.lead_id
+           WHERE e.campaign_id IS NULL
+           ORDER BY e.id""",
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return {"status": "ok", "found": 0, "quarantined": 0, "skipped": 0}
+
+    now = datetime.now(timezone.utc).isoformat()
+    quarantined = 0
+    skipped = 0
+    for row in rows:
+        meta = {}
+        try:
+            meta = json.loads(row["metadata_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        platform = str(meta.get("platform") or meta.get("source_platform") or "relay").strip()
+        relay_id = meta.get("relay_id")
+        external_id = str(relay_id) if relay_id not in (None, "") else f"local_event_{row['id']}"
+
+        existing = conn.execute(
+            """SELECT id, status FROM unmapped_campaign_queue
+               WHERE org_id = ? AND external_event_id = ?""",
+            (org_id, external_id),
+        ).fetchone()
+        if existing:
+            if auto_skip and existing["status"] == "pending":
+                conn.execute(
+                    """UPDATE unmapped_campaign_queue
+                       SET status = 'skipped', resolved_at = ?, cloud_pending = 1
+                       WHERE id = ?""",
+                    (now, existing["id"]),
+                )
+                skipped += 1
+            continue
+
+        payload = {
+            "platform": platform,
+            "event_type": row["event_type"],
+            "lead": row["email"] or "",
+            "received_at": row["created_at"],
+            "relay_id": relay_id,
+            "raw": meta,
+            "backfill_event_id": row["id"],
+        }
+        ctx = extract_campaign_context(platform, {}, {})
+        qid = quarantine_event(
+            conn,
+            org_id,
+            ctx,
+            reason="no_campaign_id",
+            payload=payload,
+            external_event_id=external_id,
+        )
+        quarantined += 1
+        if auto_skip:
+            conn.execute(
+                """UPDATE unmapped_campaign_queue
+                   SET status = 'skipped', resolved_at = ?, cloud_pending = 1
+                   WHERE id = ?""",
+                (now, qid),
+            )
+            skipped += 1
+
+    conn.commit()
+    conn.close()
+    result = {
+        "status": "ok",
+        "found": len(rows),
+        "quarantined": quarantined,
+        "skipped": skipped,
+        "auto_skip": auto_skip,
+    }
+    if not quiet and quarantined:
+        from user_messages import no_campaign_event_message
+
+        print(
+            f"Backfilled {quarantined} no-campaign event(s) into quarantine "
+            f"({'skipped' if auto_skip else 'pending'}).",
+            file=sys.stderr,
+        )
+        print(no_campaign_event_message(platform="relay"), file=sys.stderr)
+    return result
+
+
+def maybe_backfill_null_campaign_quarantine(*, quiet: bool = True) -> dict:
+    """Run one-time backfill for legacy null-campaign events."""
+    cfg = load_config()
+    if cfg.get("null_campaign_backfill_at"):
+        return {"status": "skipped", "reason": "already_backfilled"}
+    result = backfill_null_campaign_quarantine(quiet=quiet)
+    if result.get("quarantined", 0) > 0 or result.get("found", 0) == 0:
+        cfg = load_config()
+        cfg["null_campaign_backfill_at"] = datetime.now(timezone.utc).isoformat()
+        save_config(cfg)
+    return result
 
 
 def assign_quarantine(queue_id: str, workspace_slug: str) -> dict:
@@ -7526,10 +7604,9 @@ def _snapshot_kind_stream(kind: str) -> str:
 def _pull_failure_message(exc: Exception) -> str:
     msg = str(exc).strip()
     if "routing api" in msg.lower():
-        return (
-            f"{msg}\n\nRouting sync failed. Retry without cloud routing sync:\n"
-            "  pipeline.py pull --skip-routing-sync"
-        )
+        from user_messages import MSG_PULL_SKIP_ROUTING
+
+        return f"{msg}\n\nRouting sync failed. {MSG_PULL_SKIP_ROUTING}."
     if "sqlitenomem" in msg.lower() or "out of memory" in msg.lower():
         return (
             f"{msg}\n\nRelay D1 ran out of memory on a large pull page. "
@@ -7537,11 +7614,12 @@ def _pull_failure_message(exc: Exception) -> str:
             f"(Events are capped at {RELAY_PULL_EVENT_MAX}/page.)"
         )
     if "timed out" in msg.lower() or "timeout" in msg.lower():
+        from user_messages import MSG_PULL_PROBE, MSG_PULL_SKIP_SNAPSHOTS
+
         return (
             f"{msg}\n\nRelay pull HTTP timed out. Events are usually enough: "
-            "  pipeline.py pull --skip-snapshots\n"
-            "  pipeline.py pull --probe\n"
-            "If you need snapshots, retry with a smaller backlog or use --kind <kind>."
+            f"{MSG_PULL_SKIP_SNAPSHOTS}, or {MSG_PULL_PROBE.lower()}. "
+            "If you need snapshots, retry with a smaller backlog or pull one snapshot kind at a time."
         )
     return msg
 
@@ -8352,13 +8430,13 @@ This will:
 You will lose any local-only data that was NOT synced to the relay.
 pull --full alone does NOT refresh — it still skips rows already in relay_ingested.
 
-Re-run with: pipeline.py refresh --yes
+Ask Outreach Magic to refresh the local database (confirm when prompted)
 
 If refresh times out during the relay pull, your previous database is kept intact
-(staging pull). Resume with: pipeline.py pull --full
+(staging pull). Resume with a full sync when ready.
 
 If the database is empty or corrupted after a failed refresh:
-  pipeline.py restore --latest
+  Ask Outreach Magic to restore from backup
 """.strip()
 
 
@@ -8433,12 +8511,14 @@ def restore_local_database(
         }
 
     if not yes:
+        from user_messages import MSG_RESTORE_LATEST_YES
+
         return {
             "status": "error",
             "error": "confirmation_required",
             "message": (
                 f"This will replace {db_path} with backup:\n  {backup_path}\n"
-                "Re-run with: pipeline.py restore --latest --yes"
+                f"{MSG_RESTORE_LATEST_YES}"
             ),
             "backup": str(backup_path),
         }
@@ -8657,6 +8737,8 @@ def refresh_local_database(
                 quiet=quiet,
             )
         except RuntimeError as exc:
+            from user_messages import MSG_RESTORE_LATEST_YES
+
             return {
                 **result,
                 "status": "error",
@@ -8664,7 +8746,7 @@ def refresh_local_database(
                 "message": (
                     f"{exc}\n\nYour previous database was not modified. "
                     f"Backup: {result.get('backup', '(none)')}\n"
-                    "To restore manually: pipeline.py restore --latest --yes"
+                    f"{MSG_RESTORE_LATEST_YES}"
                 ),
             }
         staging_ready = True
@@ -8779,6 +8861,11 @@ def login(
             )
             print("STATUS=success")
             return
+        if status == "account_pending_approval":
+            _set_account_approval_pending(True)
+            print("STATUS=account_pending_approval")
+            print(_account_pending_message())
+            return
         if status == "pending":
             print("STATUS=pending")
             return
@@ -8795,9 +8882,43 @@ def login(
             client_id=get_or_create_client_id(),
         )
     except RuntimeError as exc:
+        if str(exc) == "account_pending_approval":
+            _set_account_approval_pending(True)
+            print(_account_pending_message())
+            sys.exit(0)
         print(f"\nLogin failed: {exc}")
         sys.exit(1)
+    _set_account_approval_pending(False)
     _save_agent_key_and_validate(agent_key, reconnect=reconnect)
+
+
+def _account_pending_message() -> str:
+    from user_messages import MSG_ACCOUNT_PENDING
+
+    return MSG_ACCOUNT_PENDING
+
+
+def _set_account_approval_pending(pending: bool) -> None:
+    cfg = load_config()
+    if pending:
+        cfg["account_approval_status"] = "pending"
+    else:
+        cfg.pop("account_approval_status", None)
+    save_config(cfg)
+
+
+def _account_approval_pending() -> bool:
+    return load_config().get("account_approval_status") == "pending"
+
+
+def _check_account_approval_pending() -> bool:
+    """Print guidance and return True if login is blocked pending approval."""
+    if not _account_approval_pending():
+        return False
+    from user_messages import MSG_ACCOUNT_PENDING_SHORT
+
+    print(MSG_ACCOUNT_PENDING_SHORT)
+    return True
 
 
 def logout():
@@ -8831,7 +8952,9 @@ def _save_agent_key_and_validate(agent_key: str, *, reconnect: bool = False):
         message = result.get("message", "")
         if "401" in str(status) or "Invalid" in message or "revoked" in message.lower():
             print(f"Authentication failed: {message}")
-            print("Run: pipeline.py login")
+            from user_messages import MSG_LOGIN
+
+            print(MSG_LOGIN)
             cfg.pop("agent_key", None)
             save_config(cfg)
             sys.exit(1)
@@ -8891,9 +9014,13 @@ def cmd_platform_map(platform: Optional[str] = None) -> None:
 
 
 def _require_agent_key() -> str:
+    if _check_account_approval_pending():
+        sys.exit(1)
     key = get_agent_key()
     if not key:
-        print("No agent key configured. Run: pipeline.py login")
+        from user_messages import MSG_NO_AGENT_KEY
+
+        print(MSG_NO_AGENT_KEY)
         sys.exit(1)
     return key
 
@@ -8935,6 +9062,14 @@ def _staleness_indicator(iso_ts: Optional[str]) -> str:
 
 def cmd_status():
     """Dashboard-style status: plan, connections, usage, routing."""
+    if _check_account_approval_pending():
+        print()
+        print("Outreach Magic Status")
+        print("\u2500" * 50)
+        print(f"Account: Pending approval")
+        print(_account_pending_message())
+        print()
+        return
     agent_key = _require_agent_key()
     api_base = routing_cloud.get_api_base(load_config)
 
@@ -9003,7 +9138,7 @@ def cmd_status():
     active = [c for c in connections if c.get("status") == "active"]
     print(f"Connections ({len(active)} active)")
     if not connections:
-        print("  No connections. Run: pipeline.py connect-platform --platform smartlead")
+        print("  No connections. Ask Outreach Magic to connect a platform (e.g. Smartlead).")
     else:
         for c in connections:
             plat = c.get("platform", "?")
@@ -9045,7 +9180,7 @@ def cmd_connections(json_output: bool = False):
         return
 
     if not connections:
-        print("No connections. Run: pipeline.py connect-platform --platform smartlead")
+        print("No connections. Ask Outreach Magic to connect a platform (e.g. Smartlead).")
         return
 
     print()
@@ -10438,6 +10573,15 @@ def main():
         metavar="REASON",
         help="Skip all pending rows with this reason (e.g. no_campaign_id); run sync after",
     )
+    q_backfill = q_sub.add_parser(
+        "backfill-no-campaign",
+        help="Move legacy events with no campaign into quarantine (skipped by default)",
+    )
+    q_backfill.add_argument(
+        "--keep-pending",
+        action="store_true",
+        help="Add to quarantine as pending instead of auto-skipping",
+    )
     q_assign = q_sub.add_parser("assign", help="Assign workspace (syncs to relay; ingested on next pull)")
     q_assign.add_argument("--id", required=True, help="Queue item id")
     q_assign.add_argument("--workspace", required=True, help="Workspace slug")
@@ -10566,7 +10710,7 @@ def main():
         print(f"  input/            → {get_input_dir()}")
         print(f"  export/           → {get_export_dir()}")
         print()
-        print("Next: run 'pipeline.py login' to connect your agent to Outreach Magic.")
+        print("Next: ask Outreach Magic to connect (login step).")
         return
 
     # Commands that only talk to the app API (no local DB required)
@@ -10833,7 +10977,7 @@ def main():
         return
 
     if not db_exists():
-        print("Database not initialized. Run: pipeline.py init")
+        print("Database not initialized. Ask Outreach Magic to initialize the database.")
         sys.exit(1)
 
     migrate_db()
@@ -10941,7 +11085,7 @@ def main():
                     "Warning: pull cursor stalled on a full relay page; "
                     "investigate relay max_id pagination."
                 )
-            print("Run 'pipeline.py show' to see your updated pipeline.")
+            print("Ask Outreach Magic to show the pipeline.")
         return
 
     pull_before_commands = ("show", "lead-table", "stats", "campaigns", "summary")
@@ -11175,7 +11319,7 @@ def main():
         action = getattr(args, "tag_action", None)
         if action == "repair":
             if not db_exists():
-                print(json.dumps({"error": "Database not initialized. Run: pipeline.py init"}))
+                print(json.dumps({"error": "Database not initialized. Ask Outreach Magic to initialize."}))
                 sys.exit(1)
             migrate_db()
             conn = get_conn()
@@ -11468,7 +11612,7 @@ def main():
         elif args.review_command in ("export", "sync"):
             tok = get_agent_key()
             if not tok:
-                print(json.dumps({"error": "login required — pipeline.py login"}))
+                print(json.dumps({"error": "login required — ask Outreach Magic to log in"}))
                 sys.exit(1)
             api_base = review_cloud.get_api_base(load_config)
             template = pipeline_lead_review.normalize_review_template(args.template)
@@ -11914,6 +12058,14 @@ def main():
             else:
                 print("Error: quarantine skip requires --id, --campaign-id, --reason, or --all")
                 sys.exit(1)
+        elif args.quarantine_cmd == "backfill-no-campaign":
+            print(json.dumps(
+                backfill_null_campaign_quarantine(
+                    auto_skip=not getattr(args, "keep_pending", False),
+                    quiet=False,
+                ),
+                indent=2,
+            ))
         elif args.quarantine_cmd == "assign":
             print(json.dumps(assign_quarantine(args.id, args.workspace), indent=2))
         elif args.quarantine_cmd == "replay":

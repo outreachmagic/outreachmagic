@@ -54,14 +54,17 @@ class TestLeadReview(unittest.TestCase):
         self.assertIn("name", keys)
         self.assertIn("workspace_stage", keys)
 
-    def test_build_column_metadata_colors(self):
+    def test_build_column_metadata_legend_and_icons(self):
         cols = plr.build_column_metadata(["lead_id", "name", "email_sent_count"])
         self.assertEqual(cols[0]["type"], "key")
         self.assertEqual(cols[0]["label"], "🔒 Lead Id")
         self.assertEqual(cols[1]["label"], "✏️ Name")
         self.assertTrue(cols[1]["label"].startswith("✏️"))
         self.assertTrue(cols[2]["label"].startswith("🔒"))
-        self.assertEqual(cols[1]["format"]["backgroundColor"], plr.EDIT_BG)
+        self.assertIn("note", cols[0])
+        self.assertIn("Outreach Magic lead review sheet", cols[0]["note"])
+        self.assertNotIn("format", cols[0])
+        self.assertNotIn("note", cols[1])
 
     def test_list_presets(self):
         resp = plr.list_presets()
@@ -69,6 +72,8 @@ class TestLeadReview(unittest.TestCase):
         self.assertIn("basic", resp["presets"])
         self.assertIn("lead_info", resp["column_groups"])
         self.assertTrue(any(f["key"] == "tags" for f in resp["all_fields"]))
+        self.assertIn("sheet_legend_note", resp)
+        self.assertIn("Outreach Magic lead review sheet", resp["sheet_legend_note"])
 
     def test_build_export_payload_includes_columns(self):
         ws = om.create_workspace("Export Meta", slug="export-meta")

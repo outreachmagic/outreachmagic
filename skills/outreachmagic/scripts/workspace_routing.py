@@ -679,47 +679,19 @@ MULTI_WORKSPACE_HOLD_MESSAGE = (
 
 def format_no_campaign_event_message(ctx: CampaignContext) -> str:
     """User-facing instructions when a relay event has no campaign metadata."""
-    platform = ctx.source_platform
-    return "\n".join([
-        f"Relay event from {platform} has no campaign id or name.",
-        "It was not processed and is waiting in the quarantine queue.",
-        "",
-        "To skip junk events permanently:",
-        "  pipeline.py quarantine skip --reason no_campaign_id",
-        "  pipeline.py sync",
-        "",
-        "Or skip one item:",
-        "  pipeline.py quarantine list",
-        "  pipeline.py quarantine skip --id QUEUE_ID",
-        "  pipeline.py sync",
-    ])
+    from user_messages import no_campaign_event_message
+
+    return no_campaign_event_message(platform=ctx.source_platform)
 
 
 def format_unmapped_campaign_message(ctx: CampaignContext) -> str:
     """User-facing instructions when multi-workspace routing cannot resolve a campaign."""
-    label = campaign_display_label(ctx)
-    platform = ctx.source_platform
-    lines = [
-        f"Campaign '{label}' ({platform}) is not mapped to a workspace.",
-        "This event was not processed and is waiting in the quarantine queue.",
-        "",
-        "To fix this:",
-        '1. Create a workspace:  pipeline.py workspace create --name "Your Team"',
-        "2. Map this campaign to that workspace:",
-        f"     pipeline.py campaign-map add --workspace WORKSPACE_SLUG --campaign-id ID",
-        f'     pipeline.py campaign-map add --workspace WORKSPACE_SLUG --campaign-name "{label}"',
-        "   Or use a contains/prefix/regex rule:",
-        f'     pipeline.py campaign-map add --workspace WORKSPACE_SLUG --match-strategy rule_contains --campaign-name "substring"',
-        "3. Or resolve one item:",
-        "     pipeline.py quarantine list",
-        "     pipeline.py quarantine skip --id QUEUE_ID",
-        "     pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG  (then sync + pull)",
-    ]
-    if ctx.campaign_id and ctx.campaign_name_raw and ctx.campaign_id != ctx.campaign_name_raw:
-        lines[6] = (
-            f"     pipeline.py campaign-map add --workspace WORKSPACE_SLUG --campaign-id {ctx.campaign_id}"
-        )
-    return "\n".join(lines)
+    from user_messages import unmapped_campaign_message
+
+    return unmapped_campaign_message(
+        label=campaign_display_label(ctx),
+        platform=ctx.source_platform,
+    )
 
 
 @dataclass

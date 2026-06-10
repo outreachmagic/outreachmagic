@@ -1,0 +1,543 @@
+{
+  "version": "1.29.8",
+  "sheet_legend_note": "Outreach Magic lead review sheet\n\nIcons in column headers:\n  ✏️  Editable — changes sync back when you run review sync\n  🔒  Read-only — sourced from your database (do not edit)\n\nRules:\n  • Do not rename column headers (sync matches by header text)\n  • lead_id is the stable row key — do not edit this column\n  • Tags: separate multiple tags with ; or ,\n  • Workspace fields (stage, status, sentiment, priority) sync to this workspace only\n  • Company edits sync to the shared companies table for all leads linked to that company\n  • Personalization fields sync to this lead's personalization record\n  • Read-only columns are computed from events, bounces, verification, and imports\n\nDropdowns: Workspace Stage and Lead Sentiment use picklists when formatting finishes.\n\nWhen finished editing, ask Outreach Magic to sync this sheet.",
+  "field_aliases": {
+    "linkedin": "linkedin_url"
+  },
+  "column_groups": {
+    "lead_info": [
+      "name",
+      "title",
+      "email",
+      "linkedin_url",
+      "company",
+      "industry",
+      "headcount"
+    ],
+    "identities": [
+      "linkedin_url",
+      "linkedin_sales_nav_id"
+    ],
+    "location": [
+      "location_city",
+      "location_state",
+      "location_country"
+    ],
+    "workspace_state": [
+      "workspace_stage",
+      "lead_status",
+      "lead_sentiment",
+      "contact_priority"
+    ],
+    "activity": [
+      "email_sent_count",
+      "linkedin_sent_count",
+      "total_replies_count",
+      "last_contacted_at"
+    ],
+    "personalization": [
+      "personalized_first_name",
+      "personalized_company_name"
+    ],
+    "attribution": [
+      "original_source",
+      "original_source_detail",
+      "latest_sender"
+    ],
+    "timestamps": [
+      "created_at",
+      "updated_at"
+    ],
+    "messaging": [
+      "latest_outbound_subject",
+      "latest_outbound_preview",
+      "latest_inbound_subject",
+      "latest_inbound_preview"
+    ]
+  },
+  "field_defs": [
+    {
+      "key": "be_bounce_message",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "be_last_seen_at",
+      "type": "timestamp",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "be_platform",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "company",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "basic",
+        "standard",
+        "full"
+      ],
+      "scope": "lead"
+    },
+    {
+      "key": "contact_priority",
+      "type": "integer",
+      "editable": true,
+      "in_presets": [
+        "standard",
+        "full"
+      ],
+      "scope": "workspace"
+    },
+    {
+      "key": "created_at",
+      "type": "timestamp",
+      "editable": false,
+      "in_presets": [
+        "standard",
+        "full"
+      ]
+    },
+    {
+      "key": "email",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "basic",
+        "standard",
+        "full"
+      ],
+      "scope": "lead"
+    },
+    {
+      "key": "email_sent_count",
+      "type": "integer",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "email_verification_status",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "standard",
+        "full"
+      ]
+    },
+    {
+      "key": "headcount",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "standard",
+        "full"
+      ],
+      "scope": "lead"
+    },
+    {
+      "key": "industry",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "standard",
+        "full"
+      ],
+      "scope": "lead"
+    },
+    {
+      "key": "last_contacted_at",
+      "type": "timestamp",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "latest_inbound_preview",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "latest_inbound_subject",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "latest_outbound_preview",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "latest_outbound_subject",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "latest_sender",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "latest_source",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "standard",
+        "full"
+      ]
+    },
+    {
+      "key": "latest_source_detail",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "standard",
+        "full"
+      ]
+    },
+    {
+      "key": "lead_id",
+      "type": "key",
+      "editable": false,
+      "in_presets": [
+        "basic",
+        "standard",
+        "full"
+      ]
+    },
+    {
+      "key": "lead_sentiment",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "standard",
+        "full"
+      ],
+      "scope": "workspace"
+    },
+    {
+      "key": "lead_status",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "standard",
+        "full"
+      ],
+      "scope": "workspace"
+    },
+    {
+      "key": "lev_source",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "lev_verified_at",
+      "type": "timestamp",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "linkedin_sales_nav_id",
+      "type": "string",
+      "editable": true,
+      "in_presets": [],
+      "scope": "identity"
+    },
+    {
+      "key": "linkedin_sent_count",
+      "type": "integer",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "linkedin_url",
+      "type": "string",
+      "editable": true,
+      "in_presets": [],
+      "scope": "lead"
+    },
+    {
+      "key": "location_city",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "standard",
+        "full"
+      ],
+      "scope": "lead"
+    },
+    {
+      "key": "location_country",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "standard",
+        "full"
+      ],
+      "scope": "lead"
+    },
+    {
+      "key": "location_state",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "standard",
+        "full"
+      ],
+      "scope": "lead"
+    },
+    {
+      "key": "name",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "basic",
+        "standard",
+        "full"
+      ],
+      "scope": "lead"
+    },
+    {
+      "key": "notes",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "basic",
+        "standard",
+        "full"
+      ],
+      "scope": "notes"
+    },
+    {
+      "key": "original_source",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "standard",
+        "full"
+      ]
+    },
+    {
+      "key": "original_source_detail",
+      "type": "string",
+      "editable": false,
+      "in_presets": [
+        "standard",
+        "full"
+      ]
+    },
+    {
+      "key": "personalized_company_name",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "full"
+      ],
+      "scope": "personalization_company"
+    },
+    {
+      "key": "personalized_first_name",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "full"
+      ],
+      "scope": "personalization_lead"
+    },
+    {
+      "key": "tags",
+      "type": "tags",
+      "editable": true,
+      "in_presets": [
+        "basic",
+        "standard",
+        "full"
+      ],
+      "scope": "tags"
+    },
+    {
+      "key": "title",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "basic",
+        "standard",
+        "full"
+      ],
+      "scope": "lead"
+    },
+    {
+      "key": "total_replies_count",
+      "type": "integer",
+      "editable": false,
+      "in_presets": [
+        "full"
+      ]
+    },
+    {
+      "key": "updated_at",
+      "type": "timestamp",
+      "editable": false,
+      "in_presets": [
+        "standard",
+        "full"
+      ]
+    },
+    {
+      "key": "workspace_stage",
+      "type": "string",
+      "editable": true,
+      "in_presets": [
+        "standard",
+        "full"
+      ],
+      "scope": "workspace"
+    }
+  ],
+  "preset_keys": {
+    "basic": [
+      "lead_id",
+      "name",
+      "email",
+      "company",
+      "title",
+      "tags",
+      "notes"
+    ],
+    "standard": [
+      "lead_id",
+      "name",
+      "email",
+      "company",
+      "title",
+      "tags",
+      "notes",
+      "linkedin_url",
+      "location_city",
+      "location_state",
+      "location_country",
+      "industry",
+      "headcount",
+      "workspace_stage",
+      "lead_status",
+      "lead_sentiment",
+      "contact_priority",
+      "email_verification_status",
+      "original_source",
+      "original_source_detail",
+      "latest_source",
+      "latest_source_detail",
+      "created_at",
+      "updated_at"
+    ],
+    "full": [
+      "lead_id",
+      "name",
+      "email",
+      "company",
+      "title",
+      "tags",
+      "notes",
+      "linkedin_url",
+      "location_city",
+      "location_state",
+      "location_country",
+      "industry",
+      "headcount",
+      "workspace_stage",
+      "lead_status",
+      "lead_sentiment",
+      "contact_priority",
+      "email_verification_status",
+      "lev_source",
+      "lev_verified_at",
+      "original_source",
+      "original_source_detail",
+      "latest_source",
+      "latest_source_detail",
+      "created_at",
+      "updated_at",
+      "last_contacted_at",
+      "email_sent_count",
+      "linkedin_sent_count",
+      "total_replies_count",
+      "latest_sender",
+      "personalized_first_name",
+      "personalized_company_name",
+      "latest_outbound_subject",
+      "latest_outbound_preview",
+      "latest_inbound_subject",
+      "latest_inbound_preview",
+      "be_platform",
+      "be_bounce_message",
+      "be_last_seen_at"
+    ]
+  },
+  "lead_review_presets": [
+    "basic",
+    "standard",
+    "full"
+  ],
+  "pipeline_stages": [
+    "prospecting",
+    "contacted",
+    "replied",
+    "interested",
+    "proposal",
+    "won",
+    "lost"
+  ],
+  "lead_sentiment_values": [
+    "positive",
+    "negative",
+    "neutral",
+    "invalid"
+  ],
+  "field_display_names": {
+    "lev_source": "Email Verification Source",
+    "lev_verified_at": "Email Verification Verified At",
+    "latest_source": "Latest Source",
+    "latest_source_detail": "Latest Source Detail",
+    "be_platform": "Bounce Platform",
+    "be_bounce_message": "Bounce Message",
+    "be_last_seen_at": "Bounce Last Seen At",
+    "personalized_first_name": "Personalized First Name",
+    "personalized_company_name": "Personalized Company Name"
+  }
+}

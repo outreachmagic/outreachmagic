@@ -25,7 +25,7 @@ def check_outreachmagic(om_dir: Any, key_status_fn: Callable) -> Optional[str]:
         return "OutreachMagic not found — install outreachmagic first"
     has_key, _source = key_status_fn(om_dir)
     if not has_key:
-        return "OutreachMagic agent key not configured — run pipeline.py login"
+        return "OutreachMagic agent key not configured — ask Outreach Magic to log in"
     return None
 
 

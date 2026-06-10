@@ -54,7 +54,7 @@ def test_database_has_schema_false_for_missing_file():
 
 def test_format_database_recovery_message_mentions_restore():
     msg = format_database_recovery_message()
-    assert "restore --latest" in msg
+    assert "restore from backup" in msg
 
 
 def test_list_database_backups_newest_first(tmp_path):

@@ -176,11 +176,23 @@ def claim_device_token(
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
             },
             allow_errors=frozenset(
-                {"authorization_pending", "expired_token", "access_denied", "invalid_grant"}
+                {
+                    "authorization_pending",
+                    "account_pending_approval",
+                    "expired_token",
+                    "access_denied",
+                    "invalid_grant",
+                }
             ),
         )
 
         error = token_resp.get("error")
+        if error == "account_pending_approval":
+            return {
+                "status": "account_pending_approval",
+                "access_token": None,
+                "error": error,
+            }
         if error == "authorization_pending":
             if wait_seconds == 0 or time.time() >= deadline:
                 return {"status": "pending", "access_token": None, "error": error}
@@ -254,10 +266,12 @@ def run_device_login(
     )
     if claim.get("status") == "success":
         return str(claim["access_token"])
+    if claim.get("status") == "account_pending_approval":
+        raise RuntimeError("account_pending_approval")
     if claim.get("status") and claim.get("status") != "pending":
         raise RuntimeError(str(claim.get("status")))
 
     raise RuntimeError(
         "Authorization timed out — open the link in your browser and confirm the code before it "
-        "expires (this step cannot be completed in chat). Run: pipeline.py login"
+        "expires (this step cannot be completed in chat). Ask Outreach Magic to log in and try again."
     )

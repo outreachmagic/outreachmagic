@@ -5,20 +5,50 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+import sys
 from typing import Any, Callable, Optional
 
-from constants import COMPANY_DOMAIN_SQL, require_professional_domain_clause
+from constants import COMPANY_DOMAIN_SQL, PIPELINE_STAGES, require_professional_domain_clause
 from workspace_routing import resolve_workspace_identity
+
+LEAD_SENTIMENT_VALUES = ("positive", "negative", "neutral", "invalid")
+
+SHEET_LEGEND_NOTE = """Outreach Magic lead review sheet
+
+Icons in column headers:
+  ✏️  Editable — changes sync back when you run review sync
+  🔒  Read-only — sourced from your database (do not edit)
+
+Rules:
+  • Do not rename column headers (sync matches by header text)
+  • lead_id is the stable row key — do not edit this column
+  • Tags: separate multiple tags with ; or ,
+  • Workspace fields (stage, status, sentiment, priority) sync to this workspace only
+  • Company edits sync to the shared companies table for all leads linked to that company
+  • Personalization fields sync to this lead's personalization record
+  • Read-only columns are computed from events, bounces, verification, and imports
+
+Dropdowns: Workspace Stage and Lead Sentiment use picklists when formatting finishes.
+
+When finished editing, ask Outreach Magic to sync this sheet."""
+
+FIELD_DISPLAY_NAMES: dict[str, str] = {
+    "lev_source": "Email Verification Source",
+    "lev_verified_at": "Email Verification Verified At",
+    "latest_source": "Latest Source",
+    "latest_source_detail": "Latest Source Detail",
+    "be_platform": "Bounce Platform",
+    "be_bounce_message": "Bounce Message",
+    "be_last_seen_at": "Bounce Last Seen At",
+    "personalized_first_name": "Personalized First Name",
+    "personalized_company_name": "Personalized Company Name",
+}
 
 
 def _normalize_tag(tag: str) -> str:
     return re.sub(r"\s+", "_", (tag or "").strip().lower())
 
 DETAIL_LEVELS = ("basic", "standard", "full", "custom")
-
-KEY_BG, KEY_TEXT = "#FFF3CD", "#856404"
-EDIT_BG, EDIT_TEXT = "#D4EDDA", "#155724"
-READ_BG, READ_TEXT = "#CCE5FF", "#004085"
 
 # Map legacy field keys / sheet headers → canonical export column keys.
 FIELD_ALIASES: dict[str, str] = {
@@ -70,8 +100,12 @@ FIELD_DEFS: dict[str, dict[str, Any]] = {
     "lead_sentiment": {"type": "string", "editable": True, "scope": "workspace", "presets": ("standard", "full")},
     "contact_priority": {"type": "integer", "editable": True, "scope": "workspace", "presets": ("standard", "full")},
     "email_verification_status": {"type": "string", "editable": False, "presets": ("standard", "full")},
+    "lev_source": {"type": "string", "editable": False, "presets": ("full",)},
+    "lev_verified_at": {"type": "timestamp", "editable": False, "presets": ("full",)},
     "original_source": {"type": "string", "editable": False, "presets": ("standard", "full")},
     "original_source_detail": {"type": "string", "editable": False, "presets": ("standard", "full")},
+    "latest_source": {"type": "string", "editable": False, "presets": ("standard", "full")},
+    "latest_source_detail": {"type": "string", "editable": False, "presets": ("standard", "full")},
     "created_at": {"type": "timestamp", "editable": False, "presets": ("standard", "full")},
     "updated_at": {"type": "timestamp", "editable": False, "presets": ("standard", "full")},
     "last_contacted_at": {"type": "timestamp", "editable": False, "presets": ("full",)},
@@ -89,6 +123,9 @@ FIELD_DEFS: dict[str, dict[str, Any]] = {
     "latest_outbound_preview": {"type": "string", "editable": False, "presets": ("full",)},
     "latest_inbound_subject": {"type": "string", "editable": False, "presets": ("full",)},
     "latest_inbound_preview": {"type": "string", "editable": False, "presets": ("full",)},
+    "be_platform": {"type": "string", "editable": False, "presets": ("full",)},
+    "be_bounce_message": {"type": "string", "editable": False, "presets": ("full",)},
+    "be_last_seen_at": {"type": "timestamp", "editable": False, "presets": ("full",)},
 }
 
 PRESET_KEYS: dict[str, list[str]] = {
@@ -97,16 +134,20 @@ PRESET_KEYS: dict[str, list[str]] = {
         "lead_id", "name", "email", "company", "title", "tags", "notes",
         "linkedin_url", "location_city", "location_state", "location_country", "industry", "headcount",
         "workspace_stage", "lead_status", "lead_sentiment", "contact_priority",
-        "email_verification_status", "original_source", "original_source_detail", "created_at", "updated_at",
+        "email_verification_status", "original_source", "original_source_detail",
+        "latest_source", "latest_source_detail", "created_at", "updated_at",
     ],
     "full": [
         "lead_id", "name", "email", "company", "title", "tags", "notes",
         "linkedin_url", "location_city", "location_state", "location_country", "industry", "headcount",
         "workspace_stage", "lead_status", "lead_sentiment", "contact_priority",
-        "email_verification_status", "original_source", "original_source_detail", "created_at", "updated_at",
+        "email_verification_status", "lev_source", "lev_verified_at",
+        "original_source", "original_source_detail", "latest_source", "latest_source_detail",
+        "created_at", "updated_at",
         "last_contacted_at", "email_sent_count", "linkedin_sent_count", "total_replies_count", "latest_sender",
         "personalized_first_name", "personalized_company_name",
         "latest_outbound_subject", "latest_outbound_preview", "latest_inbound_subject", "latest_inbound_preview",
+        "be_platform", "be_bounce_message", "be_last_seen_at",
     ],
 }
 
@@ -153,9 +194,17 @@ def normalize_review_template(template: str) -> str:
     return REVIEW_TEMPLATE_ALIASES.get(key, template)
 
 
+def _linkedin_sender_handle(sender: str) -> str:
+    text = (sender or "").strip()
+    match = re.search(r"linkedin\.com/in/([^/?#]+)", text, re.IGNORECASE)
+    if match:
+        text = match.group(1)
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    return slug or "sender"
+
+
 def _sender_col(sender: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "_", (sender or "").lower()).strip("_")
-    return f"linkedin_{slug or 'sender'}"
+    return f"linkedin_sender_{_linkedin_sender_handle(sender)}"
 
 
 def _canonical_field_key(key: str) -> str:
@@ -169,7 +218,9 @@ def _field_def(key: str) -> dict[str, Any]:
 
 def _display_field_name(key: str) -> str:
     """Title-case label for sheets (sync normalizes back to snake_case)."""
-    text = key.replace("personalized_", "").replace("_", " ")
+    if key in FIELD_DISPLAY_NAMES:
+        return FIELD_DISPLAY_NAMES[key]
+    text = key.replace("_", " ")
     return " ".join(part.capitalize() for part in text.split())
 
 
@@ -187,31 +238,8 @@ def _default_label(key: str) -> str:
     return _field_label(key)
 
 
-def _default_note(key: str) -> str:
-    defn = _field_def(key)
-    if defn.get("type") == "key":
-        return "Stable row key — do not edit or rename this column"
-    if not defn.get("editable"):
-        return "Read-only — computed from event data. Cannot be edited from the sheet."
-    scope = defn.get("scope")
-    if scope == "company":
-        return "Edits sync to the shared companies table for all leads linked to this company."
-    if scope == "workspace":
-        return "Edits sync back to workspace_leads for this lead in this workspace."
-    if scope in ("personalization_lead", "personalization_company"):
-        return "Edits sync back to personalization fields for this lead."
-    if scope == "tags":
-        return "Edits sync back as workspace tags for this lead."
-    return "Edits sync back to your OutreachMagic database for this lead. Do not rename this header."
-
-
-def _default_format(key: str) -> dict[str, Any]:
-    defn = _field_def(key)
-    if defn.get("type") == "key":
-        return {"backgroundColor": KEY_BG, "textColor": KEY_TEXT, "bold": False}
-    if defn.get("editable"):
-        return {"backgroundColor": EDIT_BG, "textColor": EDIT_TEXT, "bold": False}
-    return {"backgroundColor": READ_BG, "textColor": READ_TEXT, "bold": False}
+def sheet_legend_note() -> str:
+    return SHEET_LEGEND_NOTE
 
 
 def expand_field_groups(tokens: list[str]) -> list[str]:
@@ -235,6 +263,14 @@ def expand_field_groups(tokens: list[str]) -> list[str]:
     return ordered or ["lead_id"]
 
 
+def _dropdown_values(key: str) -> Optional[list[str]]:
+    if key == "workspace_stage":
+        return list(PIPELINE_STAGES)
+    if key == "lead_sentiment":
+        return list(LEAD_SENTIMENT_VALUES)
+    return None
+
+
 def build_column_metadata(field_keys: list[str]) -> list[dict[str, Any]]:
     cols: list[dict[str, Any]] = []
     for key in field_keys:
@@ -246,11 +282,14 @@ def build_column_metadata(field_keys: list[str]) -> list[dict[str, Any]]:
             "label": label,
             "type": defn.get("type", "string"),
             "editable": editable,
-            "note": _default_note(key),
-            "format": _default_format(key),
         }
+        if key == "lead_id":
+            meta["note"] = SHEET_LEGEND_NOTE
         if defn.get("scope"):
             meta["scope"] = defn["scope"]
+        dropdown = _dropdown_values(key)
+        if dropdown:
+            meta["validation"] = {"type": "dropdown", "values": dropdown}
         cols.append(meta)
     return cols
 
@@ -261,13 +300,12 @@ def field_keys_for_sender(sender: str) -> str:
 
 def build_sender_column_metadata(sender: str) -> dict[str, Any]:
     key = _sender_col(sender)
+    handle = _linkedin_sender_handle(sender).replace("_", " ").title()
     return {
         "key": key,
-        "label": _field_label(key, editable=False),
+        "label": f"🔒 Linkedin Sender {handle}",
         "type": "enum",
         "editable": False,
-        "note": "Read-only per-sender LinkedIn connection status from workspace data.",
-        "format": _default_format("latest_sender"),
     }
 
 
@@ -306,7 +344,11 @@ def resolve_columns(
     meta_by_key = {m["key"]: m["label"] for m in meta}
     cols: list[tuple[str, str]] = []
     for key in keys:
-        if key.startswith("linkedin_") and key not in FIELD_DEFS:
+        if key.startswith("linkedin_sender_") and key not in FIELD_DEFS:
+            handle = key[len("linkedin_sender_"):].replace("_", " ")
+            cols.append((build_sender_column_metadata(handle)["label"], key))
+        elif key.startswith("linkedin_") and key not in FIELD_DEFS:
+            # Pre-1.29.8 sheets used linkedin_<slug>; keep for sync compat.
             cols.append((build_sender_column_metadata(
                 key[len("linkedin_"):].replace("_", " "),
             )["label"], key))
@@ -333,6 +375,9 @@ def list_presets(template: str = "lead-review") -> dict[str, Any]:
         "presets": list(PRESET_KEYS.keys()),
         "column_groups": COLUMN_GROUPS,
         "field_aliases": FIELD_ALIASES,
+        "sheet_legend_note": SHEET_LEGEND_NOTE,
+        "pipeline_stages": list(PIPELINE_STAGES),
+        "lead_sentiment_values": list(LEAD_SENTIMENT_VALUES),
         "all_fields": all_fields,
     }
 
@@ -479,6 +524,47 @@ def _linkedin_cell(lead: dict, sender: str) -> str:
     return "not_requested"
 
 
+def _load_lead_supplements(
+    conn: sqlite3.Connection,
+    lead_ids: list[int],
+) -> dict[int, dict[str, Any]]:
+    """Batch-load latest email verification and bounce fields per lead."""
+    if not lead_ids:
+        return {}
+    placeholders = ",".join("?" * len(lead_ids))
+    out: dict[int, dict[str, Any]] = {lid: {} for lid in lead_ids}
+
+    lev_rows = conn.execute(
+        f"""SELECT lead_id, source, verified_at
+            FROM lead_email_verification
+            WHERE lead_id IN ({placeholders})
+            ORDER BY lead_id, verified_at DESC""",
+        lead_ids,
+    ).fetchall()
+    seen_lev: set[int] = set()
+    for row in lev_rows:
+        lid = int(row["lead_id"])
+        if lid in seen_lev:
+            continue
+        seen_lev.add(lid)
+        out[lid]["lev_source"] = row["source"] or ""
+        out[lid]["lev_verified_at"] = row["verified_at"] or ""
+
+    bounce_rows = conn.execute(
+        f"""SELECT lead_id, platform, bounce_message, last_seen_at
+            FROM bounce_events
+            WHERE lead_id IN ({placeholders})""",
+        lead_ids,
+    ).fetchall()
+    for row in bounce_rows:
+        lid = int(row["lead_id"])
+        out[lid]["be_platform"] = row["platform"] or ""
+        out[lid]["be_bounce_message"] = row["bounce_message"] or ""
+        out[lid]["be_last_seen_at"] = row["last_seen_at"] or ""
+
+    return out
+
+
 def _message_previews(conn: sqlite3.Connection, lead_id: int) -> dict[str, str]:
     rows = conn.execute(
         """SELECT direction, subject, body_preview, created_at
@@ -554,6 +640,13 @@ def build_lead_row(
         "email_verification_status": lead.get("email_verification_status") or "",
         "original_source": lead.get("original_source") or "",
         "original_source_detail": lead.get("original_source_detail") or "",
+        "latest_source": lead.get("latest_source") or "",
+        "latest_source_detail": lead.get("latest_source_detail") or "",
+        "lev_source": lead.get("lev_source") or "",
+        "lev_verified_at": lead.get("lev_verified_at") or "",
+        "be_platform": lead.get("be_platform") or "",
+        "be_bounce_message": lead.get("be_bounce_message") or "",
+        "be_last_seen_at": lead.get("be_last_seen_at") or "",
         "created_at": lead.get("created_at") or "",
         "updated_at": lead.get("updated_at") or "",
         "last_contacted_at": lead.get("last_contacted_at") or "",
@@ -629,7 +722,12 @@ def build_export_payload(
     )
     columns_meta: list[dict[str, Any]] = []
     for label, key in columns:
-        if key.startswith("linkedin_") and key not in FIELD_DEFS:
+        if key.startswith("linkedin_sender_") and key not in FIELD_DEFS:
+            handle = key[len("linkedin_sender_"):].replace("_", " ")
+            meta = build_sender_column_metadata(handle)
+            meta["label"] = label
+            columns_meta.append(meta)
+        elif key.startswith("linkedin_") and key not in FIELD_DEFS:
             sender = key[len("linkedin_"):].replace("_", " ")
             meta = build_sender_column_metadata(sender)
             meta["label"] = label
@@ -661,11 +759,21 @@ def build_export_payload(
         email_verification_status=email_verification_status,
         enrich_fn=enrich_fn,
     )
+    lead_ids = [int(lead["id"]) for lead in leads if lead.get("id") is not None]
+    supplements = _load_lead_supplements(conn, lead_ids)
+    for lead in leads:
+        lid = lead.get("id")
+        if lid is None:
+            continue
+        lead.update(supplements.get(int(lid), {}))
+
     headers = [label for label, _key in columns]
-    rows = [
-        build_lead_row(lead, columns, conn=conn, sender_profiles=senders)
-        for lead in leads
-    ]
+    total = len(leads)
+    rows: list[list[Any]] = []
+    for idx, lead in enumerate(leads, start=1):
+        if total >= 50 and (idx == 1 or idx % 100 == 0 or idx == total):
+            print(f"Building export row {idx}/{total}...", file=sys.stderr)
+        rows.append(build_lead_row(lead, columns, conn=conn, sender_profiles=senders))
     return {
         "template": "lead-review",
         "title": title,

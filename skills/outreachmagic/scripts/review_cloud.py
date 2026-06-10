@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
@@ -45,8 +47,8 @@ def _request_json(
             message = detail or exc.reason
         if exc.code == 403 and "review:write" in str(message).lower():
             message = (
-                f"{message}. Re-login to refresh scopes: pipeline.py login "
-                "(or revoke the key at app.outreachmagic.io/settings/agent and login again)."
+                f"{message}. Ask Outreach Magic to log in again to refresh scopes "
+                "(or revoke the key at app.outreachmagic.io/settings/agent and connect again)."
             )
         raise RuntimeError(f"Review API {exc.code}: {message}") from exc
     except urllib.error.URLError as exc:
@@ -101,7 +103,23 @@ def export_review(
             body["fields"] = fields
     else:
         body["candidates"] = candidates or []
-    return _request_json("POST", f"{api_base}/api/review/export", token, body=body)
+    row_count = len(body.get("rows") or [])
+    if row_count:
+        print(f"Uploading {row_count} rows to Google Sheets...", file=sys.stderr)
+    started = time.monotonic()
+    result = _request_json("POST", f"{api_base}/api/review/export", token, body=body)
+    elapsed = round(time.monotonic() - started, 1)
+    if isinstance(result, dict):
+        timings = result.get("timings")
+        if isinstance(timings, dict):
+            print(
+                "Export timing (seconds): "
+                + ", ".join(f"{k}={v}" for k, v in timings.items()),
+                file=sys.stderr,
+            )
+        else:
+            print(f"Export upload completed in {elapsed}s.", file=sys.stderr)
+    return result
 
 
 def sync_read(

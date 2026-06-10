@@ -221,7 +221,7 @@ def require_api_key_pool():
     if not om:
         raise RuntimeError(
             "outreachmagic skill required for API key pools. "
-            "Install via: python3 scripts/pipeline.py login"
+            "Install via: ask Outreach Magic to log in"
         )
     scripts = om / "scripts"
     if not (scripts / "api_key_pool.py").is_file():

@@ -30,11 +30,11 @@ CONFIG_LAST_HEALTH_STATUS = "last_health_status"
 
 RULE_HINTS: dict[str, str] = {
     "integrity_fail": "Database integrity check failed. Back up the file; only run init + pull --full with explicit user consent.",
-    "db_size_warn": "Local database is large. Run: pipeline.py archive --workspace <slug> --dry-run",
+    "db_size_warn": "Local database is large. Ask Outreach Magic to archive this workspace (dry-run first).",
     "db_size_critical": "Local database is very large. Archive old workspaces and consider VACUUM after export.",
     "relay_bloat": "Many relay dedupe keys per lead (normal at scale). Archive inactive workspaces if disk is a concern.",
-    "pending_sync": "Leads pending cloud sync. User can run: pipeline.py sync",
-    "quarantine_backlog": "Unmapped campaigns in queue. Run: pipeline.py workspace quarantine list",
+    "pending_sync": "Leads pending cloud sync. Ask Outreach Magic to sync.",
+    "quarantine_backlog": "Unmapped campaigns in queue. Ask Outreach Magic to list quarantine items.",
     "low_activity_bulk": "Many leads with few events (typical after CSV import). Informational only.",
 }
 

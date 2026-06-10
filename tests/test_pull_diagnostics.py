@@ -150,7 +150,8 @@ def test_format_pull_summary_includes_lead_count():
 
 def test_pull_failure_message_routing_hint():
     msg = om._pull_failure_message(RuntimeError("Routing API 500: Internal Server Error"))
-    assert "--skip-routing-sync" in msg
+    assert "skipping routing sync" in msg.lower()
+    assert "pipeline.py" not in msg
 
 
 def test_estimate_relay_pages():

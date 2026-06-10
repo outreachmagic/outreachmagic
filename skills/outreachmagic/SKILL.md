@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
-version: 1.29.7
+version: 1.29.8
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -103,21 +103,17 @@ python3 scripts/pipeline.py pull
 
 If `pull` returns an error like "No agent key or token configured", the user needs to set up.
 
-**When setup is needed, tell the user exactly this:**
+**When setup is needed**, ask Outreach Magic to connect (runs `login` in terminal — browser opens for sign-in and device approval). Never paste secrets into chat.
 
-> Run this in your terminal (not in chat):
->
-> `python3 scripts/pipeline.py login`
->
-> A browser window will open — sign in or sign up, then authorize this device. Never paste secrets into chat.
+If the skill is not installed yet, point them to **https://app.outreachmagic.io/onboarding** or **https://app.outreachmagic.io/agent**, then connect.
 
-If the skill is not installed yet, point them to **https://app.outreachmagic.io/onboarding** or **https://app.outreachmagic.io/agent** for install commands, then `login`.
+**Account pending approval:** New signups may wait for manual approval. The CLI stops immediately with a clear message (not a 15-minute wait). Tell the user they'll get an email when approved, then ask Outreach Magic to connect again. `status` shows approval state.
 
 `init` creates the database under `<skill_home>/databases/`. Dashboard API keys sync to `<skill_home>/config/agent_secrets.env` (next to `outreachmagic_config.json`). CSVs and exports use **`input/`** and **`export/`** relative to your **workspace directory** (where the agent runs commands). Set `"project_root"` in config to pin a fixed folder instead of cwd.
 
-If `pull` returns auth errors after a revoked key, tell them to run `login` again.
+If `pull` returns auth errors after a revoked key, ask Outreach Magic to log in again.
 
-That's it. Don't list other commands, don't offer alternatives. Just: run `login` in terminal, done.
+That's it. Don't list other commands, don't offer alternatives. Just connect via login, done.
 
 **When setup is already done** (pull succeeds or returns events), skip setup and go straight to showing data:
 
@@ -363,20 +359,18 @@ python3 scripts/pipeline.py sync
 
 ### Quarantine (multi-workspace)
 
-Unmapped relay events land in `unmapped_campaign_queue`. Resolve them locally, then `sync` so other machines and `pull --full` stay consistent:
+Unmapped relay events land in `unmapped_campaign_queue`. Resolve locally, then `sync` so other machines and `pull --full` stay consistent.
+
+**No campaign id/name:** New relay events are quarantined automatically. Legacy rows in `events` with `campaign_id IS NULL` are backfilled on `init` into quarantine and **auto-skipped** (no workspace mapping possible). Use `history` to inspect event details if needed. Manual: `quarantine backfill-no-campaign`.
 
 ```bash
-python3 scripts/pipeline.py quarantine list
-python3 scripts/pipeline.py quarantine list --json
-python3 scripts/pipeline.py quarantine list --status all --json
+python3 scripts/pipeline.py quarantine list [--json] [--status all]
 python3 scripts/pipeline.py quarantine skip --id QUEUE_ID
 python3 scripts/pipeline.py quarantine skip --campaign-id CAMPAIGN_ID
-python3 scripts/pipeline.py quarantine skip --reason no_campaign_id
-python3 scripts/pipeline.py quarantine skip --all
+python3 scripts/pipeline.py quarantine skip --reason REASON
 python3 scripts/pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG
-python3 scripts/pipeline.py workspace list --json
+python3 scripts/pipeline.py quarantine replay
 python3 scripts/pipeline.py sync
-python3 scripts/pipeline.py pull
 ```
 
 - **`skip`** — ignore junk/test events on the relay (permanent after sync).
@@ -745,7 +739,7 @@ python3 scripts/pipeline.py review sync --sheet-id SHEET_ID --commit
 
 ### Lead review sheet (export → edit → sync)
 
-Requires `pipeline.py login`. Sheets are created on `app.outreachmagic.io` with styled headers (editable=green, read-only=blue, key=yellow). Detail levels: `--detail basic|standard|full|custom`. Use `--fields` for custom columns or groups (`lead_info`, `workspace_state`, `personalization`, etc.).
+Requires login. Sheets are created on `app.outreachmagic.io` with ✏️/🔒 header icons (no column colors). All usage notes live in the `lead_id` header cell note; freeze row and dropdowns apply before the export URL is returned. Detail levels: `--detail basic|standard|full|custom`. Use `review presets` for the current column catalog (full adds `lev_*`, `be_*`, `latest_source*`, `linkedin_sender_<handle>` keys). Dropdowns: `workspace_stage`, `lead_sentiment`. Export prints row progress and API timing to stderr.
 
 ```bash
 python3 scripts/pipeline.py review presets --template lead-review

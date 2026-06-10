@@ -570,12 +570,51 @@
         }
       },
       {
-        "id": "om-version-1296",
+        "id": "om-version-1298",
         "tags": ["smoke", "om", "script"],
         "mode": "script",
         "command": ["version"],
         "expect": {
-          "contains_string": "1.29.6"
+          "contains_string": "1.29.8"
+        }
+      },
+      {
+        "id": "om-no-campaign-message-nl",
+        "tags": ["quarantine", "smoke", "script"],
+        "mode": "script",
+        "command": ["quarantine", "list", "--json", "--status", "all", "--limit", "1"],
+        "expect": {
+          "contains_json": true
+        }
+      },
+      {
+        "id": "om-review-full-column-keys",
+        "tags": ["review", "integration", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:review/data-root"
+        },
+        "command": [
+          "review", "export-payload",
+          "--workspace", "df-review",
+          "--detail", "full",
+          "--limit", "1"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "lev_source",
+          "json_fields": [
+            {"path": "detail", "equals": "full"}
+          ]
+        }
+      },
+      {
+        "id": "om-quarantine-backfill-help",
+        "tags": ["quarantine", "smoke", "script"],
+        "mode": "script",
+        "command": ["quarantine", "backfill-no-campaign", "--help"],
+        "expect": {
+          "contains_string": "backfill-no-campaign"
         }
       },
       {

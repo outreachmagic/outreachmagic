@@ -195,8 +195,8 @@ def test_multi_mode_quarantines_unmapped():
     )
     msg = format_unmapped_campaign_message(ctx)
     assert "Ghost Campaign" in msg
-    assert "campaign-map add" in msg
-    assert "quarantine assign" in msg
+    assert "Ask Outreach Magic" in msg
+    assert "quarantine" in msg.lower()
 
     event = {
         "platform": "smartlead",
@@ -255,8 +255,8 @@ def test_quarantine_summary_requires_rules_or_manual_mapping():
         ]
     )
     assert "Default" not in summary
-    assert "either a campaign rule or a manual mapping" in summary
-    assert "campaign-map add" in summary
+    assert "Ask Outreach Magic" in summary
+    assert "replay quarantined events" in summary
 
 
 def test_ingest_quarantine_and_route():

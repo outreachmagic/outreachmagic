@@ -60,10 +60,10 @@ def format_database_recovery_message(db_path=None) -> str:
     return (
         f"Database at {p} is missing or has no schema (no leads table).\n"
         "To restore from your most recent automatic backup:\n"
-        "  pipeline.py restore --latest\n"
+        "  Ask Outreach Magic to restore from backup\n"
         "To list backups:\n"
-        "  pipeline.py restore --list\n"
-        "If backups are unavailable, run login then pull --full (or refresh --yes)."
+        "  Ask Outreach Magic to list available backups\n"
+        "If backups are unavailable, ask Outreach Magic to log in and run a full sync."
     )
 
 
@@ -106,12 +106,12 @@ def end_bulk_pull_session(conn: sqlite3.Connection) -> None:
         if "disk I/O error" in str(exc).lower() or "i/o error" in str(exc).lower():
             print(
                 "[outreachmagic] Warning: disk I/O error while finalizing pull session. "
-                "Your data may be intact — run: pipeline.py db-health",
+                "Your data may be intact — ask Outreach Magic to check database health",
                 file=sys.stderr,
                 flush=True,
             )
             raise RuntimeError(
                 "Disk I/O error while finalizing pull. "
-                "Run: pipeline.py restore --latest  (or pipeline.py db-health)"
+                "Ask Outreach Magic to restore from backup or check database health"
             ) from exc
         raise

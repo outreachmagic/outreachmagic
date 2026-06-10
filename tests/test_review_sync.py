@@ -52,7 +52,7 @@ def test_personalization_emoji_header_detected():
     summary = review.apply_lead_review_sync(
         conn,
         ws_id,
-        [{"🔑 lead_id": str(lead_id), "✏️ First Name": "Alex"}],
+        [{"🔑 lead_id": str(lead_id), "✏️ Personalized First Name": "Alex"}],
         upsert_workspace_lead_fn=om.upsert_workspace_lead,
         org_id=om.DEFAULT_ORG_ID,
         dry_run=True,

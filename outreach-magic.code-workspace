@@ -1,0 +1,35 @@
+{
+  "folders": [
+    {
+      "name": "outreachmagic-brand (GTM + copy)",
+      "path": "../outreachmagic-brand"
+    },
+    {
+      "name": "outreachmagic-skill (skills + docs)",
+      "path": "."
+    },
+    {
+      "name": "outreach-magic-site (marketing)",
+      "path": "../outreach-magic-site"
+    },
+    {
+      "name": "wbhk-app (portal)",
+      "path": "../wbhk-app"
+    },
+    {
+      "name": "wbhk-worker (relay)",
+      "path": "../wbhk-worker"
+    },
+    {
+      "name": "wbhk-billing (plans)",
+      "path": "../wbhk-billing"
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "**/node_modules": true,
+      "**/dist": true,
+      "**/.next": true
+    }
+  }
+}

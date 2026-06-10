@@ -81,6 +81,7 @@ bash scripts/dark-factory/run.sh --release lead_enrich      # before lead-enrich
 bash scripts/dark-factory/run.sh --release email_finder     # before email-finder-v*
 bash scripts/dark-factory/run.sh --release companion_common # if companion_common.py changed
 bash scripts/dark-factory/run.sh --release dedup           # before v* when dedup/review changed
+bash scripts/dark-factory/run.sh --release migrate         # before v* when migrate_db / SQLite / PlusVibe ingest changed
 
 # Or ad hoc:
 bash scripts/dark-factory/run.sh --layer 3 --tags smoke
@@ -188,7 +189,7 @@ git push origin lead-enrich-v2.0.0
 ```
 
 Workflow: `.github/workflows/publish-lead-enrich.yml` (tests + SkillScan + publish).
-Domains: `docs/hermeshub-reviewed-domains-lead-enrich.md` (Serper only in v2+).
+Domains: `outreachmagic-brand/copy/hub/hermeshub-reviewed-domains-lead-enrich.md` (Serper only in v2+).
 
 ### email-finder
 
@@ -201,7 +202,7 @@ git push origin email-finder-v1.0.0
 ```
 
 Workflow: `.github/workflows/publish-email-finder.yml`.
-Domains: `docs/hermeshub-reviewed-domains-email-finder.md`.
+Domains: `outreachmagic-brand/copy/hub/hermeshub-reviewed-domains-email-finder.md`.
 
 Both companions vend `scripts/companion_common.py` in manifests. **Canonical file:** `skills/email-finder/scripts/companion_common.py`. Before companion tags:
 

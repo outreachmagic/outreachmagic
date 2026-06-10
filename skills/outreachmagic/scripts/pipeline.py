@@ -6180,6 +6180,7 @@ def _push_pending_company_updates(agent_key: str) -> dict:
         client_id,
         stream_label=_SNAPSHOT_KIND_STREAM["company"],
         bulk=bulk,
+        snapshot_bulk=True,
         mark_ids=pushed_ids,
         on_mark_cleared=clear_company_ids,
     )

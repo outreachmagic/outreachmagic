@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -11,14 +10,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 MANIFEST = ROOT / "skills" / "outreachmagic" / "update-manifest.json"
-GEN = ROOT / "scripts" / "generate-update-manifest.py"
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(SCRIPTS))
+
+from generate_skill_manifest import generate_manifest  # noqa: E402
+from skill_suite import manifest_relative_paths  # noqa: E402
 
 
 def main() -> int:
     errors: list[str] = []
     all_py = {p.name for p in SCRIPTS.glob("*.py")}
 
-    sys.path.insert(0, str(SCRIPTS))
     import pipeline as om  # noqa: E402
 
     if set(om.UPDATE_SCRIPT_FILES) != all_py:
@@ -37,13 +39,13 @@ def main() -> int:
             f"extra={sorted(manifest_py - all_py)}"
         )
 
-    spec = importlib.util.spec_from_file_location("gen_update_manifest", GEN)
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    gen_names = set(mod.manifest_file_names())
-    if gen_names != set(manifest.get("files", {})):
-        errors.append("generate-update-manifest.py output does not match committed manifest")
+    expected = set(manifest_relative_paths("outreachmagic"))
+    if set(manifest.get("files", {})) != expected:
+        errors.append("skill-suite.json paths do not match committed outreachmagic manifest")
+
+    generated = generate_manifest("outreachmagic")
+    if generated.get("files") != manifest.get("files"):
+        errors.append("run python3 scripts/generate_skill_manifest.py outreachmagic")
 
     download_names = set(om.update_download_names(manifest))
     if not {"pipeline_lead_review.py", "pipeline_dedup.py", "review_cloud.py"}.issubset(download_names):

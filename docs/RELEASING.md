@@ -115,8 +115,8 @@ sys.path.insert(0, 'skills/outreachmagic/scripts')
 import pipeline as om
 om.sync_skill_md_version()
 "
-python3 scripts/generate-update-manifest.py
-# Manifest auto-includes every scripts/*.py — do not maintain a hand-edited file list.
+make release-check   # or: python3 scripts/generate_skill_manifest.py --all
+# Manifests are generated from skill-suite.json — do not hand-edit file lists.
 
 # 3. Commit
 git add skills/outreachmagic/scripts/VERSION skills/outreachmagic/update-manifest.json
@@ -194,7 +194,7 @@ Three-skill suite: see [skill-suite.md](./skill-suite.md).
 Published to **outreachmagic/lead-enrich**:
 
 ```bash
-python3 scripts/generate-lead-enrich-manifest.py
+python3 scripts/generate_skill_manifest.py lead-enrich
 git tag lead-enrich-v2.0.0
 git push origin lead-enrich-v2.0.0
 ```
@@ -207,7 +207,7 @@ Domains: `outreachmagic-brand/copy/hub/hermeshub-reviewed-domains-lead-enrich.md
 Published to **outreachmagic/email-finder** (create public repo first):
 
 ```bash
-python3 scripts/generate-email-finder-manifest.py
+python3 scripts/generate_skill_manifest.py email-finder
 git tag email-finder-v1.0.0
 git push origin email-finder-v1.0.0
 ```
@@ -221,8 +221,7 @@ Both companions vend `scripts/companion_common.py` in manifests. **Canonical fil
 # Edit email-finder copy, then sync to lead-enrich
 bash scripts/sync-companion-common.sh
 bash scripts/sync-companion-common.sh --check   # CI uses this
-python3 scripts/generate-email-finder-manifest.py
-python3 scripts/generate-lead-enrich-manifest.py
+python3 scripts/generate_skill_manifest.py --all
 ```
 
 Regenerate manifests before every companion tag.
@@ -326,7 +325,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 | Tag on GitHub but update 404 | Release on **private** repo only | User needs **outreachmagic/outreachmagic**, not monorepo |
 | `update --check` says no update but GitHub has newer tag | Wrong `GITHUB_REPO` in installed script | Reinstall or verify `grep GITHUB_REPO …/pipeline.py` → `outreachmagic/outreachmagic` |
 | Checksum mismatch | Stale `update-manifest.json` before tag, or manual edit of published files | Regenerate manifest before tag; re-run publish job |
-| `enrich.py update` manifest error | Stale lead-enrich manifest | `python3 scripts/generate-lead-enrich-manifest.py` before `lead-enrich-v*` tag |
+| `enrich.py update` manifest error | Stale lead-enrich manifest | `python3 scripts/generate_skill_manifest.py lead-enrich` before `lead-enrich-v*` tag |
 | CI publish fails | `PUBLISH_TOKEN` missing/expired | Rotate secret; re-run workflow |
 
 ### Bootstrap one stuck Hermes install (last resort)

@@ -54,18 +54,6 @@ BACKFILL_FIELDS = frozenset({
 GITHUB_REPO = "outreachmagic/lead-enrich"
 GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RAW_BASE = "https://raw.githubusercontent.com"
-UPDATE_FILES = (
-    "SKILL.md",
-    "README.md",
-    "SECURITY.md",
-    "config.example.json",
-    "default.env",
-    ".gitignore",
-    "references/email-finder.md",
-    "scripts/companion_common.py",
-    "scripts/enrich.py",
-)
-
 _parse_dotenv_line = cc.parse_dotenv_line
 _TEAM_RE = re.compile(r"\bteam\b|center team|group award", re.I)
 
@@ -1437,11 +1425,13 @@ def cmd_update(check_only: bool = False, explicit_tag: str = "") -> None:
         return
 
     manifest = _fetch_manifest(target_tag)
-    manifest_files = manifest.get("files", {})
+    manifest_files = manifest.get("files") or {}
+    if not manifest_files:
+        raise RuntimeError("Manifest has no files. Refusing update.")
     updated: list[str] = []
 
-    for rel_path in UPDATE_FILES:
-        expected = manifest_files.get(rel_path)
+    for rel_path in sorted(manifest_files.keys()):
+        expected = manifest_files[rel_path]
         if not expected:
             raise RuntimeError(
                 f"Manifest missing checksum for {rel_path}. Refusing update."

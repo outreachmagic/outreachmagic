@@ -15,6 +15,7 @@ python3 -m pytest \
   "${ROOT}/tests/test_pull_diagnostics.py" \
   "${ROOT}/tests/test_pull_flag_matrix.py" \
   "${ROOT}/tests/test_billing_contract.py" \
+  "${ROOT}/tests/test_skill_install_contract.py" \
   "${ROOT}/tests/test_sync_cloud_pending.py" \
   "${ROOT}/tests/test_routing_sync.py" \
   "${ROOT}/tests/test_full_pull_replay.py" \

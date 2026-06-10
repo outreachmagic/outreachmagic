@@ -64,26 +64,6 @@ SKILL_NAME = "email-finder"
 GITHUB_REPO = "outreachmagic/email-finder"
 GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RAW_BASE = "https://raw.githubusercontent.com"
-UPDATE_FILES = (
-    "SKILL.md",
-    "README.md",
-    "SECURITY.md",
-    "config.example.json",
-    "default.env",
-    ".gitignore",
-    "references/email-finding-research.md",
-    "scripts/companion_common.py",
-    "scripts/credits.py",
-    "scripts/email_finder.py",
-    "scripts/normalize.py",
-    "scripts/progress.py",
-    "scripts/health.py",
-    "scripts/providers.py",
-    "scripts/batch_runner.py",
-    "scripts/millionverifier.py",
-)
-
-
 def _find_skill_dir() -> Path:
     return cc.skill_dir_from_script(__file__)
 
@@ -827,9 +807,11 @@ def cmd_update(*, check_only: bool = False, explicit_tag: str = "") -> None:
         return
     skill_dir = _find_skill_dir()
     manifest_files = manifest.get("files") or {}
+    if not manifest_files:
+        raise RuntimeError("Manifest has no files")
     updated: list[str] = []
-    for rel_path in UPDATE_FILES:
-        expected = manifest_files.get(rel_path)
+    for rel_path in sorted(manifest_files.keys()):
+        expected = manifest_files[rel_path]
         if not expected:
             raise RuntimeError(f"Manifest missing checksum for {rel_path}")
         content = _fetch_url(f"{RAW_BASE}/{GITHUB_REPO}/{target_tag}/{rel_path}")

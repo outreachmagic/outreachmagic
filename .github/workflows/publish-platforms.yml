@@ -29,6 +29,9 @@ jobs:
 
           cp install.sh "$STAGING/"
           chmod +x "$STAGING/install.sh"
+          cp skill-suite.json "$STAGING/"
+          mkdir -p "$STAGING/scripts"
+          cp scripts/skill_suite.py "$STAGING/scripts/"
           cp platforms/common/install-companions.sh "$STAGING/platforms/common/"
           chmod +x "$STAGING/platforms/common/install-companions.sh"
           cp platforms/overlays/cursor/outreachmagic.mdc "$STAGING/platforms/overlays/cursor/"
@@ -45,7 +48,7 @@ jobs:
           import pipeline as om
           om.sync_skill_md_version()
           "
-          python3 scripts/generate-update-manifest.py
+          python3 scripts/generate_skill_manifest.py outreachmagic
           cp skills/outreachmagic/SKILL.md "$STAGING/skills/outreachmagic/"
           cp skills/outreachmagic/update-manifest.json "$STAGING/skills/outreachmagic/"
 

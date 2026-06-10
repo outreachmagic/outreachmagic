@@ -44,7 +44,7 @@ jobs:
 
       - name: Assemble skill repo
         run: |
-          python3 scripts/generate-lead-enrich-manifest.py
+          python3 scripts/generate_skill_manifest.py lead-enrich
           mkdir -p staging/scripts staging/references
           cp skills/lead-enrich/SKILL.md staging/
           cp skills/lead-enrich/README.md staging/

@@ -44,7 +44,7 @@ jobs:
 
       - name: Assemble skill repo
         run: |
-          python3 scripts/generate-email-finder-manifest.py
+          python3 scripts/generate_skill_manifest.py email-finder
           mkdir -p staging/scripts staging/references
           cp skills/email-finder/SKILL.md staging/
           cp skills/email-finder/README.md staging/

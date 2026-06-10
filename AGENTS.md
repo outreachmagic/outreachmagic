@@ -1,0 +1,52 @@
+# Agent guide — outreachmagic-skill monorepo
+
+Read this first when changing skills, install, or release.
+
+## Layout
+
+| Skill | CLI | Config |
+|-------|-----|--------|
+| outreachmagic | `skills/outreachmagic/scripts/pipeline.py` | `skill-suite.json` |
+| email-finder | `skills/email-finder/scripts/email_finder.py` | same |
+| lead-enrich | `skills/lead-enrich/scripts/enrich.py` | same |
+
+**Single source of truth:** [`skill-suite.json`](skill-suite.json) — install pins, manifest file lists, public repos.
+
+## If you add `skills/<skill>/scripts/*.py`
+
+1. Add to `script_exclude` in `skill-suite.json` **only** if the file must not ship (e.g. `run_v22_tests.py`).
+2. Run: `python3 scripts/generate_skill_manifest.py <skill>` or `make manifests`
+3. Run: `make release-check`
+
+Do **not** edit `UPDATE_FILES` or hand-maintained manifest tuples — companions read `update-manifest.json` keys at update time.
+
+## If you change pricing / billing limits
+
+1. `outreachmagic-brand/product/pricing.md`
+2. `wbhk-billing/src/plans.ts`
+3. `tests/billing_contract.json`
+
+## Release (outreachmagic)
+
+```bash
+echo X.Y.Z > skills/outreachmagic/scripts/VERSION
+python3 -c "import sys; sys.path.insert(0,'skills/outreachmagic/scripts'); import pipeline as om; om.sync_skill_md_version()"
+make release-check
+git commit -am "Release vX.Y.Z"
+git tag vX.Y.Z
+git push origin main --tags
+```
+
+Companion tags: `email-finder-v*` / `lead-enrich-v*` (see `skill-suite.json` → `release_tag_prefix`).
+
+## Public vs private
+
+GitHub Actions publish **only** whitelisted skill files to `outreachmagic/*` public repos. Never put secrets under `skills/*/scripts/`. User secrets live in `skills/outreachmagic/config/` (not published).
+
+## Tests before tag
+
+```bash
+make release-check          # full pre-tag gate
+make layer1                 # fast pull/billing/install contract only
+bash scripts/dark-factory/run.sh --release v_star   # VPS integration
+```

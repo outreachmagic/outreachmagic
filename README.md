@@ -40,7 +40,7 @@ docs/
 ## Release Flow
 
 1. Bump `skills/outreachmagic/scripts/VERSION`
-2. `python3 scripts/generate-update-manifest.py`
+2. `make release-check` (regenerates manifests from `skill-suite.json`)
 3. Commit and tag: `git tag vX.Y.Z && git push origin main --tags`
 4. CI runs tests + SkillScan, builds tarball on private repo
 5. `publish-platforms.yml` pushes to [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) and creates a GitHub Release

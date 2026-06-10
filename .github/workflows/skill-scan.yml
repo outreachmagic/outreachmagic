@@ -55,7 +55,7 @@ jobs:
       - name: Verify companion_common sync
         run: bash scripts/sync-companion-common.sh --check
 
-      - name: Verify update-manifest.json is current
+      - name: Verify skill manifests and install contract
         run: |
           python3 -c "
           import sys
@@ -63,18 +63,13 @@ jobs:
           import pipeline as om
           om.sync_skill_md_version()
           "
-          python3 scripts/generate-update-manifest.py
-          git diff --exit-code skills/outreachmagic/update-manifest.json
-
-      - name: Verify lead-enrich manifest
-        run: |
-          python3 scripts/generate-lead-enrich-manifest.py
-          git diff --exit-code skills/lead-enrich/update-manifest.json
-
-      - name: Verify email-finder manifest
-        run: |
-          python3 scripts/generate-email-finder-manifest.py
-          git diff --exit-code skills/email-finder/update-manifest.json
+          python3 scripts/generate_skill_manifest.py --all
+          git diff --exit-code \
+            skills/outreachmagic/update-manifest.json \
+            skills/lead-enrich/update-manifest.json \
+            skills/email-finder/update-manifest.json
+          python3 scripts/validate-companion-manifests.py
+          python3 scripts/dark-factory/validate-om-manifest.py
 
   skill-scan:
     name: SkillScan

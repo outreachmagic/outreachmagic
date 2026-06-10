@@ -1,6 +1,5 @@
 """Ensure pipeline update installs every file listed in update-manifest.json."""
 
-import importlib.util
 import json
 import sys
 import unittest
@@ -9,20 +8,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 MANIFEST = ROOT / "skills" / "outreachmagic" / "update-manifest.json"
-GEN = ROOT / "scripts" / "generate-update-manifest.py"
 
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(SCRIPTS))
 
 import pipeline as om  # noqa: E402
-
-
-def _load_manifest_generator():
-    spec = importlib.util.spec_from_file_location("gen_update_manifest", GEN)
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    return mod
+from generate_skill_manifest import generate_manifest  # noqa: E402
+from skill_suite import manifest_relative_paths  # noqa: E402
 
 
 class UpdateManifestSyncTests(unittest.TestCase):
@@ -57,11 +49,13 @@ class UpdateManifestSyncTests(unittest.TestCase):
         self.assertNotIn("SKILL.md", names)
 
     def test_manifest_generator_matches_on_disk(self):
-        gen = _load_manifest_generator()
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         self.assertEqual(
-            set(gen.manifest_file_names()),
-            set(json.loads(MANIFEST.read_text(encoding="utf-8")).get("files", {})),
+            set(manifest_relative_paths("outreachmagic")),
+            set(manifest.get("files", {})),
         )
+        generated = generate_manifest("outreachmagic")
+        self.assertEqual(generated["files"], manifest["files"])
 
 
 if __name__ == "__main__":

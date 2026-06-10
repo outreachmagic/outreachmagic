@@ -1,5 +1,5 @@
 # Shared companion install helpers for Hermes / Cursor / Claude Code install.sh.
-# Caller must set: SKILLS_DIR, LE_REPO, EF_REPO, LE_TAG, EF_TAG
+# Caller must set: SKILLS_DIR, LE_REPO, EF_REPO, LE_TAG, EF_TAG, _here (repo root)
 
 clone_companion_repo() {
   local repo=$1
@@ -26,6 +26,42 @@ _copy_companion_skill() {
   done
 }
 
+_suite_py() {
+  [[ -n "${_here:-}" && -f "${_here}/scripts/skill_suite.py" ]] || return 1
+  printf '%s' "${_here}/scripts/skill_suite.py"
+}
+
+_read_install_required() {
+  local skill="$1" py
+  py="$(_suite_py)" || return 1
+  python3 "$py" install-required "$skill"
+}
+
+_read_suite_install_tag() {
+  local skill="$1" py
+  py="$(_suite_py)" || return 1
+  python3 "$py" install-tag "$skill"
+}
+
+_verify_companion_install() {
+  local name="$1" skill="$2" tag_opt="$3" tag_val="$4" py req
+  py="$(_suite_py)"
+  if [[ -z "$py" ]]; then
+    echo "error: $name install check requires ${_here:-repo}/scripts/skill_suite.py" >&2
+    return 1
+  fi
+  if [[ -z "$tag_val" ]]; then
+    tag_val="$(python3 "$py" install-tag "$skill")"
+  fi
+  while IFS= read -r req; do
+    [[ -n "$req" ]] || continue
+    if [[ ! -f "$SKILLS_DIR/$name/$req" ]]; then
+      echo "error: $name install incomplete — missing $req (try $tag_opt $tag_val)" >&2
+      return 1
+    fi
+  done < <(_read_install_required "$skill")
+}
+
 install_lead_enrich() {
   local tmp="" src=""
   if [[ "${LOCAL:-0}" -eq 1 && -n "${_here:-}" && -d "$_here/skills/lead-enrich/scripts" ]]; then
@@ -40,6 +76,7 @@ install_lead_enrich() {
   fi
   _copy_companion_skill lead-enrich "$src"
   chmod +x "$SKILLS_DIR/lead-enrich/scripts/enrich.py" 2>/dev/null || true
+  _verify_companion_install lead-enrich lead-enrich --lead-enrich-tag "$LE_TAG"
 }
 
 install_email_finder() {
@@ -56,12 +93,7 @@ install_email_finder() {
   fi
   _copy_companion_skill email-finder "$src"
   chmod +x "$SKILLS_DIR/email-finder/scripts/email_finder.py" 2>/dev/null || true
-  for req in scripts/email_finder.py scripts/health.py scripts/companion_common.py scripts/providers.py; do
-    if [[ ! -f "$SKILLS_DIR/email-finder/$req" ]]; then
-      echo "error: email-finder install incomplete — missing $req (try --email-finder-tag v2.2.18)" >&2
-      return 1
-    fi
-  done
+  _verify_companion_install email-finder email-finder --email-finder-tag "$EF_TAG"
   if [[ -n "${TRYKITT_ENV_FILE:-}" && -n "${TRYKITT_API_KEY:-}" ]]; then
     touch "$TRYKITT_ENV_FILE"
     if ! grep -q '^TRYKITT_API_KEY=' "$TRYKITT_ENV_FILE" 2>/dev/null; then

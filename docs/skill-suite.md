@@ -2,6 +2,8 @@
 
 Three intentional skills — not a 50-skill dump. **Outreach Magic is category 4: data infrastructure.** Strategy and copy skills stay stateless; OM is persistence.
 
+**Machine config** (manifest paths, install pins, `install_required`): [`skill-suite.json`](../skill-suite.json) at the repo root. Regenerate manifests with `make manifests`; pre-tag gate: `make release-check`.
+
 > Every other GTM skill tells your agent what to write. Outreach Magic tells your agent what's happening.
 
 ## Funnel

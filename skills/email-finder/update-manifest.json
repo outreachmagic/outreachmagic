@@ -1,21 +1,21 @@
 {
   "version": "2.2.18",
   "files": {
-    "SKILL.md": "ad1a67ee86157c206fc49e07af2d74587c7195383cd63b6ece0b070af2bb0dd6",
-    "README.md": "0411fd7b8c6efc811c8d11650bdd85d7bfa4180c18c5bf944176352f1a41a8c6",
-    "SECURITY.md": "2c6f4ec06edbfae9d656fad4d6526f0989592fe72a7eaa00818c79de106b9bc3",
-    "config.example.json": "024bd473a486852fd34a986d620136ec2e8c8e780a4bef47fef4480e32b567e4",
-    "default.env": "6b47dd4f42fa3d422a88845b6c6064b8de3d53e05dd829b515f897199968e706",
-    ".gitignore": "341c76ab4124d205ea796850984d042aefae420226f5017983fab00e435d746e",
-    "references/email-finding-research.md": "928569b8ea9f4ff322df94b40ab13875e08a213b9cc29e231248791c52805d61",
+    "scripts/batch_runner.py": "1fbc159c95fe45f1b50b08eb3ea7ca088f45d48ab8c010b8a154a872a28ad3e4",
     "scripts/companion_common.py": "85a0e42420aecbfa3a0761154ca8ed4f8c86ffddf2eea3234e3184a4ee2a6c3a",
     "scripts/credits.py": "2c07e76eb45e1a80ada1b98c4b53e2d8b93445f444a024f865d8ca606fc4c1ff",
-    "scripts/email_finder.py": "ac33afa5d49e64f2bbc4659cc55806f1d5ce3e30b5b8bf95e64957f80456a447",
+    "scripts/email_finder.py": "41268a05f9f0d5a51652c7cb237050026d0b276478ec1c9ff48aefab692d1e30",
+    "scripts/health.py": "ec63432d2e70e95e0c96bec7f5f909ea071a63005a6e5007bdc43ed560aa93a0",
+    "scripts/millionverifier.py": "6e2da6f2fe3dc278f1d33b9c7d4351fa14a1088d9172215a161ebebf9965b91d",
     "scripts/normalize.py": "ef45b6198181f009ffd8a32e1767d0d13a2cadb20da6f1677221fac8fd6a7a84",
     "scripts/progress.py": "657d8b03974c9a623ee7a5c8c373a541dd73863f6bf5c3df546516b9f647a55e",
-    "scripts/health.py": "ec63432d2e70e95e0c96bec7f5f909ea071a63005a6e5007bdc43ed560aa93a0",
     "scripts/providers.py": "d6a34e2c464a41283902e81027882c9041b7c12439814d5f8744f95894239d94",
-    "scripts/batch_runner.py": "1fbc159c95fe45f1b50b08eb3ea7ca088f45d48ab8c010b8a154a872a28ad3e4",
-    "scripts/millionverifier.py": "6e2da6f2fe3dc278f1d33b9c7d4351fa14a1088d9172215a161ebebf9965b91d"
+    ".gitignore": "341c76ab4124d205ea796850984d042aefae420226f5017983fab00e435d746e",
+    "README.md": "0411fd7b8c6efc811c8d11650bdd85d7bfa4180c18c5bf944176352f1a41a8c6",
+    "SECURITY.md": "2c6f4ec06edbfae9d656fad4d6526f0989592fe72a7eaa00818c79de106b9bc3",
+    "SKILL.md": "ad1a67ee86157c206fc49e07af2d74587c7195383cd63b6ece0b070af2bb0dd6",
+    "config.example.json": "024bd473a486852fd34a986d620136ec2e8c8e780a4bef47fef4480e32b567e4",
+    "default.env": "6b47dd4f42fa3d422a88845b6c6064b8de3d53e05dd829b515f897199968e706",
+    "references/email-finding-research.md": "928569b8ea9f4ff322df94b40ab13875e08a213b9cc29e231248791c52805d61"
   }
 }

@@ -12,8 +12,12 @@ if [[ "$FILE_VERSION" != "$VERSION" ]]; then
   exit 1
 fi
 
-python3 "$ROOT/scripts/generate-update-manifest.py"
-git diff --exit-code "$ROOT/skills/outreachmagic/update-manifest.json"
+python3 "$ROOT/scripts/generate_skill_manifest.py" --all
+git diff --exit-code \
+  "$ROOT/skills/outreachmagic/update-manifest.json" \
+  "$ROOT/skills/email-finder/update-manifest.json" \
+  "$ROOT/skills/lead-enrich/update-manifest.json"
+python3 "$ROOT/scripts/validate-companion-manifests.py"
 
 bash "$ROOT/scripts/sync-companion-common.sh" --check
 

@@ -148,6 +148,14 @@ if [[ -z "$PLATFORM" ]]; then
   exit 1
 fi
 
+# Pin companion releases when not specified (avoids incomplete installs from moving main).
+if [[ $WITH_LEAD_ENRICH -eq 1 && -z "$LE_TAG" ]]; then
+  LE_TAG="v2.1.6"
+fi
+if [[ $WITH_EMAIL_FINDER -eq 1 && -z "$EF_TAG" ]]; then
+  EF_TAG="v2.2.18"
+fi
+
 case "$PLATFORM" in
   hermes)
     HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"

@@ -8081,6 +8081,8 @@ def sync_from_relay_org(
 
     pending_events: Optional[int] = None
     est_event_pages: Optional[int] = None
+    pending_snapshots: Optional[int] = None
+    est_snap_pages: Optional[int] = None
     resolution_map: dict[int, dict] = {}
     slug_cache = qres.WorkspaceSlugCache()
     skipped_resolved = assigned_resolved = 0
@@ -8251,8 +8253,6 @@ def sync_from_relay_org(
                         break
 
             elif _pull_phase == "snapshots":
-                pending_snapshots: Optional[int] = None
-                est_snap_pages: Optional[int] = None
                 for snap_kind in ("core", "workspace", "company"):
                     if snap_kind not in kinds:
                         continue

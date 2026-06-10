@@ -5,6 +5,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -28,6 +30,52 @@ def _prefetch_ws_empty(conn, org_id, keys):
 def _patch_pull_prefetch(monkeypatch, relay_keys=_prefetch_all):
     monkeypatch.setattr(om, "prefetch_relay_ingested", relay_keys)
     monkeypatch.setattr(om, "prefetch_ws_idempotency_keys", _prefetch_ws_empty)
+
+
+@pytest.mark.parametrize(
+    "sync_kwargs",
+    [
+        {"skip_snapshots": True},
+        {"pull_kinds": frozenset({"events"})},
+    ],
+)
+@pytest.mark.parametrize("with_stats", [True, False])
+def test_sync_events_only_pull_completes(monkeypatch, sync_kwargs, with_stats):
+    """Events-only pulls must finish whether or not the snapshot phase runs (CLI + show --pull)."""
+    snapshot_calls = []
+
+    def fake_pull(*_args, **kwargs):
+        if kwargs.get("snapshots_only"):
+            snapshot_calls.append(kwargs)
+            return {"events": []}
+        return {"events": [], "max_id": 42}
+
+    monkeypatch.setattr(om, "pull_events_org", fake_pull)
+    monkeypatch.setattr(om, "ingest_relay_event", lambda *_args, **_kwargs: None)
+    _patch_pull_prefetch(monkeypatch)
+    monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **_kwargs: None)
+    monkeypatch.setattr(om, "print_quarantine_guidance", lambda: None)
+
+    stats = {} if with_stats else None
+    imported, skipped = om.sync_from_relay_org(
+        "om_agent_test",
+        after_id=5,
+        full=False,
+        quiet=True,
+        stats=stats,
+        skip_routing_sync=True,
+        **sync_kwargs,
+    )
+
+    assert imported == 0
+    assert skipped == 0
+    assert snapshot_calls == []
+    if with_stats:
+        assert stats["pull_phases"] == ["events"]
+        assert stats["pending_snapshots"] is None
+        assert stats["snapshot_pages"] == 0
+        assert "pending_events" in stats
+        assert "verdict" in stats
 
 
 def test_sync_stats_incremental_duplicate_only_advances_cursor(monkeypatch):

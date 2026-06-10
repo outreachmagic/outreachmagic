@@ -57,9 +57,16 @@ bash scripts/skill-scan.sh
 
 ## Related Repos (magic-creators)
 
-- `magic-creators/wbhk` — Cloudflare Worker relay (`api.outreachmagic.io`)
-- `magic-creators/wbhkapp` — Next.js dashboard (`app.outreachmagic.io`)
-- `magic-creators/wbhk-billing` — Shared billing library
+Full ecosystem map: [docs/ecosystem.md](docs/ecosystem.md)
+
+| Repo | Surface |
+|------|---------|
+| `outreach-magic-site` | Marketing site (`outreachmagic.io`) |
+| `wbhk-app` | Agent portal (`app.outreachmagic.io`) |
+| `wbhk-worker` | Cloudflare relay (`api.outreachmagic.io`) |
+| `wbhk-billing` | Shared billing / plan limits |
+
+**Cursor:** open `outreach-magic.code-workspace` to load all sibling repos in one window.
 
 ## Security
 

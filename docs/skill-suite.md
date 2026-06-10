@@ -46,7 +46,7 @@ flowchart LR
 | email-finder OM pre-check | |
 | `verify-email` recording | |
 
-Launch limits: **1,000 relay events/mo free**, **Pro $9/mo** (50k cap). See [positioning/pricing.md](./positioning/pricing.md).
+Launch limits: **1,000 relay events/mo free**, **Pro $9/mo** (50k cap). See [outreachmagic-brand/product/pricing.md](../outreachmagic-brand/product/pricing.md).
 
 ## Naming: find vs verify
 
@@ -63,4 +63,4 @@ Launch limits: **1,000 relay events/mo free**, **Pro $9/mo** (50k cap). See [pos
 ## Release docs
 
 - [RELEASING.md](./RELEASING.md) — tags and CI  
-- [registry-publish.md](./registry-publish.md) — marketplace order  
+- [outreachmagic-brand/copy/hub/registry-publish.md](../outreachmagic-brand/copy/hub/registry-publish.md) — marketplace order  

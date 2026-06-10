@@ -5,6 +5,9 @@ When the user asks to **test**, **dark factory**, **run smoke**, or **prepare re
 ## Quick commands
 
 ```bash
+# Layer 1 only — local pytest (pull/relay/sync, no VPS)
+bash scripts/dark-factory/run.sh --layer 1
+
 # Smoke (Layer 3 agent tests on VPS dark-factory)
 bash scripts/dark-factory/run.sh --layer 3 --tags smoke
 

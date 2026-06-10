@@ -12,13 +12,14 @@ RELEASE=""
 NO_STOP=0
 SKIP_DEPLOY=0
 DEPLOY_ONLY=0
+SKIP_PYTEST=0
 
 usage() {
   cat <<EOF
 Usage: bash scripts/dark-factory/run.sh [options]
 
 Options:
-  --layer 2|3|all          Script tests (2), agent tests (3), or both (default: all)
+  --layer 1|2|3|all        Pytest gate (1), script tests (2), agent tests (3), or all (default)
   --skills a,b             Filter catalog skills
   --tags a,b               Filter catalog tags
   --ids a,b                Filter test IDs
@@ -27,8 +28,10 @@ Options:
   --no-stop                Leave dark-factory instance running after tests
   --skip-deploy            Skip rsync deploy (skills already current)
   --deploy-only            Deploy only, no tests
+  --skip-pytest            Skip Layer 1 local pytest (VPS layers only)
 
 Examples:
+  bash scripts/dark-factory/run.sh --layer 1
   bash scripts/dark-factory/run.sh --layer 3 --tags smoke
   bash scripts/dark-factory/run.sh --release email_finder
   bash scripts/dark-factory/run.sh --release v_star --layer all
@@ -46,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --no-stop) NO_STOP=1; shift ;;
     --skip-deploy) SKIP_DEPLOY=1; shift ;;
     --deploy-only) DEPLOY_ONLY=1; shift ;;
+    --skip-pytest) SKIP_PYTEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
@@ -129,6 +133,21 @@ stop_instance() {
   echo "== Stopping instance: ${INSTANCE} =="
   ssh_cmd "cd ~/hermes/instances/${INSTANCE} && docker compose --project-name hermes-${INSTANCE} down" || true
 }
+
+if [[ "$SKIP_PYTEST" -eq 0 && "$DEPLOY_ONLY" -eq 0 ]]; then
+  echo "== Layer 1: local pytest (pull/relay/sync) =="
+  if bash "${ROOT}/scripts/dark-factory/run-pytest-gate.sh"; then
+    :
+  else
+    echo "Layer 1 pytest failed — fix before VPS tests or release." >&2
+    exit 1
+  fi
+fi
+
+if [[ "$LAYER" == "1" ]]; then
+  echo "Layer 1 only — done."
+  exit 0
+fi
 
 if [[ "$SKIP_DEPLOY" -eq 0 ]]; then
   bash "${ROOT}/scripts/dark-factory/deploy.sh"

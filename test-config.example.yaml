@@ -35,6 +35,12 @@ release_filters:
   v_star:
     skills: ["outreachmagic"]
     tags: ["smoke"]
+  pull:
+    skills: ["outreachmagic"]
+    tags: ["pull", "integration"]
+  billing:
+    skills: ["outreachmagic"]
+    tags: ["billing"]
   lead_enrich:
     skills: ["lead-enrich"]
     tags: ["smoke"]

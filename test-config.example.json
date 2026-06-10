@@ -26,6 +26,7 @@
   },
   "release_filters": {
     "v_star": { "skills": ["outreachmagic"], "tags": ["smoke"] },
+    "pull": { "skills": ["outreachmagic"], "tags": ["pull", "integration"] },
     "lead_enrich": { "skills": ["lead-enrich"], "tags": ["smoke"] },
     "email_finder": { "skills": ["email-finder"], "tags": ["smoke"] },
     "companion_common": { "skills": ["lead-enrich", "email-finder"], "tags": ["smoke"] },
@@ -37,6 +38,10 @@
     "migrate": {
       "skills": ["outreachmagic"],
       "tags": ["migrate"]
+    },
+    "billing": {
+      "skills": ["outreachmagic"],
+      "tags": ["billing"]
     }
   }
 }

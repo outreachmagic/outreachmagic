@@ -41,4 +41,16 @@ for kind in events core workspace company; do
   run_kind "${kind}" || exit 1
 done
 
+echo "--- pull --skip-snapshots (120s cap) ---"
+SKIP_LOG="/tmp/om-pull-smoke-skip-snapshots.log"
+if timeout 120 python3 "${PIPE}" pull --skip-snapshots >"${SKIP_LOG}" 2>&1; then
+  echo "OK skip-snapshots"
+  tail -8 "${SKIP_LOG}"
+else
+  ec=$?
+  echo "FAIL skip-snapshots exit=${ec}" >&2
+  tail -30 "${SKIP_LOG}" >&2
+  exit "${ec}"
+fi
+
 echo "=== smoke complete ==="

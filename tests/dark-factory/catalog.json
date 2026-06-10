@@ -622,15 +622,6 @@
         }
       },
       {
-        "id": "om-version-1298",
-        "tags": ["smoke", "om", "script"],
-        "mode": "script",
-        "command": ["version"],
-        "expect": {
-          "contains_string": "1.29.8"
-        }
-      },
-      {
         "id": "om-no-campaign-message-nl",
         "tags": ["quarantine", "smoke", "script"],
         "mode": "script",

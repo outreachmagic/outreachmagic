@@ -56,6 +56,12 @@ install_email_finder() {
   fi
   _copy_companion_skill email-finder "$src"
   chmod +x "$SKILLS_DIR/email-finder/scripts/email_finder.py" 2>/dev/null || true
+  for req in scripts/email_finder.py scripts/health.py scripts/companion_common.py scripts/providers.py; do
+    if [[ ! -f "$SKILLS_DIR/email-finder/$req" ]]; then
+      echo "error: email-finder install incomplete — missing $req (try --email-finder-tag v2.2.18)" >&2
+      return 1
+    fi
+  done
   if [[ -n "${TRYKITT_ENV_FILE:-}" && -n "${TRYKITT_API_KEY:-}" ]]; then
     touch "$TRYKITT_ENV_FILE"
     if ! grep -q '^TRYKITT_API_KEY=' "$TRYKITT_ENV_FILE" 2>/dev/null; then

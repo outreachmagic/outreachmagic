@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "source": "outreachmagic-brand/product/pricing.md",
+  "usage_thresholds": {
+    "warning_percent": 80,
+    "critical_percent": 95
+  },
+  "upgrade_url": "https://app.outreachmagic.io/settings/billing",
+  "plans": {
+    "free": {
+      "monthly_events": 1000,
+      "buffer_cap": 2000,
+      "max_active_tokens": 1
+    },
+    "pro": {
+      "monthly_events": 50000,
+      "buffer_cap": 100000,
+      "price_usd": 9
+    },
+    "agency": {
+      "monthly_events": 250000,
+      "buffer_cap": 500000,
+      "price_usd": 29
+    }
+  },
+  "counting_rules": {
+    "push_batch_usage_units": 1,
+    "webhook_usage_units": 1,
+    "local_tracking_counts": false,
+    "sequencer_webhooks_count": true
+  },
+  "buffering_rules": {
+    "webhooks_always_accept_until_buffer_cap": true,
+    "http_429_only_on_buffer_cap": true,
+    "over_quota_state": "buffered"
+  }
+}

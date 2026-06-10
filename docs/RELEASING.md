@@ -70,10 +70,13 @@ For tag `v1.21.0`:
 
 ### Dark factory gate (before tagging)
 
-Run agent + script tests on the isolated VPS instance **`dark-factory`** (not `magic` / `jonathan`). One-time setup: [dark-factory-setup.md](./dark-factory-setup.md).
+Run **Layer 1 pytest** (local, no VPS) plus agent + script tests on the isolated VPS instance **`dark-factory`** (not `magic` / `jonathan`). One-time setup: [dark-factory-setup.md](./dark-factory-setup.md).
 
 ```bash
 cp test-config.example.json test-config.local.json   # once
+
+# Fast local gate only (pull/relay/sync unit tests):
+bash scripts/dark-factory/run.sh --layer 1
 
 # Match the tag you are about to push:
 bash scripts/dark-factory/run.sh --release v_star           # before git tag v*
@@ -89,7 +92,15 @@ bash scripts/dark-factory/run.sh --layer 3 --tags smoke
 
 Do **not** tag until the run reports **PASS** for the affected filter. If `platforms/overlays/cursor/outreachmagic.mdc` changed, also run manual Cursor smoke ([harness-cursor](../tests/dark-factory/harness-cursor/rules.md)).
 
-CI (`skill-scan.yml`) still runs pytest on every PR; dark factory is the pre-release integration gate.
+CI (`skill-scan.yml`) runs the full pytest suite on every PR. Dark factory adds **Layer 1** (pull/relay/sync + billing contract pytest, plus `wbhk-billing` when the sibling repo is present) before VPS deploy, then fixture + agent integration on `dark-factory`.
+
+Billing policy source of truth: `outreachmagic-brand/product/pricing.md` → enforced in `wbhk-billing` → mirrored in `tests/billing_contract.json` for skill CLI tests.
+
+After tagging on `magic`, optional live relay smoke:
+
+```bash
+bash scripts/vps_pull_smoke_test.sh v1.30.0
+```
 
 ### Steps
 

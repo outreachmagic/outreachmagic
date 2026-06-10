@@ -13,7 +13,7 @@
       },
       {
         "id": "om-plusvibe-platform-map",
-        "tags": ["smoke", "plusvibe", "script"],
+        "tags": ["smoke", "plusvibe", "migrate", "script"],
         "mode": "script",
         "command": ["platform-map", "--json"],
         "expect": {

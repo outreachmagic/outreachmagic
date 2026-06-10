@@ -4469,8 +4469,9 @@ def enrich_lead_rows(
             for pers_row in prefetch["personalization"].get(lead_id) or []:
                 fname = pers_row["field_name"]
                 merged[fname] = pers_row["field_value"]
-                if pers_row.get("field_date"):
-                    merged[f"{fname}_date"] = pers_row["field_date"]
+                field_date = pers_row["field_date"]
+                if field_date:
+                    merged[f"{fname}_date"] = field_date
                 elif f"{fname}_date" in merged:
                     del merged[f"{fname}_date"]
             row["personalization"] = merged

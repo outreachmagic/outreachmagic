@@ -4,7 +4,7 @@ The simplest pipeline tracker for AI agents. Auto-logs every outreach action to 
 
 ## Install
 
-Get your Agent Key at [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent), then run:
+Get your Agent Key at [app.outreachmagic.io/onboarding](https://app.outreachmagic.io/onboarding), then run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/outreachmagic/claude-code-outreachmagic/main/install.sh | bash
@@ -50,7 +50,7 @@ Start Claude Code in your project directory and ask:
 - **Free:** Unlimited agent-originated tracking, CLI pipeline view, 1 platform, 1,000 relay events/month
 - **Pro ($9/mo):** 50,000 relay events/month, all platform connections, multi-workspace routing
 
-Sign up at [outreachmagic.io](https://outreachmagic.io) · Upgrade at [app.outreachmagic.io](https://app.outreachmagic.io/dashboard/billing)
+Sign up at [outreachmagic.io](https://outreachmagic.io) · Upgrade at [app.outreachmagic.io](https://app.outreachmagic.io/settings/billing)
 
 ## License
 

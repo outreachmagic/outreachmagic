@@ -3,7 +3,7 @@
 **Status:** Implemented (2026-06-06) — vault + pools + failover  
 **Repos:** `wbhk-app` (portal + API), `outreachmagic-skill` (agent sync + companion loading)  
 **Last updated:** 2026-06-06  
-**Related:** [deepline-competitor-analysis.md](../positioning/deepline-competitor-analysis.md), [routing-config pattern](../../wbhk-app/docs/routing-config-contract.md) (when published)
+**Related:** [deepline-competitor-analysis.md](../../outreachmagic-brand/research/competitors/deepline-competitor-analysis.md), [routing-config pattern](../../wbhk-app/docs/routing-config-contract.md) (when published)
 
 ---
 
@@ -16,7 +16,7 @@
 | Step | Repo | Work |
 |------|------|------|
 | 1 | `wbhk-app` | Prisma + migrations + `agent-secrets.ts` + API routes |
-| 2 | `wbhk-app` | `/dashboard/api-keys` UI with pool slots + reorder |
+| 2 | `wbhk-app` | `/settings/api-keys` UI with pool slots + reorder |
 | 3 | `outreachmagic-skill` | `agent_secrets_cloud.py` + `sync-secrets` + login/pull hooks |
 | 4 | `outreachmagic-skill` | Companion env loading + `api_key_pool.py` + failover wiring |
 | 5 | Both | Docs, Agent Setup Steps, tests, scope migration |
@@ -142,7 +142,7 @@ Replaces: `~/.zshrc`, `~/.hermes/.env`, per-skill `config.json` scattered across
 ```mermaid
 flowchart TB
   subgraph portal [wbhk-app — app.outreachmagic.io]
-    UI["/dashboard/api-keys"]
+    UI["/settings/api-keys"]
     API["/api/agent-secrets"]
     Neon[(Neon — encrypted vault)]
     UI -->|PUT/DELETE/PATCH Clerk| API
@@ -233,7 +233,7 @@ sequenceDiagram
 | API Keys | BYOK + key pools |
 | Agent Access | Install, login, devices |
 
-### Page: `/dashboard/api-keys`
+### Page: `/settings/api-keys`
 
 1. **Hero** — "Test in your agent" copy-prompt
 2. **Companion skills** — provider cards with slot lists
@@ -267,7 +267,7 @@ Serper (lead-enrich)                    [+ Add backup key]
 | `agent-access-content.tsx` | Link to API Keys |
 | `agent-setup-steps.tsx` | Steps 3–4: API Keys URL + `sync-secrets` |
 | `agent-install-commands.ts` | `syncSecretsCommandForPlatform()` in post-install |
-| `COMPANION_SKILLS_BUNDLE` | Link `/dashboard/api-keys`; mention backup keys |
+| `COMPANION_SKILLS_BUNDLE` | Link `/settings/api-keys`; mention backup keys |
 | `SKILL.md` | 5-step path + pool failover one-liner |
 
 ---
@@ -541,7 +541,7 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py sync-secrets --check 
 
 **UI**
 
-- [ ] `src/app/dashboard/api-keys/page.tsx` + `api-keys-content.tsx`
+- [ ] `src/app/(shell)/settings/api-keys/page.tsx` + `api-keys-content.tsx`
 - [ ] Sidebar nav **API Keys**
 - [ ] Provider cards: slot list, ↑↓ reorder, add backup, update/remove
 - [ ] Custom keys section (same slot UI)

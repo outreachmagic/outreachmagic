@@ -1,12 +1,12 @@
 {
-  "version": "1.29.6",
+  "version": "1.29.7",
   "files": {
     "activity_sync.py": "a1d36da5b1b35863ecdff8e366d89601ef622729978b148ee1e1cba0da3a04d2",
     "agent_secrets_cloud.py": "fe478a2280b7799d7b7ae551149c38a43f1ec6f0ac05b6b9d3142f29293a56e3",
     "api_key_pool.py": "3174a8f8509ca97fcefe3f1c9a175cfdead450941b8cfb0f19df7af4e7b34caf",
     "bounces.py": "fe88d67b13baf7ced732605b996df28eeac11a4525d4c4cd23c29d54e8a18e2d",
     "connections_cloud.py": "6637b182ffd9dcd36781aae1b5bfb78d6f692e8498a5f7ac733ddf2194f86a3e",
-    "constants.py": "63ac812d09f21c86303b01a265f460f66b23b65213445ce443b2570604f89c9f",
+    "constants.py": "62a2a7753671b02e3f58fe220cf99e8c0a088e5bddb84a9ad35bfa6f8de54254",
     "data_freshness.py": "91e73725525703420d5af4d9de2816f6c6917eb1e4130cda2b860a11b0256007",
     "db_conn.py": "428c7f80d63ca0fca058a5848887ba69e32fe5d5f1d9d169083a9a301569c113",
     "db_health.py": "5de3432e0cc058a60055993a0b62a553b49aaf948e1b0fc0c750f17ce2a263a3",
@@ -30,7 +30,7 @@
     "schema_views.py": "0307f3d44c157742dc1092c9914bd9bed2a1684180a73a9afc9dd6f41260ee08",
     "workspace_archive.py": "d150960581f33c365defed0ba8cf038d6c972ea53a33980d1d3062dd4ebf8934",
     "workspace_routing.py": "ec5dffae6f9e9fcac654922d83d886ea7da4523e96c8cadd7ccf7f4856a0d52d",
-    "VERSION": "5cc0914dc01b3e061ac57a2009c28fbf1e57b5ebfb98fa2bbba5ae7603924db8",
-    "SKILL.md": "f478b7cb9087c47a596f38e788ed047ae9b813fd13ee93dcefb44c0ce93708b0"
+    "VERSION": "53bcd9897cb9dc4c0921eb2cb5e752e9b8061a31f06f13964321f5c3248c5ae5",
+    "SKILL.md": "d97a81993b3d62a75593dc7e35c364f33aea033a8594030a38a2bdbaae1de463"
   }
 }

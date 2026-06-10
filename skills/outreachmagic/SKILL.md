@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
-version: 1.29.6
+version: 1.29.7
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -67,7 +67,7 @@ bash install.sh --platform hermes --with-lead-enrich --with-email-finder --migra
 
 Pin a release (optional): add `--tag vX.Y.Z --lead-enrich-tag lead-enrich-vA.B.C --email-finder-tag email-finder-vA.B.C`.
 
-Use `--platform cursor` or `--platform claude` for other agents. Setup: https://app.outreachmagic.io/setup/agent
+Use `--platform cursor` or `--platform claude` for other agents. Setup: https://app.outreachmagic.io/onboarding
 
 ### Hermes profiles
 
@@ -111,7 +111,7 @@ If `pull` returns an error like "No agent key or token configured", the user nee
 >
 > A browser window will open — sign in or sign up, then authorize this device. Never paste secrets into chat.
 
-If the skill is not installed yet, point them to **https://app.outreachmagic.io/setup/agent** or **https://app.outreachmagic.io/dashboard/agent** for install commands, then `login`.
+If the skill is not installed yet, point them to **https://app.outreachmagic.io/onboarding** or **https://app.outreachmagic.io/agent** for install commands, then `login`.
 
 `init` creates the database under `<skill_home>/databases/`. Dashboard API keys sync to `<skill_home>/config/agent_secrets.env` (next to `outreachmagic_config.json`). CSVs and exports use **`input/`** and **`export/`** relative to your **workspace directory** (where the agent runs commands). Set `"project_root"` in config to pin a fixed folder instead of cwd.
 

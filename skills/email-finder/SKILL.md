@@ -19,7 +19,7 @@ required_environment_variables:
     required_for: Email find via Icypeas (fallback)
   - name: OUTREACHMAGIC_AGENT_KEY
     prompt: Outreach Magic agent key
-    help: Create at https://app.outreachmagic.io/setup/agent (starts with om_agent_)
+    help: Create at https://app.outreachmagic.io/onboarding (starts with om_agent_)
     required_for: Dedup and save to local SQLite
   - name: MILLIONVERIFIER_API_KEY
     prompt: MillionVerifier API key

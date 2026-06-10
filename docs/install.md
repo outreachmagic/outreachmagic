@@ -4,7 +4,7 @@
 [raw.githubusercontent.com/.../main/AGENTS-INSTALL.md](https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md)
 on the public repo.
 
-Get install commands for your platform at [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent).
+Get install commands for your platform at [app.outreachmagic.io/onboarding](https://app.outreachmagic.io/onboarding).
 
 All platforms install from one repo: [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic).
 

@@ -1,7 +1,7 @@
 # Agent install guide — Outreach Magic skill suite
 
 Agent-readable install guide for **outreachmagic**, **lead-enrich**, and **email-finder**.
-Human setup portal: https://app.outreachmagic.io/setup/agent
+Human setup portal: https://app.outreachmagic.io/onboarding
 
 ## Ask the user first
 
@@ -79,7 +79,7 @@ python3 <SKILLS>/outreachmagic/scripts/pipeline.py login
 ```
 
 Browser opens for sign-in / device authorization. Key setup:
-https://app.outreachmagic.io/setup/agent
+https://app.outreachmagic.io/onboarding
 
 **CI / automation:** after one interactive `login`, you may set `OUTREACHMAGIC_AGENT_KEY`
 in CI secrets (overrides config). Never commit the key.
@@ -119,7 +119,7 @@ export MILLIONVERIFIER_API_KEY="" # email-finder verify (optional)
 
 Get keys:
 
-- Outreach Magic: https://app.outreachmagic.io/setup/agent
+- Outreach Magic: https://app.outreachmagic.io/onboarding
 - Serper: https://serper.dev
 - TryKitt: https://trykitt.ai
 - Icypeas: https://icypeas.com

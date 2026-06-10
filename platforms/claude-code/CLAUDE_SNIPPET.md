@@ -27,5 +27,5 @@ Reference: `~/.claude/skills/outreachmagic/references/query-guide.md`
 
 ### Setup
 
-If not connected: `pipeline.py login` — https://app.outreachmagic.io/setup/agent
+If not connected: `pipeline.py login` — https://app.outreachmagic.io/onboarding
 <!-- /Outreach Magic -->

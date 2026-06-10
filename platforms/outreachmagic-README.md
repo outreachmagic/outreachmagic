@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/in
 
 Use `--platform cursor` or `--platform claude` for other agents. Outreach Magic only: omit `--with-lead-enrich` and `--with-email-finder`.
 
-Full agent install guide: [AGENTS-INSTALL.md](./AGENTS-INSTALL.md) · Portal: [app.outreachmagic.io/setup/agent](https://app.outreachmagic.io/setup/agent)
+Full agent install guide: [AGENTS-INSTALL.md](./AGENTS-INSTALL.md) · Portal: [app.outreachmagic.io/onboarding](https://app.outreachmagic.io/onboarding)
 
 Connect after install (run in terminal, not chat):
 

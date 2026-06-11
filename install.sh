@@ -80,9 +80,9 @@ _bootstrap_install_if_needed() {
   tmp="$(mktemp -d -t om-install-bootstrap-XXXXXX)"
   _log_step "Fetching installer bundle from $OM_REPO${tag:+ @ $tag}"
   if [[ -n "$tag" ]]; then
-    git clone --depth 1 --progress --branch "$tag" "$OM_REPO" "$tmp"
+    git -c advice.detachedHead=false clone --depth 1 --progress --branch "$tag" "$OM_REPO" "$tmp"
   else
-    git clone --depth 1 --progress "$OM_REPO" "$tmp"
+    git -c advice.detachedHead=false clone --depth 1 --progress "$OM_REPO" "$tmp"
   fi
   if [[ ! -f "$tmp/platforms/common/install-companions.sh" ]]; then
     echo "error: cloned repo missing platforms/common/install-companions.sh" >&2
@@ -111,7 +111,7 @@ Options:
   --no-profiles            Hermes only: skip profile symlinks
   --all-profiles           Hermes only: symlink all existing profiles (default when profiles/ exists)
   --profile NAME           Hermes only: symlink one profile (repeatable)
-  --tag TAG                outreachmagic release tag (e.g. v1.35.0)
+  --tag TAG                outreachmagic release tag (e.g. v1.35.1)
   --lead-enrich-tag TAG    lead-enrich release tag (default from skill-suite.json)
   --email-finder-tag TAG   email-finder release tag (default from skill-suite.json)
   --dry-run                Print planned actions without writing
@@ -201,9 +201,9 @@ clone_repo() {
   rm -rf "$dest"
   mkdir -p "$dest"
   if [[ -n "$tag" ]]; then
-    git clone --depth 1 --progress --branch "$tag" "$repo" "$dest"
+    git -c advice.detachedHead=false clone --depth 1 --progress --branch "$tag" "$repo" "$dest"
   else
-    git clone --depth 1 --progress "$repo" "$dest"
+    git -c advice.detachedHead=false clone --depth 1 --progress "$repo" "$dest"
   fi
   _log_step "Clone complete ($((SECONDS - started))s)"
 }

@@ -30,4 +30,7 @@ if rg -n '~/.hermes/\.env' AGENTS-INSTALL.md docs/AGENT-INTENTS.md skills/*/SECU
   exit 1
 fi
 
+echo "== Install doc sync and pattern validation =="
+python3 scripts/sync_install_docs.py --check
+
 echo "release-check: PASS"

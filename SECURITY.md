@@ -94,13 +94,14 @@ Development overrides (in `outreachmagic_config.json`, not environment variables
 Install from a pinned release (download → verify → run — never `curl | bash`):
 
 ```bash
-OM_VERSION=v1.35.0
+OM_VERSION=v1.35.1
+INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \
-  -o /tmp/om_install.sh
+  -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" \
-  -o /tmp/om_SHA256SUMS
-(cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
-bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}"
+  -o "${INSTALL_DIR}/SHA256SUMS"
+grep ' install.sh$' "${INSTALL_DIR}/SHA256SUMS" | (cd "${INSTALL_DIR}" && shasum -a 256 --check)
+bash "${INSTALL_DIR}/install.sh" --platform hermes --tag "${OM_VERSION}"
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 ```
 

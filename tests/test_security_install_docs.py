@@ -8,14 +8,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "skills" / "outreachmagic" / "scripts" / "pipeline.py"
+VERSION_FILE = ROOT / "skills" / "outreachmagic" / "scripts" / "VERSION"
+
+
+def _read_tag() -> str:
+    ver = VERSION_FILE.read_text(encoding="utf-8").strip()
+    return ver if ver.startswith("v") else f"v{ver}"
 
 
 def test_agents_install_uses_download_not_pipe_only():
     text = (ROOT / "AGENTS-INSTALL.md").read_text(encoding="utf-8")
+    tag = _read_tag()
     assert "download" in text.lower()
     assert "agent_secrets.env" in text
     assert "SHA256SUMS" in text
-    assert "v1.35.0" in text
+    assert f"OM_VERSION={tag}" in text
+    assert "INSTALL_DIR=$(mktemp -d)" in text
+    assert "om_install.sh" not in text
     assert "export SERPER_API_KEY" not in text
     assert "~/.hermes/.env" not in text
     assert "--with-lead-enrich" not in text

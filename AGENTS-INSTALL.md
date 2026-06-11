@@ -29,10 +29,10 @@ Before executing any install command:
 
 The installer always installs the **full suite** (outreachmagic + lead-enrich + email-finder).
 
-Preview without writing:
+After download (Step 1 below), preview without writing:
 
 ```bash
-bash /tmp/om_install.sh --dry-run --platform <PLATFORM> --tag v1.35.0
+bash "${INSTALL_DIR}/install.sh" --dry-run --platform <PLATFORM> --tag "${OM_VERSION}"
 ```
 
 ## Prerequisites
@@ -64,20 +64,23 @@ git --version
 Pin a **release tag** (recommended). Check latest: `pipeline.py update --check` or GitHub releases.
 
 ```bash
+OM_VERSION=v1.35.1
+INSTALL_DIR=$(mktemp -d)
+
 # Step 1 — download (does not execute)
-curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.35.0/install.sh \
-  -o /tmp/om_install.sh
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \
+  -o "${INSTALL_DIR}/install.sh"
 
 # Step 2 — verify integrity (recommended)
-curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.35.0/SHA256SUMS \
-  -o /tmp/om_SHA256SUMS
-(cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" \
+  -o "${INSTALL_DIR}/SHA256SUMS"
+grep ' install.sh$' "${INSTALL_DIR}/SHA256SUMS" | (cd "${INSTALL_DIR}" && shasum -a 256 --check)
 
 # Step 3 — optional: inspect before running
-less /tmp/om_install.sh
+less "${INSTALL_DIR}/install.sh"
 
 # Step 4 — run from local copy
-bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.35.0
+bash "${INSTALL_DIR}/install.sh" --platform <PLATFORM> --tag "${OM_VERSION}"
 ```
 
 **Read-only platform detection** (no install side effects):
@@ -194,7 +197,7 @@ hermes -s outreachmagic
 (`../../../skills/outreachmagic`). Re-run install to link a new profile:
 
 ```bash
-bash /tmp/om_install.sh --platform hermes --profile <name>
+bash "${INSTALL_DIR}/install.sh" --platform hermes --profile <name>
 ```
 
 ## Verify
@@ -223,8 +226,8 @@ Re-run the install script only for a full reinstall (broken layout, new platform
 ## Uninstall
 
 ```bash
-bash /tmp/om_install.sh --uninstall --dry-run --platform <PLATFORM>
-bash /tmp/om_install.sh --uninstall --platform <PLATFORM>
+bash "${INSTALL_DIR}/install.sh" --uninstall --dry-run --platform <PLATFORM>
+bash "${INSTALL_DIR}/install.sh" --uninstall --platform <PLATFORM>
 ```
 
 ## Stop on errors

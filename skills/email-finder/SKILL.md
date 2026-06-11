@@ -50,7 +50,7 @@ Find work emails when you have **name + company domain**. **trykitt** first, **I
 2. **API keys** — save in Dashboard → API Keys, then `pipeline.py sync-secrets` (writes `<skill_home>/config/agent_secrets.env`; scripts load **only** these keys for TryKitt/Icypeas/MV). Check source with `email_finder.py config` (`*_api_key_source` should be `agent_secrets`).
 3. **Batch:** `lead_id` on every row + **`--workspace`**
 
-Before find/batch, confirm keys: `python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py sync-secrets --check --json` or `python3 scripts/email_finder.py config`.
+Before find/batch, confirm keys: `python3 <SKILLS>/outreachmagic/scripts/pipeline.py sync-secrets --check --json` or `python3 scripts/email_finder.py config`.
 
 ## Production batch defaults
 

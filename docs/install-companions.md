@@ -8,15 +8,16 @@ See [AGENTS-INSTALL.md](../AGENTS-INSTALL.md) for the full agent guide.
 ## Install
 
 ```bash
-OM_VERSION=v1.35.0
+OM_VERSION=v1.35.1
+INSTALL_DIR=$(mktemp -d)
 
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \
-  -o /tmp/om_install.sh
+  -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" \
-  -o /tmp/om_SHA256SUMS
-(cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
+  -o "${INSTALL_DIR}/SHA256SUMS"
+grep ' install.sh$' "${INSTALL_DIR}/SHA256SUMS" | (cd "${INSTALL_DIR}" && shasum -a 256 --check)
 
-bash /tmp/om_install.sh --platform <PLATFORM> --tag "${OM_VERSION}"
+bash "${INSTALL_DIR}/install.sh" --platform <PLATFORM> --tag "${OM_VERSION}"
 ```
 
 | Platform | Flag | Skills directory |

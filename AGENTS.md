@@ -31,6 +31,7 @@ Do **not** edit `UPDATE_FILES` or hand-maintained manifest tuples — companions
 ```bash
 echo X.Y.Z > skills/outreachmagic/scripts/VERSION
 python3 -c "import sys; sys.path.insert(0,'skills/outreachmagic/scripts'); import pipeline as om; om.sync_skill_md_version()"
+python3 scripts/sync_install_docs.py
 make release-check
 git commit -am "Release vX.Y.Z"
 git tag vX.Y.Z

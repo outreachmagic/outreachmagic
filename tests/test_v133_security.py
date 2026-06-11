@@ -13,6 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "skills" / "outreachmagic" / "scripts" / "pipeline.py"
 DETECT = ROOT / "skills" / "outreachmagic" / "scripts" / "detect_platform.py"
 EF_SCRIPTS = ROOT / "skills" / "email-finder" / "scripts"
+VERSION_FILE = ROOT / "skills" / "outreachmagic" / "scripts" / "VERSION"
+
+
+def _read_tag() -> str:
+    ver = VERSION_FILE.read_text(encoding="utf-8").strip()
+    return ver if ver.startswith("v") else f"v{ver}"
 
 
 def test_detect_platform_json_shape():
@@ -114,8 +120,10 @@ def test_batch_auth_resync_retries_once(monkeypatch):
 
 def test_agents_install_sha256_and_release_pin():
     text = (ROOT / "AGENTS-INSTALL.md").read_text(encoding="utf-8")
-    assert "v1.35.0" in text
+    tag = _read_tag()
+    assert f"OM_VERSION={tag}" in text
     assert "SHA256SUMS" in text
+    assert "INSTALL_DIR=$(mktemp -d)" in text
     assert "detect_platform.py" in text
     assert "--public" in text
     assert "releases/download" in text

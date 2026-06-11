@@ -22,7 +22,7 @@ Outreach Magic has a **private dev monorepo** and a **single public install repo
 │    1. release.yml           → validate, tarball, Release (private)  │
 │    2. publish-platforms.yml → push to outreachmagic/outreachmagic   │
 └───────────────────────────────┬─────────────────────────────────────┘
-                                │  same tag (e.g. v1.21.0)
+                                │  same tag (e.g. v1.35.1)
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  PUBLIC — outreachmagic/outreachmagic                               │
@@ -115,6 +115,7 @@ sys.path.insert(0, 'skills/outreachmagic/scripts')
 import pipeline as om
 om.sync_skill_md_version()
 "
+python3 scripts/sync_install_docs.py
 make release-check   # or: python3 scripts/generate_skill_manifest.py --all
 # Manifests are generated from skill-suite.json — do not hand-edit file lists.
 
@@ -128,12 +129,23 @@ git tag v1.20.9
 git push origin main --tags
 ```
 
+### Cross-repo deploy order
+
+| Change touches | Deploy order |
+|----------------|--------------|
+| Sheets export API (`public_link`, share errors) | **wbhk-app** first → then tag skill |
+| Relay caps | **wbhk-worker** first → then tag skill |
+| Install docs / `install.sh` only | Skill tag only |
+
 ### After CI finishes — verify public release
 
 Do **not** assume the private monorepo tag alone is enough. Confirm the **public install repo** has a GitHub Release:
 
 ```bash
 TAG=v1.20.9
+
+# Full install-asset + SHA256 verify (uses documented INSTALL_DIR flow)
+bash scripts/verify-public-release.sh "$TAG"
 
 # Release exists on the unified public repo
 gh release view "$TAG" --repo outreachmagic/outreachmagic
@@ -333,9 +345,12 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 Only if `update` cannot run at all. Reinstall from the unified public repo:
 
 ```bash
-OM_VERSION=v1.35.0
-curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o /tmp/om_install.sh
-bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}"
+OM_VERSION=v1.35.1
+INSTALL_DIR=$(mktemp -d)
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"
+grep ' install.sh$' "${INSTALL_DIR}/SHA256SUMS" | (cd "${INSTALL_DIR}" && shasum -a 256 --check)
+bash "${INSTALL_DIR}/install.sh" --platform hermes --tag "${OM_VERSION}"
 ```
 
 Or download manifest files manually from `raw.githubusercontent.com/outreachmagic/outreachmagic/<tag>/skills/outreachmagic/…` (see `update_skill` in `pipeline.py`).

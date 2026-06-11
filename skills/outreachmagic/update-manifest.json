@@ -1,8 +1,8 @@
 {
-  "version": "1.35.0",
+  "version": "1.35.1",
   "files": {
-    "SKILL.md": "f94ee1a4269f1a5d24c77a215827e42f0c6875ef22ac0654b910afac0d7c24bb",
-    "VERSION": "c34d19b8ddcf6f916e4e43354d3a22058dcb584a957d62ac967052ec7bb3a424",
+    "SKILL.md": "f33a3fb7492188566fb1091026f90bff9d4ab50552e1736244ea8666b34e5082",
+    "VERSION": "f94faeb30d3276f949866dfe7b9adcda39209d70ab07dec59a88452688468850",
     "activity_sync.py": "a1d36da5b1b35863ecdff8e366d89601ef622729978b148ee1e1cba0da3a04d2",
     "agent_secrets_cloud.py": "fe478a2280b7799d7b7ae551149c38a43f1ec6f0ac05b6b9d3142f29293a56e3",
     "api_key_pool.py": "3174a8f8509ca97fcefe3f1c9a175cfdead450941b8cfb0f19df7af4e7b34caf",

@@ -13,25 +13,26 @@ from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagi
 Pin a release tag. Download first — do not pipe remote scripts directly into `bash`.
 
 ```bash
-OM_VERSION=v1.35.0
+OM_VERSION=v1.35.1
+INSTALL_DIR=$(mktemp -d)
 
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \
-  -o /tmp/om_install.sh
+  -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" \
-  -o /tmp/om_SHA256SUMS
-(cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
+  -o "${INSTALL_DIR}/SHA256SUMS"
+grep ' install.sh$' "${INSTALL_DIR}/SHA256SUMS" | (cd "${INSTALL_DIR}" && shasum -a 256 --check)
 
-bash /tmp/om_install.sh --platform <PLATFORM> --tag "${OM_VERSION}"
+bash "${INSTALL_DIR}/install.sh" --platform <PLATFORM> --tag "${OM_VERSION}"
 ```
 
-Preview: `bash /tmp/om_install.sh --dry-run --platform <PLATFORM> --tag "${OM_VERSION}"`
+Preview: `bash "${INSTALL_DIR}/install.sh" --dry-run --platform <PLATFORM> --tag "${OM_VERSION}"`
 
 ## Platform examples
 
 **Hermes:**
 
 ```bash
-bash /tmp/om_install.sh --platform hermes --tag v1.35.0
+bash "${INSTALL_DIR}/install.sh" --platform hermes --tag "${OM_VERSION}"
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 hermes -s outreachmagic
 ```
@@ -39,14 +40,14 @@ hermes -s outreachmagic
 **Cursor:**
 
 ```bash
-bash /tmp/om_install.sh --platform cursor --tag v1.35.0
+bash "${INSTALL_DIR}/install.sh" --platform cursor --tag "${OM_VERSION}"
 python3 ~/.cursor/skills/outreachmagic/scripts/pipeline.py login
 ```
 
 **Claude Code:**
 
 ```bash
-bash /tmp/om_install.sh --platform claude --tag v1.35.0
+bash "${INSTALL_DIR}/install.sh" --platform claude --tag "${OM_VERSION}"
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py login
 ```
 

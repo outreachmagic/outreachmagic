@@ -326,6 +326,29 @@ def scripts_base_for_tag(
     return f"{base}/{path}/scripts"
 
 
+def raw_repo_base_for_branch(
+    branch: str,
+    *,
+    github_repo: Optional[str] = None,
+    skill_repo_path: Optional[str] = None,
+) -> str:
+    repo, _path = effective_update_target() if github_repo is None else (github_repo, skill_repo_path or SKILL_REPO_PATH)
+    return f"https://raw.githubusercontent.com/{repo}/{branch.strip()}"
+
+
+def scripts_base_for_branch(
+    branch: str,
+    *,
+    github_repo: Optional[str] = None,
+    skill_repo_path: Optional[str] = None,
+) -> str:
+    repo, path = effective_update_target() if github_repo is None else (github_repo, skill_repo_path or SKILL_REPO_PATH)
+    base = raw_repo_base_for_branch(branch, github_repo=repo, skill_repo_path=path)
+    if path == ".":
+        return f"{base}/scripts"
+    return f"{base}/{path}/scripts"
+
+
 def update_manifest_url(repo_base: str, skill_repo_path: str) -> str:
     if skill_repo_path == ".":
         return f"{repo_base.rstrip('/')}/update-manifest.json"
@@ -447,6 +470,12 @@ def notify_update_available(quiet: bool = False) -> None:
 def check_skill_update(quiet: bool = False) -> bool:
     """Return True if installed scripts match or exceed the latest release."""
     remote = fetch_remote_version()
+    cfg = load_config()
+    installed_tag = (cfg.get("installed_from_tag") or "").strip() or "unknown"
+    if not quiet:
+        print(f"Installed: {__version__} (source: {installed_tag})")
+        if remote:
+            print(f"Latest release: {remote}")
     if not remote or parse_version(remote) <= parse_version(__version__):
         return True
     if not quiet:
@@ -491,7 +520,68 @@ def update_download_names(manifest: Optional[dict] = None) -> list[str]:
     return list(UPDATE_MANIFEST_FILES)
 
 
-def resolve_update_source(explicit_tag: Optional[str] = None) -> tuple[Optional[Path], str, str, str]:
+def scripts_rollback_dir() -> Path:
+    return get_config_path().parent / "scripts-rollback"
+
+
+def backup_scripts_for_rollback(dest: Path) -> None:
+    """Snapshot scripts/ before update so pipeline.py rollback can restore."""
+    backup = scripts_rollback_dir()
+    if backup.exists():
+        shutil.rmtree(backup)
+    shutil.copytree(dest, backup)
+    meta = {
+        "version": _read_version_file(dest / "VERSION"),
+        "installed_from_tag": load_config().get("installed_from_tag"),
+        "backed_up_at": datetime.now(timezone.utc).isoformat(),
+    }
+    (get_config_path().parent / "scripts-rollback-meta.json").write_text(
+        json.dumps(meta, indent=2),
+        encoding="utf-8",
+    )
+
+
+def rollback_skill() -> dict:
+    """Restore skill scripts from the pre-update backup."""
+    backup = scripts_rollback_dir()
+    if not backup.is_dir():
+        return {
+            "status": "error",
+            "error": "no_rollback_snapshot",
+            "message": "No rollback snapshot found. Run pipeline.py update first.",
+        }
+    dest = skill_scripts_dir()
+    meta_path = get_config_path().parent / "scripts-rollback-meta.json"
+    meta = _load_json_dict(meta_path) if meta_path.is_file() else {}
+    for path in dest.iterdir():
+        if path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+    for item in backup.iterdir():
+        target = dest / item.name
+        if item.is_dir():
+            shutil.copytree(item, target)
+        else:
+            shutil.copy2(item, target)
+    if meta.get("installed_from_tag"):
+        cfg = load_config()
+        cfg["installed_from_tag"] = meta["installed_from_tag"]
+        save_config(cfg)
+    sync_skill_md_version()
+    return {
+        "status": "rolled_back",
+        "version": _read_version_file(dest / "VERSION"),
+        "restored_from_tag": meta.get("installed_from_tag"),
+        "path": str(dest),
+    }
+
+
+def resolve_update_source(
+    explicit_tag: Optional[str] = None,
+    *,
+    channel: str = "release",
+) -> tuple[Optional[Path], str, str, str]:
     """
     Resolve where to download skill files from.
     Returns (local_scripts_dir or None, scripts_base_url, repo_base_url, label).
@@ -521,6 +611,14 @@ def resolve_update_source(explicit_tag: Optional[str] = None) -> tuple[Optional[
             norm,
         )
 
+    if channel == "main":
+        return (
+            None,
+            scripts_base_for_branch("main", github_repo=github_repo, skill_repo_path=skill_path),
+            raw_repo_base_for_branch("main", github_repo=github_repo, skill_repo_path=skill_path),
+            "main",
+        )
+
     release = fetch_latest_release()
     if not release:
         raise RuntimeError(
@@ -534,10 +632,13 @@ def resolve_update_source(explicit_tag: Optional[str] = None) -> tuple[Optional[
     return None, release["base"], repo_base, release["tag"]
 
 
-def update_skill(explicit_tag: Optional[str] = None) -> dict:
+def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release") -> dict:
     """Download or copy a tagged release into this skill install, then migrate DB."""
     dest = skill_scripts_dir()
-    local_src, scripts_base, repo_base, source_label = resolve_update_source(explicit_tag)
+    backup_scripts_for_rollback(dest)
+    local_src, scripts_base, repo_base, source_label = resolve_update_source(
+        explicit_tag, channel=channel,
+    )
     updated: list[str] = []
     _, skill_path = effective_update_target()
     manifest: Optional[dict] = None
@@ -549,7 +650,7 @@ def update_skill(explicit_tag: Optional[str] = None) -> dict:
             except (OSError, json.JSONDecodeError):
                 manifest = None
     else:
-        manifest = fetch_update_manifest(repo_base, skill_path)
+        manifest = fetch_update_manifest(repo_base, skill_path) if source_label != "main" else None
 
     download_names = update_download_names(manifest)
 
@@ -9093,9 +9194,34 @@ def require_share_email_for_export(explicit: Optional[str] = None) -> str:
         json.dumps(
             {
                 "error": (
-                    "share_email required — pass --share-email or configure org owner in portal. "
+                    "share_email required — pass --share-email, --public, or configure org owner in portal. "
                     "Tip: pipeline.py whoami --json → share_email"
                 )
+            }
+        )
+    )
+    sys.exit(1)
+
+
+def resolve_sheets_export_access(args) -> tuple[Optional[str], bool]:
+    """Return (share_email, public_link) for sheets/review lead export."""
+    public = bool(getattr(args, "public", False))
+    if public:
+        return None, True
+    explicit = getattr(args, "share_email", None)
+    if explicit and str(explicit).strip():
+        return str(explicit).strip(), False
+    email = resolve_share_email(None)
+    if email:
+        return email, False
+    print(
+        json.dumps(
+            {
+                "error": (
+                    "share_email required — pass --share-email, --public, or configure org owner. "
+                    "Tip: pipeline.py whoami --json → share_email"
+                ),
+                "hint": "Use --public for anyone-with-link edit access (no email delivery).",
             }
         )
     )
@@ -10048,6 +10174,7 @@ def _remap_to_lead_review_export(args) -> None:
         ("no_email", False),
         ("require_domain", False),
         ("share_email", None),
+        ("public", False),
         ("fields", None),
         ("tag", None),
         ("stage", None),
@@ -10079,6 +10206,17 @@ def main():
     )
     update_p.add_argument("--check", action="store_true", help="Only check for updates, do not install")
     update_p.add_argument("--tag", help="Install a specific release tag (e.g. v1.4.5)")
+    update_p.add_argument(
+        "--channel",
+        choices=("release", "main"),
+        default="release",
+        help="release (default): latest GitHub tag; main: moving main branch (power users)",
+    )
+
+    rollback_p = sub.add_parser(
+        "rollback",
+        help="Restore skill scripts from backup taken before the last pipeline.py update",
+    )
 
     show_p = sub.add_parser("show", help="Show pipeline")
     show_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
@@ -10651,6 +10789,11 @@ def main():
     review_export_p.add_argument("--input", help="candidates.json from dedup find (dedup-review)")
     review_export_p.add_argument("--title", default="Outreach Dedup Review")
     review_export_p.add_argument("--share-email", help="Email to share sheet with (default: org owner)")
+    review_export_p.add_argument(
+        "--public",
+        action="store_true",
+        help="Anyone with the link can edit (no email share; use when share_email fails)",
+    )
     review_export_p.add_argument("--workspace", help="Workspace slug (lead-review)")
     review_export_p.add_argument(
         "--detail",
@@ -10747,6 +10890,11 @@ def main():
     sheets_export_p.add_argument("--workspace", required=True, help="Workspace slug")
     sheets_export_p.add_argument("--title", help="Sheet title (default: <workspace> leads)")
     sheets_export_p.add_argument("--share-email", help="Email to share sheet with (default: org owner)")
+    sheets_export_p.add_argument(
+        "--public",
+        action="store_true",
+        help="Anyone with the link can edit (no email share; use when share_email fails)",
+    )
     sheets_export_p.add_argument(
         "--detail",
         choices=pipeline_lead_review.DETAIL_LEVELS,
@@ -10998,12 +11146,23 @@ def main():
             print(f"Up to date ({__version__})")
             return
         try:
-            result = update_skill(explicit_tag=args.tag)
+            result = update_skill(
+                explicit_tag=args.tag,
+                channel=getattr(args, "channel", "release"),
+            )
             print(f"Updated to v{result['version']} from {result['source']} in {result['path']}")
             print("Files:", ", ".join(result["files"]))
         except Exception as e:
             print(f"Update failed: {e}")
             sys.exit(1)
+        return
+
+    if args.command == "rollback":
+        result = rollback_skill()
+        if result.get("status") != "rolled_back":
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+        print(json.dumps(result, indent=2))
         return
 
     if args.command == "init":
@@ -11979,12 +12138,14 @@ def main():
                     if not payload.get("rows"):
                         print(json.dumps({"error": "no leads matched export filters"}))
                         sys.exit(1)
+                    share_email, public_link = resolve_sheets_export_access(args)
                     result = review_cloud.export_review(
                         api_base,
                         tok,
                         template=template,
                         title=args.title,
-                        share_email=require_share_email_for_export(getattr(args, "share_email", None)),
+                        share_email=share_email,
+                        public_link=public_link,
                         detail=payload.get("detail"),
                         headers=payload.get("headers"),
                         rows=payload.get("rows"),

@@ -120,6 +120,7 @@ Options:
   --all-profiles           Hermes only: symlink all existing profiles (default when profiles/ exists)
   --profile NAME           Hermes only: symlink one profile (repeatable)
   --migrate                Hermes only: replace profile copies with symlinks
+  --migrate-hermes-profiles  Alias for --migrate
   --tag TAG                outreachmagic release tag (e.g. v1.20.24)
   --lead-enrich-tag TAG    lead-enrich release tag
   --email-finder-tag TAG   email-finder release tag
@@ -136,7 +137,7 @@ while [[ $# -gt 0 ]]; do
     --with-lead-enrich) WITH_LEAD_ENRICH=1; shift ;;
     --with-email-finder) WITH_LEAD_ENRICH=1; WITH_EMAIL_FINDER=1; shift ;;
     --local) LOCAL=1; shift ;;
-    --migrate) MIGRATE=1; shift ;;
+    --migrate|--migrate-hermes-profiles) MIGRATE=1; shift ;;
     --all-profiles) ALL_PROFILES=1; shift ;;
     --no-profiles) NO_PROFILES=1; shift ;;
     --profile) PROFILES+=("$2"); shift 2 ;;
@@ -165,7 +166,7 @@ if [[ $WITH_LEAD_ENRICH -eq 1 && -z "$LE_TAG" ]]; then
 fi
 if [[ $WITH_EMAIL_FINDER -eq 1 && -z "$EF_TAG" ]]; then
   EF_TAG="$(_read_suite_install_tag email-finder 2>/dev/null || true)"
-  [[ -n "$EF_TAG" ]] || EF_TAG="v2.2.21"
+  [[ -n "$EF_TAG" ]] || EF_TAG="v2.2.22"
 fi
 
 if [[ -z "$OM_TAG" && $UNINSTALL -eq 0 ]]; then
@@ -312,8 +313,19 @@ install_outreachmagic() {
 
   chmod +x "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" 2>/dev/null || true
   local db_path="$SKILLS_DIR/outreachmagic/databases/outreachmagic.db"
-  _log_step "Initializing local SQLite database at $db_path"
-  echo "  (Stores pipeline contacts and event history locally — no data sent to servers during init.)"
+  if [[ $YES -eq 0 ]]; then
+    echo "Initialize local SQLite database at $db_path?"
+    echo "  (Stores pipeline contacts and event history locally — no data sent to servers during init.)"
+    read -r -p "Run pipeline.py init? [y/N] " reply
+    if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+      echo "Skipping init. Run later:"
+      echo "  python3 $SKILLS_DIR/outreachmagic/scripts/pipeline.py init"
+      return 0
+    fi
+  else
+    _log_step "Initializing local SQLite database at $db_path"
+    echo "  (Stores pipeline contacts and event history locally — no data sent to servers during init.)"
+  fi
   local tag_label="${OM_TAG:-main}"
   python3 "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" init --from-tag "$tag_label"
 }

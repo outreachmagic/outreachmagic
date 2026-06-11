@@ -27,7 +27,7 @@ Before executing any install command:
 2. Ask for **explicit confirmation**. Do not run `install.sh` without user approval of the full command string.
 3. Prefer **download → inspect → run** (below), not `curl | bash` in one pipeline.
 
-`--migrate` (Hermes only): replaces profile **copies** with symlinks into `~/.hermes/skills/`. It does not delete lead data.
+`--migrate` / `--migrate-hermes-profiles` (Hermes only): replaces profile **copies** with symlinks into `~/.hermes/skills/`. It does not delete lead data.
 
 Preview without writing:
 
@@ -65,21 +65,33 @@ Pin a **release tag** (recommended). Check latest: `pipeline.py update --check` 
 
 ```bash
 # Step 1 — download (does not execute)
-curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.32.0/install.sh \
+curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.33.0/install.sh \
   -o /tmp/om_install.sh
 
-# Step 2 — optional: inspect before running
+# Step 2 — verify integrity (recommended)
+curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.33.0/SHA256SUMS \
+  -o /tmp/om_SHA256SUMS
+(cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
+
+# Step 3 — optional: inspect before running
 less /tmp/om_install.sh
 
-# Step 3 — run from local copy (full suite)
-bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.32.0 \
-  --with-lead-enrich --with-email-finder --migrate
+# Step 4 — run from local copy (full suite)
+bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.33.0 \
+  --with-lead-enrich --with-email-finder --migrate-hermes-profiles
 ```
 
 **Outreach Magic only** (no Serper or email find):
 
 ```bash
-bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.32.0 --migrate
+bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.33.0 --migrate-hermes-profiles
+```
+
+**Read-only platform detection** (no install side effects):
+
+```bash
+python3 <SKILLS>/outreachmagic/scripts/detect_platform.py
+# → {"platform": "cursor", "skills_dir": "~/.cursor/skills"}
 ```
 
 On Hermes, omit `--migrate` only if you have no existing Hermes profiles to fix.
@@ -143,11 +155,16 @@ python3 <SKILLS>/email-finder/scripts/email_finder.py config
 | "export leads to Google Sheets" | `pipeline.py sheets export --workspace W` (see share email below) |
 | "export leads to Google Sheets for [client]" | `pipeline.py sheets export --workspace W --title "…"` |
 | "export and share with [email]" | `pipeline.py sheets export --share-email addr` |
+| "share failed / test email" | `pipeline.py sheets export --public` (link can edit) |
 | "export only leads with email" | `pipeline.py sheets export --require-domain` |
 | "export leads that haven't been contacted" | `pipeline.py sheets export --never-contacted` |
 | "import a CSV of leads" | `import-profiles` then `sync` (auto-sync runs by default) |
 
-**Sheets export (always pass share email from OM identity):**
+**Sheets export — share email, then `--public` fallback:**
+
+1. Resolve share email from OM identity; confirm with the user if it looks like a test address (`+` alias or internal domain).
+2. Try `--share-email`. If Google rejects delivery (`share_email_undeliverable`), retry with `--public` and warn that anyone with the URL can edit.
+3. Never silently fall back to local CSV.
 
 ```bash
 SHARE_EMAIL=$(python3 <SKILLS>/outreachmagic/scripts/pipeline.py whoami --json \
@@ -158,6 +175,10 @@ python3 <SKILLS>/outreachmagic/scripts/pipeline.py sheets export \
   --title "Lead Export — YYYY-MM-DD" \
   --share-email "$SHARE_EMAIL" \
   --detail full
+
+# If share fails — anyone with link can edit (no email delivery):
+python3 <SKILLS>/outreachmagic/scripts/pipeline.py sheets export \
+  --workspace <WORKSPACE> --title "Lead Export" --public --detail full
 ```
 
 Use `pipeline.py sheets export` — **not** `review export` (dedup workflow), `gspread`, browser automation, or manual CSV for Google Sheets.
@@ -204,6 +225,8 @@ python3 <SKILLS>/outreachmagic/scripts/pipeline.py update --check
 ```
 
 Pin: `pipeline.py update --tag vX.Y.Z`. Power users: `pipeline.py update --channel main`.
+
+Rollback after a bad update: `pipeline.py rollback` (restores scripts snapshot from before the last update).
 
 Re-run the install script only for a full reinstall (broken layout, new platform overlay).
 

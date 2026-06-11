@@ -74,6 +74,7 @@ def export_review(
     template: str,
     title: str,
     share_email: Optional[str] = None,
+    public_link: bool = False,
     candidates: Optional[list[dict[str, Any]]] = None,
     detail: Optional[str] = None,
     headers: Optional[list[str]] = None,
@@ -89,6 +90,8 @@ def export_review(
     }
     if share_email:
         body["share_email"] = share_email
+    if public_link:
+        body["public_link"] = True
     if template == "lead-review":
         body["detail"] = detail or "standard"
         body["headers"] = headers or []

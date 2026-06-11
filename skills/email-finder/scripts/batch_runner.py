@@ -44,6 +44,7 @@ BATCH_CSV_COLUMNS = (
     "error", "provider", "api_calls", "status", "icypeas_status", "timestamp",
 )
 CREDIT_RECHECK_EVERY = 100
+_PROVIDER_ENV_KEYS = {"trykitt": "TRYKITT_API_KEY", "icypeas": "ICYPEAS_API_KEY"}
 
 RETRYABLE_CHECKPOINT_STATUSES = frozenset({
     "error", "http_error", "auth_error", "rate_limited", "credits_exhausted", "bad_input",
@@ -70,6 +71,26 @@ def checkpoint_row_is_complete(row: dict[str, Any]) -> bool:
 
 def count_checkpoint_errors(rows: list[dict[str, Any]]) -> int:
     return sum(1 for row in rows if not checkpoint_row_is_complete(row))
+
+
+def _reload_cfg_provider_keys(cfg: dict[str, Any], provider_names: list[str]) -> None:
+    for pname in provider_names:
+        env_key = _PROVIDER_ENV_KEYS.get(pname)
+        if not env_key:
+            continue
+        val = os.environ.get(env_key, "").strip()
+        if val:
+            cfg[f"{pname}_api_key"] = val
+
+
+def _api_providers_from_cfg(cfg: dict[str, Any], provider_names: list[str]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for pname in provider_names:
+        key = cfg.get(f"{pname}_api_key") or cfg.get(
+            "trykitt_api_key" if pname == "trykitt" else "icypeas_api_key"
+        )
+        rows.append((pname, str(key or "").strip()))
+    return rows
 
 
 @dataclass
@@ -798,6 +819,26 @@ def run_batch(
 
     credits_stop = False
     pending_queue: list[tuple[int, dict[str, Any]]] = list(to_process)
+    auth_resync_lock = threading.Lock()
+    auth_resync_attempted = False
+
+    def _maybe_resync_on_auth(result: dict[str, Any]) -> bool:
+        nonlocal auth_resync_attempted, api_providers
+        if str(result.get("status") or "") != "auth_error":
+            return False
+        with auth_resync_lock:
+            if auth_resync_attempted:
+                return False
+            auth_resync_attempted = True
+        print(
+            "\n⚠️  Auth error — refreshing API keys from portal (sync-secrets)...\n",
+            file=sys.stderr,
+        )
+        if not cc.maybe_sync_secrets_from_portal(skill_dir=skill_dir, quiet=False):
+            return False
+        _reload_cfg_provider_keys(cfg, provider_names)
+        api_providers = _api_providers_from_cfg(cfg, provider_names)
+        return True
 
     def _work(item: tuple[int, dict[str, Any]]) -> tuple[int, dict[str, Any]]:
         idx, row = item
@@ -853,9 +894,12 @@ def run_batch(
         if not chunk:
             continue
         with ThreadPoolExecutor(max_workers=len(chunk)) as pool:
-            futures = [pool.submit(_work, item) for item in chunk]
+            futures = {pool.submit(_work, item): item for item in chunk}
             for fut in as_completed(futures):
+                item = futures[fut]
                 idx, result = fut.result()
+                if _maybe_resync_on_auth(result):
+                    idx, result = _work(item)
                 results[idx] = result
                 done_count += 1
                 _record_result(idx, people[idx], result, writer, stats)
@@ -1013,9 +1057,14 @@ def run_batch(
             - {""}
         )
         label = ", ".join(providers) if providers else "provider"
+        resync_note = (
+            "   sync-secrets ran automatically after the first auth error.\n"
+            if auth_resync_attempted
+            else "   Run: pipeline.py sync-secrets --check to verify portal key status.\n"
+        )
         print(
             f"\n⚠  {label} auth error on {auth_n} lead(s) — API key may be invalid or expired.\n"
-            "   Run: pipeline.py sync-secrets --check to verify portal key status.\n",
+            f"{resync_note}",
             file=sys.stderr,
         )
     print_final_summary(

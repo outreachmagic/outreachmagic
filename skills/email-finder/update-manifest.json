@@ -1,7 +1,7 @@
 {
-  "version": "2.2.21",
+  "version": "2.2.22",
   "files": {
-    "scripts/batch_runner.py": "34dbd447269edf2b2064f7529674af72ea8a8c2e567b732469f1bed65dcf2458",
+    "scripts/batch_runner.py": "6a510730bb496a9086fbe3be8a42c254088c099c21cdc12238f1b050435db4e8",
     "scripts/companion_common.py": "f74d93cdaf12b7aa820df1c4cbfd48b16dbdf8649fc7a656acde67c5440f1e59",
     "scripts/credits.py": "2c07e76eb45e1a80ada1b98c4b53e2d8b93445f444a024f865d8ca606fc4c1ff",
     "scripts/email_finder.py": "4f713413d9c9fdb4aba40d7b753dfee4e627038b891b4719a4cfde56b4f5a85d",
@@ -13,7 +13,7 @@
     ".gitignore": "341c76ab4124d205ea796850984d042aefae420226f5017983fab00e435d746e",
     "README.md": "0411fd7b8c6efc811c8d11650bdd85d7bfa4180c18c5bf944176352f1a41a8c6",
     "SECURITY.md": "4c09df7f7942ca74f6c569b46919afed9c9edc70665a542d5026e96295cc0408",
-    "SKILL.md": "79c1b0202170f64d1e80f3fb70c7487240c820b4b963caddda136776797e7a57",
+    "SKILL.md": "c49de8f57a2e217803127f89fdc4bc7f0f9b42b3f5807c16c046451ca4d686eb",
     "config.example.json": "9d87bf65becd3c419659bf876e25bd25bfefbf904fef445bba428254a80e00b7",
     "default.env": "9ad001bca5c49187f82a543ba9ee787a9684caf1b6c64043354546e8305e7c54",
     "references/email-finding-research.md": "928569b8ea9f4ff322df94b40ab13875e08a213b9cc29e231248791c52805d61"

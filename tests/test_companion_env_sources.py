@@ -87,8 +87,10 @@ def test_serper_loads_from_hermes_when_local_keys_allowed():
         os.environ.pop("SERPER_API_KEY", None)
         cc._AGENT_ENV_LOADED = False
         cc.ensure_agent_env_loaded(reload=True)
-        assert os.environ.get("SERPER_API_KEY") == "from-hermes"
-        os.environ.pop("OM_ALLOW_LOCAL_API_KEYS", None)
+        try:
+            assert os.environ.get("SERPER_API_KEY") == "from-hermes"
+        finally:
+            os.environ.pop("OM_ALLOW_LOCAL_API_KEYS", None)
 
 
 def test_stale_shell_key_cleared_when_not_in_agent_secrets():

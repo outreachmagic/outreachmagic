@@ -331,6 +331,7 @@ class TestHermesEnv(unittest.TestCase):
                 "OUTREACHMAGIC_AGENT_KEY=om_agent_test\n"
             )
             os.environ["HERMES_HOME"] = str(home)
+            os.environ["OM_ALLOW_LOCAL_API_KEYS"] = "1"
             cc._AGENT_ENV_LOADED = False
             enrich.ensure_hermes_env_loaded()
             self.assertEqual(os.environ.get("SERPER_API_KEY"), "from-hermes-env")
@@ -342,6 +343,7 @@ class TestHermesEnv(unittest.TestCase):
 
     def test_does_not_override_existing_shell_env(self):
         os.environ["SERPER_API_KEY"] = "shell-wins"
+        os.environ["OM_ALLOW_LOCAL_API_KEYS"] = "1"
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             (home / ".env").write_text("SERPER_API_KEY=from-file\n")
@@ -485,6 +487,7 @@ class TestSerperSearchPool(unittest.TestCase):
 
     @patch.object(enrich, "_serper_search_with_key")
     def test_serper_search_uses_key_pool(self, mock_search):
+        os.environ["OM_ALLOW_LOCAL_API_KEYS"] = "1"
         os.environ["SERPER_API_KEY"] = "primary"
         mock_search.return_value = {"organic": []}
         cfg = enrich.load_config()
@@ -494,6 +497,7 @@ class TestSerperSearchPool(unittest.TestCase):
 
     @patch.object(enrich, "_serper_search_with_key")
     def test_serper_search_failover_on_credit_exhaustion(self, mock_search):
+        os.environ["OM_ALLOW_LOCAL_API_KEYS"] = "1"
         os.environ["SERPER_API_KEY"] = "exhausted"
         os.environ["SERPER_API_KEY__1"] = "backup"
 

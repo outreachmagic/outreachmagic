@@ -106,7 +106,13 @@ class TestNormalizeLinkedin(unittest.TestCase):
 
 
 class TestTrykittFind(unittest.TestCase):
-    @patch.dict("os.environ", {"TRYKITT_API_KEY": "testkey1234567890123456789012"})
+    @patch.dict(
+        "os.environ",
+        {
+            "TRYKITT_API_KEY": "testkey1234567890123456789012",
+            "OM_ALLOW_LOCAL_API_KEYS": "1",
+        },
+    )
     def test_no_key_in_config_still_works(self):
         lemail.cc._AGENT_ENV_LOADED = False
         cfg = lemail.load_config()
@@ -139,7 +145,10 @@ class TestTrykittFind(unittest.TestCase):
 
 
 class TestIcypeasFind(unittest.TestCase):
-    @patch.dict("os.environ", {"ICYPEAS_API_KEY": "test_icypeas"})
+    @patch.dict(
+        "os.environ",
+        {"ICYPEAS_API_KEY": "test_icypeas", "OM_ALLOW_LOCAL_API_KEYS": "1"},
+    )
     def test_no_key_in_config_still_works(self):
         lemail.cc._AGENT_ENV_LOADED = False
         cfg = lemail.load_config()

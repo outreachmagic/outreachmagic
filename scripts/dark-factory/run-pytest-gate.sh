@@ -21,6 +21,11 @@ python3 -m pytest \
   "${ROOT}/tests/test_full_pull_replay.py" \
   "${ROOT}/tests/test_relay_pull_bulk_dedupe.py" \
   "${ROOT}/tests/test_lead_source_relay_sync.py" \
+  "${ROOT}/tests/test_companion_env_sources.py" \
+  "${ROOT}/tests/test_security_install_docs.py" \
+  "${ROOT}/tests/test_auth_error_summary.py" \
+  "${ROOT}/tests/test_email_finder.py" \
+  "${ROOT}/tests/test_lead_enrich.py" \
   -q --tb=short
 
 bash "${ROOT}/scripts/dark-factory/run-billing-gate.sh"

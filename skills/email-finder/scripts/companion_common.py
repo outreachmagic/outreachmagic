@@ -212,27 +212,29 @@ def ensure_agent_env_loaded(skill_dir: Optional[Path] = None, *, reload: bool = 
         return
     # Portal-synced keys are the sole runtime source for BYOK providers (strict mode).
     _load_synced_agent_secrets(skill_dir)
-    if allow_local_api_keys():
+    local_keys = allow_local_api_keys()
+    skip_portal = frozenset() if local_keys else _PORTAL_ONLY_KEYS
+    if local_keys:
         home = agent_home()
         for name in (".env", "default.env"):
             load_dotenv_file(
                 home / name,
                 force_api_keys=True,
-                skip_api_keys=_PORTAL_ONLY_KEYS,
+                skip_api_keys=skip_portal,
             )
         profile = active_profile()
         if profile:
             load_dotenv_file(
                 home / "profiles" / profile / ".env",
                 force_api_keys=True,
-                skip_api_keys=_PORTAL_ONLY_KEYS,
+                skip_api_keys=skip_portal,
             )
         repo_env = _monorepo_dotenv(skill_dir)
         if repo_env:
             load_dotenv_file(
                 repo_env,
                 force_api_keys=True,
-                skip_api_keys=_PORTAL_ONLY_KEYS,
+                skip_api_keys=skip_portal,
             )
         if skill_dir:
             load_dotenv_file(skill_dir / "default.env", force_api_keys=True)

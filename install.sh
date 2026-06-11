@@ -161,11 +161,11 @@ fi
 # Fallback tags below are for public installer bundles before scripts/skill_suite.py shipped.
 if [[ $WITH_LEAD_ENRICH -eq 1 && -z "$LE_TAG" ]]; then
   LE_TAG="$(_read_suite_install_tag lead-enrich 2>/dev/null || true)"
-  [[ -n "$LE_TAG" ]] || LE_TAG="v2.1.8"
+  [[ -n "$LE_TAG" ]] || LE_TAG="v2.1.9"
 fi
 if [[ $WITH_EMAIL_FINDER -eq 1 && -z "$EF_TAG" ]]; then
   EF_TAG="$(_read_suite_install_tag email-finder 2>/dev/null || true)"
-  [[ -n "$EF_TAG" ]] || EF_TAG="v2.2.20"
+  [[ -n "$EF_TAG" ]] || EF_TAG="v2.2.21"
 fi
 
 if [[ -z "$OM_TAG" && $UNINSTALL -eq 0 ]]; then

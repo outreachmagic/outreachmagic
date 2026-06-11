@@ -44,6 +44,14 @@ def test_format_local_sync_hint_actionable():
     sys.path.insert(0, str(ROOT / "skills" / "outreachmagic" / "scripts"))
     import pipeline as om  # noqa: E402
 
-    hint = om.format_local_sync_hint({"total": 3, "cloud_pending_leads": 3})
+    hint = om.format_local_sync_hint(
+        {
+            "total": 3,
+            "workspaces": 0,
+            "rules": 0,
+            "local_agent_events": 0,
+            "cloud_pending_leads": 3,
+        }
+    )
     assert "pipeline.py sync" in hint
     assert "Ask Outreach Magic" not in hint

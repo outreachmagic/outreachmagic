@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas (waterfall). Checks Outreach Magic
   first to avoid duplicate API spend. Saves email and verification via outreachmagic.
   Optional MillionVerifier for bulk re-check.
-version: 2.2.18
+version: 2.2.19
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -47,7 +47,7 @@ Find work emails when you have **name + company domain**. **trykitt** first, **I
 ## Prerequisites
 
 1. **outreachmagic** — `pipeline.py login`
-2. **API keys** — save in Dashboard → API Keys, then `pipeline.py sync-secrets` (writes `<skill_home>/config/agent_secrets.env`; scripts load this automatically). Legacy: `~/.hermes/.env` with `TRYKITT_API_KEY` and/or `ICYPEAS_API_KEY`.
+2. **API keys** — save in Dashboard → API Keys, then `pipeline.py sync-secrets` (writes `<skill_home>/config/agent_secrets.env`; scripts load **only** these keys for TryKitt/Icypeas/MV). Check source with `email_finder.py config` (`*_api_key_source` should be `agent_secrets`).
 3. **Batch:** `lead_id` on every row + **`--workspace`**
 
 Before find/batch, confirm keys: `python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py sync-secrets --check --json` or `python3 scripts/email_finder.py config`.
@@ -103,7 +103,15 @@ python3 scripts/email_finder.py verify-bulk --workspace CLIENT --poll --yes
 
 `MILLIONVERIFIER_API_KEY` in a local `.env` may show `***`; OM `agent_secrets.env` overrides via `ensure_env_loaded()`.
 
-Resume a crashed batch by re-running the same `batch-find` command (skips completed API rows).
+Resume a crashed batch by re-running the same `batch-find` command (skips completed API rows). If a run failed with network/auth errors, use **`--retry-errors`** to re-attempt errored rows without deleting the checkpoint.
+
+## Common workflows
+
+| User says | You do |
+|-----------|--------|
+| "Find emails for my list" | Ensure leads in OM with domains → build batch JSON → `batch-find --workspace W --yes` |
+| "Find Patrick at stripe.com" | `find --name … --domain stripe.com` |
+| "Retry failed email lookup" | Same `batch-find` command with `--retry-errors` |
 
 ## Troubleshooting
 
@@ -112,7 +120,7 @@ Resume a crashed batch by re-running the same `batch-find` command (skips comple
 - **CSV has emails, OM empty** — batch save failed; `import-to-om --file {output-base}.csv --workspace W`
 - **`import-profiles` timed out** — results are on disk; use `import-to-om` or re-run with smaller batches.
 - **IcyPeas ~10% hit rate** — poll timeout; raise `icypeas_poll_attempts` in config
-- **New leads created** — every row needs `lead_id`
+- **Checkpoint skipped everything after errors** — re-run with `--retry-errors`, or delete `{output-base}.csv` / `.json` and start fresh.
 
 ## Funnel
 

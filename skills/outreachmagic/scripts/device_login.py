@@ -108,6 +108,11 @@ def _post_json(
         raise RuntimeError(f"Network error: {exc.reason}") from exc
 
 
+def _append_query_param(url: str, key: str, value: str) -> str:
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}{key}={value}"
+
+
 def start_device_authorization(
     load_config_fn: Callable[[], dict],
     *,
@@ -131,14 +136,18 @@ def start_device_authorization(
 
     device_code = start.get("device_code")
     user_code = start.get("user_code")
-    verification_uri = start.get("verification_uri") or f"{api_base}/connect"
+    verification_uri = start.get("verification_uri") or f"{api_base}/onboarding?step=connect"
     expires_in = int(start.get("expires_in") or 900)
     interval = int(start.get("interval") or 5)
 
     if not device_code or not user_code:
         raise RuntimeError("Device authorization failed to start (invalid server response).")
 
-    connect_url = f"{verification_uri}?user_code={str(user_code).replace('-', '')}"
+    connect_url = _append_query_param(
+        str(verification_uri),
+        "user_code",
+        str(user_code).replace("-", ""),
+    )
     return {
         "api_base": api_base,
         "client_platform": client_platform,
@@ -226,12 +235,14 @@ def run_device_login(
     api_base = str(flow["api_base"])
 
     print()
-    print("  Connect Outreach Magic to this computer")
+    print("  A browser window should open on your computer.")
+    print("  Sign in to Outreach Magic and approve the connection.")
+    print("  I'll continue automatically once you're done.")
     print()
-    print(f"  1. Open: {connect_url}")
-    print(f"  2. Confirm code: {user_code}")
+    print(f"  Or open manually: {connect_url}")
+    print(f"  Confirm code: {user_code}")
     print()
-    print("  Waiting for authorization in your browser…")
+    print("  Waiting for you to finish in the browser…")
     print()
 
     opened = False

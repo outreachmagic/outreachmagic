@@ -28,7 +28,7 @@ def test_start_device_authorization_returns_expected_fields():
             lambda url, body: {
                 "device_code": "dev_abc",
                 "user_code": "GL3Q-2HQZ",
-                "verification_uri": "https://app.outreachmagic.test/connect",
+                "verification_uri": "https://app.outreachmagic.test/onboarding?step=connect",
                 "expires_in": 600,
                 "interval": 3,
             },
@@ -38,7 +38,9 @@ def test_start_device_authorization_returns_expected_fields():
 
     assert flow["device_code"] == "dev_abc"
     assert flow["user_code"] == "GL3Q-2HQZ"
-    assert flow["connect_url"] == "https://app.outreachmagic.test/connect?user_code=GL3Q2HQZ"
+    assert flow["connect_url"] == (
+        "https://app.outreachmagic.test/onboarding?step=connect&user_code=GL3Q2HQZ"
+    )
     assert flow["expires_in"] == 600
     assert flow["interval"] == 3
 

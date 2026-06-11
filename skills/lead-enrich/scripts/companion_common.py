@@ -86,12 +86,20 @@ def _env_value_empty(key: str) -> bool:
     return False
 
 
+_COMPANION_DASHBOARD_ONLY = frozenset({
+    "TRYKITT_API_KEY",
+    "ICYPEAS_API_KEY",
+    "MILLIONVERIFIER_API_KEY",
+})
+
+
 def load_dotenv_file(
     path: Path,
     *,
     force_api_keys: bool = False,
     override_existing: bool = False,
     override_all: bool = False,
+    skip_api_keys: Optional[frozenset[str]] = None,
 ) -> None:
     if not path.is_file():
         return
@@ -113,6 +121,8 @@ def load_dotenv_file(
             os.environ[key] = value
             continue
         if force_api_keys and _is_pooled_api_key_var(key):
+            if skip_api_keys and key in skip_api_keys:
+                continue
             if override_existing or _env_value_empty(key):
                 os.environ[key] = value
             continue
@@ -143,20 +153,64 @@ def ensure_agent_env_loaded(skill_dir: Optional[Path] = None, *, reload: bool = 
     global _AGENT_ENV_LOADED
     if _AGENT_ENV_LOADED and not reload:
         return
-    # Dashboard-synced keys first; local .env files only fill gaps (force_api_keys skips set vars).
+    # Dashboard-synced keys first; Hermes ~/.env must not backfill companion provider keys.
     _load_synced_agent_secrets(skill_dir)
     home = agent_home()
     for name in (".env", "default.env"):
-        load_dotenv_file(home / name, force_api_keys=True)
+        load_dotenv_file(
+            home / name,
+            force_api_keys=True,
+            skip_api_keys=_COMPANION_DASHBOARD_ONLY,
+        )
     profile = active_profile()
     if profile:
-        load_dotenv_file(home / "profiles" / profile / ".env", force_api_keys=True)
+        load_dotenv_file(
+            home / "profiles" / profile / ".env",
+            force_api_keys=True,
+            skip_api_keys=_COMPANION_DASHBOARD_ONLY,
+        )
     repo_env = _monorepo_dotenv(skill_dir)
     if repo_env:
-        load_dotenv_file(repo_env, force_api_keys=True)
+        load_dotenv_file(
+            repo_env,
+            force_api_keys=True,
+            skip_api_keys=_COMPANION_DASHBOARD_ONLY,
+        )
     if skill_dir:
         load_dotenv_file(skill_dir / "default.env", force_api_keys=True)
     _AGENT_ENV_LOADED = True
+
+
+def _dotenv_keys(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    keys: set[str] = set()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return keys
+    for line in text.splitlines():
+        parsed = parse_dotenv_line(line)
+        if parsed:
+            keys.add(parsed[0])
+    return keys
+
+
+def companion_api_key_source(key: str, skill_dir: Optional[Path] = None) -> Optional[str]:
+    """Where a companion provider key was loaded from (for config diagnostics)."""
+    if not os.environ.get(key, "").strip():
+        return None
+    om = find_outreachmagic({}, skill_dir=skill_dir)
+    if om:
+        secrets = om / "config" / "agent_secrets.env"
+        if key in _dotenv_keys(secrets):
+            return "agent_secrets"
+    home_env = agent_home() / ".env"
+    if key in _dotenv_keys(home_env):
+        return "hermes_env"
+    if key in os.environ:
+        return "shell"
+    return None
 
 
 def subprocess_env(skill_dir: Optional[Path] = None) -> dict[str, str]:

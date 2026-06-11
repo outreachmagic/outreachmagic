@@ -530,6 +530,66 @@
         }
       },
       {
+        "id": "om-import-salesnav-name-not-unknown",
+        "tags": ["import", "integration", "sales-nav", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:sales-nav/data-root"
+        },
+        "command": [
+          "query", "--sql", "SELECT name, title FROM leads WHERE id=1", "--json"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "Sam Nav",
+          "not_contains_string": "Unknown"
+        }
+      },
+      {
+        "id": "om-import-salesnav-company-domain",
+        "tags": ["import", "integration", "sales-nav", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:sales-nav/data-root"
+        },
+        "command": [
+          "query",
+          "--sql",
+          "SELECT c.domain FROM companies c JOIN leads l ON l.company_id = c.id WHERE l.id = 1",
+          "--json"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "navcorp.io"
+        }
+      },
+      {
+        "id": "om-import-salesnav-dry-run-preview",
+        "tags": ["import", "sales-nav", "script"],
+        "mode": "script",
+        "env": {
+          "OUTREACHMAGIC_DATA_ROOT": "@fixture:sales-nav/data-root-copy"
+        },
+        "setup": "copy_fixture_db:sales-nav",
+        "command": [
+          "import-profiles",
+          "--file",
+          "@fixture:sales-nav/sales-nav-export.csv",
+          "--workspace",
+          "df-salesnav",
+          "--import-format",
+          "auto",
+          "--dry-run"
+        ],
+        "expect": {
+          "contains_json": true,
+          "contains_string": "Sam Nav",
+          "json_fields": [
+            {"path": "import_format", "equals": "sales_navigator"}
+          ]
+        }
+      },
+      {
         "id": "om-review-export-linkedin-fields",
         "tags": ["review", "integration", "sales-nav", "script"],
         "mode": "script",

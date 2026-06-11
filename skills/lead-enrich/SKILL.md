@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill. For email finding, use the email-finder companion skill.
-version: 2.1.6
+version: 2.1.7
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -89,6 +89,16 @@ See `references/email-finder.md` and the email-finder skill docs.
 `workspace summary --workspace <slug> --json` for tag counts and LinkedIn
 connection accepted per sender. On large workspaces (>2,000 leads), add
 `--tags-only` for faster tag counts. Local DB only — pull optional.
+
+## Common workflows
+
+| User says | You do |
+|-----------|--------|
+| "Research this person" | Serper search → save via `import-profiles` |
+| "Enrich my CSV" | `batch-check` / import → enrich missing fields → save to OM |
+| "Find their email too" | After enrich, hand off to **email-finder** |
+
+Sales Nav / Vayne CSVs: use outreachmagic `import-profiles --file …` (auto-detects columns).
 
 ## CSV / award-list workflow (preferred for 10+ people)
 

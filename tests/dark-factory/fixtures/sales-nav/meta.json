@@ -1,9 +1,11 @@
 {
   "workspace": "df-salesnav",
   "lead_id": 1,
+  "name": "Sam Nav",
+  "title": "Director of Sales",
+  "company_domain": "navcorp.io",
   "linkedin_url": "linkedin.com/in/sam-nav-handle",
-  "sales_nav_identity": "ACwAABAK84YBQ6cs16Ta-YfqZidA8SX2ywuCxhI",
-  "public_identity": "linkedin.com/in/sam-nav-handle",
+  "sales_nav_identity": null,
   "import_summary": {
     "processed": 1,
     "created": 1,

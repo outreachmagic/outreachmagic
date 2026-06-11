@@ -124,10 +124,15 @@ def cmd_config() -> None:
         "skill": SKILL_NAME,
         "trykitt_api_key_set": bool(key),
         "trykitt_api_key_preview": _mask_key(key) if key else None,
+        "trykitt_api_key_source": cc.companion_api_key_source("TRYKITT_API_KEY", _find_skill_dir()),
         "icypeas_api_key_set": bool(icypeas_key),
         "icypeas_api_key_preview": _mask_key(icypeas_key) if icypeas_key else None,
+        "icypeas_api_key_source": cc.companion_api_key_source("ICYPEAS_API_KEY", _find_skill_dir()),
         "millionverifier_api_key_set": bool(mv_key),
         "millionverifier_api_key_preview": _mask_key(mv_key) if mv_key else None,
+        "millionverifier_api_key_source": cc.companion_api_key_source(
+            "MILLIONVERIFIER_API_KEY", _find_skill_dir(),
+        ),
         "outreachmagic_found": om_dir is not None,
         "outreachmagic_home": str(om_dir) if om_dir else None,
         "max_per_run": cfg.get("max_people_per_run", 500),
@@ -430,6 +435,9 @@ def _parse_batch_args(argv: list[str]) -> tuple[BatchOptions, str]:
             i += 1
         elif arg in ("--yes",):
             opts.yes = True
+            i += 1
+        elif arg in ("--retry-errors",):
+            opts.retry_errors = True
             i += 1
         elif not arg.startswith("-") and not path:
             path = arg

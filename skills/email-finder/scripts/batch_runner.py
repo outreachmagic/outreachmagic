@@ -45,6 +45,32 @@ BATCH_CSV_COLUMNS = (
 )
 CREDIT_RECHECK_EVERY = 100
 
+RETRYABLE_CHECKPOINT_STATUSES = frozenset({
+    "error", "http_error", "auth_error", "rate_limited", "credits_exhausted", "bad_input",
+})
+
+
+def checkpoint_row_is_complete(row: dict[str, Any]) -> bool:
+    """True when a checkpoint row should be skipped on resume."""
+    st = str(row.get("status") or "").strip().lower()
+    if st in RETRYABLE_CHECKPOINT_STATUSES:
+        return False
+    if st == "skipped":
+        return True
+    if row.get("email"):
+        return True
+    if st == "not_found":
+        return True
+    if row.get("error"):
+        return False
+    if st:
+        return st not in RETRYABLE_CHECKPOINT_STATUSES
+    return bool(row.get("timestamp"))
+
+
+def count_checkpoint_errors(rows: list[dict[str, Any]]) -> int:
+    return sum(1 for row in rows if not checkpoint_row_is_complete(row))
+
 
 @dataclass
 class BatchOptions:
@@ -61,6 +87,7 @@ class BatchOptions:
     yes: bool = False
     progress_every: int = 25
     json_checkpoint: int = 50
+    retry_errors: bool = False
 
 
 def build_import_profile(
@@ -414,12 +441,14 @@ def _resolve_output_base(path: str, input_path: str) -> str:
 
 
 class IncrementalWriter:
-    def __init__(self, output_base: str) -> None:
+    def __init__(self, output_base: str, *, retry_errors: bool = False) -> None:
         self.output_base = output_base
+        self.retry_errors = retry_errors
         self.csv_path = f"{output_base}.csv"
         self.json_path = f"{output_base}.json"
         self.buffer: list[dict[str, Any]] = []
         self.done_keys: set[str] = set()
+        self.error_keys: set[str] = set()
         self._lock = threading.Lock()
         self._load_existing()
 
@@ -458,8 +487,17 @@ class IncrementalWriter:
                         for row in reader:
                             _merge_row(row)
 
-        self.done_keys = set(by_key.keys())
         self.buffer = list(by_key.values())
+        self.done_keys = set()
+        self.error_keys = set()
+        for key, row in by_key.items():
+            if checkpoint_row_is_complete(row):
+                self.done_keys.add(key)
+            else:
+                self.error_keys.add(key)
+                if self.retry_errors:
+                    continue
+                self.done_keys.add(key)
 
     def _open_csv(self):
         need_header = (
@@ -481,10 +519,24 @@ class IncrementalWriter:
 
     def append(self, row_dict: dict[str, Any], resume_key: str) -> None:
         with self._lock:
-            if resume_key in self.done_keys:
+            complete = checkpoint_row_is_complete(row_dict)
+            if resume_key in self.done_keys and complete:
                 return
-            self.done_keys.add(resume_key)
-            self.buffer.append(row_dict)
+            if complete:
+                self.done_keys.add(resume_key)
+                self.error_keys.discard(resume_key)
+            else:
+                self.error_keys.add(resume_key)
+                self.done_keys.discard(resume_key)
+            existing = next((i for i, r in enumerate(self.buffer) if r.get("resume_key") == resume_key), None)
+            if existing is not None:
+                self.buffer[existing] = row_dict
+            else:
+                self.buffer.append(row_dict)
+            if existing is not None:
+                self.buffer[existing] = row_dict
+            else:
+                self.buffer.append(row_dict)
             fh, writer = self._open_csv()
             try:
                 writer.writerow([row_dict.get(c, "") for c in BATCH_CSV_COLUMNS])
@@ -495,6 +547,29 @@ class IncrementalWriter:
             if len(self.buffer) % 50 == 0:
                 self._write_json()
 
+    def _rewrite_csv(self) -> None:
+        with open(self.csv_path, "w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(BATCH_CSV_COLUMNS)
+            for row_dict in self.buffer:
+                writer.writerow([row_dict.get(c, "") for c in BATCH_CSV_COLUMNS])
+            fh.flush()
+            os.fsync(fh.fileno())
+
+    def finalize(self) -> None:
+        by_key: dict[str, dict[str, Any]] = {}
+        for row_dict in self.buffer:
+            key = str(row_dict.get("resume_key") or "").strip()
+            if not key:
+                continue
+            prev = by_key.get(key)
+            if prev is None or checkpoint_row_is_complete(row_dict):
+                by_key[key] = row_dict
+        self.buffer = list(by_key.values())
+        if self.buffer:
+            self._rewrite_csv()
+        self._write_json()
+
     def _write_json(self) -> None:
         with open(self.json_path, "w", encoding="utf-8") as f:
             json.dump(self.buffer, f, indent=2)
@@ -504,9 +579,6 @@ class IncrementalWriter:
             os.close(fd)
         except OSError:
             pass
-
-    def finalize(self) -> None:
-        self._write_json()
 
 
 def build_verify_batch(
@@ -561,7 +633,7 @@ def run_batch(
         input_path,
     )
     writer: Optional[IncrementalWriter] = (
-        IncrementalWriter(output_base) if output_base else None
+        IncrementalWriter(output_base, retry_errors=opts.retry_errors) if output_base else None
     )
 
     lookup_by_index: dict[int, dict[str, Any]] = {}
@@ -622,6 +694,14 @@ def run_batch(
         to_process.append((i, row))
 
     resume_done = len(writer.done_keys) if writer else 0
+    checkpoint_errors = len(writer.error_keys) if writer else 0
+    if writer and checkpoint_errors and not opts.retry_errors and not opts.dry_run:
+        print(
+            f"\n⚠️  Checkpoint has {checkpoint_errors} row(s) with errors from a prior run. "
+            f"They will be skipped. Re-run with --retry-errors to re-attempt, "
+            f"or delete {writer.csv_path} to start fresh.\n",
+            file=sys.stderr,
+        )
     if resume_done and not opts.dry_run:
         print_resume_banner(resume_done, len(to_process), len(people))
 

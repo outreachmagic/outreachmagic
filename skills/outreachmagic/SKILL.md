@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
-version: 1.30.2
+version: 1.31.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -103,11 +103,23 @@ python3 scripts/pipeline.py pull
 
 If `pull` returns an error like "No agent key or token configured", the user needs to set up.
 
-**When setup is needed**, ask Outreach Magic to connect (runs `login` in terminal — browser opens for sign-in and device approval). Never paste secrets into chat.
+**When setup is needed**, run `pipeline.py login` — a browser opens on the user's machine for sign-in. Tell the user: *"I'm opening Outreach Magic sign-in — come back when you're done and I'll continue."* Never paste secrets into chat.
 
 If the skill is not installed yet, point them to **https://app.outreachmagic.io/onboarding** or **https://app.outreachmagic.io/agent**, then connect.
 
-**Account pending approval:** New signups may wait for manual approval. The CLI stops immediately with a clear message (not a 15-minute wait). Tell the user they'll get an email when approved, then ask Outreach Magic to connect again. `status` shows approval state.
+**Account pending approval:** New signups may wait for manual approval. Use `pipeline.py status --json` (`approval_pending`) or `pipeline.py login --wait-approval` to poll. Once approved, run `login` again.
+
+## Common workflows (plain English)
+
+| User says | You do |
+|-----------|--------|
+| "Show my pipeline" | `pull` → `show` |
+| "Import my Sales Nav / Vayne CSV" | `import-profiles --file … --workspace W --dry-run` first (preview), then import |
+| "Find emails for these leads" | import if needed → `email-finder-candidates` → `batch-find --workspace W --yes` |
+| "Export to Google Sheets" | `sheets export --workspace W` (uses account email automatically) |
+| "Connect Smartlead / Instantly" | `connections create --platform …` and share webhook URL |
+
+`pipeline.py whoami --json` returns account email, org, and plan.
 
 `init` creates the database under `<skill_home>/databases/`. Dashboard API keys sync to `<skill_home>/config/agent_secrets.env` (next to `outreachmagic_config.json`). CSVs and exports use **`input/`** and **`export/`** relative to your **workspace directory** (where the agent runs commands). Set `"project_root"` in config to pin a fixed folder instead of cwd.
 

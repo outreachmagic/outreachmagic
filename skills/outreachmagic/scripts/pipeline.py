@@ -109,6 +109,10 @@ import review_cloud
 import quarantine_resolutions as qres
 import workspace_archive
 import query_cli
+from import_formats import (
+    build_import_quality_warnings,
+    preprocess_import_rows,
+)
 from data_freshness import (
     attach_freshness,
     freshness_from_last_pull,
@@ -2512,10 +2516,14 @@ PROFILE_ALIASES: dict[str, tuple[str, ...]] = {
     "email": ("email", "lead_email", "work_email"),
     "linkedin": ("linkedin url", "linkedin_url", "linkedin", "lead_linkedin_url", "profile_url"),
     "name": ("name", "full_name", "display_name"),
-    "title": ("title", "job_title", "role"),
+    "title": ("title", "job_title", "role", "job title"),
     "company": ("company", "company_name", "organization", "org"),
-    "industry": ("industry",),
-    "headcount": ("headcount", "company_size", "employees", "employee_count", "company_headcount"),
+    "industry": ("industry", "linkedin industry", "linkedin_industry"),
+    "headcount": (
+        "headcount", "company_size", "employees", "employee_count", "company_headcount",
+        "linkedin employees", "linkedin_employees", "linkedin company employee count",
+        "linkedin_company_employee_count",
+    ),
     "location_city": ("location_city", "city", "lead_city"),
     "location_state": ("location_state", "state", "region", "lead_state"),
     "location_country": ("location_country", "country", "lead_country"),
@@ -2560,8 +2568,8 @@ def normalize_profile_row(row: dict) -> dict[str, str]:
             val = _pick_profile_field(row, aliases)
         if val:
             out[canonical] = val
-    first = _pick_profile_field(row, ("first_name",))
-    last = _pick_profile_field(row, ("last_name",))
+    first = _pick_profile_field(row, ("first_name", "first name"))
+    last = _pick_profile_field(row, ("last_name", "last name"))
     if first and "name" not in out:
         out["name"] = f"{first} {last}".strip() if last else first
     return out
@@ -3161,9 +3169,13 @@ def import_profiles(
     source: Optional[str] = None,
     source_detail: Optional[str] = None,
     import_batch_id: Optional[str] = None,
+    import_format: Optional[str] = None,
 ) -> dict:
     """Import many profile rows (CSV dicts or JSON objects). Tiered identity match keys."""
+    rows, import_meta = preprocess_import_rows(rows, import_format=import_format)
     default_source = source if source is not None else "csv_import"
+    if default_source == "csv_import" and import_meta.get("detected_format") == "sales_navigator":
+        default_source = "sales_navigator"
     summary: dict = {
         "processed": 0,
         "created": 0,
@@ -3179,7 +3191,13 @@ def import_profiles(
         "errors": [],
         "results": [],
         "skipped_features": [],
+        "import_format": import_meta.get("detected_format"),
+        "import_format_confidence": import_meta.get("confidence"),
     }
+    if dry_run:
+        summary["fields_mapped"] = import_meta.get("fields_mapped") or []
+        summary["fields_dropped"] = import_meta.get("fields_dropped") or []
+        summary["sample_preview"] = import_meta.get("sample_preview") or {}
 
     workspace_id = None
     if workspace:
@@ -3400,6 +3418,13 @@ def import_profiles(
 
         ws_conn.commit()
         ws_conn.close()
+
+    warnings = build_import_quality_warnings(summary)
+    if warnings:
+        summary["warnings"] = warnings
+        if not dry_run:
+            for w in warnings:
+                print(w, file=sys.stderr)
 
     return summary
 
@@ -8856,6 +8881,8 @@ def login(
     device_code: Optional[str] = None,
     wait_seconds: int = 30,
     force: bool = False,
+    wait_approval: bool = False,
+    approval_timeout: int = 600,
 ):
     """Connect this machine via browser device authorization (GitHub CLI-style)."""
     if not force and not generate_url and not claim_token:
@@ -8953,11 +8980,37 @@ def login(
         if str(exc) == "account_pending_approval":
             _set_account_approval_pending(True)
             print(_account_pending_message())
-            sys.exit(0)
+            if wait_approval:
+                _poll_until_approved(approval_timeout)
+            else:
+                sys.exit(0)
         print(f"\nLogin failed: {exc}")
         sys.exit(1)
     _set_account_approval_pending(False)
     _save_agent_key_and_validate(agent_key, reconnect=reconnect)
+
+
+def _poll_until_approved(timeout_seconds: int) -> None:
+    """Poll status until account approval clears or timeout."""
+    print("Waiting for account approval… (Ctrl+C to stop)")
+    deadline = time.time() + max(30, int(timeout_seconds))
+    while time.time() < deadline:
+        if not _account_approval_pending():
+            print("Account approved — run login again to connect.")
+            return
+        time.sleep(30)
+        agent_key = get_agent_key()
+        if agent_key:
+            try:
+                api_base = routing_cloud.get_api_base(load_config)
+                data = connections_cloud.fetch_status(api_base, agent_key)
+                if not data.get("approvalPending"):
+                    _set_account_approval_pending(False)
+                    print("Account approved — connecting…")
+                    return
+            except Exception:
+                pass
+    print("Still pending approval — you'll receive an email when ready.")
 
 
 def _account_pending_message() -> str:
@@ -9003,6 +9056,100 @@ def logout():
         print("No local agent credentials found.")
 
 
+def resolve_share_email(explicit: Optional[str] = None) -> Optional[str]:
+    """Default Google Sheet share target: CLI flag → config → live status API."""
+    if explicit and str(explicit).strip():
+        return str(explicit).strip()
+    cfg = load_config()
+    stored = (cfg.get("account_email") or "").strip()
+    if stored:
+        return stored
+    agent_key = get_agent_key()
+    if not agent_key:
+        return None
+    try:
+        api_base = routing_cloud.get_api_base(load_config)
+        data = connections_cloud.fetch_status(api_base, agent_key)
+        _persist_account_identity_from_status(data)
+        email = (
+            data.get("shareEmail") or data.get("accountEmail") or ""
+        ).strip()
+        return email or None
+    except Exception:
+        return None
+
+
+def _persist_account_identity_from_status(data: dict) -> None:
+    """Store account email / org from agent status API when available."""
+    email = (data.get("accountEmail") or data.get("account_email") or "").strip()
+    org_id = str(data.get("organizationId") or data.get("organization_id") or "").strip()
+    cfg = load_config()
+    changed = False
+    if email and cfg.get("account_email") != email:
+        cfg["account_email"] = email
+        changed = True
+    if org_id and cfg.get("organization_id") != org_id:
+        cfg["organization_id"] = org_id
+        changed = True
+    if changed:
+        save_config(cfg)
+
+
+def cmd_whoami(*, json_output: bool = False) -> None:
+    """Print connected account identity for agents."""
+    pending = _account_approval_pending()
+    if pending:
+        payload = {
+            "status": "pending_approval",
+            "approval_pending": True,
+            "email": load_config().get("account_email"),
+            "org_id": load_config().get("organization_id"),
+            "plan": None,
+        }
+        if json_output:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(_account_pending_message())
+        return
+
+    agent_key = get_agent_key()
+    if not agent_key:
+        payload = {"status": "not_connected", "approval_pending": False}
+        if json_output:
+            print(json.dumps(payload, indent=2))
+        else:
+            from user_messages import MSG_NO_AGENT_KEY
+            print(MSG_NO_AGENT_KEY)
+        sys.exit(1)
+
+    api_base = routing_cloud.get_api_base(load_config)
+    try:
+        data = connections_cloud.fetch_status(api_base, agent_key)
+    except RuntimeError as exc:
+        if json_output:
+            print(json.dumps({"status": "error", "error": str(exc)}))
+        else:
+            print(f"Could not fetch account: {exc}")
+        sys.exit(1)
+
+    _persist_account_identity_from_status(data)
+    cfg = load_config()
+    payload = {
+        "status": "connected",
+        "approval_pending": False,
+        "email": data.get("accountEmail") or cfg.get("account_email"),
+        "org_id": data.get("organizationId") or cfg.get("organization_id"),
+        "plan": data.get("plan"),
+        "share_email": data.get("shareEmail") or data.get("accountEmail") or cfg.get("account_email"),
+    }
+    if json_output:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Email: {payload.get('email') or '(unknown)'}")
+        print(f"Org:   {payload.get('org_id') or '(unknown)'}")
+        print(f"Plan:  {(payload.get('plan') or 'free').capitalize()}")
+
+
 def _save_agent_key_and_validate(agent_key: str, *, reconnect: bool = False):
     if not agent_key.startswith("om_agent_"):
         print("Invalid key format. Agent keys start with 'om_agent_'.")
@@ -9038,6 +9185,13 @@ def _save_agent_key_and_validate(agent_key: str, *, reconnect: bool = False):
         pass
     try:
         maybe_sync_agent_secrets_from_cloud(quiet=True)
+    except Exception:
+        pass
+
+    try:
+        api_base = routing_cloud.get_api_base(load_config)
+        status_data = connections_cloud.fetch_status(api_base, agent_key)
+        _persist_account_identity_from_status(status_data)
     except Exception:
         pass
 
@@ -9128,9 +9282,17 @@ def _staleness_indicator(iso_ts: Optional[str]) -> str:
     return "\U0001f534"  # red
 
 
-def cmd_status():
+def cmd_status(*, json_output: bool = False):
     """Dashboard-style status: plan, connections, usage, routing."""
     if _check_account_approval_pending():
+        payload = {
+            "approval_pending": True,
+            "status": "pending_approval",
+            "message": _account_pending_message(),
+        }
+        if json_output:
+            print(json.dumps(payload, indent=2))
+            return
         print()
         print("Outreach Magic Status")
         print("\u2500" * 50)
@@ -9144,8 +9306,29 @@ def cmd_status():
     try:
         data = connections_cloud.fetch_status(api_base, agent_key)
     except RuntimeError as exc:
-        print(f"Could not fetch status: {exc}")
+        if json_output:
+            print(json.dumps({"error": str(exc), "approval_pending": False}))
+        else:
+            print(f"Could not fetch status: {exc}")
         sys.exit(1)
+
+    _persist_account_identity_from_status(data)
+    if json_output:
+        cfg = load_config()
+        print(json.dumps({
+            "approval_pending": False,
+            "status": "ok",
+            "plan": data.get("plan"),
+            "account_email": data.get("accountEmail") or cfg.get("account_email"),
+            "organization_id": data.get("organizationId") or cfg.get("organization_id"),
+            "share_email": data.get("shareEmail") or data.get("accountEmail") or cfg.get("account_email"),
+            "eventsUsed": data.get("eventsUsed"),
+            "eventsLimit": data.get("eventsLimit"),
+            "connections": data.get("connections", []),
+            "workspaceMode": data.get("workspaceMode"),
+            "workspacesCount": data.get("workspacesCount"),
+        }, indent=2))
+        return
 
     plan = (data.get("plan") or "free").capitalize()
     events_used = int(data.get("eventsUsed", 0) or 0)
@@ -10001,6 +10184,14 @@ def main():
         help="Stable batch id for name-only rows (import_key dedupe within batch)",
     )
 
+    imp_p.add_argument(
+        "--import-format",
+        dest="import_format",
+        choices=("auto", "generic", "sales_navigator"),
+        default="auto",
+        help="CSV format preset (auto-detect Sales Nav / Vayne exports by default)",
+    )
+
     aef_p = sub.add_parser(
         "apply-email-find-results",
         help="Fast batch save when every row has lead id (email-finder companion)",
@@ -10171,6 +10362,17 @@ def main():
         action="store_true",
         help="Run browser device login even when a valid agent key is already configured",
     )
+    login_p.add_argument(
+        "--wait-approval",
+        action="store_true",
+        help="Poll until manual account approval completes (use after pending signup)",
+    )
+    login_p.add_argument(
+        "--approval-timeout",
+        type=int,
+        default=600,
+        help="Seconds to poll for approval when using --wait-approval (default 600)",
+    )
     sub.add_parser("logout", help="Clear local agent credentials")
 
     sync_secrets_p = sub.add_parser(
@@ -10290,7 +10492,11 @@ def main():
         help="Confirm restore (replaces the live database)",
     )
 
-    sub.add_parser("status", help="Dashboard-style status: plan, connections, usage, routing")
+    status_p = sub.add_parser("status", help="Dashboard-style status: plan, connections, usage, routing")
+    status_p.add_argument("--json", action="store_true", help="JSON output for agents")
+
+    whoami_p = sub.add_parser("whoami", help="Show connected account email, org, and plan")
+    whoami_p.add_argument("--json", action="store_true", help="JSON output for agents")
     sync_p = sub.add_parser("sync", help="Push pending workspaces and routing rules to the webapp")
     sync_p.add_argument("--status", action="store_true", help="Show what needs syncing without pushing")
     sync_p.add_argument(
@@ -10788,7 +10994,11 @@ def main():
 
     # Commands that only talk to the app API (no local DB required)
     if args.command == "status":
-        cmd_status()
+        cmd_status(json_output=getattr(args, "json", False))
+        return
+
+    if args.command == "whoami":
+        cmd_whoami(json_output=getattr(args, "json", False))
         return
 
     if args.command == "refresh":
@@ -10807,6 +11017,8 @@ def main():
             device_code=getattr(args, "device_code", None),
             wait_seconds=getattr(args, "wait", 30),
             force=getattr(args, "force", False),
+            wait_approval=getattr(args, "wait_approval", False),
+            approval_timeout=getattr(args, "approval_timeout", 600),
         )
         return
     if args.command == "logout":
@@ -11342,6 +11554,7 @@ def main():
             source=getattr(args, "source", None),
             source_detail=getattr(args, "source_detail", None),
             import_batch_id=getattr(args, "import_batch_id", None),
+            import_format=getattr(args, "import_format", None),
         )
         print(json.dumps(summary, indent=2))
     elif args.command == "apply-email-find-results":
@@ -11727,7 +11940,7 @@ def main():
                         tok,
                         template=template,
                         title=args.title,
-                        share_email=getattr(args, "share_email", None),
+                        share_email=resolve_share_email(getattr(args, "share_email", None)),
                         detail=payload.get("detail"),
                         headers=payload.get("headers"),
                         rows=payload.get("rows"),
@@ -11751,7 +11964,7 @@ def main():
                         template=template,
                         candidates=candidates,
                         title=args.title,
-                        share_email=getattr(args, "share_email", None),
+                        share_email=resolve_share_email(getattr(args, "share_email", None)),
                     )
             except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as e:
                 print(json.dumps({"error": str(e)}))

@@ -30,7 +30,7 @@ def _capture_output(fn):
 def test_login_generate_url_prints_parseable_fields():
     fake_device_login = types.SimpleNamespace(
         start_device_authorization=lambda *args, **kwargs: {
-            "connect_url": "https://app.outreachmagic.io/connect?user_code=ABC123",
+            "connect_url": "https://app.outreachmagic.io/onboarding?step=connect&user_code=ABC123",
             "user_code": "ABC-123",
             "device_code": "device_123",
             "expires_in": 900,
@@ -41,7 +41,10 @@ def test_login_generate_url_prints_parseable_fields():
     with patch.dict(sys.modules, {"device_login": fake_device_login}):
         out = _capture_output(lambda: om.login(generate_url=True))
 
-    assert "OUTREACHMAGIC_URL=https://app.outreachmagic.io/connect?user_code=ABC123" in out
+    assert (
+        "OUTREACHMAGIC_URL=https://app.outreachmagic.io/onboarding?step=connect&user_code=ABC123"
+        in out
+    )
     assert "OUTREACHMAGIC_CODE=ABC-123" in out
     assert "OUTREACHMAGIC_DEVICE_CODE=device_123" in out
     assert "OUTREACHMAGIC_EXPIRES_IN=900" in out

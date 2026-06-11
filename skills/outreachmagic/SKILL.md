@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
-version: 1.31.0
+version: 1.32.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -114,9 +114,9 @@ If the skill is not installed yet, point them to **https://app.outreachmagic.io/
 | User says | You do |
 |-----------|--------|
 | "Show my pipeline" | `pull` → `show` |
-| "Import my Sales Nav / Vayne CSV" | `import-profiles --file … --workspace W --dry-run` first (preview), then import |
+| "Import my Sales Nav / Vayne CSV" | `import-profiles --file … --workspace W --dry-run` first, then import (auto-syncs) |
 | "Find emails for these leads" | import if needed → `email-finder-candidates` → `batch-find --workspace W --yes` |
-| "Export to Google Sheets" | `sheets export --workspace W` (uses account email automatically) |
+| "Export to Google Sheets" | `whoami --json` → `share_email`, then `sheets export --workspace W --share-email …` |
 | "Connect Smartlead / Instantly" | `connections create --platform …` and share webhook URL |
 
 `pipeline.py whoami --json` returns account email, org, and plan.
@@ -452,14 +452,13 @@ python3 scripts/pipeline.py campaigns --json
 
 ### PlusVibe webhooks (status + sentiment)
 
-Point PlusVibe webhooks at your relay URL (`…/plusvibe/{token}`). Enable:
+Point PlusVibe webhooks at your relay URL (`…/plusvibe/{token}`). Select **all** event types and category labels in PlusVibe — including any custom categories in the user’s instance. Standard ones to verify:
 
 - `EMAIL_SENT`, `ALL_EMAIL_REPLIES`, `BOUNCED_EMAIL`
 - `LEAD_MARKED_AS_INTERESTED`, `LEAD_MARKED_AS_NOT_INTERESTED`, `LEAD_MARKED_AS_OUT_OF_OFFICE`, `LEAD_MARKED_AS_AUTOMATIC_REPLY`
 - `LEAD_MARKED_AS_MEETING_BOOKED`, `LEAD_MARKED_AS_MEETING_COMPLETED`, `LEAD_MARKED_AS_WRONG_PERSON`, `LEAD_MARKED_AS_CLOSED`
-- `LEAD_MARKED_AS_QC_INTERESTED`, `LEAD_MARKED_AS_QC_CRM_ONLY`
 
-**Do not enable** `ALL_POSITIVE_REPLIES` (always duplicates `ALL_EMAIL_REPLIES`) or `FIRST_EMAIL_REPLIES` (subset of `ALL_EMAIL_REPLIES`). Leave “Skip out of office replies” and “Skip autoreplies” **unchecked**.
+**Do not enable** `ALL_POSITIVE_REPLIES` (duplicates `ALL_EMAIL_REPLIES`) or `FIRST_EMAIL_REPLIES` (subset of `ALL_EMAIL_REPLIES`). Leave “Skip out of office replies” and “Skip autoreplies” **unchecked**.
 
 Each webhook is stored as an event. **Interested / not interested / sentiment come from label webhooks**, not from reply webhooks alone. OOO is classified as **auto-reply** (metadata flag, query with `--auto-reply true`). Bounces set event sentiment `invalid` but **do not** auto-move the lead to stage `lost` (use `--sentiment invalid` to find them).
 

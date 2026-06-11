@@ -3426,6 +3426,11 @@ def import_profiles(
             for w in warnings:
                 print(w, file=sys.stderr)
 
+    if not dry_run and (summary["created"] or summary["matched"]):
+        counts = get_local_pending_counts()
+        if counts.get("cloud_pending_leads"):
+            summary["sync_hint"] = "Run: pipeline.py sync to push imported leads to the relay."
+
     return summary
 
 
@@ -5403,7 +5408,7 @@ def format_sync_status(status: dict) -> str:
         )
     out = ""
     if parts:
-        out = f"\n⚠ Not synced to cloud: {', '.join(parts)}. Ask Outreach Magic to sync."
+        out = f"\n⚠ Not synced to cloud: {', '.join(parts)}. Run: pipeline.py sync"
     if relay_untracked:
         out += (
             f"\nℹ relay_untracked_leads={relay_untracked}: imported/local leads with no relay "
@@ -5480,7 +5485,7 @@ def format_local_sync_hint(counts: dict) -> str:
     if counts.get("cloud_pending_leads"):
         n = counts["cloud_pending_leads"]
         parts.append(f"{n} lead snapshot{'s' if n != 1 else ''}")
-    return f"\n⚠ Not synced: {', '.join(parts)}. Ask Outreach Magic to sync."
+    return f"\n⚠ Not synced: {', '.join(parts)}. Run: pipeline.py sync"
 
 
 def sync_all(
@@ -9079,6 +9084,24 @@ def resolve_share_email(explicit: Optional[str] = None) -> Optional[str]:
         return None
 
 
+def require_share_email_for_export(explicit: Optional[str] = None) -> str:
+    """Resolve share email or exit with a clear error (avoids backend 500s)."""
+    email = resolve_share_email(explicit)
+    if email:
+        return email
+    print(
+        json.dumps(
+            {
+                "error": (
+                    "share_email required — pass --share-email or configure org owner in portal. "
+                    "Tip: pipeline.py whoami --json → share_email"
+                )
+            }
+        )
+    )
+    sys.exit(1)
+
+
 def _persist_account_identity_from_status(data: dict) -> None:
     """Store account email / org from agent status API when available."""
     email = (data.get("accountEmail") or data.get("account_email") or "").strip()
@@ -10185,6 +10208,11 @@ def main():
     )
 
     imp_p.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="Skip automatic pipeline.py sync after import (default: auto-sync when logged in)",
+    )
+    imp_p.add_argument(
         "--import-format",
         dest="import_format",
         choices=("auto", "generic", "sales_navigator"),
@@ -10607,7 +10635,7 @@ def main():
 
     review_p = sub.add_parser(
         "review",
-        help="Export leads to Google Sheets and sync edits back (two-way, no local Google creds)",
+        help="Dedup review and two-way Google Sheet sync workflows (not the same as sheets export)",
     )
     review_sub = review_p.add_subparsers(dest="review_command", required=True)
 
@@ -10708,7 +10736,7 @@ def main():
 
     sheets_p = sub.add_parser(
         "sheets",
-        help="Export workspace leads to a hosted Google Sheet (alias for review export)",
+        help="Export workspace leads to a hosted Google Sheet (no local Google credentials)",
         description="Export workspace leads to a hosted Google Sheet via Outreach Magic (no local Google credentials).",
     )
     sheets_sub = sheets_p.add_subparsers(dest="sheets_command", required=True)
@@ -11556,6 +11584,22 @@ def main():
             import_batch_id=getattr(args, "import_batch_id", None),
             import_format=getattr(args, "import_format", None),
         )
+        if (
+            not args.dry_run
+            and not getattr(args, "no_sync", False)
+            and (summary.get("created") or summary.get("matched"))
+        ):
+            counts = get_local_pending_counts()
+            if counts.get("cloud_pending_leads"):
+                sync_result = sync_all(no_health_report=True)
+                summary["sync"] = sync_result
+                if sync_result.get("status") == "ok":
+                    summary["sync_hint"] = "Imported leads pushed to relay via pipeline.py sync."
+                else:
+                    summary["sync_hint"] = (
+                        f"Auto-sync failed: {sync_result.get('error', 'unknown')}. "
+                        "Run: pipeline.py sync"
+                    )
         print(json.dumps(summary, indent=2))
     elif args.command == "apply-email-find-results":
         rows: list[dict] = []
@@ -11940,7 +11984,7 @@ def main():
                         tok,
                         template=template,
                         title=args.title,
-                        share_email=resolve_share_email(getattr(args, "share_email", None)),
+                        share_email=require_share_email_for_export(getattr(args, "share_email", None)),
                         detail=payload.get("detail"),
                         headers=payload.get("headers"),
                         rows=payload.get("rows"),
@@ -11964,7 +12008,7 @@ def main():
                         template=template,
                         candidates=candidates,
                         title=args.title,
-                        share_email=resolve_share_email(getattr(args, "share_email", None)),
+                        share_email=require_share_email_for_export(getattr(args, "share_email", None)),
                     )
             except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as e:
                 print(json.dumps({"error": str(e)}))

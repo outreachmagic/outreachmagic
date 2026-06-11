@@ -1,5 +1,5 @@
 {
-  "_comment_keys": "Prefer ~/.hermes/.env: TRYKITT_API_KEY, ICYPEAS_API_KEY, and OUTREACHMAGIC_AGENT_KEY (see default.env)",
+  "_comment_keys": "API keys: Outreach Magic portal → pipeline.py sync-secrets → agent_secrets.env",
   "trykitt_api_key": "",
   "icypeas_api_key": "",
   "trykitt_endpoint": "https://api.trykitt.ai/job/find_email",

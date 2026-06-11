@@ -10,10 +10,15 @@
 
 ## Secrets
 
-- Store `SERPER_API_KEY` in `~/.hermes/.env` (preferred on Hermes), `config.json`
-  (gitignored), or shell env. `OUTREACHMAGIC_AGENT_KEY` belongs in the same file.
-- CLI output masks keys in `config` and uses `$SERPER_API_KEY` in generated curl
-  examples — do not paste live keys into chat.
+`SERPER_API_KEY` is managed in the **Outreach Magic portal** and synced to
+`config/agent_secrets.env` via `pipeline.py sync-secrets`. Do not store keys in shell
+config or local `.env` files for interactive installs.
+
+**CI/automation only:** set `OM_ALLOW_LOCAL_API_KEYS=1` to allow legacy env/config key loading.
+
+`OUTREACHMAGIC_AGENT_KEY` is set via `pipeline.py login` (stored in outreachmagic config).
+
+CLI output masks keys in `config` — do not paste live keys into chat.
 
 ## Optional dependency
 
@@ -22,6 +27,5 @@ installed, saving uses `import-profiles` / `tag bulk` locally — same trust mod
 
 ## Reporting vulnerabilities
 
-Email security concerns for Outreach Magic products to the address in
-[SECURITY.md](https://github.com/outreachmagic/hermes-outreachmagic/blob/main/SECURITY.md)
-for the core outreachmagic skill, or contact **security@outreachmagic.io**.
+Email security concerns to **security@outreachmagic.io** or see
+[SECURITY.md](https://github.com/outreachmagic/outreachmagic/blob/main/SECURITY.md).

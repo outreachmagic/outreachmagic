@@ -369,11 +369,11 @@ PLATFORMS: dict[str, PlatformDef] = {
         channel="email",
         category="sequencer",
         setup_hint=(
-            "In PlusVibe → Settings → Webhooks, paste the URL. Enable: EMAIL_SENT, ALL_EMAIL_REPLIES, "
-            "LEAD_MARKED_AS_INTERESTED, LEAD_MARKED_AS_NOT_INTERESTED, LEAD_MARKED_AS_OUT_OF_OFFICE, "
-            "LEAD_MARKED_AS_AUTOMATIC_REPLY, BOUNCED_EMAIL, LEAD_MARKED_AS_MEETING_BOOKED, "
-            "LEAD_MARKED_AS_MEETING_COMPLETED, LEAD_MARKED_AS_WRONG_PERSON, LEAD_MARKED_AS_CLOSED, "
-            "LEAD_MARKED_AS_QC_INTERESTED, LEAD_MARKED_AS_QC_CRM_ONLY. "
+            "In PlusVibe → Settings → Webhooks, paste the URL. Select all event types and category "
+            "labels (including any custom categories in the instance). Standard ones: EMAIL_SENT, "
+            "ALL_EMAIL_REPLIES, BOUNCED_EMAIL, LEAD_MARKED_AS_INTERESTED, LEAD_MARKED_AS_NOT_INTERESTED, "
+            "LEAD_MARKED_AS_OUT_OF_OFFICE, LEAD_MARKED_AS_AUTOMATIC_REPLY, LEAD_MARKED_AS_MEETING_BOOKED, "
+            "LEAD_MARKED_AS_MEETING_COMPLETED, LEAD_MARKED_AS_WRONG_PERSON, LEAD_MARKED_AS_CLOSED. "
             "Do NOT enable ALL_POSITIVE_REPLIES (duplicates ALL_EMAIL_REPLIES) or FIRST_EMAIL_REPLIES. "
             "Leave 'Skip out of office replies' and 'Skip autoreplies' unchecked."
         ),

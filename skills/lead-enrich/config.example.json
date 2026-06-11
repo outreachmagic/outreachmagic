@@ -1,5 +1,5 @@
 {
-  "_comment_keys": "Prefer ~/.hermes/.env: SERPER_API_KEY and OUTREACHMAGIC_AGENT_KEY (see default.env)",
+  "_comment_keys": "API keys: Outreach Magic portal → pipeline.py sync-secrets → agent_secrets.env",
   "serper_api_key": "",
   "serper_endpoint": "https://google.serper.dev/search",
 

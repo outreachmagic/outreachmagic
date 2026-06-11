@@ -86,11 +86,68 @@ def _env_value_empty(key: str) -> bool:
     return False
 
 
-_COMPANION_DASHBOARD_ONLY = frozenset({
+_PORTAL_ONLY_KEYS = frozenset({
+    "SERPER_API_KEY",
     "TRYKITT_API_KEY",
     "ICYPEAS_API_KEY",
     "MILLIONVERIFIER_API_KEY",
 })
+
+# Backward-compatible alias used by tests and older imports.
+_COMPANION_DASHBOARD_ONLY = _PORTAL_ONLY_KEYS
+
+
+def allow_local_api_keys() -> bool:
+    """CI/automation escape hatch — not for interactive agent installs."""
+    return os.environ.get("OM_ALLOW_LOCAL_API_KEYS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _portal_key_env_vars() -> list[str]:
+    """All env var names for portal-managed keys (primary + __N backup slots)."""
+    found: list[str] = []
+    for base in _POOL_API_KEY_BASES:
+        if base in os.environ:
+            found.append(base)
+        idx = 1
+        while True:
+            var = f"{base}__{idx}"
+            if var in os.environ:
+                found.append(var)
+                idx += 1
+            else:
+                break
+    return found
+
+
+def _authorized_portal_keys_from_file(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    keys: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        parsed = parse_dotenv_line(line)
+        if parsed and _is_pooled_api_key_var(parsed[0]):
+            keys.add(parsed[0])
+    return keys
+
+
+def _enforce_portal_only_keys(skill_dir: Optional[Path]) -> None:
+    """Drop BYOK keys not present in agent_secrets.env (strict mode)."""
+    if allow_local_api_keys():
+        return
+    om = find_outreachmagic({}, skill_dir=skill_dir)
+    secrets_path = (om / "config" / "agent_secrets.env") if om else None
+    authorized = (
+        _authorized_portal_keys_from_file(secrets_path)
+        if secrets_path
+        else set()
+    )
+    for var in _portal_key_env_vars():
+        if var not in authorized:
+            os.environ.pop(var, None)
 
 
 def load_dotenv_file(
@@ -153,31 +210,33 @@ def ensure_agent_env_loaded(skill_dir: Optional[Path] = None, *, reload: bool = 
     global _AGENT_ENV_LOADED
     if _AGENT_ENV_LOADED and not reload:
         return
-    # Dashboard-synced keys first; Hermes ~/.env must not backfill companion provider keys.
+    # Portal-synced keys are the sole runtime source for BYOK providers (strict mode).
     _load_synced_agent_secrets(skill_dir)
-    home = agent_home()
-    for name in (".env", "default.env"):
-        load_dotenv_file(
-            home / name,
-            force_api_keys=True,
-            skip_api_keys=_COMPANION_DASHBOARD_ONLY,
-        )
-    profile = active_profile()
-    if profile:
-        load_dotenv_file(
-            home / "profiles" / profile / ".env",
-            force_api_keys=True,
-            skip_api_keys=_COMPANION_DASHBOARD_ONLY,
-        )
-    repo_env = _monorepo_dotenv(skill_dir)
-    if repo_env:
-        load_dotenv_file(
-            repo_env,
-            force_api_keys=True,
-            skip_api_keys=_COMPANION_DASHBOARD_ONLY,
-        )
-    if skill_dir:
-        load_dotenv_file(skill_dir / "default.env", force_api_keys=True)
+    if allow_local_api_keys():
+        home = agent_home()
+        for name in (".env", "default.env"):
+            load_dotenv_file(
+                home / name,
+                force_api_keys=True,
+                skip_api_keys=_PORTAL_ONLY_KEYS,
+            )
+        profile = active_profile()
+        if profile:
+            load_dotenv_file(
+                home / "profiles" / profile / ".env",
+                force_api_keys=True,
+                skip_api_keys=_PORTAL_ONLY_KEYS,
+            )
+        repo_env = _monorepo_dotenv(skill_dir)
+        if repo_env:
+            load_dotenv_file(
+                repo_env,
+                force_api_keys=True,
+                skip_api_keys=_PORTAL_ONLY_KEYS,
+            )
+        if skill_dir:
+            load_dotenv_file(skill_dir / "default.env", force_api_keys=True)
+    _enforce_portal_only_keys(skill_dir)
     _AGENT_ENV_LOADED = True
 
 
@@ -203,14 +262,87 @@ def companion_api_key_source(key: str, skill_dir: Optional[Path] = None) -> Opti
     om = find_outreachmagic({}, skill_dir=skill_dir)
     if om:
         secrets = om / "config" / "agent_secrets.env"
-        if key in _dotenv_keys(secrets):
+        secret_keys = _dotenv_keys(secrets)
+        if key in secret_keys or any(k.startswith(f"{key}__") for k in secret_keys):
             return "agent_secrets"
+    if skill_dir:
+        cfg_path = skill_dir / "config.json"
+        if cfg_path.is_file():
+            try:
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                cfg = {}
+            cfg_key = {
+                "SERPER_API_KEY": "serper_api_key",
+                "TRYKITT_API_KEY": "trykitt_api_key",
+                "ICYPEAS_API_KEY": "icypeas_api_key",
+                "MILLIONVERIFIER_API_KEY": "millionverifier_api_key",
+            }.get(key)
+            if cfg_key and str(cfg.get(cfg_key) or "").strip():
+                return "config_json"
+        if key in _dotenv_keys(skill_dir / "default.env"):
+            return "default_env"
     home_env = agent_home() / ".env"
     if key in _dotenv_keys(home_env):
         return "hermes_env"
     if key in os.environ:
         return "shell"
-    return None
+    return "unknown"
+
+
+def warn_non_portal_key_sources(
+    skill_dir: Optional[Path] = None,
+    *,
+    keys: Optional[tuple[str, ...]] = None,
+    file: Any = None,
+) -> list[str]:
+    """Return warning lines for keys not sourced from agent_secrets.env."""
+    check_keys = keys or tuple(_PORTAL_ONLY_KEYS)
+    warnings: list[str] = []
+    for env_key in check_keys:
+        if not os.environ.get(env_key, "").strip():
+            continue
+        source = companion_api_key_source(env_key, skill_dir=skill_dir)
+        if source != "agent_secrets":
+            warnings.append(
+                f"⚠  {env_key} loaded from {source or 'unknown'} — portal sync keys not found. "
+                "Configure in Outreach Magic portal → Settings → API Keys, then run: "
+                "pipeline.py sync-secrets"
+            )
+    for line in warnings:
+        print(line, file=file or sys.stderr)
+    return warnings
+
+
+def maybe_sync_secrets_from_portal(
+    skill_dir: Optional[Path] = None,
+    *,
+    quiet: bool = True,
+) -> bool:
+    """Refresh agent_secrets.env from portal (e.g. after auth failure)."""
+    om = find_outreachmagic({}, skill_dir=skill_dir)
+    if not om:
+        return False
+    pipeline = get_pipeline_path(om)
+    if not pipeline.is_file():
+        return False
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(pipeline), "sync-secrets"],
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        if proc.returncode != 0 and not quiet:
+            err = (proc.stderr or proc.stdout or "").strip()
+            if err:
+                print(err, file=sys.stderr)
+        ensure_agent_env_loaded(skill_dir, reload=True)
+        return proc.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def subprocess_env(skill_dir: Optional[Path] = None) -> dict[str, str]:

@@ -141,6 +141,7 @@ def cmd_config() -> None:
         has_key, source = cc.outreachmagic_agent_key_status(om_dir)
         out["outreachmagic_agent_key"] = {"set": has_key, "source": source}
     print(json.dumps(out, indent=2))
+    cc.warn_non_portal_key_sources(_find_skill_dir())
 
 
 def check_existing_email(

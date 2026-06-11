@@ -33,6 +33,15 @@ tar -czf "$ARCHIVE" -C "$ROOT/skills" outreachmagic
 )
 
 cp "$ROOT/skills/outreachmagic/update-manifest.json" "$DIST/update-manifest.json"
+cp "$ROOT/install.sh" "$DIST/install.sh"
+(
+  cd "$DIST"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 install.sh > SHA256SUMS
+  else
+    sha256sum install.sh > SHA256SUMS
+  fi
+)
 
 echo "Built $ARCHIVE"
 echo "Checksum: $(cat "${ARCHIVE}.sha256")"

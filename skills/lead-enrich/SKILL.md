@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill. For email finding, use the email-finder companion skill.
-version: 2.1.7
+version: 2.1.8
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -47,28 +47,13 @@ for extraction, and the **outreachmagic** skill for persistence.
 
 ### 1. Serper.dev API key
 
-Sign up at https://serper.dev → get API key.
-
-**Hermes (recommended):** add to `~/.hermes/.env` (see `default.env` in this skill
-for a copy-paste template):
-
-```bash
-SERPER_API_KEY=your_serper_key_here
-```
-
-`enrich.py` loads `~/.hermes/.env` automatically (also checks `default.env` in the
-same folder). Hermes forwards these vars when the skill is loaded.
-
-**Alternatives:** `config.json` (`serper_api_key`) or `export SERPER_API_KEY=...`.
+Save your Serper key in **Outreach Magic portal → Settings → API Keys**, then run
+`pipeline.py sync-secrets`. Keys sync to `config/agent_secrets.env` — verify with
+`enrich.py config` (`serper_api_key_source` should be `agent_secrets`).
 
 ### 2. outreachmagic skill
 
-Required for saving results. Install outreachmagic and set the agent key in the
-same Hermes env file:
-
-```bash
-OUTREACHMAGIC_AGENT_KEY=om_agent_your_key_here
-```
+Required for saving results. Connect via `pipeline.py login` (browser device auth).
 
 **Hermes:** Install skills under `~/.hermes/skills/`; profile dirs use symlinks only (see outreachmagic `install.sh` or `docs/hermes-skills-layout.md`). `enrich.py` finds outreachmagic at `~/.hermes/skills/outreachmagic/`.
 
@@ -466,7 +451,7 @@ Max 50 people per run.
 
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
-| `serper_api_key` | Yes* | — | Serper.dev API key (*or `SERPER_API_KEY` in `~/.hermes/.env`) |
+| `serper_api_key` | Yes* | — | Serper.dev API key (*portal → `agent_secrets.env` via sync-secrets) |
 | `serper_endpoint` | No | `https://google.serper.dev/search` | API endpoint |
 | `outreachmagic_home` | No | auto-detect | Path to outreachmagic skill |
 | `max_people_per_run` | No | 50 | Batch size limit |

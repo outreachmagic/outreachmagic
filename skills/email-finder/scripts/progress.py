@@ -181,7 +181,12 @@ def print_final_summary(
     file=sys.stderr,
 ) -> None:
     stats = _init_stats(stats)
-    total = stats.get("found", 0) + stats.get("not_found", 0) + stats.get("errors", 0)
+    total = (
+        stats.get("found", 0)
+        + stats.get("not_found", 0)
+        + stats.get("errors", 0)
+        + int(stats.get("auth_errors", 0))
+    )
     denom = max(stats.get("found", 0) + stats.get("not_found", 0), 1)
     hit_rate = stats.get("found", 0) / denom * 100
     elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
@@ -198,6 +203,9 @@ def print_final_summary(
     print(f"║  FIND RESULTS{'':49}║", file=file)
     print(f"║    Found:          {stats.get('found', 0):<5} ({hit_rate:.1f}%){'':>30}║", file=file)
     print(f"║    Not found:      {stats.get('not_found', 0):<44}║", file=file)
+    auth_errors = int(stats.get("auth_errors", 0))
+    if auth_errors:
+        print(f"║    Auth errors:    {auth_errors:<44}║", file=file)
     print(f"║    Errors:         {stats.get('errors', 0):<44}║", file=file)
     if stats.get("rate_limited"):
         print(f"║    Rate limited:   {stats.get('rate_limited', 0):<44}║", file=file)

@@ -158,7 +158,7 @@ def load_config() -> dict[str, Any]:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Env var overrides (shell + ~/.hermes/.env via ensure_hermes_env_loaded)
+    # Env from portal-synced agent_secrets.env (via ensure_hermes_env_loaded)
     serper = os.environ.get("SERPER_API_KEY", "").strip()
     if serper:
         cfg["serper_api_key"] = serper
@@ -174,7 +174,8 @@ def load_config() -> dict[str, Any]:
     cfg.setdefault("dedup_before_search", True)
     cfg.setdefault("outreachmagic_home", "")
 
-    _promote_config_api_keys_to_environ(cfg)
+    if cc.allow_local_api_keys():
+        _promote_config_api_keys_to_environ(cfg)
     return cfg
 
 

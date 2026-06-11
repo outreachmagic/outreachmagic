@@ -8,8 +8,12 @@
 
 ## Secrets
 
-Store `TRYKITT_API_KEY`, `ICYPEAS_API_KEY`, and `OUTREACHMAGIC_AGENT_KEY` in `~/.hermes/.env` (preferred) or shell env. Do not paste keys into chat.
+API keys (TryKitt, Icypeas, MillionVerifier) are managed in the **Outreach Magic portal** and synced to `config/agent_secrets.env` via `pipeline.py sync-secrets`. Do not store keys in shell config, `config.json`, or local `.env` files for interactive use.
+
+**CI/automation only:** set `OM_ALLOW_LOCAL_API_KEYS=1` to allow legacy env/config key loading. Never use in agent chat contexts.
+
+Do not paste keys into chat.
 
 ## Reporting vulnerabilities
 
-Contact **security@outreachmagic.io** or see outreachmagic [SECURITY.md](https://github.com/outreachmagic/hermes-outreachmagic/blob/main/SECURITY.md).
+Contact **security@outreachmagic.io** or see outreachmagic [SECURITY.md](https://github.com/outreachmagic/outreachmagic/blob/main/SECURITY.md).

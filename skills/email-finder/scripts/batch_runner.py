@@ -1002,6 +1002,22 @@ def run_batch(
                 )
 
     elapsed = time.time() - start
+    auth_n = int(stats.get("auth_errors", 0))
+    if auth_n:
+        providers = sorted(
+            {
+                str(r.get("provider") or "")
+                for r in results
+                if isinstance(r, dict) and str(r.get("status") or "") == "auth_error"
+            }
+            - {""}
+        )
+        label = ", ".join(providers) if providers else "provider"
+        print(
+            f"\n⚠  {label} auth error on {auth_n} lead(s) — API key may be invalid or expired.\n"
+            "   Run: pipeline.py sync-secrets --check to verify portal key status.\n",
+            file=sys.stderr,
+        )
     print_final_summary(
         stats,
         elapsed,
@@ -1060,7 +1076,9 @@ def _record_result(
     elif st == "error" and str(result.get("error") or "") == "icypeas_timeout":
         stats["timeout"] = int(stats.get("timeout", 0)) + 1
         stats["errors"] += 1
-    elif st in ("error", "http_error", "auth_error") or result.get("error"):
+    elif st == "auth_error":
+        stats["auth_errors"] = int(stats.get("auth_errors", 0)) + 1
+    elif st in ("error", "http_error") or result.get("error"):
         stats["errors"] += 1
     elif result.get("email"):
         stats["found"] += 1

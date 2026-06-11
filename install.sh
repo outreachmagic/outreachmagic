@@ -14,6 +14,9 @@ MIGRATE=0
 ALL_PROFILES=0
 NO_PROFILES=0
 LOCAL=0
+DRY_RUN=0
+YES=0
+UNINSTALL=0
 OM_TAG=""
 LE_TAG=""
 EF_TAG=""
@@ -120,6 +123,9 @@ Options:
   --tag TAG                outreachmagic release tag (e.g. v1.20.24)
   --lead-enrich-tag TAG    lead-enrich release tag
   --email-finder-tag TAG   email-finder release tag
+  --dry-run                Print planned actions without writing
+  --yes                    Skip interactive prompts (non-interactive init)
+  --uninstall              Remove installed skills for this platform
   -h, --help               Show this help
 EOF
 }
@@ -137,6 +143,9 @@ while [[ $# -gt 0 ]]; do
     --tag) OM_TAG="$2"; shift 2 ;;
     --lead-enrich-tag) LE_TAG="$2"; shift 2 ;;
     --email-finder-tag) EF_TAG="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --yes) YES=1; shift ;;
+    --uninstall) UNINSTALL=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
@@ -152,11 +161,17 @@ fi
 # Fallback tags below are for public installer bundles before scripts/skill_suite.py shipped.
 if [[ $WITH_LEAD_ENRICH -eq 1 && -z "$LE_TAG" ]]; then
   LE_TAG="$(_read_suite_install_tag lead-enrich 2>/dev/null || true)"
-  [[ -n "$LE_TAG" ]] || LE_TAG="v2.1.7"
+  [[ -n "$LE_TAG" ]] || LE_TAG="v2.1.8"
 fi
 if [[ $WITH_EMAIL_FINDER -eq 1 && -z "$EF_TAG" ]]; then
   EF_TAG="$(_read_suite_install_tag email-finder 2>/dev/null || true)"
-  [[ -n "$EF_TAG" ]] || EF_TAG="v2.2.19"
+  [[ -n "$EF_TAG" ]] || EF_TAG="v2.2.20"
+fi
+
+if [[ -z "$OM_TAG" && $UNINSTALL -eq 0 ]]; then
+  if [[ -f "$_here/skills/outreachmagic/scripts/VERSION" ]]; then
+    OM_TAG="v$(tr -d '[:space:]' < "$_here/skills/outreachmagic/scripts/VERSION")"
+  fi
 fi
 
 case "$PLATFORM" in
@@ -211,9 +226,52 @@ copy_skill_tree() {
   _log_step "Copied ${count} file(s) to $dest"
 }
 
+_plan_uninstall() {
+  echo "[dry-run] Would remove:"
+  echo "  $SKILLS_DIR/outreachmagic"
+  [[ $WITH_LEAD_ENRICH -eq 1 ]] && echo "  $SKILLS_DIR/lead-enrich"
+  [[ $WITH_EMAIL_FINDER -eq 1 ]] && echo "  $SKILLS_DIR/email-finder"
+  if [[ "$PLATFORM" == "hermes" && ${#PROFILES[@]} -gt 0 ]]; then
+    local profile skill
+    for profile in "${PROFILES[@]}"; do
+      for skill in outreachmagic lead-enrich email-finder; do
+        echo "  $HERMES_HOME/profiles/$profile/skills/$skill (symlink)"
+      done
+    done
+  fi
+}
+
+_do_uninstall() {
+  local skill
+  for skill in outreachmagic lead-enrich email-finder; do
+    if [[ -d "$SKILLS_DIR/$skill" ]]; then
+      _log_step "Removing $SKILLS_DIR/$skill"
+      rm -rf "$SKILLS_DIR/$skill"
+    fi
+  done
+  if [[ "$PLATFORM" == "hermes" ]]; then
+    local profile
+    for profile in "$HERMES_HOME/profiles"/*/; do
+      [[ -d "$profile" ]] || continue
+      for skill in outreachmagic lead-enrich email-finder; do
+        local link="${profile}skills/$skill"
+        if [[ -L "$link" ]]; then
+          rm -f "$link"
+        fi
+      done
+    done
+  fi
+  echo "✓ Uninstall complete for platform: $PLATFORM"
+}
+
 install_outreachmagic() {
   local tmp=""
   local skill_src=""
+  if [[ $DRY_RUN -eq 1 ]]; then
+    _log_step "[dry-run] Would install outreachmagic to $SKILLS_DIR/outreachmagic"
+    _log_step "[dry-run] Source: ${OM_REPO}${OM_TAG:+ @ $OM_TAG}${LOCAL:+ (local checkout)}"
+    _log_step "[dry-run] Would run: pipeline.py init --from-tag ${OM_TAG:-main}"
+  fi
   if [[ $LOCAL -eq 1 ]]; then
     skill_src="$_here/skills/outreachmagic"
     if [[ ! -d "$skill_src/scripts" ]]; then
@@ -232,6 +290,9 @@ install_outreachmagic() {
     fi
   fi
 
+  if [[ $DRY_RUN -eq 1 ]]; then
+    return 0
+  fi
   _log_step "Installing outreachmagic to $SKILLS_DIR/outreachmagic"
   copy_skill_tree "$skill_src" "$SKILLS_DIR/outreachmagic"
 
@@ -250,7 +311,9 @@ install_outreachmagic() {
   fi
 
   chmod +x "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" 2>/dev/null || true
-  _log_step "Initializing database..."
+  local db_path="$SKILLS_DIR/outreachmagic/databases/outreachmagic.db"
+  _log_step "Initializing local SQLite database at $db_path"
+  echo "  (Stores pipeline contacts and event history locally — no data sent to servers during init.)"
   local tag_label="${OM_TAG:-main}"
   python3 "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" init --from-tag "$tag_label"
 }
@@ -322,18 +385,47 @@ if [[ "$PLATFORM" == "hermes" ]] && [[ $NO_PROFILES -eq 0 ]] && [[ $ALL_PROFILES
   fi
 fi
 
+if [[ "$PLATFORM" == "hermes" ]] && [[ ${#PROFILES[@]} -eq 0 ]] && [[ $ALL_PROFILES -eq 1 ]]; then
+  while IFS= read -r profile; do
+    PROFILES+=("$profile")
+  done < <(discover_profiles)
+fi
+
 mkdir -p "$SKILLS_DIR"
+
+if [[ $UNINSTALL -eq 1 ]]; then
+  if [[ $DRY_RUN -eq 1 ]]; then
+    _plan_uninstall
+    exit 0
+  fi
+  _do_uninstall
+  exit 0
+fi
+
+if [[ $DRY_RUN -eq 1 ]]; then
+  echo "=== Outreach Magic install plan (dry-run) ==="
+  echo "Platform:     $PLATFORM"
+  echo "Skills dir:   $SKILLS_DIR"
+  echo "outreachmagic tag: ${OM_TAG:-main}"
+  [[ $WITH_LEAD_ENRICH -eq 1 ]] && echo "lead-enrich tag:   ${LE_TAG:-main}"
+  [[ $WITH_EMAIL_FINDER -eq 1 ]] && echo "email-finder tag:  ${EF_TAG:-main}"
+  [[ $MIGRATE -eq 1 ]] && echo "Hermes migrate:    yes (replace profile copies with symlinks)"
+  install_outreachmagic
+  [[ $WITH_LEAD_ENRICH -eq 1 ]] && _log_step "[dry-run] Would install lead-enrich to $SKILLS_DIR/lead-enrich"
+  [[ $WITH_EMAIL_FINDER -eq 1 ]] && _log_step "[dry-run] Would install email-finder to $SKILLS_DIR/email-finder"
+  if [[ "$PLATFORM" == "hermes" && ${#PROFILES[@]} -gt 0 ]]; then
+    _log_step "[dry-run] Would link profiles: ${PROFILES[*]}"
+  fi
+  echo "=== End dry-run (no changes made) ==="
+  exit 0
+fi
+
 install_outreachmagic
 if [[ $WITH_LEAD_ENRICH -eq 1 ]]; then
   install_lead_enrich
 fi
 if [[ $WITH_EMAIL_FINDER -eq 1 ]]; then
   install_email_finder
-fi
-if [[ "$PLATFORM" == "hermes" ]] && [[ ${#PROFILES[@]} -eq 0 ]] && [[ $ALL_PROFILES -eq 1 ]]; then
-  while IFS= read -r profile; do
-    PROFILES+=("$profile")
-  done < <(discover_profiles)
 fi
 
 if [[ "$PLATFORM" == "hermes" ]] && [[ ${#PROFILES[@]} -gt 0 ]]; then

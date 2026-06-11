@@ -21,7 +21,7 @@ python3 <skill-path>/scripts/pipeline.py login
 Pin a **release tag** (check latest: `pipeline.py update --check` or [GitHub releases](https://github.com/outreachmagic/outreachmagic/releases)). Download first — do not pipe remote scripts directly into `bash`.
 
 ```bash
-OM_VERSION=v1.34.0
+OM_VERSION=v1.34.1
 
 # Step 1 — download (does not execute)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \
@@ -46,13 +46,13 @@ Preview without writing: `bash /tmp/om_install.sh --dry-run ...`
 ## Hermes
 
 ```bash
-bash /tmp/om_install.sh --platform hermes --tag v1.34.0 --migrate-hermes-profiles
+bash /tmp/om_install.sh --platform hermes --tag v1.34.1 --migrate-hermes-profiles
 ```
 
 With companions:
 
 ```bash
-bash /tmp/om_install.sh --platform hermes --tag v1.34.0 \
+bash /tmp/om_install.sh --platform hermes --tag v1.34.1 \
   --with-lead-enrich --with-email-finder --migrate-hermes-profiles
 ```
 
@@ -64,7 +64,7 @@ hermes -s outreachmagic
 ## Cursor
 
 ```bash
-bash /tmp/om_install.sh --platform cursor --tag v1.34.0
+bash /tmp/om_install.sh --platform cursor --tag v1.34.1
 ```
 
 With companions: add `--with-lead-enrich --with-email-finder`.
@@ -72,7 +72,7 @@ With companions: add `--with-lead-enrich --with-email-finder`.
 ## Claude Code
 
 ```bash
-bash /tmp/om_install.sh --platform claude --tag v1.34.0
+bash /tmp/om_install.sh --platform claude --tag v1.34.1
 ```
 
 With companions: add `--with-lead-enrich --with-email-finder`.

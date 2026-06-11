@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
-version: 1.34.0
+version: 1.34.1
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -58,10 +58,10 @@ Optional config keys: `data_root` (share one DB across platforms), `api_base_url
 
 ## Platform install
 
-Install from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — pin a release tag, download first (never `curl | bash`):
+Install from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — pin a release tag; download and verify SHA256 before running locally:
 
 ```bash
-OM_VERSION=v1.34.0
+OM_VERSION=v1.34.1
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o /tmp/om_install.sh
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o /tmp/om_SHA256SUMS
 (cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)

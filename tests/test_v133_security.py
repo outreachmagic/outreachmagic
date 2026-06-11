@@ -114,7 +114,7 @@ def test_batch_auth_resync_retries_once(monkeypatch):
 
 def test_agents_install_sha256_and_release_pin():
     text = (ROOT / "AGENTS-INSTALL.md").read_text(encoding="utf-8")
-    assert "v1.34.0" in text
+    assert "v1.34.1" in text
     assert "SHA256SUMS" in text
     assert "detect_platform.py" in text
     assert "--public" in text

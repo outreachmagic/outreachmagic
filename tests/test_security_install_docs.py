@@ -15,7 +15,7 @@ def test_agents_install_uses_download_not_pipe_only():
     assert "download" in text.lower()
     assert "agent_secrets.env" in text
     assert "SHA256SUMS" in text
-    assert "v1.34.0" in text
+    assert "v1.34.1" in text
     assert "export SERPER_API_KEY" not in text
     assert "~/.hermes/.env" not in text
 

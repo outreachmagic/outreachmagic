@@ -7,7 +7,7 @@ Canonical install commands from the unified public repo [outreachmagic/outreachm
 ## Secure install pattern
 
 ```bash
-OM_VERSION=v1.34.0
+OM_VERSION=v1.34.1
 
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \
   -o /tmp/om_install.sh
@@ -21,7 +21,7 @@ curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${O
 One script installs outreachmagic + optional companions into `~/.hermes/skills/`:
 
 ```bash
-bash /tmp/om_install.sh --platform hermes --tag v1.34.0 \
+bash /tmp/om_install.sh --platform hermes --tag v1.34.1 \
   --with-lead-enrich --with-email-finder \
   --migrate-hermes-profiles
 ```
@@ -35,7 +35,7 @@ Profile symlinks: see [hermes-skills-layout.md](./hermes-skills-layout.md).
 ## Cursor
 
 ```bash
-bash /tmp/om_install.sh --platform cursor --tag v1.34.0 \
+bash /tmp/om_install.sh --platform cursor --tag v1.34.1 \
   --with-lead-enrich --with-email-finder
 ```
 
@@ -48,7 +48,7 @@ Skills live under `~/.cursor/skills/{outreachmagic,lead-enrich,email-finder}/`.
 ## Claude Code
 
 ```bash
-bash /tmp/om_install.sh --platform claude --tag v1.34.0 \
+bash /tmp/om_install.sh --platform claude --tag v1.34.1 \
   --with-lead-enrich --with-email-finder
 ```
 
@@ -63,7 +63,7 @@ Skills live under `~/.claude/skills/{outreachmagic,lead-enrich,email-finder}/`.
 Companion versions are pinned automatically from `skill-suite.json`. Override explicitly:
 
 ```bash
-bash /tmp/om_install.sh --platform hermes --tag v1.34.0 \
+bash /tmp/om_install.sh --platform hermes --tag v1.34.1 \
   --with-lead-enrich --with-email-finder \
   --lead-enrich-tag lead-enrich-v2.1.9 \
   --email-finder-tag email-finder-v2.2.22 \

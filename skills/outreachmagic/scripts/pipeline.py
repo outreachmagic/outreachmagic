@@ -8037,7 +8037,7 @@ def _ingest_relay_page(
                         )
                     except Exception as exc:
                         if not quiet:
-                            print(f"Warning: skipped relay event {relay_id}: {exc}")
+                            print(f"Warning: skipped webhook event {relay_id}: {exc}")
                         skipped += 1
                         skipped_errors += 1
                         continue
@@ -8062,7 +8062,7 @@ def _ingest_relay_page(
                 ingested = ingest_relay_event(event, **ingest_kw)
             except Exception as exc:
                 if not quiet:
-                    print(f"Warning: skipped relay event {event.get('relay_id') or '?'}: {exc}")
+                    print(f"Warning: skipped webhook event {event.get('relay_id') or '?'}: {exc}")
                 skipped += 1
                 skipped_errors += 1
                 continue
@@ -8554,7 +8554,7 @@ def sync_from_relay_org(
 
     pull_hint = None
     if not full and relay_events_seen == 0 and not cursor_stalled and page_after_id == initial_after_id:
-        pull_hint = "no new relay events — run `pull --full` once or clear last_max_id in config"
+        pull_hint = "no new webhook events — run `pull --full` once or clear last_max_id in config"
 
     cursor_advanced = bool(page_after_id > initial_after_id)
     if stats is not None:
@@ -9512,7 +9512,11 @@ def cmd_status(*, json_output: bool = False):
     plan_suffix = ""
     if is_canceling:
         plan_suffix = " (canceling)"
-    print(f"Plan: {plan}{plan_suffix}  |  Relay events: {usage_str}  |  Resets: {resets_label}")
+    from user_messages import metered_usage_label
+
+    print(
+        f"Plan: {plan}{plan_suffix}  |  {metered_usage_label(plan)}: {usage_str}  |  Resets: {resets_label}"
+    )
 
     if billing_notice:
         print(f"⚠  {billing_notice}")
@@ -10562,7 +10566,7 @@ def main():
 
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
     pull_p.add_argument("--cron", action="store_true", help="Silent mode for cron")
-    pull_p.add_argument("--full", action="store_true", help="Re-import all relay events (after DB reset)")
+    pull_p.add_argument("--full", action="store_true", help="Re-import all webhook events (after DB reset)")
     pull_p.add_argument(
         "--yes",
         action="store_true",
@@ -11465,12 +11469,12 @@ def main():
             and not args.cron
             and not getattr(args, "yes", False)
         ):
-            hint = "all relay events"
+            hint = "all webhook events"
             try:
                 probe = probe_relay_backlog(agent_key)
                 pending = (probe.get("events") or {}).get("pending")
                 if pending is not None:
-                    hint = f"~{int(pending):,} relay events"
+                    hint = f"~{int(pending):,} webhook events"
             except (RuntimeError, ValueError, TypeError):
                 pass
             print(

@@ -333,8 +333,9 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
 Only if `update` cannot run at all. Reinstall from the unified public repo:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
-  --platform hermes --migrate
+OM_VERSION=v1.35.0
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o /tmp/om_install.sh
+bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}"
 ```
 
 Or download manifest files manually from `raw.githubusercontent.com/outreachmagic/outreachmagic/<tag>/skills/outreachmagic/…` (see `update_skill` in `pipeline.py`).

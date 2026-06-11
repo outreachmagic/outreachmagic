@@ -40,7 +40,7 @@ flowchart LR
 
 ## Freemium
 
-| Free forever (no relay count) | Counts as relay event |
+| Free forever (no metered count) | Counts as webhook/sync event |
 |------------------------------|------------------------|
 | Local pipeline queries | Webhook events synced from sequencers |
 | `import-profiles`, `apply-email-find-results`, export | |
@@ -48,7 +48,7 @@ flowchart LR
 | email-finder OM pre-check | |
 | `verify-email` recording | |
 
-Launch limits: **1,000 relay events/mo free**, **Pro $9/mo** (50k cap). See [outreachmagic-brand/product/pricing.md](../outreachmagic-brand/product/pricing.md).
+Launch limits: **1,000 webhook events/mo free**, **Pro $9/mo** (50k webhook and sync events). See [outreachmagic-brand/product/pricing.md](../outreachmagic-brand/product/pricing.md).
 
 ## Naming: find vs verify
 

@@ -23,7 +23,7 @@ Canonical DDL: [`scripts/schema.py`](../scripts/schema.py) (`SCHEMA_SQL`). Views
 | `workspaces` | Multi-workspace routing (org-scoped) |
 | `workspace_leads` | Per-workspace lead status, tags, activity |
 | `campaign_workspace_map` | Platform campaign ID/name → workspace |
-| `unmapped_campaign_queue` | Quarantined relay events; resolutions sync via `sync` |
+| `unmapped_campaign_queue` | Quarantined webhook events; resolutions sync via `sync` |
 | `workspace_lead_events` | Workspace-scoped ingest audit — **subset**, not full relay volume |
 | `relay_ingested` | Pull dedupe keys |
 
@@ -144,4 +144,4 @@ Presets accept: `48h`, `7d`, `2w`, `today`, or `YYYY-MM-DD`.
 
 Local analytics do **not** require `pull` first. Read commands print `Data as of … (N minutes ago)` on stderr and include `last_pull` / `stale_minutes` in `--json`.
 
-Run `pull` when the user needs the latest relay events or says “refresh.” Use `pull --if-stale 5m` to skip redundant network round-trips in the same session.
+Run `pull` when the user needs the latest webhook events or says “refresh.” Use `pull --if-stale 5m` to skip redundant network round-trips in the same session.

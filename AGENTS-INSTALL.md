@@ -23,16 +23,16 @@ Replace `<PLATFORM>` below with that flag. Replace `<SKILLS>` with the matching 
 
 Before executing any install command:
 
-1. Show the user the **exact full command** you plan to run (platform flag, companions, `--migrate` if any).
+1. Show the user the **exact full command** you plan to run (`--platform` and optional `--tag`).
 2. Ask for **explicit confirmation**. Do not run `install.sh` without user approval of the full command string.
-3. Prefer **download → inspect → run** (below), not `curl | bash` in one pipeline.
+3. Prefer **download → inspect → run** (below), not piping a remote script directly into `bash`.
 
-`--migrate` / `--migrate-hermes-profiles` (Hermes only): replaces profile **copies** with symlinks into `~/.hermes/skills/`. It does not delete lead data.
+The installer always installs the **full suite** (outreachmagic + lead-enrich + email-finder).
 
 Preview without writing:
 
 ```bash
-bash /tmp/om_install.sh --dry-run --platform <PLATFORM> --with-lead-enrich --with-email-finder --migrate
+bash /tmp/om_install.sh --dry-run --platform <PLATFORM> --tag v1.35.0
 ```
 
 ## Prerequisites
@@ -65,26 +65,19 @@ Pin a **release tag** (recommended). Check latest: `pipeline.py update --check` 
 
 ```bash
 # Step 1 — download (does not execute)
-curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.34.1/install.sh \
+curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.35.0/install.sh \
   -o /tmp/om_install.sh
 
 # Step 2 — verify integrity (recommended)
-curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.34.1/SHA256SUMS \
+curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.35.0/SHA256SUMS \
   -o /tmp/om_SHA256SUMS
 (cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
 
 # Step 3 — optional: inspect before running
 less /tmp/om_install.sh
 
-# Step 4 — run from local copy (full suite)
-bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.34.1 \
-  --with-lead-enrich --with-email-finder --migrate-hermes-profiles
-```
-
-**Outreach Magic only** (no Serper or email find):
-
-```bash
-bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.34.1 --migrate-hermes-profiles
+# Step 4 — run from local copy
+bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.35.0
 ```
 
 **Read-only platform detection** (no install side effects):
@@ -94,11 +87,9 @@ python3 <SKILLS>/outreachmagic/scripts/detect_platform.py
 # → {"platform": "cursor", "skills_dir": "~/.cursor/skills"}
 ```
 
-On Hermes, omit `--migrate` only if you have no existing Hermes profiles to fix.
-
-The installer clones skills, initializes SQLite at
-`<SKILLS>/outreachmagic/databases/outreachmagic.db`, and on Hermes links profile
-symlinks (never full copies under `profiles/`).
+The installer clones all three skills, initializes SQLite at
+`<SKILLS>/outreachmagic/databases/outreachmagic.db`, and on Hermes symlinks skills into
+each profile under `~/.hermes/profiles/`.
 
 ## Windows
 
@@ -199,12 +190,11 @@ python3 <SKILLS>/outreachmagic/scripts/pipeline.py sync
 hermes -s outreachmagic
 ```
 
-**Profiles:** real files live under `~/.hermes/skills/outreachmagic/`. Each profile
-symlinks into that tree (`../../../skills/outreachmagic`). If a profile has a full
-copy instead of a symlink, re-run install with `--migrate` or:
+**Profiles:** real files live under `~/.hermes/skills/`. Each profile symlinks into that tree
+(`../../../skills/outreachmagic`). Re-run install to link a new profile:
 
 ```bash
-bash install.sh --platform hermes --migrate --all-profiles
+bash /tmp/om_install.sh --platform hermes --profile <name>
 ```
 
 ## Verify

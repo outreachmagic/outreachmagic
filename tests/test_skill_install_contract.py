@@ -34,21 +34,17 @@ def test_skill_suite_json_loads():
     assert install_default_tag("lead-enrich") == suite["skills"]["lead-enrich"]["install_default_tag"]
 
 
-@pytest.mark.parametrize("skill,tag_var,fallback_line", [
-    ("lead-enrich", "LE_TAG", '|| LE_TAG="'),
-    ("email-finder", "EF_TAG", '|| EF_TAG="'),
-])
-def test_install_sh_fallback_tags_match_skill_suite(skill, tag_var, fallback_line):
+def test_install_sh_resolves_companion_tags_from_skill_suite():
     install_sh = (ROOT / "install.sh").read_text(encoding="utf-8")
     companions = (ROOT / "platforms/common/install-companions.sh").read_text(encoding="utf-8")
-    expected = install_default_tag(skill)
-    assert f"_read_suite_install_tag {skill}" in install_sh
+    assert "_resolve_companion_tag" in install_sh
+    assert "install_default_tag" in install_sh
+    assert "_resolve_companion_tag lead-enrich" in install_sh
+    assert "_resolve_companion_tag email-finder" in install_sh
     assert "install-tag" in companions
-    start = install_sh.index(fallback_line)
-    fragment = install_sh[start : start + 40]
-    assert f'{tag_var}="{expected}"' in fragment, (
-        f"install.sh fallback for {skill} must match skill-suite.json install_default_tag ({expected})"
-    )
+    suite = load_suite()
+    assert install_default_tag("lead-enrich") == suite["skills"]["lead-enrich"]["install_default_tag"]
+    assert install_default_tag("email-finder") == suite["skills"]["email-finder"]["install_default_tag"]
 
 
 def test_install_companions_reads_install_required_from_skill_suite():

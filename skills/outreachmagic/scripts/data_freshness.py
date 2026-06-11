@@ -74,7 +74,7 @@ def freshness_from_last_pull(last_pull: Optional[str]) -> dict[str, Any]:
         "last_pull": iso,
         "stale_minutes": stale_minutes,
         "freshness": "ok",
-        "freshness_message": f"Data as of {iso} ({age_label}). Run pull for latest relay events.",
+        "freshness_message": f"Data as of {iso} ({age_label}). Run pull for latest webhook events.",
     }
 
 

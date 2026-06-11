@@ -1,6 +1,6 @@
 # Hermes skills layout
 
-Skills live in `~/.hermes/skills/<name>/` — Hermes’s built-in skills directory. Each profile only holds symlinks to those trees.
+Skills live in `~/.hermes/skills/<name>/` — Hermes's built-in skills directory. Each profile only holds symlinks to those trees.
 
 ```
 ~/.hermes/
@@ -16,34 +16,34 @@ Skills live in `~/.hermes/skills/<name>/` — Hermes’s built-in skills directo
 
 ## Why
 
-1. **One copy** — `pipeline.py update` and `enrich.py update` write under `~/.hermes/skills/`. Every profile sees the same version through its symlink.
+1. **One copy** — `pipeline.py update` writes under `~/.hermes/skills/`. Every profile sees the same version through its symlink.
 2. **Profile visibility** — `skill_view` scans `profiles/<name>/skills/`, follows the symlink, and loads the global install.
-3. **No extra config** — `~/.hermes/skills/` is the default Hermes scan path. No `external_dirs` required.
+3. **No extra config** — `~/.hermes/skills/` is the default Hermes scan path.
 
 ## Install
 
 ```bash
-OM_VERSION=v1.34.1
+OM_VERSION=v1.35.0
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o /tmp/om_install.sh
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o /tmp/om_SHA256SUMS
 (cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
-bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}" \
-  --with-lead-enrich --with-email-finder --migrate-hermes-profiles
+bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}"
 ```
 
 When `~/.hermes/profiles/` exists, `install.sh` symlinks every profile by default (`--no-profiles` to skip).
 
-Or from a monorepo clone (dev only):
+## New profile
 
 ```bash
-bash platforms/hermes/install.sh --with-lead-enrich --with-email-finder --profile popcam --migrate
+bash install.sh --platform hermes --profile <name>
 ```
 
-## New profile
+Or manually:
 
 ```bash
 mkdir -p ~/.hermes/profiles/<name>/skills
 ln -sf ../../../skills/lead-enrich ~/.hermes/profiles/<name>/skills/lead-enrich
+ln -sf ../../../skills/email-finder ~/.hermes/profiles/<name>/skills/email-finder
 ln -sf ../../../skills/outreachmagic ~/.hermes/profiles/<name>/skills/outreachmagic
 ```
 
@@ -51,8 +51,8 @@ ln -sf ../../../skills/outreachmagic ~/.hermes/profiles/<name>/skills/outreachma
 
 | What | Where |
 |------|--------|
-| Portal-synced API keys (Serper, TryKitt, Icypeas, etc.) | `~/.hermes/skills/outreachmagic/config/agent_secrets.env` (via `pipeline.py sync-secrets`) |
-| Agent key (after `pipeline.py login`) | `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json` |
+| Portal-synced API keys | `~/.hermes/skills/outreachmagic/config/agent_secrets.env` (via `pipeline.py sync-secrets`) |
+| Agent key (after login) | `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json` |
 | outreachmagic config & SQLite | `~/.hermes/skills/outreachmagic/` |
 
 ## Verify
@@ -62,8 +62,3 @@ readlink ~/.hermes/profiles/<name>/skills/outreachmagic
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py paths
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py version
 ```
-
-## Do not
-
-- Copy full skill trees into `profiles/<name>/skills/` (they go stale).
-- Query SQLite under `profiles/.../databases/` — use `pipeline.py paths` for the real DB path.

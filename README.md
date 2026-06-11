@@ -50,7 +50,7 @@ docs/
 ## Local Development
 
 ```bash
-bash install.sh --platform hermes --local --migrate   # Install from monorepo checkout
+bash install.sh --platform hermes --local   # Install full suite from monorepo checkout
 bash scripts/run-tests.sh
 bash scripts/skill-scan.sh
 ```

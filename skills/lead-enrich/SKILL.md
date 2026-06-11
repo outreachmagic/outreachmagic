@@ -514,9 +514,9 @@ Params: `["your_workspace"]`
 
 | Platform | Install | Skill path |
 |----------|---------|------------|
-| Hermes | [hermes-outreachmagic `install.sh`](https://github.com/outreachmagic/hermes-outreachmagic) with `--with-lead-enrich` (symlinks all profiles by default) | `~/.hermes/skills/lead-enrich/` |
-| Cursor | Copy or clone into `~/.cursor/skills/lead-enrich/` | `~/.cursor/skills/lead-enrich/` |
-| Claude Code | Copy or clone into `~/.claude/skills/lead-enrich/` | `~/.claude/skills/lead-enrich/` |
+| Hermes | [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — `install.sh --platform hermes` | `~/.hermes/skills/lead-enrich/` |
+| Cursor | `install.sh --platform cursor` | `~/.cursor/skills/lead-enrich/` |
+| Claude Code | `install.sh --platform claude` | `~/.claude/skills/lead-enrich/` |
 
 **Hermes:** Real files live under `~/.hermes/skills/`. Each profile uses symlinks only (`profiles/<name>/skills/lead-enrich` → `../../../skills/lead-enrich`). Do not copy the skill into a profile directory.
 
@@ -526,7 +526,7 @@ Params: `["your_workspace"]`
 
 | Problem | Fix |
 |---------|-----|
-| Stale skill or empty DB | Hermes: run `install.sh --migrate` (links all profiles by default). Check `pipeline.py paths` for `warning`. |
+| Stale skill or empty DB | Re-run `install.sh --platform <name>`. Check `pipeline.py paths` for `warning`. |
 | "No outreachmagic found" | Set `outreachmagic_home` in config.json to the absolute path |
 | Serper 400 "not allowed" | Query too restrictive — fallback to simpler template |
 | `import-profiles` rejects row | Requires email, LinkedIn, or `id` (lead_id). Use `stamp-attempted` for tag-only updates |
@@ -534,5 +534,5 @@ Params: `["your_workspace"]`
 | Empty extraction | Serper results too thin — try broad queries, or mark confidence `low` |
 | `ambiguous` on check | Name matched wrong company — run Serper or `check --force` |
 | Team / group award row | `batch-check` returns `team_award` — skip research |
-| outreachmagic not found | Install [hermes-outreachmagic](https://github.com/outreachmagic/hermes-outreachmagic) or set `outreachmagic_home` |
-| Need email find | Install **email-finder** — see `references/email-finder.md` |
+| outreachmagic not found | Install [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) or set `outreachmagic_home` |
+| Need email find | Installed with the suite — see `references/email-finder.md` |

@@ -7,8 +7,8 @@ description: >
   views, client briefings, deliverability diagnostics, campaign breakdowns,
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
-  Free tier: local tracking plus 1,000 relay events/mo. Pro: 50k/mo. Agency: 250k/mo.
-version: 1.34.1
+  Free tier: local tracking plus 1,000 webhook events/mo. Pro: 50k webhook and sync events/mo. Agency: 250k/mo.
+version: 1.35.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -61,24 +61,22 @@ Optional config keys: `data_root` (share one DB across platforms), `api_base_url
 Install from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — pin a release tag; download and verify SHA256 before running locally:
 
 ```bash
-OM_VERSION=v1.34.1
+OM_VERSION=v1.35.0
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o /tmp/om_install.sh
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o /tmp/om_SHA256SUMS
 (cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
-bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}" \
-  --with-lead-enrich --with-email-finder --migrate-hermes-profiles
+bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}"
 ```
 
-Agent-readable full guide: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md).
+Installs outreachmagic, lead-enrich, and email-finder. Agent guide: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md).
 
 Use `--platform cursor` or `--platform claude` for other agents. Setup: https://app.outreachmagic.io/onboarding
 
 ### Hermes profiles
 
-- **Real install:** `~/.hermes/skills/outreachmagic/` — never copy the full tree into `profiles/`
-- **Profiles:** symlink only → `../../../skills/outreachmagic`
-- **Verify:** `pipeline.py paths` (warns if a profile has a copy instead of a symlink)
-- **Fix copies:** `install.sh --platform hermes --migrate --all-profiles`
+- **Real install:** `~/.hermes/skills/` — profiles symlink only (`../../../skills/<skill>`)
+- **Verify:** `pipeline.py paths`
+- **New profile:** `bash install.sh --platform hermes --profile <name>`
 - **Update:** `pipeline.py update` writes the global install; all profiles pick it up via symlink
 
 ### Cursor
@@ -241,7 +239,7 @@ python3 scripts/pipeline.py pull --if-stale 5m   # skip when last_pull is within
 python3 scripts/pipeline.py pull --force         # always network (ignore --if-stale)
 ```
 
-If routing sync times out but you only need relay events, use:
+If routing sync times out but you only need webhook events, use:
 
 ```bash
 python3 scripts/pipeline.py pull --skip-routing-sync
@@ -286,22 +284,22 @@ Tag-only (same tag data as summary): `pipeline.py tag list --workspace <slug>`.
 ## Free Tier
 
 - Unlimited local tracking, enrichment, queries, and exports
-- **1,000 relay events / period** (sequencer webhooks + cloud sync)
+- **1,000 webhook events / period** (sequencer webhooks + cloud sync)
 - 1 sequencer connection, single workspace
 
 ## Pro Tier ($9/mo)
 
-- **50,000 relay events / month**
+- **50,000 webhook and sync events / month**
 - All sequencers, multi-workspace routing
 
 ## Agency Tier ($29/mo)
 
-- **250,000 relay events / month**
+- **250,000 webhook and sync events / month**
 - All sequencers, unlimited workspaces, priority support
 
 ### What counts
 
-Only **relay-synced events**: sequencer webhooks and `pipeline.py sync` uploads to the cloud (**one event per sync batch**, not per lead). Local tracking (`log-event`, `add-lead`), enrichment dedup, email finding, queries, and exports do **not** count.
+Only **webhook and sync traffic**: sequencer webhooks and `pipeline.py sync` uploads to the cloud (**one event per sync batch**, not per lead). Local tracking (`log-event`, `add-lead`), enrichment dedup, email finding, queries, and exports do **not** count.
 
 ### Over limit
 
@@ -375,9 +373,9 @@ python3 scripts/pipeline.py sync
 
 ### Quarantine (multi-workspace)
 
-Unmapped relay events land in `unmapped_campaign_queue`. Resolve locally, then `sync` so other machines and `pull --full` stay consistent.
+Unmapped webhook events land in `unmapped_campaign_queue`. Resolve locally, then `sync` so other machines and `pull --full` stay consistent.
 
-**No campaign id/name:** New relay events are quarantined automatically. Legacy rows in `events` with `campaign_id IS NULL` are backfilled on `init` into quarantine and **auto-skipped** (no workspace mapping possible). Use `history` to inspect event details if needed. Manual: `quarantine backfill-no-campaign`.
+**No campaign id/name:** New webhook events are quarantined automatically. Legacy rows in `events` with `campaign_id IS NULL` are backfilled on `init` into quarantine and **auto-skipped** (no workspace mapping possible). Use `history` to inspect event details if needed. Manual: `quarantine backfill-no-campaign`.
 
 ```bash
 python3 scripts/pipeline.py quarantine list [--json] [--status all]

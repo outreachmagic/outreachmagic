@@ -33,7 +33,7 @@ Install the full suite (or outreachmagic + this skill) via the main repo agent g
 
 https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md
 
-Suite one-liner: [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — `install.sh --platform <name> --with-lead-enrich` (add `--with-email-finder` for email find).
+Suite install: [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — `install.sh --platform <name>` (installs all three skills).
 
 ## API keys
 

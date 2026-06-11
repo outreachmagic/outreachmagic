@@ -88,13 +88,13 @@ def _validate_skill(name: str) -> list[str]:
     install_sh = (Path(__file__).resolve().parents[1] / "install.sh").read_text(encoding="utf-8")
     companions_sh = Path(__file__).resolve().parents[1] / "platforms/common/install-companions.sh"
     companions_text = companions_sh.read_text(encoding="utf-8")
-    tag_key = "EF_TAG" if name == "email-finder" else "LE_TAG"
-    tag = install_default_tag(name)
     reads_tag = (
-        f"_read_suite_install_tag {name}" in install_sh
+        "_resolve_companion_tag" in install_sh
+        and "install_default_tag" in install_sh
+        and f"_resolve_companion_tag {name}" in install_sh
         and "install-tag" in companions_text
     )
-    if not reads_tag and f'{tag_key}="{tag}"' not in install_sh:
+    if not reads_tag:
         errors.append(f"{name}: install.sh does not read install tag from skill-suite.json")
 
     return errors

@@ -26,10 +26,17 @@ MSG_ACCOUNT_PENDING_SHORT = (
 MSG_NO_AGENT_KEY = f"No agent key configured. {MSG_LOGIN}."
 
 
+def metered_usage_label(plan: str = "") -> str:
+    """Customer-facing usage meter label (see outreachmagic-brand/product/pricing.md)."""
+    if str(plan or "").strip().lower() in ("", "free"):
+        return "Webhook events"
+    return "Webhook and sync events"
+
+
 def no_campaign_event_message(*, platform: str = "relay") -> str:
-    """Instructions when a relay event has no campaign metadata."""
+    """Instructions when a webhook event has no campaign metadata."""
     return "\n".join([
-        f"A relay event from {platform} has no campaign id or name, so it cannot be "
+        f"A webhook event from {platform} has no campaign id or name, so it cannot be "
         "attributed to a workspace.",
         "It was added to the quarantine skip list — no action needed unless you want to investigate.",
         "",

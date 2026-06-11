@@ -1,35 +1,35 @@
 # Outreach Magic
 
-Cross-platform AI agent skill for outbound pipeline tracking. Works with **Hermes**, **Cursor**, and **Claude Code** from one repo.
+Cross-platform AI agent skill suite: **outreachmagic**, **lead-enrich**, and **email-finder**.
+Works with **Hermes**, **Cursor**, and **Claude Code** from this repo.
 
 ## Install
 
 **For AI agents (Claude Code, Cursor, Hermes):**
 
 ```
-Fetch https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md
+Fetch https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md
 and follow its instructions exactly to install the Outreach Magic skill suite on this machine.
 
 Ask me which platform (Claude Code / Cursor / Hermes) and OS (Mac / Windows / Linux)
 before starting. Stop and show me any errors.
 ```
 
-**Manual install (full suite):** download → verify → run (see [AGENTS-INSTALL.md](./AGENTS-INSTALL.md)):
+**Manual install:**
 
 ```bash
-OM_VERSION=v1.34.1
+OM_VERSION=v1.35.0
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o /tmp/om_install.sh
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o /tmp/om_SHA256SUMS
 (cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
-bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}" \
-  --with-lead-enrich --with-email-finder --migrate-hermes-profiles
+bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}"
 ```
 
-Use `--platform cursor` or `--platform claude` for other agents. Outreach Magic only: omit `--with-lead-enrich` and `--with-email-finder`.
+Use `--platform cursor` or `--platform claude` for other agents.
 
-Full agent install guide: [AGENTS-INSTALL.md](./AGENTS-INSTALL.md) · Portal: [app.outreachmagic.io/onboarding](https://app.outreachmagic.io/onboarding)
+Portal: [app.outreachmagic.io/onboarding](https://app.outreachmagic.io/onboarding)
 
-Connect after install (run in terminal, not chat):
+Connect after install:
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
@@ -40,22 +40,13 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 
 Configure providers and sequencer connections in the [Outreach Magic portal](https://app.outreachmagic.io) after `pipeline.py login`. Keys sync locally via `pipeline.py sync-secrets` — do not set shell env vars for interactive installs.
 
-| Provider | Skill | Required? |
-|----------|-------|-----------|
-| Outreach Magic account (`pipeline.py login`) | outreachmagic | Yes |
-| Serper | lead-enrich | If using lead-enrich |
-| TryKitt / Icypeas | email-finder | One required for find |
-| MillionVerifier | email-finder | Optional |
-
-CI/automation: set `OUTREACHMAGIC_AGENT_KEY` in secrets (never commit).
-
 ## Layout
 
 ```
 skills/outreachmagic/     # SKILL.md, scripts/, references/, update-manifest.json
-install.sh                # --platform hermes|cursor|claude
-AGENTS-INSTALL.md         # Agent-readable full install guide
-platforms/overlays/       # Cursor .mdc, Claude snippet (optional)
+install.sh                # --platform hermes|cursor|claude (full suite)
+AGENTS-INSTALL.md         # Agent-readable install guide
+platforms/overlays/       # Cursor .mdc, Claude snippet
 ```
 
 ## Update
@@ -64,16 +55,11 @@ platforms/overlays/       # Cursor .mdc, Claude snippet (optional)
 python3 <skill>/scripts/pipeline.py update
 ```
 
-Downloads from tagged releases on this repo (`skills/outreachmagic/` layout).
+Downloads from tagged releases on this repo.
 
 ## Hermes profiles
 
-Real files live under `~/.hermes/skills/outreachmagic/`. Profile dirs symlink only — never full copies. See `skills/outreachmagic/SKILL.md` → **Hermes profiles**.
-
-## Companion skills
-
-- [lead-enrich](https://github.com/outreachmagic/lead-enrich)
-- [email-finder](https://github.com/outreachmagic/email-finder)
+Real files live under `~/.hermes/skills/`. Profile dirs symlink only. See `docs/hermes-skills-layout.md`.
 
 ## Security
 

@@ -76,7 +76,7 @@ class TestBuildImportProfile(unittest.TestCase):
             company="Acme",
             domain="acme.com",
             linkedin="",
-            find_result={},
+            find_result={"status": "not_found", "provider": "trykitt"},
             normalize_linkedin_fn=norm.normalize_linkedin,
         )
         self.assertEqual(profile["tags"], ["trykitt_attempted"])

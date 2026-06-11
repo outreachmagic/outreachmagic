@@ -64,7 +64,7 @@ git --version
 Pin a **release tag** (recommended). Check latest: `pipeline.py update --check` or GitHub releases.
 
 ```bash
-OM_VERSION=v1.35.1
+OM_VERSION=v1.36.0
 INSTALL_DIR=$(mktemp -d)
 
 # Step 1 — download (does not execute)
@@ -149,16 +149,18 @@ python3 <SKILLS>/email-finder/scripts/email_finder.py config
 | "export leads to Google Sheets" | `pipeline.py sheets export --workspace W` (see share email below) |
 | "export leads to Google Sheets for [client]" | `pipeline.py sheets export --workspace W --title "…"` |
 | "export and share with [email]" | `pipeline.py sheets export --share-email addr` |
-| "share failed / test email" | `pipeline.py sheets export --public` (link can edit) |
+| "share failed / test email" | `pipeline.py sheets export --anyone-with-link` (unlisted URL can edit) |
+| "refresh an existing sheet" | `pipeline.py sheets export --workspace W --sheet-id SHEET_ID` |
 | "export only leads with email" | `pipeline.py sheets export --require-domain` |
 | "export leads that haven't been contacted" | `pipeline.py sheets export --never-contacted` |
 | "import a CSV of leads" | `import-profiles` then `sync` (auto-sync runs by default) |
 
-**Sheets export — share email, then `--public` fallback:**
+**Sheets export — share email, then `--anyone-with-link` fallback:**
 
 1. Resolve share email from OM identity; confirm with the user if it looks like a test address (`+` alias or internal domain).
-2. Try `--share-email`. If Google rejects delivery (`share_email_undeliverable`), retry with `--public` and warn that anyone with the URL can edit.
-3. Never silently fall back to local CSV.
+2. Try `--share-email`. If Google rejects delivery (`share_email_undeliverable`), retry with `--anyone-with-link` and warn that anyone with the URL can edit.
+3. Re-export to the same URL with `--sheet-id` (from prior export JSON) instead of creating a new sheet.
+4. Never silently fall back to local CSV.
 
 ```bash
 SHARE_EMAIL=$(python3 <SKILLS>/outreachmagic/scripts/pipeline.py whoami --json \
@@ -172,7 +174,7 @@ python3 <SKILLS>/outreachmagic/scripts/pipeline.py sheets export \
 
 # If share fails — anyone with link can edit (no email delivery):
 python3 <SKILLS>/outreachmagic/scripts/pipeline.py sheets export \
-  --workspace <WORKSPACE> --title "Lead Export" --public --detail full
+  --workspace <WORKSPACE> --title "Lead Export" --anyone-with-link --detail full
 ```
 
 Use `pipeline.py sheets export` — **not** `review export` (dedup workflow), `gspread`, browser automation, or manual CSV for Google Sheets.

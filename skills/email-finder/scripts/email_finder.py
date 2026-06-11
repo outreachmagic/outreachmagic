@@ -298,7 +298,7 @@ def tag_provider_attempt(
         company=company,
         domain=domain,
         linkedin=linkedin,
-        find_result={"provider": provider},
+        find_result={"provider": provider, "status": "not_found"},
         normalize_linkedin_fn=normalize_linkedin,
     )
     imported = batch_import_results(

@@ -8,7 +8,7 @@ See [AGENTS-INSTALL.md](../AGENTS-INSTALL.md) for the full agent guide.
 ## Install
 
 ```bash
-OM_VERSION=v1.35.1
+OM_VERSION=v1.36.0
 INSTALL_DIR=$(mktemp -d)
 
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \

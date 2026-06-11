@@ -127,14 +127,20 @@ def build_import_profile(
     attempted_tags: list[str] = []
     if attempts:
         for attempt in attempts:
+            if not should_tag_provider_attempt(attempt if isinstance(attempt, dict) else {}):
+                continue
             p = str((attempt or {}).get("provider") or "")
-            if p == "trykitt" and "trykitt_attempted" not in attempted_tags:
-                attempted_tags.append("trykitt_attempted")
-            if p == "icypeas" and "icypeas_attempted" not in attempted_tags:
-                attempted_tags.append("icypeas_attempted")
+            tag = f"{p}_attempted"
+            if tag not in attempted_tags and p in ("trykitt", "icypeas"):
+                attempted_tags.append(tag)
     else:
-        p = str(find_result.get("provider") or "trykitt")
-        attempted_tags.append("icypeas_attempted" if p == "icypeas" else "trykitt_attempted")
+        p = str(find_result.get("provider") or ("trykitt" if email else ""))
+        if email and p in ("trykitt", "icypeas"):
+            attempted_tags.append(f"{p}_attempted")
+        elif p in ("trykitt", "icypeas") and should_tag_provider_attempt(
+            {"provider": p, "status": find_result.get("status")}
+        ):
+            attempted_tags.append(f"{p}_attempted")
     profile: dict[str, Any] = {
         "name": full_name,
         "company": company or domain,
@@ -164,6 +170,69 @@ def should_tag_provider_attempt(result: dict[str, Any]) -> bool:
     if result.get("attempted") is False:
         return False
     return result.get("status") in ("found", "not_found")
+
+
+def _providers_with_keys(cfg: dict[str, Any], names: list[str]) -> list[str]:
+    out: list[str] = []
+    for pname in names:
+        key = cfg.get(f"{pname}_api_key") or cfg.get(
+            "trykitt_api_key" if pname == "trykitt" else "icypeas_api_key"
+        )
+        if str(key or "").strip():
+            out.append(pname)
+    return out
+
+
+def prompt_batch_provider_plan(
+    cfg: dict[str, Any],
+    *,
+    cli_provider: Optional[str],
+    yes: bool,
+    dry_run: bool,
+) -> list[str]:
+    if cli_provider:
+        return resolve_provider_names(cfg, cli_provider)
+    enabled = resolve_provider_names(cfg, None)
+    keyed = _providers_with_keys(cfg, enabled)
+    if len(keyed) <= 1:
+        return keyed or enabled
+    if yes or dry_run or not sys.stdin.isatty():
+        return enabled
+    print("\nHow do you want to find emails?\n", file=sys.stderr)
+    print("  1. (Recommended) TryKitt first, Icypeas as fallback if not found", file=sys.stderr)
+    print("  2. TryKitt only", file=sys.stderr)
+    print("  3. Icypeas only", file=sys.stderr)
+    choice = input("\nEnter choice [1]: ").strip() or "1"
+    if choice == "2":
+        return ["trykitt"]
+    if choice == "3":
+        return ["icypeas"]
+    if "trykitt" in keyed and "icypeas" in keyed:
+        return ["trykitt", "icypeas"]
+    return keyed
+
+
+def prompt_batch_confirm(
+    *,
+    to_process: int,
+    skipped_total: int,
+    provider_label: str,
+    yes: bool,
+    dry_run: bool,
+) -> bool:
+    if dry_run or yes or not to_process:
+        return True
+    if not sys.stdin.isatty():
+        return False
+    print("\nReady to run:", file=sys.stderr)
+    print(f"  Providers:     {provider_label}", file=sys.stderr)
+    print(
+        f"  Leads to try:  {to_process} ({skipped_total} skipped — already have email or previously attempted)",
+        file=sys.stderr,
+    )
+    print(f"  Max credits:   ~{to_process} (1 per email found; misses cost 0)\n", file=sys.stderr)
+    answer = input("Proceed? [y/N]: ").strip().lower()
+    return answer in ("y", "yes")
 
 
 def should_import_result(result: dict[str, Any]) -> bool:
@@ -644,9 +713,16 @@ def run_batch(
     if len(people) > opts.max_leads:
         return {"error": f"max {opts.max_leads} people per run (use --max to raise)"}
 
-    provider_names = resolve_provider_names(cfg, opts.provider)
+    provider_names = prompt_batch_provider_plan(
+        cfg, cli_provider=opts.provider, yes=opts.yes, dry_run=opts.dry_run,
+    )
     if not provider_names:
         return {"error": "no provider configured (check API keys and --provider)"}
+    keyed = _providers_with_keys(cfg, provider_names)
+    if keyed:
+        provider_names = [p for p in provider_names if p in keyed]
+    if not provider_names:
+        return {"error": "no provider API keys configured (run pipeline.py sync-secrets --check)"}
 
     provider_label = "+".join(provider_names)
     output_base = _resolve_output_base(
@@ -788,8 +864,18 @@ def run_batch(
         if not opts.yes:
             return {"error": "health check failed", "issues": issues}
 
-    if to_process and not opts.yes:
-        print(f"\nAbout to run {len(to_process)} API lookups ({provider_label}). Pass --yes to confirm.\n")
+    skipped_total = skipped_email + skipped_tagged + skipped_resume
+    if to_process and not prompt_batch_confirm(
+        to_process=len(to_process),
+        skipped_total=skipped_total,
+        provider_label=provider_label,
+        yes=opts.yes,
+        dry_run=False,
+    ):
+        print(
+            f"\nAbout to run {len(to_process)} API lookups ({provider_label}). Pass --yes to confirm.\n",
+            file=sys.stderr,
+        )
         return {"error": "confirmation required", "use": "--yes"}
 
     stats: dict[str, Any] = {

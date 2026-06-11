@@ -34,6 +34,8 @@ When finished editing, ask Outreach Magic to sync this sheet."""
 
 FIELD_DISPLAY_NAMES: dict[str, str] = {
     "lev_source": "Email Verification Source",
+    "latest_lev_source": "Latest Email Verification Source",
+    "original_lev_source": "Original Email Verification Source",
     "lev_verified_at": "Email Verification Verified At",
     "latest_source": "Latest Source",
     "latest_source_detail": "Latest Source Detail",
@@ -101,6 +103,8 @@ FIELD_DEFS: dict[str, dict[str, Any]] = {
     "contact_priority": {"type": "integer", "editable": True, "scope": "workspace", "presets": ("standard", "full")},
     "email_verification_status": {"type": "string", "editable": False, "presets": ("standard", "full")},
     "lev_source": {"type": "string", "editable": False, "presets": ("full",)},
+    "latest_lev_source": {"type": "string", "editable": False, "presets": ("full",)},
+    "original_lev_source": {"type": "string", "editable": False, "presets": ("full",)},
     "lev_verified_at": {"type": "timestamp", "editable": False, "presets": ("full",)},
     "original_source": {"type": "string", "editable": False, "presets": ("standard", "full")},
     "original_source_detail": {"type": "string", "editable": False, "presets": ("standard", "full")},
@@ -142,7 +146,7 @@ PRESET_KEYS: dict[str, list[str]] = {
         "linkedin_url", "location_city", "location_state", "location_country", "industry", "headcount",
         "workspace_stage", "lead_status", "lead_sentiment", "contact_priority",
         "personalized_first_name", "personalized_company_name",
-        "email_verification_status", "lev_source", "lev_verified_at",
+        "email_verification_status", "lev_source", "latest_lev_source", "original_lev_source", "lev_verified_at",
         "original_source", "original_source_detail", "latest_source", "latest_source_detail",
         "created_at", "updated_at",
         "last_contacted_at", "email_sent_count", "linkedin_sent_count", "total_replies_count", "latest_sender",
@@ -537,18 +541,25 @@ def _load_lead_supplements(
     lev_rows = conn.execute(
         f"""SELECT lead_id, source, verified_at
             FROM lead_email_verification
-            WHERE lead_id IN ({placeholders})
-            ORDER BY lead_id, verified_at DESC""",
+            WHERE lead_id IN ({placeholders}) AND source != 'platform_bounce'
+            ORDER BY lead_id, verified_at ASC""",
         lead_ids,
     ).fetchall()
-    seen_lev: set[int] = set()
+    lev_by_lead: dict[int, list] = {}
     for row in lev_rows:
-        lid = int(row["lead_id"])
-        if lid in seen_lev:
+        source = (row["source"] or "").strip()
+        if source in ("agent_sync", "relay_sync"):
             continue
-        seen_lev.add(lid)
-        out[lid]["lev_source"] = row["source"] or ""
-        out[lid]["lev_verified_at"] = row["verified_at"] or ""
+        lev_by_lead.setdefault(int(row["lead_id"]), []).append(row)
+    for lid, rows in lev_by_lead.items():
+        if not rows:
+            continue
+        latest = rows[-1]
+        original = rows[0]
+        out[lid]["lev_source"] = latest["source"] or ""
+        out[lid]["latest_lev_source"] = latest["source"] or ""
+        out[lid]["original_lev_source"] = original["source"] or ""
+        out[lid]["lev_verified_at"] = latest["verified_at"] or ""
 
     bounce_rows = conn.execute(
         f"""SELECT lead_id, platform, bounce_message, last_seen_at
@@ -694,7 +705,9 @@ def build_lead_row(
         "original_source_detail": lead.get("original_source_detail") or "",
         "latest_source": lead.get("latest_source") or "",
         "latest_source_detail": lead.get("latest_source_detail") or "",
-        "lev_source": lead.get("lev_source") or "",
+        "lev_source": lead.get("lev_source") or lead.get("latest_lev_source") or "",
+        "latest_lev_source": lead.get("latest_lev_source") or lead.get("lev_source") or "",
+        "original_lev_source": lead.get("original_lev_source") or "",
         "lev_verified_at": lead.get("lev_verified_at") or "",
         "be_platform": lead.get("be_platform") or "",
         "be_bounce_message": lead.get("be_bounce_message") or "",

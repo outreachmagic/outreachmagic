@@ -2272,6 +2272,7 @@ def resolve_lead(
     import_batch: Optional[str] = None,
     import_extra: Optional[dict[str, str]] = None,
     force_lead_id: Optional[int] = None,
+    mark_cloud_pending: Optional[bool] = None,
 ) -> dict:
     """Match or create lead by tiered identities (email, external_id, name+company, etc.)."""
     email_norm = normalize_email(email)
@@ -2395,7 +2396,10 @@ def resolve_lead(
     domain_from_email = email_domain(email_norm)
     effective_domain = domain_explicit or domain_from_email
     now_ts = datetime.now(timezone.utc).isoformat()
-    mark_pending = _lead_should_cloud_pending(source, source_platform)
+    if mark_cloud_pending is None:
+        mark_pending = _lead_should_cloud_pending(source, source_platform)
+    else:
+        mark_pending = bool(mark_cloud_pending)
     pending_val = 1 if mark_pending else 0
     linkedin_url_conflicts: list[dict] = []
     insert_li_public = li_public
@@ -9194,7 +9198,7 @@ def require_share_email_for_export(explicit: Optional[str] = None) -> str:
         json.dumps(
             {
                 "error": (
-                    "share_email required — pass --share-email, --public, or configure org owner in portal. "
+                    "share_email required — pass --share-email, --anyone-with-link, or configure org owner in portal. "
                     "Tip: pipeline.py whoami --json → share_email"
                 )
             }
@@ -9205,7 +9209,9 @@ def require_share_email_for_export(explicit: Optional[str] = None) -> str:
 
 def resolve_sheets_export_access(args) -> tuple[Optional[str], bool]:
     """Return (share_email, public_link) for sheets/review lead export."""
-    public = bool(getattr(args, "public", False))
+    public = bool(
+        getattr(args, "anyone_with_link", False) or getattr(args, "public", False)
+    )
     if public:
         return None, True
     explicit = getattr(args, "share_email", None)
@@ -9218,10 +9224,10 @@ def resolve_sheets_export_access(args) -> tuple[Optional[str], bool]:
         json.dumps(
             {
                 "error": (
-                    "share_email required — pass --share-email, --public, or configure org owner. "
+                    "share_email required — pass --share-email, --anyone-with-link, or configure org owner. "
                     "Tip: pipeline.py whoami --json → share_email"
                 ),
-                "hint": "Use --public for anyone-with-link edit access (no email delivery).",
+                "hint": "Use --anyone-with-link for unlisted URL edit access (no email delivery).",
             }
         )
     )
@@ -10179,6 +10185,8 @@ def _remap_to_lead_review_export(args) -> None:
         ("require_domain", False),
         ("share_email", None),
         ("public", False),
+        ("anyone_with_link", False),
+        ("sheet_id", None),
         ("fields", None),
         ("tag", None),
         ("stage", None),
@@ -10794,9 +10802,18 @@ def main():
     review_export_p.add_argument("--title", default="Outreach Dedup Review")
     review_export_p.add_argument("--share-email", help="Email to share sheet with (default: org owner)")
     review_export_p.add_argument(
+        "--anyone-with-link",
+        action="store_true",
+        help="Unlisted URL — anyone with the link can edit (no email share)",
+    )
+    review_export_p.add_argument(
         "--public",
         action="store_true",
-        help="Anyone with the link can edit (no email share; use when share_email fails)",
+        help=argparse.SUPPRESS,
+    )
+    review_export_p.add_argument(
+        "--sheet-id",
+        help="Refresh an existing Google Sheet instead of creating a new one",
     )
     review_export_p.add_argument("--workspace", help="Workspace slug (lead-review)")
     review_export_p.add_argument(
@@ -10895,9 +10912,18 @@ def main():
     sheets_export_p.add_argument("--title", help="Sheet title (default: <workspace> leads)")
     sheets_export_p.add_argument("--share-email", help="Email to share sheet with (default: org owner)")
     sheets_export_p.add_argument(
+        "--anyone-with-link",
+        action="store_true",
+        help="Unlisted URL — anyone with the link can edit (no email share)",
+    )
+    sheets_export_p.add_argument(
         "--public",
         action="store_true",
-        help="Anyone with the link can edit (no email share; use when share_email fails)",
+        help=argparse.SUPPRESS,
+    )
+    sheets_export_p.add_argument(
+        "--sheet-id",
+        help="Refresh an existing Google Sheet instead of creating a new one",
     )
     sheets_export_p.add_argument(
         "--detail",
@@ -12143,6 +12169,7 @@ def main():
                         print(json.dumps({"error": "no leads matched export filters"}))
                         sys.exit(1)
                     share_email, public_link = resolve_sheets_export_access(args)
+                    sheet_id = getattr(args, "sheet_id", None)
                     result = review_cloud.export_review(
                         api_base,
                         tok,
@@ -12150,6 +12177,7 @@ def main():
                         title=args.title,
                         share_email=share_email,
                         public_link=public_link,
+                        sheet_id=str(sheet_id).strip() if sheet_id else None,
                         detail=payload.get("detail"),
                         headers=payload.get("headers"),
                         rows=payload.get("rows"),

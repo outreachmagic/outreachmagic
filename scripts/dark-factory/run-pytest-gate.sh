@@ -25,6 +25,8 @@ python3 -m pytest \
   "${ROOT}/tests/test_security_install_docs.py" \
   "${ROOT}/tests/test_auth_error_summary.py" \
   "${ROOT}/tests/test_email_finder.py" \
+  "${ROOT}/tests/test_apply_email_find_results.py" \
+  "${ROOT}/tests/test_bug_report_20260611.py" \
   "${ROOT}/tests/test_lead_enrich.py" \
   -q --tb=short
 

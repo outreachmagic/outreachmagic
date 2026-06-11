@@ -138,6 +138,11 @@ def _assemble_lead_core_sync_payload(
         payload["email_verified_at"] = row["email_verified_at"]
     if "email_verification_status" in row.keys() and row["email_verification_status"]:
         payload["email_verification_status"] = row["email_verification_status"]
+    if "original_lev_source" in row.keys() and row["original_lev_source"]:
+        payload["original_lev_source"] = row["original_lev_source"]
+    if "latest_lev_source" in row.keys() and row["latest_lev_source"]:
+        payload["lev_source"] = row["latest_lev_source"]
+        payload["latest_lev_source"] = row["latest_lev_source"]
     if row["company_domain"]:
         payload["company_domain"] = row["company_domain"]
     for hq in ("hq_city", "hq_state", "hq_country"):
@@ -401,8 +406,14 @@ def build_lead_core_sync_payload(
             "SELECT field_name, field_value, field_date, processed_at FROM lead_personalization WHERE lead_id = ?",
             (lead_id,),
         ).fetchall()
+    row_dict = dict(row)
+    original_lev, latest_lev = _lev_sources_for_lead(conn, lead_id)
+    if original_lev:
+        row_dict["original_lev_source"] = original_lev
+    if latest_lev:
+        row_dict["latest_lev_source"] = latest_lev
     return _assemble_lead_core_sync_payload(
-        row,
+        row_dict,
         identity_rows=identity_rows,
         external_id=external_id,
         personalization_rows=personalization_rows,
@@ -507,6 +518,27 @@ def _attribution_from_sync_payload(payload: dict) -> tuple[str, Optional[str], s
 
 
 _WEAK_ATTRIBUTION_SOURCES = frozenset({"agent_sync", "relay_sync", ""})
+_WEAK_VERIFICATION_SOURCES = frozenset({"agent_sync", "relay_sync", "platform_bounce", ""})
+
+
+def _is_weak_verification_source(source: Optional[str]) -> bool:
+    return (source or "").strip() in _WEAK_VERIFICATION_SOURCES
+
+
+def _lev_sources_for_lead(conn: sqlite3.Connection, lead_id: int) -> tuple[Optional[str], Optional[str]]:
+    """Return (original_lev_source, latest_lev_source) from tool verification rows."""
+    rows = conn.execute(
+        """SELECT source, verified_at FROM lead_email_verification
+           WHERE lead_id = ? AND source != 'platform_bounce'
+           ORDER BY verified_at ASC""",
+        (lead_id,),
+    ).fetchall()
+    tool_rows = [r for r in rows if not _is_weak_verification_source(r["source"])]
+    if not tool_rows:
+        return None, None
+    original = (tool_rows[0]["source"] or "").strip() or None
+    latest = (tool_rows[-1]["source"] or "").strip() or None
+    return original, latest
 
 
 def apply_attribution_from_sync_payload(
@@ -608,6 +640,7 @@ def resolve_lead_from_agent_sync(
         source_detail=source_detail,
         source_platform=source_platform,
         overwrite=True,
+        mark_cloud_pending=False,
         conn=conn,
     )
 
@@ -704,11 +737,14 @@ def apply_agent_lead_core_payload(
         conn.commit()
         conn.close()
 
-    if payload.get("email_verification_status"):
+    lev_source = (
+        (payload.get("latest_lev_source") or payload.get("lev_source") or "").strip()
+    )
+    if payload.get("email_verification_status") and lev_source and not _is_weak_verification_source(lev_source):
         verify_email(
             lead_id,
             str(payload["email_verification_status"]),
-            "agent_sync",
+            lev_source,
             conn=None if own_conn else conn,
         )
 

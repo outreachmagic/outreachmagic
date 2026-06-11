@@ -63,7 +63,7 @@ def test_sheets_export_help_documents_public_flag():
         text=True,
         check=True,
     )
-    assert "--public" in proc.stdout
+    assert "--anyone-with-link" in proc.stdout
 
 
 def test_update_help_documents_channel_and_rollback():
@@ -125,7 +125,7 @@ def test_agents_install_sha256_and_release_pin():
     assert "SHA256SUMS" in text
     assert "INSTALL_DIR=$(mktemp -d)" in text
     assert "detect_platform.py" in text
-    assert "--public" in text
+    assert "--anyone-with-link" in text
     assert "releases/download" in text
 
 

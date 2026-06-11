@@ -65,11 +65,11 @@ Pin a **release tag** (recommended). Check latest: `pipeline.py update --check` 
 
 ```bash
 # Step 1 — download (does not execute)
-curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.33.0/install.sh \
+curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.34.0/install.sh \
   -o /tmp/om_install.sh
 
 # Step 2 — verify integrity (recommended)
-curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.33.0/SHA256SUMS \
+curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.34.0/SHA256SUMS \
   -o /tmp/om_SHA256SUMS
 (cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
 
@@ -77,14 +77,14 @@ curl -fsSL https://github.com/outreachmagic/outreachmagic/releases/download/v1.3
 less /tmp/om_install.sh
 
 # Step 4 — run from local copy (full suite)
-bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.33.0 \
+bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.34.0 \
   --with-lead-enrich --with-email-finder --migrate-hermes-profiles
 ```
 
 **Outreach Magic only** (no Serper or email find):
 
 ```bash
-bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.33.0 --migrate-hermes-profiles
+bash /tmp/om_install.sh --platform <PLATFORM> --tag v1.34.0 --migrate-hermes-profiles
 ```
 
 **Read-only platform detection** (no install side effects):

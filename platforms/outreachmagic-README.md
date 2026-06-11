@@ -14,11 +14,15 @@ Ask me which platform (Claude Code / Cursor / Hermes) and OS (Mac / Windows / Li
 before starting. Stop and show me any errors.
 ```
 
-**Manual / one-liner (full suite):**
+**Manual install (full suite):** download → verify → run (see [AGENTS-INSTALL.md](./AGENTS-INSTALL.md)):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
-  --platform hermes --with-lead-enrich --with-email-finder --migrate
+OM_VERSION=v1.34.0
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o /tmp/om_install.sh
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o /tmp/om_SHA256SUMS
+(cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
+bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}" \
+  --with-lead-enrich --with-email-finder --migrate-hermes-profiles
 ```
 
 Use `--platform cursor` or `--platform claude` for other agents. Outreach Magic only: omit `--with-lead-enrich` and `--with-email-finder`.
@@ -34,14 +38,16 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 
 ## API keys
 
-| Key | Skill | Required? |
-|-----|-------|-----------|
-| Outreach Magic (via `pipeline.py login`) | outreachmagic | Yes |
-| `SERPER_API_KEY` | lead-enrich | If using lead-enrich |
-| `TRYKITT_API_KEY` / `ICYPEAS_API_KEY` | email-finder | One required for find |
-| `MILLIONVERIFIER_API_KEY` | email-finder | Optional |
+Configure providers and sequencer connections in the [Outreach Magic portal](https://app.outreachmagic.io) after `pipeline.py login`. Keys sync locally via `pipeline.py sync-secrets` — do not set shell env vars for interactive installs.
 
-Details and signup links: [AGENTS-INSTALL.md](./AGENTS-INSTALL.md#third-party-api-keys-companions). CI may use `OUTREACHMAGIC_AGENT_KEY` instead of login.
+| Provider | Skill | Required? |
+|----------|-------|-----------|
+| Outreach Magic account (`pipeline.py login`) | outreachmagic | Yes |
+| Serper | lead-enrich | If using lead-enrich |
+| TryKitt / Icypeas | email-finder | One required for find |
+| MillionVerifier | email-finder | Optional |
+
+CI/automation: set `OUTREACHMAGIC_AGENT_KEY` in secrets (never commit).
 
 ## Layout
 

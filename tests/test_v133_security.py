@@ -1,4 +1,4 @@
-"""v1.33.0 security audit items: rollback, public export, detect_platform, auth resync."""
+"""v1.34.0 security audit items: rollback, public export, detect_platform, auth resync."""
 
 from __future__ import annotations
 
@@ -112,9 +112,26 @@ def test_batch_auth_resync_retries_once(monkeypatch):
     assert calls["sync"] == 1
 
 
-def test_agents_install_sha256_and_v133():
+def test_agents_install_sha256_and_release_pin():
     text = (ROOT / "AGENTS-INSTALL.md").read_text(encoding="utf-8")
-    assert "v1.33.0" in text
+    assert "v1.34.0" in text
     assert "SHA256SUMS" in text
     assert "detect_platform.py" in text
     assert "--public" in text
+    assert "releases/download" in text
+
+
+def test_release_workflow_publishes_install_assets():
+    text = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "dist/install.sh" in text
+    assert "dist/SHA256SUMS" in text
+
+
+def test_human_install_docs_no_curl_pipe_bash():
+    import re
+
+    pipe_install = re.compile(r"curl\s+-fsSL[^\n]*\|\s*bash")
+    for rel in ("docs/install.md", "docs/install-companions.md", "SECURITY.md"):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        assert not pipe_install.search(text), rel
+        assert "releases/download" in text, rel

@@ -26,9 +26,9 @@ flowchart LR
 
 ## Install order
 
-1. **outreachmagic** — `pipeline.py init` then `pipeline.py login` in terminal  
-2. **lead-enrich** — add `SERPER_API_KEY` to `~/.hermes/.env`  
-3. **email-finder** (optional) — `TRYKITT_API_KEY` and/or `ICYPEAS_API_KEY`; batch OM save needs **`lead_id` on every row + `--workspace`**.  
+1. **outreachmagic** — `pipeline.py init` then `pipeline.py login` (browser device auth)  
+2. **lead-enrich** — enable Serper in the portal; keys sync via `pipeline.py sync-secrets`  
+3. **email-finder** (optional) — enable TryKitt/Icypeas in the portal; batch OM save needs **`lead_id` on every row + `--workspace`**.  
 
 **Canonical install commands (Hermes, Cursor, Claude):** [install-companions.md](./install-companions.md)
 

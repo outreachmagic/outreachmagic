@@ -53,3 +53,5 @@ jobs:
             dist/outreachmagic-skill-*.tar.gz
             dist/outreachmagic-skill-*.tar.gz.sha256
             dist/update-manifest.json
+            dist/install.sh
+            dist/SHA256SUMS

@@ -16,20 +16,44 @@ python3 <skill-path>/scripts/pipeline.py login
 
 **Full suite install (all platforms):** see [install-companions.md](./install-companions.md).
 
+## Secure install (all platforms)
+
+Pin a **release tag** (check latest: `pipeline.py update --check` or [GitHub releases](https://github.com/outreachmagic/outreachmagic/releases)). Download first — do not pipe remote scripts directly into `bash`.
+
+```bash
+OM_VERSION=v1.34.0
+
+# Step 1 — download (does not execute)
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \
+  -o /tmp/om_install.sh
+
+# Step 2 — verify integrity (recommended)
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" \
+  -o /tmp/om_SHA256SUMS
+(cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
+
+# Step 3 — optional: inspect before running
+less /tmp/om_install.sh
+
+# Step 4 — run from local copy
+bash /tmp/om_install.sh --platform <PLATFORM> --tag "${OM_VERSION}"
+```
+
+Add `--with-lead-enrich --with-email-finder` for companions. On Hermes, add `--migrate-hermes-profiles` when fixing profile copies.
+
+Preview without writing: `bash /tmp/om_install.sh --dry-run ...`
+
 ## Hermes
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
-  --platform hermes \
-  --migrate
+bash /tmp/om_install.sh --platform hermes --tag v1.34.0 --migrate-hermes-profiles
 ```
 
-With optional companions (lead-enrich + email-finder):
+With companions:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
-  --platform hermes \
-  --with-lead-enrich --with-email-finder --migrate
+bash /tmp/om_install.sh --platform hermes --tag v1.34.0 \
+  --with-lead-enrich --with-email-finder --migrate-hermes-profiles
 ```
 
 ```bash
@@ -40,8 +64,7 @@ hermes -s outreachmagic
 ## Cursor
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
-  --platform cursor
+bash /tmp/om_install.sh --platform cursor --tag v1.34.0
 ```
 
 With companions: add `--with-lead-enrich --with-email-finder`.
@@ -49,8 +72,7 @@ With companions: add `--with-lead-enrich --with-email-finder`.
 ## Claude Code
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
-  --platform claude
+bash /tmp/om_install.sh --platform claude --tag v1.34.0
 ```
 
 With companions: add `--with-lead-enrich --with-email-finder`.

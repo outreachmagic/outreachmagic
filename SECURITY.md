@@ -91,13 +91,20 @@ Development overrides (in `outreachmagic_config.json`, not environment variables
 - `dev_update_url` — custom raw URL base for dev/testing only
 - `api_base_url` — portal API host (default `https://app.outreachmagic.io`)
 
-Install through Hermes when possible — Hermes runs its own security scan on hub installs:
+Install from a pinned release (download → verify → run — never `curl | bash`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/install.sh | bash -s -- \
-  --platform hermes --migrate
-python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py init
+OM_VERSION=v1.34.0
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \
+  -o /tmp/om_install.sh
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" \
+  -o /tmp/om_SHA256SUMS
+(cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
+bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}" --migrate-hermes-profiles
+python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 ```
+
+API keys for companion skills are managed in the Outreach Magic portal and synced via `pipeline.py sync-secrets` — do not store keys in shell config or local `.env` files.
 
 ## Reporting a vulnerability
 

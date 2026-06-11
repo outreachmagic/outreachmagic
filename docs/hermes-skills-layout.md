@@ -23,12 +23,12 @@ Skills live in `~/.hermes/skills/<name>/` — Hermes’s built-in skills directo
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outreachmagic/outreachmagic/v1.20.24/install.sh | bash -s -- \
-  --platform hermes \
-  --with-lead-enrich --with-email-finder --migrate \
-  --tag v1.20.24 \
-  --lead-enrich-tag v2.0.2 \
-  --email-finder-tag v1.0.2
+OM_VERSION=v1.34.0
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o /tmp/om_install.sh
+curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o /tmp/om_SHA256SUMS
+(cd /tmp && grep ' install.sh$' om_SHA256SUMS | shasum -a 256 --check)
+bash /tmp/om_install.sh --platform hermes --tag "${OM_VERSION}" \
+  --with-lead-enrich --with-email-finder --migrate-hermes-profiles
 ```
 
 When `~/.hermes/profiles/` exists, `install.sh` symlinks every profile by default (`--no-profiles` to skip).
@@ -51,9 +51,9 @@ ln -sf ../../../skills/outreachmagic ~/.hermes/profiles/<name>/skills/outreachma
 
 | What | Where |
 |------|--------|
-| `SERPER_API_KEY`, `OUTREACHMAGIC_AGENT_KEY` | `~/.hermes/.env` |
+| Portal-synced API keys (Serper, TryKitt, Icypeas, etc.) | `~/.hermes/skills/outreachmagic/config/agent_secrets.env` (via `pipeline.py sync-secrets`) |
+| Agent key (after `pipeline.py login`) | `~/.hermes/skills/outreachmagic/config/outreachmagic_config.json` |
 | outreachmagic config & SQLite | `~/.hermes/skills/outreachmagic/` |
-| Per-profile env overrides | `~/.hermes/profiles/<name>/.env` |
 
 ## Verify
 

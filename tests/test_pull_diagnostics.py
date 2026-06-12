@@ -406,12 +406,23 @@ def test_agent_event_log_reuses_pull_conn(monkeypatch):
         default_workspace_id = "ws_test"
 
     logged = []
+    workspace_conns = []
 
     def spy_log_event(*_args, **kwargs):
         logged.append(kwargs)
         return 99
 
+    def spy_upsert_workspace_lead(conn, *_args, **_kwargs):
+        workspace_conns.append(conn)
+        return "wl_ws_test_1"
+
+    def spy_append_workspace_event(conn, *_args, **_kwargs):
+        workspace_conns.append(conn)
+        return "wse_test"
+
     monkeypatch.setattr(om, "log_event", spy_log_event)
+    monkeypatch.setattr(om, "upsert_workspace_lead", spy_upsert_workspace_lead)
+    monkeypatch.setattr(om, "append_workspace_event", spy_append_workspace_event)
     monkeypatch.setattr(om, "get_or_create_client_id", lambda: "local-client")
     monkeypatch.setattr(om, "find_lead_by_identifier", lambda *_a, **_k: 1)
     monkeypatch.setattr(om, "get_org_routing_config", lambda *_a, **_k: _Routing())
@@ -437,6 +448,8 @@ def test_agent_event_log_reuses_pull_conn(monkeypatch):
     assert logged[0]["conn"] is pull
     assert logged[0]["commit"] is False
     assert logged[0]["refresh_activity"] is False
+    assert logged[0]["event_at"] == "2026-01-01T00:00:00Z"
+    assert workspace_conns == [pull, pull]
 
 
 def test_snapshot_pull_passes_shared_pull_conn(monkeypatch):

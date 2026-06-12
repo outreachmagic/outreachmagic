@@ -19,6 +19,7 @@ python3 -m pytest \
   "${ROOT}/tests/test_sync_cloud_pending.py" \
   "${ROOT}/tests/test_routing_sync.py" \
   "${ROOT}/tests/test_full_pull_replay.py" \
+  "${ROOT}/tests/test_agent_sync_timestamp.py" \
   "${ROOT}/tests/test_relay_pull_bulk_dedupe.py" \
   "${ROOT}/tests/test_lead_source_relay_sync.py" \
   "${ROOT}/tests/test_companion_env_sources.py" \

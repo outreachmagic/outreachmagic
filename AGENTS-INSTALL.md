@@ -64,7 +64,7 @@ git --version
 Pin a **release tag** (recommended). Check latest: `pipeline.py update --check` or GitHub releases.
 
 ```bash
-OM_VERSION=v1.37.0
+OM_VERSION=v1.38.0
 INSTALL_DIR=$(mktemp -d)
 
 # Step 1 — download (does not execute)

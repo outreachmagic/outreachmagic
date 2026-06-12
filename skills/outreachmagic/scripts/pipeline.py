@@ -7067,6 +7067,8 @@ def export_local_changes(
             event_entry["payload"]["body_preview"] = row["body_preview"]
         if meta.get("body"):
             event_entry["payload"]["body"] = str(meta.get("body"))
+        if row["sender"]:
+            event_entry["payload"]["sender"] = row["sender"]
         entries.append(event_entry)
         if n % 5000 == 0:
             _relay_log(f"export: built {n:,}/{len(event_rows):,} event_log entries ...")
@@ -7448,26 +7450,68 @@ def ingest_agent_entry(
                     conn.close()
                     conn = None
                 if lead_id:
+                    event_at = normalize_relay_timestamp(timestamp) if timestamp else None
                     event_meta = {"source": "agent_sync", "origin_client": client_id}
                     if payload.get("body"):
                         event_meta["body"] = str(payload.get("body"))
+                    relay_rid = event.get("relay_id")
+                    if relay_rid is not None:
+                        event_meta["relay_id"] = relay_rid
                     campaign = payload.get("campaign") or payload.get("campaign_name")
                     if campaign and str(campaign).strip():
                         event_meta["campaign"] = str(campaign).strip()
+                    sender = payload.get("sender")
                     log_conn = conn if not own_conn else None
+                    local_type = payload.get("event_type", "email_sent")
                     log_event(
                         lead_id,
-                        event_type=payload.get("event_type", "email_sent"),
+                        event_type=local_type,
                         direction=payload.get("direction", "outbound"),
                         channel=payload.get("channel", "email"),
                         subject=payload.get("subject"),
                         body_preview=payload.get("body_preview"),
                         metadata=event_meta,
                         campaign=campaign,
+                        event_at=event_at,
+                        sender=sender,
                         conn=log_conn,
                         commit=log_conn is None,
                         refresh_activity=log_conn is None and not defer_activity_refresh,
                     )
+                    ws_conn = log_conn
+                    ws_own = ws_conn is None
+                    if ws_own:
+                        ws_conn = get_conn()
+                    try:
+                        ws_lead_id = upsert_workspace_lead(
+                            ws_conn, org_id, workspace_id, lead_id,
+                        )
+                        ws_payload = {
+                            "event": event_meta,
+                            "subject": payload.get("subject"),
+                            "body_preview": payload.get("body_preview"),
+                            "direction": payload.get("direction", "outbound"),
+                            "channel": payload.get("channel", "email"),
+                            "campaign_name": campaign,
+                        }
+                        append_workspace_event(
+                            ws_conn,
+                            org_id,
+                            workspace_id,
+                            lead_id,
+                            ws_lead_id,
+                            event_type=local_type,
+                            event_at=event_at or datetime.now(timezone.utc).isoformat(),
+                            source_platform="agent",
+                            idempotency_key=f"ws:{dedupe_key}",
+                            payload=ws_payload,
+                            external_event_id=str(relay_rid or ""),
+                        )
+                        if ws_own:
+                            ws_conn.commit()
+                    finally:
+                        if ws_own:
+                            ws_conn.close()
                     if (
                         defer_activity_refresh
                         and activity_refresh_pairs is not None

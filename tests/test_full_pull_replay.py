@@ -221,10 +221,20 @@ def test_full_pull_replays_event_log_after_core_snapshot(monkeypatch):
         """SELECT metadata_json FROM events
            WHERE json_extract(metadata_json, '$.source') = 'agent_sync'"""
     ).fetchone()
+    ts_row = conn.execute(
+        """SELECT created_at FROM events
+           WHERE json_extract(metadata_json, '$.source') = 'agent_sync'"""
+    ).fetchone()
+    wle = conn.execute(
+        "SELECT COUNT(*) AS n FROM workspace_lead_events WHERE lower(event_type) = 'email_sent'"
+    ).fetchone()
     conn.close()
     assert int(count) >= 1
     assert meta is not None
     assert json.loads(meta["metadata_json"]).get("campaign") == "popcam | headshot lounge"
+    assert ts_row is not None
+    assert str(ts_row["created_at"]).startswith("2026-06-01")
+    assert int(wle["n"]) >= 1
 
 
 def test_event_log_bootstraps_even_when_events_run_before_snapshots(monkeypatch):

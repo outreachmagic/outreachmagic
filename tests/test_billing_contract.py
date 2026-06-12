@@ -33,7 +33,7 @@ CONTRACT = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
 
 
 def _patch_status_fetch(monkeypatch, payload: dict):
-    monkeypatch.setattr(om, "_check_account_approval_pending", lambda: False)
+    monkeypatch.setattr(om, "_check_account_access_revoked", lambda: False)
     monkeypatch.setattr(om, "_require_agent_key", lambda: "om_agent_test")
     monkeypatch.setattr(om.routing_cloud, "get_api_base", lambda _load: "https://app.example")
     monkeypatch.setattr(om.connections_cloud, "fetch_status", lambda *_a, **_k: payload)

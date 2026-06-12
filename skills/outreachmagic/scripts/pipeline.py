@@ -242,7 +242,9 @@ from om_paths import (
     get_working_root,
     hermes_profile_copy_warning,
     resolve_project_path,
+    save_sheets_export_record,
     set_db_path_override,
+    working_paths_payload,
 )
 
 SKILL_NAME = "outreachmagic"
@@ -8991,8 +8993,6 @@ def login(
     device_code: Optional[str] = None,
     wait_seconds: int = 30,
     force: bool = False,
-    wait_approval: bool = False,
-    approval_timeout: int = 600,
 ):
     """Connect this machine via browser device authorization (GitHub CLI-style)."""
     if not force and not generate_url and not claim_token:
@@ -9066,10 +9066,10 @@ def login(
             )
             print("STATUS=success")
             return
-        if status == "account_pending_approval":
-            _set_account_approval_pending(True)
-            print("STATUS=account_pending_approval")
-            print(_account_pending_message())
+        if status == "account_revoked":
+            _set_account_access_revoked(True)
+            print("STATUS=account_revoked")
+            print(_account_error_message())
             return
         if status == "pending":
             print("STATUS=pending")
@@ -9087,68 +9087,42 @@ def login(
             client_id=get_or_create_client_id(),
         )
     except RuntimeError as exc:
-        if str(exc) == "account_pending_approval":
-            _set_account_approval_pending(True)
-            print(_account_pending_message())
-            if wait_approval:
-                _poll_until_approved(approval_timeout)
-            else:
-                sys.exit(0)
+        if str(exc) == "account_revoked":
+            _set_account_access_revoked(True)
+            print(_account_error_message())
+            sys.exit(0)
         print(f"\nLogin failed: {exc}")
         sys.exit(1)
-    _set_account_approval_pending(False)
+    _set_account_access_revoked(False)
     _save_agent_key_and_validate(agent_key, reconnect=reconnect)
 
 
-def _poll_until_approved(timeout_seconds: int) -> None:
-    """Poll status until account approval clears or timeout."""
-    print("Waiting for account approval… (Ctrl+C to stop)")
-    deadline = time.time() + max(30, int(timeout_seconds))
-    while time.time() < deadline:
-        if not _account_approval_pending():
-            print("Account approved — run login again to connect.")
-            return
-        time.sleep(30)
-        agent_key = get_agent_key()
-        if agent_key:
-            try:
-                api_base = routing_cloud.get_api_base(load_config)
-                data = connections_cloud.fetch_status(api_base, agent_key)
-                if not data.get("approvalPending"):
-                    _set_account_approval_pending(False)
-                    print("Account approved — connecting…")
-                    return
-            except Exception:
-                pass
-    print("Still pending approval — you'll receive an email when ready.")
+def _account_error_message() -> str:
+    from user_messages import MSG_ACCOUNT_ERROR
+
+    return MSG_ACCOUNT_ERROR
 
 
-def _account_pending_message() -> str:
-    from user_messages import MSG_ACCOUNT_PENDING
-
-    return MSG_ACCOUNT_PENDING
-
-
-def _set_account_approval_pending(pending: bool) -> None:
+def _set_account_access_revoked(revoked: bool) -> None:
     cfg = load_config()
-    if pending:
-        cfg["account_approval_status"] = "pending"
+    if revoked:
+        cfg["account_access_revoked"] = True
     else:
-        cfg.pop("account_approval_status", None)
+        cfg.pop("account_access_revoked", None)
     save_config(cfg)
 
 
-def _account_approval_pending() -> bool:
-    return load_config().get("account_approval_status") == "pending"
+def _account_access_revoked() -> bool:
+    return bool(load_config().get("account_access_revoked"))
 
 
-def _check_account_approval_pending() -> bool:
-    """Print guidance and return True if login is blocked pending approval."""
-    if not _account_approval_pending():
+def _check_account_access_revoked() -> bool:
+    """Print guidance and return True if this machine recorded an account access error."""
+    if not _account_access_revoked():
         return False
-    from user_messages import MSG_ACCOUNT_PENDING_SHORT
+    from user_messages import MSG_ACCOUNT_ERROR
 
-    print(MSG_ACCOUNT_PENDING_SHORT)
+    print(MSG_ACCOUNT_ERROR)
     return True
 
 
@@ -9252,11 +9226,10 @@ def _persist_account_identity_from_status(data: dict) -> None:
 
 def cmd_whoami(*, json_output: bool = False) -> None:
     """Print connected account identity for agents."""
-    pending = _account_approval_pending()
-    if pending:
+    if _account_access_revoked():
         payload = {
-            "status": "pending_approval",
-            "approval_pending": True,
+            "status": "access_revoked",
+            "access_revoked": True,
             "email": load_config().get("account_email"),
             "org_id": load_config().get("organization_id"),
             "plan": None,
@@ -9264,12 +9237,12 @@ def cmd_whoami(*, json_output: bool = False) -> None:
         if json_output:
             print(json.dumps(payload, indent=2))
         else:
-            print(_account_pending_message())
+            print(_account_error_message())
         return
 
     agent_key = get_agent_key()
     if not agent_key:
-        payload = {"status": "not_connected", "approval_pending": False}
+        payload = {"status": "not_connected", "access_revoked": False}
         if json_output:
             print(json.dumps(payload, indent=2))
         else:
@@ -9291,7 +9264,7 @@ def cmd_whoami(*, json_output: bool = False) -> None:
     cfg = load_config()
     payload = {
         "status": "connected",
-        "approval_pending": False,
+        "access_revoked": False,
         "email": data.get("accountEmail") or cfg.get("account_email"),
         "org_id": data.get("organizationId") or cfg.get("organization_id"),
         "plan": data.get("plan"),
@@ -9375,8 +9348,10 @@ def _save_agent_key_and_validate(agent_key: str, *, reconnect: bool = False):
             print(format_stats(get_stats()))
 
     print()
-    print(f"Working files: {get_working_root()}")
-    print("  input/  export/  (created on import/export)")
+    paths = working_paths_payload()
+    print(f"Working files: {paths['working_root']}")
+    print(f"  {paths['imports']}")
+    print(f"  {paths['exports']}")
     print()
     print("Connected. Run 'pull' to sync events, 'show' to view pipeline.")
 
@@ -9391,7 +9366,7 @@ def cmd_platform_map(platform: Optional[str] = None) -> None:
 
 
 def _require_agent_key() -> str:
-    if _check_account_approval_pending():
+    if _check_account_access_revoked():
         sys.exit(1)
     key = get_agent_key()
     if not key:
@@ -9439,11 +9414,11 @@ def _staleness_indicator(iso_ts: Optional[str]) -> str:
 
 def cmd_status(*, json_output: bool = False):
     """Dashboard-style status: plan, connections, usage, routing."""
-    if _check_account_approval_pending():
+    if _check_account_access_revoked():
         payload = {
-            "approval_pending": True,
-            "status": "pending_approval",
-            "message": _account_pending_message(),
+            "access_revoked": True,
+            "status": "access_revoked",
+            "message": _account_error_message(),
         }
         if json_output:
             print(json.dumps(payload, indent=2))
@@ -9451,8 +9426,8 @@ def cmd_status(*, json_output: bool = False):
         print()
         print("Outreach Magic Status")
         print("\u2500" * 50)
-        print(f"Account: Pending approval")
-        print(_account_pending_message())
+        print("Account: Access error")
+        print(_account_error_message())
         print()
         return
     agent_key = _require_agent_key()
@@ -9462,7 +9437,7 @@ def cmd_status(*, json_output: bool = False):
         data = connections_cloud.fetch_status(api_base, agent_key)
     except RuntimeError as exc:
         if json_output:
-            print(json.dumps({"error": str(exc), "approval_pending": False}))
+            print(json.dumps({"error": str(exc), "access_revoked": False}))
         else:
             print(f"Could not fetch status: {exc}")
         sys.exit(1)
@@ -9471,7 +9446,7 @@ def cmd_status(*, json_output: bool = False):
     if json_output:
         cfg = load_config()
         print(json.dumps({
-            "approval_pending": False,
+            "access_revoked": False,
             "status": "ok",
             "plan": data.get("plan"),
             "account_email": data.get("accountEmail") or cfg.get("account_email"),
@@ -10475,7 +10450,7 @@ def main():
         default="csv",
         help="csv/json write local files; sheets opens a hosted Google Sheet (see: pipeline.py sheets export)",
     )
-    export_p.add_argument("--file", help="Output path under workspace export/ (default auto-named)")
+    export_p.add_argument("--file", help="Output path under outreachmagic/exports/ (default auto-named)")
     export_p.add_argument(
         "--never-contacted",
         action="store_true",
@@ -10500,6 +10475,14 @@ def main():
     efc_p.add_argument("--never-contacted", action="store_true")
     efc_p.add_argument("--no-email", action="store_true", default=True)
     efc_p.add_argument("--require-domain", action="store_true", default=True)
+    efc_p.add_argument(
+        "--lead-ids",
+        help="Comma-separated lead ids to scope candidates (e.g. from a CSV batch)",
+    )
+    efc_p.add_argument(
+        "--file",
+        help="JSON batch file; lead_id from each row scopes candidates",
+    )
 
     agent_export_p = sub.add_parser("agent-changes", help="Show agent-created leads and events not yet synced")
     agent_export_p.add_argument("--json", action="store_true", help="Output as JSON (default)")
@@ -10539,17 +10522,6 @@ def main():
         "--force",
         action="store_true",
         help="Run browser device login even when a valid agent key is already configured",
-    )
-    login_p.add_argument(
-        "--wait-approval",
-        action="store_true",
-        help="Poll until manual account approval completes (use after pending signup)",
-    )
-    login_p.add_argument(
-        "--approval-timeout",
-        type=int,
-        default=600,
-        help="Seconds to poll for approval when using --wait-approval (default 600)",
     )
     sub.add_parser("logout", help="Clear local agent credentials")
 
@@ -10677,6 +10649,7 @@ def main():
     whoami_p.add_argument("--json", action="store_true", help="JSON output for agents")
     sync_p = sub.add_parser("sync", help="Push pending workspaces and routing rules to the webapp")
     sync_p.add_argument("--status", action="store_true", help="Show what needs syncing without pushing")
+    sync_p.add_argument("--json", action="store_true", help="JSON-only output (use with --status)")
     sync_p.add_argument(
         "--inspect",
         metavar="EMAIL",
@@ -11158,8 +11131,8 @@ def main():
             "database": str(get_db_path()),
             "config": str(get_config_path()),
             "agent_secrets": str(get_agent_secrets_path()),
-            "working_root": str(get_working_root()),
             "cwd": str(Path.cwd()),
+            **working_paths_payload(),
         }
         warn = hermes_profile_copy_warning()
         if warn:
@@ -11202,9 +11175,10 @@ def main():
             record_install_source(from_tag)
         print(f"Outreach Magic v{__version__} installed.")
         print(f"Database initialized: {get_db_path()}")
-        print(f"Working files (CSVs/exports): {get_working_root()}")
-        print(f"  input/            → {get_input_dir()}")
-        print(f"  export/           → {get_export_dir()}")
+        paths = working_paths_payload()
+        print(f"Working files: {paths['working_root']}")
+        for key in ("imports", "exports", "batches", "sheets", "archive", "logs"):
+            print(f"  {key:16} → {paths[key]}")
         print()
         print("Next: ask Outreach Magic to connect (login step).")
         return
@@ -11234,8 +11208,6 @@ def main():
             device_code=getattr(args, "device_code", None),
             wait_seconds=getattr(args, "wait", 30),
             force=getattr(args, "force", False),
-            wait_approval=getattr(args, "wait_approval", False),
-            approval_timeout=getattr(args, "approval_timeout", 600),
         )
         return
     if args.command == "logout":
@@ -11281,15 +11253,18 @@ def main():
             return
         if getattr(args, "status", False):
             status = get_sync_status()
-            mode = status.get("recommended_mode", "push")
-            pending = status.get("cloud_pending_leads", 0)
-            if pending:
-                print(
-                    f"Sync status: {mode} mode recommended — "
-                    f"{pending} snapshot(s) pending cloud push",
-                    flush=True,
-                )
-            print(json.dumps(status, indent=2))
+            if getattr(args, "json", False):
+                print(json.dumps(status, indent=2))
+            else:
+                mode = status.get("recommended_mode", "push")
+                pending = status.get("cloud_pending_leads", 0)
+                if pending:
+                    print(
+                        f"Sync status: {mode} mode recommended — "
+                        f"{pending} snapshot(s) pending cloud push",
+                        flush=True,
+                    )
+                print(json.dumps(status, indent=2))
         else:
             if getattr(args, "full_snapshot_v2", False):
                 mark_all_lead_snapshots_pending()
@@ -11631,7 +11606,24 @@ def main():
     elif args.command == "email-finder-candidates":
         conn = get_conn()
         try:
-            leads = pipeline_lead_review.load_workspace_leads_for_review(
+            lead_ids = None
+            if getattr(args, "lead_ids", None):
+                lead_ids = [
+                    int(x.strip()) for x in str(args.lead_ids).split(",") if x.strip()
+                ]
+            elif getattr(args, "file", None):
+                in_path = resolve_project_path(args.file, kind="input")
+                batch_rows = json.loads(in_path.read_text(encoding="utf-8"))
+                if not isinstance(batch_rows, list):
+                    raise ValueError("--file must be a JSON array of lead rows")
+                lead_ids = []
+                for row in batch_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    lid = row.get("lead_id") or row.get("id")
+                    if lid is not None:
+                        lead_ids.append(int(lid))
+            scope_leads = pipeline_lead_review.load_workspace_leads_for_review(
                 conn,
                 args.workspace,
                 tag=getattr(args, "tag", None),
@@ -11639,15 +11631,27 @@ def main():
                 since=getattr(args, "since", None),
                 limit=args.limit,
                 never_contacted=getattr(args, "never_contacted", False),
-                no_email=getattr(args, "no_email", True),
-                require_domain=getattr(args, "require_domain", True),
+                no_email=False,
+                require_domain=False,
+                lead_ids=lead_ids,
                 enrich_fn=enrich_lead_rows,
             )
-            candidates = pipeline_lead_review.email_finder_candidates_from_leads(leads)
+            skipped_has_email = sum(
+                1 for lead in scope_leads if (lead.get("email") or "").strip()
+            )
+            pool = scope_leads
+            if getattr(args, "no_email", True):
+                pool = [
+                    lead for lead in scope_leads if not (lead.get("email") or "").strip()
+                ]
+            candidates = pipeline_lead_review.email_finder_candidates_from_leads(pool)
+            skipped_no_domain = len(pool) - len(candidates)
             print(json.dumps({
                 "status": "ok",
                 "workspace": args.workspace,
-                "scanned": len(leads),
+                "scanned": len(scope_leads),
+                "skipped_has_email": skipped_has_email,
+                "skipped_no_domain": skipped_no_domain,
                 "count": len(candidates),
                 "candidates": candidates,
             }, indent=2))
@@ -12206,6 +12210,19 @@ def main():
             except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as e:
                 print(json.dumps({"error": str(e)}))
                 sys.exit(1)
+            if template == "lead-review" and isinstance(result, dict) and result.get("sheet_id"):
+                try:
+                    meta_path = save_sheets_export_record(
+                        workspace=args.workspace,
+                        title=args.title,
+                        sheet_id=str(result["sheet_id"]),
+                        url=str(result.get("url") or result.get("spreadsheet_url") or ""),
+                        detail=str(payload.get("detail") or getattr(args, "detail", "") or ""),
+                    )
+                    result = dict(result)
+                    result["metadata_path"] = str(meta_path)
+                except OSError:
+                    pass
             print(json.dumps(result, indent=2))
         elif args.review_command == "sync":
             field_keys = None

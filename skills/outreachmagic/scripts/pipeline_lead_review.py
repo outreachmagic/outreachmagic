@@ -419,6 +419,7 @@ def load_workspace_leads_for_review(
     location_state: Optional[str] = None,
     email_domain: Optional[str] = None,
     email_verification_status: Optional[str] = None,
+    lead_ids: Optional[list[int]] = None,
     enrich_fn: Callable[..., list[dict]],
 ) -> list[dict]:
     """Load enriched lead rows for review export."""
@@ -472,6 +473,10 @@ def load_workspace_leads_for_review(
         query += f" AND {_never_contacted_sql('wl')}"
     if no_email:
         query += " AND (l.email IS NULL OR TRIM(l.email) = '')"
+    if lead_ids:
+        placeholders = ",".join("?" * len(lead_ids))
+        query += f" AND l.id IN ({placeholders})"
+        params.extend(lead_ids)
     if require_domain:
         domain_clause, domain_params = require_professional_domain_clause()
         query += f" {domain_clause}"

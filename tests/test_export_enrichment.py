@@ -38,8 +38,8 @@ class ExportEnrichmentTests(unittest.TestCase):
     def test_resolve_project_path_creates_export_dir(self):
         root = self._root / "workspace"
         out = om_paths.resolve_project_path("out.csv", kind="export", for_write=True)
-        self.assertTrue((root / "export").is_dir())
-        self.assertEqual(out, (root / "export" / "out.csv").resolve())
+        self.assertTrue((root / "outreachmagic" / "exports").is_dir())
+        self.assertEqual(out, (root / "outreachmagic" / "exports" / "out.csv").resolve())
 
     def test_resolve_project_path_input(self):
         resolved = om_paths.resolve_project_path("leads.csv", kind="input", for_write=True)
@@ -48,7 +48,10 @@ class ExportEnrichmentTests(unittest.TestCase):
             om_paths.resolve_project_path("leads.csv", kind="input"),
             resolved,
         )
-        self.assertEqual(resolved, (self._root / "workspace" / "input" / "leads.csv").resolve())
+        self.assertEqual(
+            resolved,
+            (self._root / "workspace" / "outreachmagic" / "imports" / "leads.csv").resolve(),
+        )
 
     def test_build_lead_sync_payload_linkedin(self):
         conn = om.get_conn()

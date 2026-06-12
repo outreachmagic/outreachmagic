@@ -25,6 +25,7 @@ from normalize import lead_resume_key, load_people_json, row_fields, sanitize_in
 from progress import (
     print_dry_run_box,
     print_final_summary,
+    print_preflight_summary,
     print_progress,
     print_resume_banner,
     record_api_calls,
@@ -155,7 +156,7 @@ def build_import_profile(
         profile["linkedin"] = normalize_linkedin_fn(linkedin)
     if email:
         profile["email"] = email
-        profile["tags"] = [*attempted_tags, "email_found"]
+        profile["tags"] = attempted_tags
     provider = str(find_result.get("provider") or "trykitt")
     profile["list_source"] = provider
     validity = str(find_result.get("validity") or "")
@@ -483,7 +484,7 @@ def skip_resolved_before_api(
 
 
 def _record_om_skip(stats: dict[str, Any], reason: str, *, fresh: bool = False) -> None:
-    if reason in ("has_email", "email_found_tag"):
+    if reason == "has_email":
         stats["skipped_email"] = int(stats.get("skipped_email", 0)) + 1
     else:
         stats["skipped_tagged"] = int(stats.get("skipped_tagged", 0)) + 1
@@ -512,22 +513,22 @@ def skip_reason_from_lookup(
     if email:
         return "has_email"
     tags = set(lookup.get("tags") or [])
-    if "email_found" in tags:
-        return "email_found_tag"
     for p in provider_names:
         if f"{p}_attempted" in tags:
             return f"{p}_attempted"
     return None
 
 
-def _resolve_output_base(path: str, input_path: str) -> str:
+def _resolve_output_base(path: str, input_path: str, *, om_dir: Optional[Path] = None) -> str:
     if path:
         p = Path(path).expanduser()
         if p.suffix in (".csv", ".json"):
             return str(p.with_suffix(""))
         return str(p)
     stem = Path(input_path).expanduser().stem
-    return str(Path.cwd() / f"{stem}-email-results")
+    export_dir = cc.get_working_export_dir(om_dir) if om_dir else Path.cwd() / "outreachmagic" / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    return str(export_dir / f"{stem}-email-results")
 
 
 class IncrementalWriter:
@@ -718,6 +719,17 @@ def run_batch(
     )
     if not provider_names:
         return {"error": "no provider configured (check API keys and --provider)"}
+    if opts.provider:
+        missing = [p for p in provider_names if p not in _providers_with_keys(cfg, [p])]
+        if missing:
+            label = missing[0]
+            return {
+                "error": (
+                    f"{label} API key not configured. "
+                    "Add it at app.outreachmagic.io → Settings, then run: "
+                    "pipeline.py sync-secrets --check"
+                ),
+            }
     keyed = _providers_with_keys(cfg, provider_names)
     if keyed:
         provider_names = [p for p in provider_names if p in keyed]
@@ -728,6 +740,7 @@ def run_batch(
     output_base = _resolve_output_base(
         opts.output_base or (str(Path(opts.output_csv).with_suffix("")) if opts.output_csv else ""),
         input_path,
+        om_dir=om_dir,
     )
     writer: Optional[IncrementalWriter] = (
         IncrementalWriter(output_base, retry_errors=opts.retry_errors) if output_base else None
@@ -743,6 +756,7 @@ def run_batch(
     to_process: list[tuple[int, dict[str, Any]]] = []
     pre_skipped: dict[int, dict[str, Any]] = {}
     skipped_email = skipped_tagged = skipped_resume = 0
+    skipped_names: list[str] = []
     for i, row in enumerate(people):
         name, domain, _c, _li, _lid = row_fields(row)
         if not name or not domain:
@@ -761,7 +775,7 @@ def run_batch(
             continue
         reason = skip_reason_from_lookup(lookup_by_index.get(i), provider_names)
         if reason:
-            if reason == "has_email" or reason == "email_found_tag":
+            if reason == "has_email":
                 skipped_email += 1
             else:
                 skipped_tagged += 1
@@ -769,11 +783,14 @@ def run_batch(
                 "batch_status": "skipped",
                 "status": "skipped",
                 "skip_reason": reason,
+                "name": name,
             }
+            if name and reason == "has_email":
+                skipped_names.append(name)
             continue
         if writer and lead_resume_key(row, index=i) in writer.done_keys:
             resume_reason = skip_reason_from_lookup(lookup_by_index.get(i), provider_names)
-            if resume_reason in ("has_email", "email_found_tag"):
+            if resume_reason == "has_email":
                 skipped_email += 1
                 pre_skipped[i] = {
                     "batch_status": "skipped",
@@ -865,6 +882,12 @@ def run_batch(
             return {"error": "health check failed", "issues": issues}
 
     skipped_total = skipped_email + skipped_tagged + skipped_resume
+    print_preflight_summary(
+        total=len(people),
+        to_process=len(to_process),
+        skipped_total=skipped_total,
+        skipped_names=skipped_names,
+    )
     if to_process and not prompt_batch_confirm(
         to_process=len(to_process),
         skipped_total=skipped_total,
@@ -1153,12 +1176,21 @@ def run_batch(
             f"{resync_note}",
             file=sys.stderr,
         )
+    cloud_pending = 0
+    if om_dir and not opts.skip_om and import_status and import_status.get("reason") == "success":
+        try:
+            sync_status = cc.fetch_sync_status(om_dir, skill_dir=skill_dir)
+            cloud_pending = int(sync_status.get("cloud_pending_leads") or 0)
+        except (RuntimeError, json.JSONDecodeError, TypeError, ValueError):
+            cloud_pending = 0
     print_final_summary(
         stats,
         elapsed,
         output_base,
         provider=provider_label,
         import_status=import_status,
+        skipped_names=skipped_names,
+        cloud_pending_leads=cloud_pending,
     )
 
     return {

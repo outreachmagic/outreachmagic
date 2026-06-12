@@ -128,20 +128,20 @@ def test_dropdown_metadata_on_workspace_fields():
     assert "validation" not in by_key["lead_status"]
 
 
-def test_account_pending_status_output():
-    om.save_config({"account_approval_status": "pending"})
+def test_account_revoked_status_output():
+    om.save_config({"account_access_revoked": True})
     buf = io.StringIO()
     with redirect_stdout(buf):
         om.cmd_status()
     out = buf.getvalue()
-    assert "Pending approval" in out
+    assert "Access error" in out
     assert "pipeline.py" not in out
 
 
-def test_require_agent_key_pending_blocks():
-    om.save_config({"account_approval_status": "pending"})
+def test_require_agent_key_revoked_blocks():
+    om.save_config({"account_access_revoked": True})
     buf = io.StringIO()
     with pytest.raises(SystemExit):
         with redirect_stdout(buf):
             om._require_agent_key()
-    assert "pending" in buf.getvalue().lower()
+    assert "account access error" in buf.getvalue().lower()

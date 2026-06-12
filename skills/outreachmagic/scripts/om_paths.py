@@ -1,9 +1,8 @@
 """
 Skill install paths. Resolves ~/.hermes (or ~/.cursor / ~/.claude) from scripts location.
-Hermes: install real files under <home>/skills/outreachmagic/; profile dirs use symlinks only.
 
-Working files (CSVs, exports): relative paths resolve under process cwd, or an optional
-project_root in outreachmagic_config.json. Skill state (DB, config) stays under skill_home.
+Working files (CSVs, exports): under outreachmagic/ relative to project_root or cwd.
+Skill state (DB, config) stays under skill_home.
 """
 
 from __future__ import annotations
@@ -14,6 +13,14 @@ from pathlib import Path
 from typing import Literal, Optional
 
 SKILL_NAME = "outreachmagic"
+
+OM_SUBDIR = "outreachmagic"
+IMPORTS_SUBDIR = "imports"
+EXPORTS_SUBDIR = "exports"
+BATCHES_SUBDIR = "batches"
+SHEETS_SUBDIR = "sheets"
+ARCHIVE_SUBDIR = "archive"
+LOGS_SUBDIR = "logs"
 
 _PROJECT_ROOT_OVERRIDE: Optional[Path] = None
 
@@ -64,7 +71,7 @@ def set_data_root_override(path: Optional[Path]) -> None:
 
 
 def set_working_root_override(path: Optional[Path]) -> None:
-    """Tests only: redirect working file paths (input/export)."""
+    """Tests only: redirect working file paths."""
     global _PROJECT_ROOT_OVERRIDE
     _PROJECT_ROOT_OVERRIDE = path
 
@@ -134,28 +141,62 @@ def _config_working_root() -> Optional[Path]:
 
 
 def get_working_root() -> Path:
-    """Root for relative input/export paths: config project_root or process cwd."""
+    """Root for outreachmagic/ working tree: config project_root or process cwd."""
     configured = _config_working_root()
     if configured:
         return configured.resolve()
     return Path.cwd()
 
 
+def get_om_data_dir() -> Path:
+    return get_working_root() / OM_SUBDIR
+
+
 def get_input_dir() -> Path:
-    return get_working_root() / "input"
+    return get_om_data_dir() / IMPORTS_SUBDIR
 
 
 def get_export_dir() -> Path:
-    return get_working_root() / "export"
+    return get_om_data_dir() / EXPORTS_SUBDIR
+
+
+def get_batches_dir() -> Path:
+    return get_om_data_dir() / BATCHES_SUBDIR
+
+
+def get_sheets_dir() -> Path:
+    return get_om_data_dir() / SHEETS_SUBDIR
+
+
+def get_archive_dir() -> Path:
+    return get_om_data_dir() / ARCHIVE_SUBDIR
+
+
+def get_logs_dir() -> Path:
+    return get_om_data_dir() / LOGS_SUBDIR
+
+
+def working_paths_payload() -> dict[str, str]:
+    """Resolved working-file directories for CLI output."""
+    return {
+        "working_root": str(get_working_root()),
+        "om_data_dir": str(get_om_data_dir()),
+        "imports": str(get_input_dir()),
+        "exports": str(get_export_dir()),
+        "batches": str(get_batches_dir()),
+        "sheets": str(get_sheets_dir()),
+        "archive": str(get_archive_dir()),
+        "logs": str(get_logs_dir()),
+    }
 
 
 def resolve_project_path(
     path: str,
     *,
-    kind: Literal["input", "export"] = "input",
+    kind: Literal["input", "export", "batches", "sheets", "archive", "logs"] = "input",
     for_write: bool = False,
 ) -> Path:
-    """Resolve a user path under working_root (cwd by default). Absolute paths pass through."""
+    """Resolve a user path under the outreachmagic working tree. Absolute paths pass through."""
     raw = (path or "").strip()
     if not raw:
         raise ValueError("path is required")
@@ -164,12 +205,51 @@ def resolve_project_path(
         if for_write:
             p.parent.mkdir(parents=True, exist_ok=True)
         return p.resolve()
+
     root = get_working_root()
-    if raw.startswith("input/") or raw.startswith("export/"):
+    om_prefix = f"{OM_SUBDIR}/"
+    if raw.startswith(om_prefix):
         resolved = (root / raw).resolve()
     else:
-        base = get_input_dir() if kind == "input" else get_export_dir()
+        kind_dirs = {
+            "input": get_input_dir(),
+            "export": get_export_dir(),
+            "batches": get_batches_dir(),
+            "sheets": get_sheets_dir(),
+            "archive": get_archive_dir(),
+            "logs": get_logs_dir(),
+        }
+        base = kind_dirs[kind]
         resolved = (base / raw).resolve()
     if for_write:
         resolved.parent.mkdir(parents=True, exist_ok=True)
     return resolved
+
+
+def save_sheets_export_record(
+    *,
+    workspace: str,
+    title: str,
+    sheet_id: str,
+    url: str = "",
+    detail: str = "",
+) -> Path:
+    """Persist sheet export metadata under outreachmagic/sheets/."""
+    from datetime import datetime, timezone
+
+    sheets_dir = get_sheets_dir()
+    sheets_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    safe_ws = "".join(c if c.isalnum() or c in "-_" else "-" for c in workspace)[:40]
+    safe_title = "".join(c if c.isalnum() or c in "-_" else "-" for c in (title or "export"))[:40]
+    out_path = sheets_dir / f"{safe_ws}-{safe_title}-{stamp}.json"
+    payload = {
+        "workspace": workspace,
+        "title": title,
+        "sheet_id": sheet_id,
+        "url": url,
+        "detail": detail,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+    }
+    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return out_path

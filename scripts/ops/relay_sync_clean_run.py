@@ -3,7 +3,7 @@
 Kill stuck sync, purge D1 agent event_logs, clear local push markers, re-run events sync.
 
 Watch progress:
-  tail -f ~/Developer/outreachmagic-skill/skills/outreachmagic/export/batch_sync.log
+  tail -f ~/Developer/outreachmagic-skill/outreachmagic/logs/batch_sync.log
 
 Usage:
   python3 scripts/ops/relay_sync_clean_run.py

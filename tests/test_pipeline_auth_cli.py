@@ -50,13 +50,13 @@ def test_login_generate_url_prints_parseable_fields():
     assert "OUTREACHMAGIC_EXPIRES_IN=900" in out
 
 
-def test_login_claim_token_account_pending_approval():
+def test_login_claim_token_account_revoked():
     fake_device_login = types.SimpleNamespace(
         start_device_authorization=lambda *args, **kwargs: {},
         claim_device_token=lambda *args, **kwargs: {
-            "status": "account_pending_approval",
+            "status": "account_revoked",
             "access_token": None,
-            "error": "account_pending_approval",
+            "error": "account_revoked",
         },
         run_device_login=lambda *args, **kwargs: "om_agent_unused",
     )
@@ -70,9 +70,9 @@ def test_login_claim_token_account_pending_approval():
         out = _capture_output(
             lambda: om.login(claim_token=True, device_code="dev_code", wait_seconds=0)
         )
-    assert "STATUS=account_pending_approval" in out
+    assert "STATUS=account_revoked" in out
     assert "pipeline.py" not in out
-    assert saved["cfg"].get("account_approval_status") == "pending"
+    assert saved["cfg"].get("account_access_revoked") is True
 
 
 def test_login_claim_token_pending():

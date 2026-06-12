@@ -89,7 +89,7 @@ Use in this order; stop when a deliverable email is saved to outreachmagic.
 | 4 | **Findymail** | Last resort |
 
 After provider attempts, tag the lead with provider-specific attempt tags:
-`trykitt_attempted` and/or `icypeas_attempted`; add `email_found` when an email
+`trykitt_attempted` and/or `icypeas_attempted`; found state is `leads.email` + `latest_source`
 was saved. Keep provider-specific validity/certainty details in `notes`.
 
 ## Saving found emails
@@ -98,13 +98,13 @@ was saved. Keep provider-specific validity/certainty details in `notes`.
 
 ```bash
 python3 scripts/email_finder.py batch-find --workspace your_workspace --yes \
-  --output-base ./export/emails --workers 3 --delay 3 leads.json
+  --output-base outreachmagic/exports/emails --workers 3 --delay 3 leads.json
 ```
 
 **OM save only** — `import-to-om` reads the batch checkpoint `.csv` or `.json`:
 
 ```bash
-python3 scripts/email_finder.py import-to-om --file ./export/emails.csv --workspace your_workspace
+python3 scripts/email_finder.py import-to-om --file outreachmagic/exports/emails.csv --workspace your_workspace
 ```
 
 **Single lead** — email-finder CLI (tags + notes on `--save`):
@@ -121,7 +121,7 @@ Or via outreachmagic directly:
 python3 {outreachmagic_home}/scripts/pipeline.py import-profiles \
   --workspace your_workspace \
   --source trykitt --source-detail "email-finder/trykitt" \
-  --json '[{"name":"Jane Doe","company":"Acme Corp","email":"jane@acme.com","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["trykitt_attempted","email_found"],"notes":"trykitt verify: valid"}]'
+  --json '[{"name":"Jane Doe","company":"Acme Corp","email":"jane@acme.com","linkedin":"linkedin.com/in/janedoe","company_domain":"acme.com","tags":["trykitt_attempted"],"notes":"trykitt verify: valid"}]'
 ```
 
 Include `validity` / `validSMTP` in `notes` when helpful for downstream sequencing.

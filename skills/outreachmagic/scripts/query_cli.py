@@ -51,7 +51,7 @@ def register_query_parser(sub) -> None:
         "--params",
         help='JSON array of SQL bind parameters (example: ["acme"])',
     )
-    q.add_argument("--file", help="Read SQL from a file (workspace input/ or absolute path)")
+    q.add_argument("--file", help="Read SQL from a file (outreachmagic/imports/ or absolute path)")
     q.add_argument("--limit", type=int, default=read_queries.DEFAULT_ROW_LIMIT)
     q.add_argument("--json", action="store_true", help="JSON output for agents")
     q.set_defaults(command="query")
@@ -165,6 +165,9 @@ def cmd_pipeline_view(args, *, table_formatter, json_enricher=None) -> None:
     if getattr(args, "json", False):
         enrich = json_enricher or om.enrich_lead_rows
         leads = enrich(leads, workspace=getattr(args, "workspace", None))
-        print(json.dumps(attach_freshness(leads, last_pull=om.get_last_pull()), indent=2))
+        payload = attach_freshness(leads, last_pull=om.get_last_pull())
+        if isinstance(payload, dict) and "data" in payload:
+            payload["leads"] = payload["data"]
+        print(json.dumps(payload, indent=2))
     else:
         print(table_formatter(leads))

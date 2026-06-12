@@ -1,6 +1,6 @@
 # Relay sync progress (log format)
 
-`pipeline.py pull` and `pipeline.py sync` print human-readable progress to stdout. When run via `export/batch_sync_to_relay.py`, each line is also prefixed with an ISO timestamp and phase label in `export/batch_sync.log`.
+`pipeline.py pull` and `pipeline.py sync` print human-readable progress to stdout. When run via `export/batch_sync_to_relay.py`, each line is also prefixed with an ISO timestamp and phase label in `outreachmagic/logs/batch_sync.log`.
 
 ## Streams
 
@@ -82,7 +82,7 @@ See `SKILL.md` § “Relay sync limits” for env overrides.
 ## Grep tips
 
 ```bash
-tail -f skills/outreachmagic/export/batch_sync.log | grep '↑ Event'
-tail -f skills/outreachmagic/export/batch_sync.log | grep '↑ Lead'
+tail -f outreachmagic/logs/batch_sync.log | grep '↑ Event'
+tail -f outreachmagic/logs/batch_sync.log | grep '↑ Lead'
 python3 skills/outreachmagic/scripts/pipeline.py pull 2>&1 | grep '↓'
 ```

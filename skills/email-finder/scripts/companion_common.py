@@ -540,6 +540,34 @@ def _append_json_or_file(
         raise
 
 
+def get_working_export_dir(om_dir: Optional[Path] = None) -> Path:
+    """Resolve outreachmagic/exports under project_root or cwd."""
+    root = Path.cwd()
+    if om_dir:
+        cfg_path = Path(om_dir) / "config" / "outreachmagic_config.json"
+        if cfg_path.exists():
+            try:
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                project_root = (cfg.get("project_root") or "").strip()
+                if project_root:
+                    root = Path(project_root).expanduser()
+            except (OSError, json.JSONDecodeError):
+                pass
+    return (root / "outreachmagic" / "exports").resolve()
+
+
+def fetch_sync_status(om_dir: Path, *, skill_dir: Optional[Path] = None) -> dict[str, Any]:
+    """Read pipeline sync --status --json without pushing."""
+    cmd = [
+        sys.executable,
+        str(get_pipeline_path(om_dir)),
+        "sync",
+        "--status",
+        "--json",
+    ]
+    return _run_subprocess_json(cmd, temp_path=None, timeout=120, skill_dir=skill_dir)
+
+
 def _run_subprocess_json(
     cmd: list[str],
     *,

@@ -13,14 +13,9 @@ MSG_PULL_PROBE = "Ask Outreach Magic to probe relay connectivity"
 MSG_SYNC = "Ask Outreach Magic to sync"
 MSG_CONNECT = "Ask Outreach Magic to connect"
 
-MSG_ACCOUNT_PENDING = (
-    "Your account is pending approval. You'll receive an email when it's ready. "
-    "Once approved, ask Outreach Magic to connect and it will pick up from here."
-)
-
-MSG_ACCOUNT_PENDING_SHORT = (
-    "Account approval is pending — no action needed yet. "
-    "Once approved, ask Outreach Magic to connect."
+MSG_ACCOUNT_ERROR = (
+    "There was an account access error and we couldn't sign you in. "
+    "Email support@outreachmagic.io and we'll help you get set up."
 )
 
 MSG_NO_AGENT_KEY = f"No agent key configured. {MSG_LOGIN}."

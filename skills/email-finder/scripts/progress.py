@@ -171,6 +171,30 @@ def _import_status_lines(
     return lines
 
 
+def print_preflight_summary(
+    *,
+    total: int,
+    to_process: int,
+    skipped_total: int,
+    skipped_names: Optional[list[str]] = None,
+    file=sys.stderr,
+) -> None:
+    if skipped_total <= 0 and to_process <= 0:
+        return
+    print(file=file)
+    print(
+        f"Pre-flight: {to_process}/{total} leads will be looked up"
+        f" ({skipped_total} skipped — already have email or prior attempt in OM).",
+        file=file,
+    )
+    if skipped_names:
+        preview = ", ".join(skipped_names[:8])
+        if len(skipped_names) > 8:
+            preview += f" (+{len(skipped_names) - 8} more)"
+        print(f"  Skipped (has email): {preview}", file=file)
+    print(file=file)
+
+
 def print_final_summary(
     stats: dict[str, Any],
     elapsed: float,
@@ -178,6 +202,8 @@ def print_final_summary(
     *,
     provider: str = "",
     import_status: Optional[dict[str, Any]] = None,
+    skipped_names: Optional[list[str]] = None,
+    cloud_pending_leads: int = 0,
     file=sys.stderr,
 ) -> None:
     stats = _init_stats(stats)
@@ -250,6 +276,11 @@ def print_final_summary(
         print(f"║  SKIPPED{'':54}║", file=file)
         if skipped_email:
             print(f"║    Already has email:  {skipped_email:<38}║", file=file)
+            if skipped_names:
+                preview = ", ".join(skipped_names[:3])
+                if len(skipped_names) > 3:
+                    preview += f" (+{len(skipped_names) - 3})"
+                print(f"║      e.g. {preview[:52]:<52}║", file=file)
         if skipped_tagged:
             print(f"║    Already attempted:   {skipped_tagged:<37}║", file=file)
         if skipped_resume:
@@ -267,6 +298,13 @@ def print_final_summary(
         print(f"║  IMPORT{'':55}║", file=file)
         for line in _import_status_lines(status, output_base=output_base, verify=verify):
             print(f"║    {line[:58]:<58}║", file=file)
+    if cloud_pending_leads:
+        print(f"║{'':62}║", file=file)
+        print(f"║  RELAY{'':56}║", file=file)
+        print(
+            f"║    {cloud_pending_leads} snapshot(s) pending — run pipeline.py sync{'':>8}║",
+            file=file,
+        )
     print("╚" + "═" * 62 + "╝", file=file)
     print(file=file)
 

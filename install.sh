@@ -111,7 +111,7 @@ Options:
   --no-profiles            Hermes only: skip profile symlinks
   --all-profiles           Hermes only: symlink all existing profiles (default when profiles/ exists)
   --profile NAME           Hermes only: symlink one profile (repeatable)
-  --tag TAG                outreachmagic release tag (e.g. v1.36.0)
+  --tag TAG                outreachmagic release tag (e.g. v1.37.0)
   --lead-enrich-tag TAG    lead-enrich release tag (default from skill-suite.json)
   --email-finder-tag TAG   email-finder release tag (default from skill-suite.json)
   --dry-run                Print planned actions without writing
@@ -313,7 +313,7 @@ install_outreachmagic() {
 
   chmod +x "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" 2>/dev/null || true
   local db_path="$SKILLS_DIR/outreachmagic/databases/outreachmagic.db"
-  if [[ $YES -eq 0 ]]; then
+  if [[ $YES -eq 0 && -t 0 ]]; then
     echo "Initialize local SQLite database at $db_path?"
     echo "  (Stores pipeline contacts and event history locally — no data sent to servers during init.)"
     read -r -p "Run pipeline.py init? [y/N] " reply

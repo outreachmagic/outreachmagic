@@ -187,7 +187,7 @@ def claim_device_token(
             allow_errors=frozenset(
                 {
                     "authorization_pending",
-                    "account_pending_approval",
+                    "account_revoked",
                     "expired_token",
                     "access_denied",
                     "invalid_grant",
@@ -196,9 +196,9 @@ def claim_device_token(
         )
 
         error = token_resp.get("error")
-        if error == "account_pending_approval":
+        if error == "account_revoked":
             return {
-                "status": "account_pending_approval",
+                "status": "account_revoked",
                 "access_token": None,
                 "error": error,
             }
@@ -277,8 +277,8 @@ def run_device_login(
     )
     if claim.get("status") == "success":
         return str(claim["access_token"])
-    if claim.get("status") == "account_pending_approval":
-        raise RuntimeError("account_pending_approval")
+    if claim.get("status") == "account_revoked":
+        raise RuntimeError("account_revoked")
     if claim.get("status") and claim.get("status") != "pending":
         raise RuntimeError(str(claim.get("status")))
 

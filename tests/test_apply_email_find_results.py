@@ -53,7 +53,7 @@ def test_apply_email_find_results_updates_email_tags_and_verification():
         [{
             "id": lead_id,
             "email": "fast@acme.com",
-            "tags": ["trykitt_attempted", "email_found"],
+            "tags": ["trykitt_attempted"],
             "list_source": "trykitt",
             "notes": "trykitt valid",
             "_verify_provider": "trykitt",
@@ -76,7 +76,7 @@ def test_apply_email_find_results_updates_email_tags_and_verification():
     ).fetchone()
     tag = conn.execute(
         "SELECT tag FROM workspace_lead_tags WHERE lead_id = ? AND tag = ?",
-        (lead_id, "email_found"),
+        (lead_id, "trykitt_attempted"),
     ).fetchone()
     ver = conn.execute(
         "SELECT status, source FROM lead_email_verification WHERE lead_id = ?",
@@ -108,8 +108,6 @@ def _profile_row(
     include_email_tag: bool = True,
 ) -> dict:
     tags = ["trykitt_attempted"]
-    if include_email_tag and email:
-        tags.append("email_found")
     row: dict = {
         "id": lead_id,
         "tags": tags,
@@ -165,7 +163,7 @@ def test_collision_skips_email_keeps_tags_and_verification():
     ).fetchone()
     ghost_tag = conn.execute(
         "SELECT tag FROM workspace_lead_tags WHERE lead_id = ? AND tag = ?",
-        (ghost_id, "email_found"),
+        (ghost_id, "trykitt_attempted"),
     ).fetchone()
     ver = conn.execute(
         "SELECT email, status FROM lead_email_verification WHERE lead_id = ?",

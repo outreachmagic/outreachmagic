@@ -6,7 +6,7 @@ description: >
   Extracts company domain, website, and LinkedIn URL via the agent's built-in
   model — no external LLM API needed. Saves results locally via the
   outreachmagic skill. For email finding, use the email-finder companion skill.
-version: 2.1.9
+version: 2.1.10
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -87,19 +87,19 @@ Sales Nav / Vayne CSVs: use outreachmagic `import-profiles --file …` (auto-det
 
 ## CSV / award-list workflow (preferred for 10+ people)
 
-Paths like `input/awards.csv` are relative to your **workspace directory** (where the agent runs the command), not the skill install folder.
+Paths like `outreachmagic/imports/awards.csv` are relative to your **workspace directory** (where the agent runs the command), not the skill install folder.
 
 ```bash
 # 0 credits — dedup entire file first (auto-stamps serper_attempted on complete rows)
-python3 scripts/enrich.py batch-check --workspace your_workspace input/awards.csv
+python3 scripts/enrich.py batch-check --workspace your_workspace outreachmagic/imports/awards.csv
 
 # Re-run dedup skipping leads already tagged serper_attempted
-python3 scripts/enrich.py batch-check --workspace your_workspace --skip-tagged input/awards.csv
+python3 scripts/enrich.py batch-check --workspace your_workspace --skip-tagged outreachmagic/imports/awards.csv
 
 # Serper only for rows that need LinkedIn/domain (skip team_award, exists_linkedin_*, skipped_serper_attempted)
 
 # After research — patch title/industry only (0 Serper credits)
-python3 scripts/enrich.py backfill --fields title,industry --workspace your_workspace input/patch.csv
+python3 scripts/enrich.py backfill --fields title,industry --workspace your_workspace outreachmagic/imports/patch.csv
 ```
 
 `batch-check` accepts `.json` or `.csv`. `backfill` requires `email` or `linkedin` per row; uses chunked `import-profiles` via `companion_common` (200 rows/chunk, up to 300s/chunk; fills empty fields; add `--overwrite` to replace).
@@ -157,15 +157,15 @@ python3 scripts/enrich.py check "Jane Doe" "Acme Corp"
 python3 scripts/enrich.py check --workspace your_workspace "Jane Doe" "Acme Corp"
 
 # Batch from JSON or CSV (run this before Serper on lists)
-python3 scripts/enrich.py batch-check --workspace your_workspace input/people.json
-python3 scripts/enrich.py batch-check --workspace your_workspace --skip-tagged input/awards.csv
+python3 scripts/enrich.py batch-check --workspace your_workspace outreachmagic/imports/people.json
+python3 scripts/enrich.py batch-check --workspace your_workspace --skip-tagged outreachmagic/imports/awards.csv
 
 # Stamp serper_attempted after failed LinkedIn lookup (when lead_id is known)
 python3 scripts/enrich.py stamp-attempted --workspace your_workspace --lead-ids 42,43 \
   --notes "No LinkedIn found via Serper"
 
 # Backfill title/industry on existing leads (linkedin or email required)
-python3 scripts/enrich.py backfill --fields title,industry input/patch.csv
+python3 scripts/enrich.py backfill --fields title,industry outreachmagic/imports/patch.csv
 
 # Update skill safely from GitHub release (checksum-verified)
 python3 scripts/enrich.py update --check

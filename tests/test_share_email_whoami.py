@@ -36,7 +36,7 @@ def test_resolve_share_email_from_status_api():
 
 
 def test_cmd_whoami_json(monkeypatch, capsys):
-    monkeypatch.setattr(om, "_account_approval_pending", lambda: False)
+    monkeypatch.setattr(om, "_account_access_revoked", lambda: False)
     monkeypatch.setattr(om, "get_agent_key", lambda: "om_agent_test")
     monkeypatch.setattr(om, "load_config", lambda: {"organization_id": "org_1"})
     monkeypatch.setattr(
@@ -55,4 +55,4 @@ def test_cmd_whoami_json(monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["email"] == "whoami@example.com"
     assert out["plan"] == "pro"
-    assert out["approval_pending"] is False
+    assert out["access_revoked"] is False

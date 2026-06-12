@@ -33,6 +33,22 @@ def test_detect_platform_json_shape():
     assert "skills_dir" in data
 
 
+def test_detect_platform_cursor_agent_over_hermes_dir(tmp_path):
+    home = tmp_path / "home"
+    (home / ".hermes" / "skills").mkdir(parents=True)
+    (home / ".cursor" / "skills").mkdir(parents=True)
+    env = {**__import__("os").environ, "HOME": str(home), "CURSOR_AGENT": "1"}
+    proc = subprocess.run(
+        [sys.executable, str(DETECT)],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    data = json.loads(proc.stdout)
+    assert data["platform"] == "cursor"
+
+
 def test_rollback_without_snapshot_exits_nonzero():
     proc = subprocess.run(
         [sys.executable, str(PIPELINE), "rollback"],

@@ -511,7 +511,7 @@ def test_import_profiles_force_lead_id_merges_email_conflict():
     s2 = om.import_profiles([{
         "id": target_id,
         "email": "shared@acme.com",
-        "tags": "email_found",
+        "tags": "trykitt_attempted",
     }], workspace="default")
     assert s2["matched"] == 1
     conn = om.get_conn()
@@ -536,7 +536,7 @@ def test_import_profiles_force_lead_id_enriches_existing():
     s1 = om.import_profiles([{
         "id": lead_id,
         "email": "lucia@berkeley.edu",
-        "tags": "email_found",
+        "tags": "trykitt_attempted",
     }], workspace="default")
     assert s1["created"] == 0
     assert s1["matched"] == 1

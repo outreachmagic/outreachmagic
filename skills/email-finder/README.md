@@ -28,11 +28,11 @@ Full key table: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmag
 ```bash
 # Waterfall (default)
 python3 scripts/email_finder.py batch-find --workspace YOUR_WS --yes \
-  --output-base ./export/emails --workers 3 --delay 3 leads.json
+  --output-base outreachmagic/exports/emails --workers 3 --delay 3 leads.json
 
 # IcyPeas only (stricter rate limits)
 python3 scripts/email_finder.py batch-find --provider icypeas --workspace YOUR_WS --yes \
-  --workers 2 --delay 3 --output-base ./export/icypeas leads.json
+  --workers 2 --delay 3 --output-base outreachmagic/exports/icypeas leads.json
 ```
 
 Every batch row needs **`lead_id`**; pass **`--workspace`** so OM save runs via `apply-email-find-results` (fast path). Without `lead_id`, save uses tiered `import-profiles`. See `config.example.json` for poll/rate-limit tuning.

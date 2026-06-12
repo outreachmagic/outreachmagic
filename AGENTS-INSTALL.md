@@ -64,7 +64,7 @@ git --version
 Pin a **release tag** (recommended). Check latest: `pipeline.py update --check` or GitHub releases.
 
 ```bash
-OM_VERSION=v1.36.0
+OM_VERSION=v1.37.0
 INSTALL_DIR=$(mktemp -d)
 
 # Step 1 — download (does not execute)
@@ -79,8 +79,8 @@ grep ' install.sh$' "${INSTALL_DIR}/SHA256SUMS" | (cd "${INSTALL_DIR}" && shasum
 # Step 3 — optional: inspect before running
 less "${INSTALL_DIR}/install.sh"
 
-# Step 4 — run from local copy
-bash "${INSTALL_DIR}/install.sh" --platform <PLATFORM> --tag "${OM_VERSION}"
+# Step 4 — run from local copy (--yes required for non-interactive / agent installs)
+bash "${INSTALL_DIR}/install.sh" --platform <PLATFORM> --tag "${OM_VERSION}" --yes
 ```
 
 **Read-only platform detection** (no install side effects):

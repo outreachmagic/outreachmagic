@@ -31,9 +31,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
-DB = SKILL_ROOT / "databases" / "outreachmagic.db"
+sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+from om_paths import get_db_path, get_logs_dir  # noqa: E402
+
+DB = get_db_path()
 PIPELINE = SKILL_ROOT / "scripts" / "pipeline.py"
-LOG = SKILL_ROOT / "export" / "batch_sync.log"
+LOG = get_logs_dir() / "batch_sync.log"
 CURSOR_CFG = Path.home() / ".cursor/skills/outreachmagic/config/outreachmagic_config.json"
 BATCH_SIZE = int(os.environ.get("OM_SYNC_LEAD_BATCH", "2500"))
 # pipeline.py picks push batch size automatically (5000 when pending ≥ 2500).

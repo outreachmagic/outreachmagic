@@ -67,7 +67,7 @@ class TestBuildImportProfile(unittest.TestCase):
             find_result={"email": "j@acme.com", "validity": "valid"},
             normalize_linkedin_fn=norm.normalize_linkedin,
         )
-        self.assertEqual(profile["tags"], ["trykitt_attempted", "email_found"])
+        self.assertEqual(profile["tags"], ["trykitt_attempted"])
         self.assertEqual(profile["notes"], "trykitt verify: valid")
 
     def test_miss_tags(self):
@@ -91,7 +91,7 @@ class TestBuildImportProfile(unittest.TestCase):
             find_result={"email": "j@acme.com", "validity": "ultra_sure", "provider": "icypeas"},
             normalize_linkedin_fn=norm.normalize_linkedin,
         )
-        self.assertEqual(profile["tags"], ["icypeas_attempted", "email_found"])
+        self.assertEqual(profile["tags"], ["icypeas_attempted"])
         self.assertEqual(profile["notes"], "icypeas certainty: ultra_sure")
 
 
@@ -436,7 +436,7 @@ class TestCheckpointImport(unittest.TestCase):
         self.assertEqual(len(profiles), 1)
         self.assertEqual(profiles[0]["id"], 42)
         self.assertEqual(profiles[0]["email"], "jane@acme.com")
-        self.assertIn("email_found", profiles[0]["tags"])
+        self.assertIn("trykitt_attempted", profiles[0]["tags"])
 
     def test_load_profiles_from_checkpoint_json(self):
         from batch_runner import load_profiles_for_om_import

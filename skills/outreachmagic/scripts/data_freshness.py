@@ -93,7 +93,7 @@ def attach_freshness(result: Any, *, last_pull: Optional[str]) -> Any:
         out = dict(result)
         out.update(meta)
         return out
-    return {"data": result, **meta}
+    return {"data": result, "leads": result, **meta}
 
 
 def freshness_stderr_line(last_pull: Optional[str]) -> str:

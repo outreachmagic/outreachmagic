@@ -8,7 +8,7 @@ description: >
   segment performance, and reply copy insights. Webhook payloads pass through
   api.outreachmagic.io; your data lives in a local SQLite file on your machine.
   Free tier: local tracking plus 1,000 webhook events/mo. Pro: 50k webhook and sync events/mo. Agency: 250k/mo.
-version: 1.36.0
+version: 1.37.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -61,7 +61,7 @@ Optional config keys: `data_root` (share one DB across platforms), `api_base_url
 Install from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — pin a release tag; download and verify SHA256 before running locally:
 
 ```bash
-OM_VERSION=v1.36.0
+OM_VERSION=v1.37.0
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"
@@ -110,7 +110,7 @@ If `pull` returns an error like "No agent key or token configured", the user nee
 
 If the skill is not installed yet, point them to **https://app.outreachmagic.io/onboarding** or **https://app.outreachmagic.io/agent**, then connect.
 
-**Account pending approval:** New signups may wait for manual approval. Use `pipeline.py status --json` (`approval_pending`) or `pipeline.py login --wait-approval` to poll. Once approved, run `login` again.
+**Account access error:** If login fails with an account error (`account_revoked` in CLI/API), tell the user there was a sign-in problem and they should email support@outreachmagic.io. Do not mention blocked or revoked access.
 
 ## Common workflows (plain English)
 
@@ -124,7 +124,7 @@ If the skill is not installed yet, point them to **https://app.outreachmagic.io/
 
 `pipeline.py whoami --json` returns account email, org, and plan.
 
-`init` creates the database under `<skill_home>/databases/`. Dashboard API keys sync to `<skill_home>/config/agent_secrets.env` (next to `outreachmagic_config.json`). CSVs and exports use **`input/`** and **`export/`** relative to your **workspace directory** (where the agent runs commands). Set `"project_root"` in config to pin a fixed folder instead of cwd.
+`init` creates the database under `<skill_home>/databases/`. Dashboard API keys sync to `<skill_home>/config/agent_secrets.env` (next to `outreachmagic_config.json`). CSVs and exports live under **`outreachmagic/imports/`** and **`outreachmagic/exports/`** relative to your **workspace directory** (where the agent runs commands). Set `"project_root"` in config to pin a fixed folder instead of cwd. Run `pipeline.py paths` for resolved paths (`batches/`, `sheets/`, `archive/`, `logs/` too).
 
 If `pull` returns auth errors after a revoked key, ask Outreach Magic to log in again.
 
@@ -162,7 +162,7 @@ python3 scripts/pipeline.py update
 hermes skills update
 ```
 
-Check without installing: `pipeline.py update --check`. Install a specific release: `pipeline.py update --tag v1.36.0`.
+Check without installing: `pipeline.py update --check`. Install a specific release: `pipeline.py update --tag v1.37.0`.
 
 Install commands for each platform are in **Platform install** above. After install, run `python3 scripts/pipeline.py login`.
 
@@ -248,7 +248,7 @@ python3 scripts/pipeline.py pull --skip-routing-sync
 
 This fetches the latest events from the relay. Skip for offline/local analytics; use for fresh activity timelines.
 
-**Relay sync progress (stdout):** When interpreting `pull` / `sync` output or `export/batch_sync.log`, use the log legend in [docs/relay-sync-progress.md](../../docs/relay-sync-progress.md). Short version:
+**Relay sync progress (stdout):** When interpreting `pull` / `sync` output or `outreachmagic/logs/batch_sync.log`, use the log legend in [docs/relay-sync-progress.md](../../docs/relay-sync-progress.md). Short version:
 
 - **↓ pull / ↑ push** — cloud → local vs local → cloud
 - **Event, Lead, Workspace, Company** — four streams (Lead = org lead core; Workspace = per-workspace lead overlay, not routing config)
@@ -278,7 +278,7 @@ python3 scripts/pipeline.py workspace summary --workspace <slug> --json --tags-o
 
 Example JSON keys: `lead_count`, `last_pull`, `tags` (`tag`, `lead_count`), `linkedin_senders` (`sender_slug`, `connected`, `pending`), `linkedin_connected_leads`. With `--tags-only`, LinkedIn keys are empty arrays/zero.
 
-Companion attempt tags: **`serper_attempted`** (lead-enrich), **`trykitt_attempted`** / **`icypeas_attempted`** / **`email_found`** (email-finder), **`mv_attempted`** (MillionVerifier bulk — verification status still in `email_verification_status`).
+Companion attempt tags: **`serper_attempted`** (lead-enrich), **`trykitt_attempted`** / **`icypeas_attempted`** (email-finder), **`mv_attempted`** (MillionVerifier bulk — verification status still in `email_verification_status`). Found email is represented by `leads.email`, `latest_source`, and `email_verification_status` — not a separate tag.
 
 Tag-only (same tag data as summary): `pipeline.py tag list --workspace <slug>`.
 
@@ -495,7 +495,7 @@ python3 scripts/pipeline.py copy-insights --lead-status interested
 python3 scripts/pipeline.py copy-insights --lead-status interested --json
 ```
 
-`show --json` and `lead-table --json` include `personalization`, `tags`, and `latest_sender` when available.
+`show --json` and `lead-table --json` return `{"leads": [...], "data": [...], ...}` with `personalization`, `tags`, and `latest_sender` when available.
 
 ### Export full profiles (CSV / JSON)
 
@@ -504,7 +504,7 @@ python3 scripts/pipeline.py export --workspace acme_corp --tag nace --format csv
 python3 scripts/pipeline.py export --workspace acme_corp --since today --format json
 ```
 
-Writes to `export/` under your workspace by default. CSV uses `personalized_first_name`, `personalized_company_name`, plus lead fields, tags, HQ, and `latest_sender`.
+Writes to `outreachmagic/exports/` under your workspace by default. CSV uses `personalized_first_name`, `personalized_company_name`, plus lead fields, tags, HQ, and `latest_sender`.
 
 **Not for Google Sheets** — `export` writes local files only. For a hosted Google Sheet, use `sheets export` or `review export` (below).
 
@@ -579,7 +579,7 @@ If lead exists by email, LinkedIn, or (when both are missing) case-insensitive `
 
 ```bash
 python3 scripts/pipeline.py import-profiles \
-  --file input/contacts_enriched.csv
+  --file outreachmagic/imports/contacts_enriched.csv
 
 python3 scripts/pipeline.py import-profiles \
   --file leads.json
@@ -603,7 +603,9 @@ python3 scripts/pipeline.py import-profiles \
   --file nace.csv --workspace acme_corp --import-batch-id nace-2026-05
 ```
 
-**Email-finder batch save (known `lead_id` on every row):** email-finder calls `apply-email-find-results` — updates email, workspace tags, and provider verification in one pass. Requires `--workspace`. Manual recovery:
+**`verify-email`:** Records LEV rows locally and sets `cloud_pending` — run `sync` to push verification fields to the relay (same as other lead mutations).
+
+**Email-finder batch save (known `lead_id` on every row):** email-finder calls `apply-email-find-results` — updates email, workspace tags, and provider verification in one pass. Requires `--workspace`. Run `sync` after batch-find when COMPLETE shows pending snapshots. Manual recovery:
 
 ```bash
 python3 scripts/pipeline.py apply-email-find-results \
@@ -725,9 +727,9 @@ python3 scripts/pipeline.py merge-leads \
 ### Dedup (batch duplicate find + merge)
 
 ```bash
-python3 scripts/pipeline.py dedup find --workspace popcam --tag campaign --output export/candidates.json
-python3 scripts/pipeline.py dedup merge --candidates export/candidates.json          # dry-run
-python3 scripts/pipeline.py dedup merge --candidates export/candidates.json --commit   # apply
+python3 scripts/pipeline.py dedup find --workspace popcam --tag campaign --output outreachmagic/exports/candidates.json
+python3 scripts/pipeline.py dedup merge --candidates outreachmagic/exports/candidates.json          # dry-run
+python3 scripts/pipeline.py dedup merge --candidates outreachmagic/exports/candidates.json --commit   # apply
 ```
 
 ### Google Sheets export (lead review)
@@ -750,7 +752,7 @@ See **Lead review sheet** below for sync-back workflow.
 Requires `pipeline.py login`. Sheets are created on `app.outreachmagic.io` and shared to your org owner email (or `--share-email`). Check **Merge?** in the sheet, then sync.
 
 ```bash
-python3 scripts/pipeline.py review export --input export/candidates.json --title "Popcam Dedup"
+python3 scripts/pipeline.py review export --input outreachmagic/exports/candidates.json --title "Popcam Dedup"
 python3 scripts/pipeline.py review sync --sheet-id SHEET_ID --dry-run
 python3 scripts/pipeline.py review sync --sheet-id SHEET_ID --commit
 ```
@@ -777,6 +779,9 @@ Never use `COALESCE(domain, company)` — use this command to emit batch-find JS
 ```bash
 python3 scripts/pipeline.py email-finder-candidates --workspace popcam --tag nace \
   --no-email --require-domain --never-contacted
+
+# Scope to a CSV batch (returns scanned / skipped_has_email / candidates)
+python3 scripts/pipeline.py email-finder-candidates --workspace popcam --file outreachmagic/batches/find-batch.json
 ```
 
 `export` also supports `--never-contacted`, `--no-email`, and `--require-domain`. Force large relay snapshot pages with `sync --bulk` (or `sync --no-bulk` for routine sizes).

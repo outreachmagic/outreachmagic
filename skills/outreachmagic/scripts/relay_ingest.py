@@ -92,6 +92,21 @@ def build_plusvibe_status_metadata(
     return meta
 
 
+def build_calendly_status_metadata(envelope_event_type: str) -> dict:
+    """Status fields for Calendly webhook events (invitee.created / invitee.canceled)."""
+    meta: dict = {}
+    et = (envelope_event_type or "").lower()
+    if et == "invitee.created":
+        meta["lead_status_raw"] = "meeting_booked"
+        meta["lead_status_display"] = "meeting booked"
+        meta["lead_status_sentiment"] = "positive"
+    elif et == "invitee.canceled":
+        meta["lead_status_raw"] = "canceled"
+        meta["lead_status_display"] = "canceled"
+        meta["lead_status_sentiment"] = "negative"
+    return meta
+
+
 def relay_target_stage(
     platform: str,
     envelope_event_type: str,
@@ -650,6 +665,8 @@ def ingest_relay_event(
 
     if platform in PLUSVIBE_PLATFORMS:
         metadata.update(build_plusvibe_status_metadata(raw, signals, envelope_event_type))
+    if platform == "calendly":
+        metadata.update(build_calendly_status_metadata(envelope_event_type))
     if local_type == "email_bounce" and bounce_payload:
         metadata.update(build_bounce_event_metadata(bounce_payload, envelope_event_type))
 

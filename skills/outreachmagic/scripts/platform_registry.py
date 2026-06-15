@@ -429,6 +429,44 @@ PLATFORMS: dict[str, PlatformDef] = {
         extractor_spec=_DEFAULT_SPEC,
         event_mappings=_generic_email_mappings(),
     ),
+    "calendly": PlatformDef(
+        id="calendly",
+        label="Calendly",
+        channel="email",
+        category="sequencer",
+        setup_hint=(
+            "Generate a Personal Access Token in Calendly → Integrations → API & Webhooks, "
+            "then paste it in the connection form to automatically register the webhook."
+        ),
+        linkedin_platform=False,
+        extractor_spec={
+            "lead": {
+                "first_name": ("payload.invitee.name", "payload.name"),
+                "company_name": ("payload.invitee.company",),
+                "job_title": ("payload.invitee.job_title",),
+            },
+            "event": {
+                "campaign": ("payload.event_type.name",),
+                "campaign_name": ("payload.event_type.name",),
+                "subject": ("payload.event_type.name",),
+            },
+            "signals": {
+                "status": ("payload.status",),
+                "canceled": ("payload.invitee.canceled", "payload.canceled"),
+                "rescheduled": ("payload.invitee.rescheduled", "payload.rescheduled"),
+                "webhook_event": ("event",),
+            },
+            "identity": {
+                "email": ("payload.invitee.email", "payload.email"),
+                "name": ("payload.invitee.name", "payload.name"),
+            },
+        },
+        event_mappings=(
+            _em("invitee.created", "meeting_booked", "inbound", "interested", "meeting_booked"),
+            _em("invitee.canceled", "lead_disposition", "inbound", None, "lead_disposition",
+                "Meeting canceled — log as disposition, no stage change"),
+        ),
+    ),
     "clay": PlatformDef(
         id="clay",
         label="Clay",

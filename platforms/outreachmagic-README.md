@@ -1,11 +1,13 @@
 # Outreach Magic
 
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![MIT License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills)
-[![Cursor](https://img.shields.io/badge/Cursor-ready-black)](https://docs.cursor.com/skills)
-[![Hermes](https://img.shields.io/badge/Hermes-ready-purple)](https://hermes-agent.nousresearch.com/docs/skills)
+[![Cursor](https://img.shields.io/badge/Cursor-ready-007ACC)](https://docs.cursor.com/skills)
+[![Hermes](https://img.shields.io/badge/Hermes-ready-8B5CF6)](https://hermes-agent.nousresearch.com/docs/skills)
 
-Pipeline visibility for AI agents. Syncs events from your outreach tools into a local SQLite database your agent can query. Works with **Claude Code**, **Cursor**, and **Hermes**.
+Pipeline visibility for AI agents. Syncs Smartlead, Instantly, HeyReach,
+PlusVibe, EmailBison, Prosp, MasterInbox, and Calendly into a local SQLite
+database your agent can query. Works with **Claude Code**, **Cursor**, and **Hermes**.
 
 ## How it works
 
@@ -76,7 +78,7 @@ Don't see your tool? [Open a GitHub issue](https://github.com/outreachmagic/outr
 ## Manual install
 
 ```bash
-OM_VERSION=v1.38.4
+OM_VERSION=v1.38.5
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"

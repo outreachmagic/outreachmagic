@@ -1,6 +1,13 @@
 # Outreach Magic
 
-Cross-platform AI agent skill suite: **outreachmagic**, **lead-enrich**, and **email-finder**.
+Cross-platform AI agent skill suite. Install all three, or grab companions standalone:
+
+| Skill | Standalone | With OM (better together) |
+|-------|-----------|--------------------------|
+| **outreachmagic** | — | Pipeline DB, sequencer sync, cross-platform state |
+| **lead-enrich** | Serper searches → JSON output | Dedup before Serper, save to pipeline |
+| **email-finder** | trykitt/Icypeas → stdout | Pre-flight dedup, save to pipeline |
+
 Works with **Hermes**, **Cursor**, and **Claude Code** from this repo.
 
 ## Install
@@ -39,7 +46,9 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 
 ## API keys
 
-Configure providers and sequencer connections in the [Outreach Magic portal](https://app.outreachmagic.io) after `pipeline.py login`. Keys sync locally via `pipeline.py sync-secrets` — do not set shell env vars for interactive installs.
+Configure providers and sequencer connections in the [Outreach Magic portal](https://app.outreachmagic.io) after `pipeline.py login`. Keys sync locally via `pipeline.py sync-secrets`. Do not set shell env vars for interactive installs.
+
+Don't see your email finder, enrichment provider, or sequencer in our supported list? [Open a GitHub issue](https://github.com/outreachmagic/outreachmagic/issues) and we'll look at adding it.
 
 ## Layout
 
@@ -68,4 +77,4 @@ See [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT — [Outreach Magic](https://outreachmagic.io)
+MIT. [Outreach Magic](https://outreachmagic.io)

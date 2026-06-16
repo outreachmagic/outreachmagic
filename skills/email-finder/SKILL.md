@@ -1,9 +1,9 @@
 ---
 name: email-finder
 description: >
-  Find work emails with trykitt.ai and Icypeas (waterfall). Checks Outreach Magic
-  first to avoid duplicate API spend. Saves email and verification via outreachmagic.
-  Optional MillionVerifier for bulk re-check.
+  Find work emails with trykitt.ai and Icypeas (waterfall). Works standalone
+  (prints to stdout) or pairs with Outreach Magic for dedup, credit-saving, and
+  persistent SQLite storage. Optional MillionVerifier for bulk re-check.
 version: 2.2.24
 author: Outreach Magic
 license: MIT
@@ -20,14 +20,16 @@ required_environment_variables:
   - name: OUTREACHMAGIC_AGENT_KEY
     prompt: Outreach Magic agent key
     help: Create at https://app.outreachmagic.io/onboarding (starts with om_agent_)
-    required_for: Dedup and save to local SQLite
+    required_for: Dedup and save to OM pipeline (not needed for standalone find)
   - name: MILLIONVERIFIER_API_KEY
     prompt: MillionVerifier API key
     help: https://app.millionverifier.com — optional verify commands only
     required_for: verify / verify-bulk (optional)
 metadata:
   hermes:
-    tags: [sales, outreach, email, enrichment, leads, trykitt, icypeas, pipeline]
+    tags: [sales, outreach, email, enrichment, leads, trykitt, icypeas, pipeline, ecosystem:outreachmagic]
+    category: email
+    homepage: https://outreachmagic.io
     related_skills: [outreachmagic, lead-enrich]
     external_domains:
       - domain: api.trykitt.ai
@@ -42,15 +44,52 @@ metadata:
 
 # Email Finder
 
-Find work emails when you have **name + company domain**. **trykitt** first, **Icypeas** on miss. Checks outreachmagic before any paid lookup.
+Find work emails when you have **name + company domain**. **trykitt** first, **Icypeas** on miss.
 
-## Prerequisites
+**Works standalone** — just needs API keys. Pairs with **Outreach Magic** for
+credit-saving dedup, persistent storage, and cross-session availability.
 
-1. **outreachmagic** — `pipeline.py login`
-2. **API keys** — save in Dashboard → API Keys, then `pipeline.py sync-secrets` (writes `<skill_home>/config/agent_secrets.env`; scripts load **only** these keys for TryKitt/Icypeas/MV). Check source with `email_finder.py config` (`*_api_key_source` should be `agent_secrets`).
-3. **Batch:** `lead_id` on every row + **`--workspace`**
+## Setup
 
-Before find/batch, confirm keys: `python3 <SKILLS>/outreachmagic/scripts/pipeline.py sync-secrets --check --json` or `python3 scripts/email_finder.py config`.
+### Standalone (no OM)
+
+Just API keys. Results print to stdout. No database needed.
+
+| Key | For |
+|-----|-----|
+| `TRYKITT_API_KEY` | trykitt.ai (first in waterfall) — [trykitt.ai](https://trykitt.ai) |
+| `ICYPEAS_API_KEY` | Icypeas (fallback) — [app.icypeas.com](https://app.icypeas.com) |
+
+```bash
+python3 scripts/email_finder.py config  # verify keys loaded
+python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com
+# → prints result to stdout
+```
+
+### With Outreach Magic (dedup + save)
+
+Adds pre-flight dedup (skip leads already in OM) and saves results to your local
+SQLite pipeline. Requires [outreachmagic skill](https://github.com/outreachmagic/outreachmagic)
+with `pipeline.py login`.
+
+| Key | For |
+|-----|-----|
+| All standalone keys above + | |
+| `OUTREACHMAGIC_AGENT_KEY` | OM login via `pipeline.py login` |
+
+```bash
+python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com --save --workspace CLIENT
+python3 scripts/email_finder.py batch-find --workspace CLIENT --yes --workers 3 --delay 3 input.json
+```
+
+Keys sync via Dashboard → `pipeline.py sync-secrets`. Verify source:
+`python3 scripts/email_finder.py config` (`*_api_key_source` should be `agent_secrets`).
+
+### Batch format
+
+```json
+[{"lead_id": 12345, "name": "Jane Doe", "company_domain": "acme.com"}]
+```
 
 ## Production batch defaults
 
@@ -62,14 +101,14 @@ Before find/batch, confirm keys: `python3 <SKILLS>/outreachmagic/scripts/pipelin
 
 ## Agent rules
 
-1. Check OM first (`check` / `find`).
+1. **With OM:** check before find (`check` / `find` with `--save`). **Standalone:** skip check — run find directly.
 2. Never fabricate emails.
 3. Waterfall: trykitt → Icypeas when both keys set.
-4. Tags: `trykitt_attempted` / `icypeas_attempted`; `mv_attempted` after MillionVerifier bulk (result lives in OM `email_verification_status`). Found state is `leads.email`, `latest_source`, and `email_verification_status`.
-5. Batch: `lead_id` on every row; `--workspace` required for OM save.
+4. **With OM:** tags `trykitt_attempted` / `icypeas_attempted`; `mv_attempted` after MillionVerifier bulk (result lives in OM `email_verification_status`). Found state is `leads.email`, `latest_source`, and `email_verification_status`.
+5. **With OM:** `lead_id` on every row; `--workspace` required for OM save. **Standalone:** omit `--save` or use `--no-save` to print results to stdout.
 6. Run `batch-find --dry-run` before `--yes` to see skip counts (leads may already have email in OM while CSV `email` is empty).
 7. `batch-find` re-checks OM immediately before each API call (skips leads resolved since batch start).
-8. `batch-find` writes `{output-base}.csv` / `.json` under `outreachmagic/exports/` by default, then saves to OM (`apply-email-find-results` when all rows have `lead_id`).
+8. **With OM:** `batch-find` writes CSV/JSON under `outreachmagic/exports/`, then saves to OM. **Standalone:** add `--skip-om` to run without OM (writes to cwd).
 9. COMPLETE box shows **IMPORT** and **RELAY** (pending snapshots — run `pipeline.py sync`; upload is never automatic).
 10. **Credits** — **1 credit per email found** (trykitt / Icypeas) or **1 credit per email verified** (MillionVerifier). Not-found lookups cost **0** credits.
 
@@ -82,12 +121,17 @@ Before find/batch, confirm keys: `python3 <SKILLS>/outreachmagic/scripts/pipelin
 ## Commands
 
 ```bash
+# Standalone (no OM) — prints result to stdout
+python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com
+
+# Standalone batch (no OM) — writes CSV to cwd
+python3 scripts/email_finder.py batch-find --skip-om --yes --dry-run input.json
+
+# With OM — find + dedup + save
+python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com --save --workspace CLIENT
+
 # Dry run (skip counts, no API spend)
 python3 scripts/email_finder.py batch-find --workspace CLIENT --dry-run outreachmagic/batches/leads.json
-
-# Find + save one lead
-python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com \
-  --save --workspace CLIENT
 
 # Batch (find + OM save)
 python3 scripts/email_finder.py batch-find --workspace CLIENT --yes \
@@ -113,8 +157,9 @@ Resume a crashed batch by re-running the same `batch-find` command (skips comple
 
 | User says | You do |
 |-----------|--------|
-| "Find emails for my list" | `email-finder-candidates --workspace W` (or `--file batch.json`) → `batch-find --dry-run` → `batch-find --yes` → `sync` if COMPLETE shows pending |
-| "Find Patrick at stripe.com" | `find --name … --domain stripe.com` |
+| "Find Patrick at stripe.com" | `find --name … --domain stripe.com` (standalone) or with `--save --workspace W` (OM) |
+| "Find emails for my CSV" (with OM) | `batch-find --dry-run` → `batch-find --yes` |
+| "Find emails for my CSV" (standalone) | `batch-find --skip-om --dry-run` → `batch-find --skip-om --yes` |
 | "Retry failed email lookup" | Same `batch-find` command with `--retry-errors` |
 
 ## Troubleshooting
@@ -129,4 +174,8 @@ Resume a crashed batch by re-running the same `batch-find` command (skips comple
 
 ## Funnel
 
-`lead-enrich` → OM (keep `lead_id`, stamp `serper_attempted`) → `batch-find --workspace W`. Both companions skip leads already tagged (`serper_attempted` / `trykitt_attempted` / `icypeas_attempted`).
+Starts useful alone: `find` / `batch-find --skip-om`. Pairs with
+**lead-enrich** (research → domain) and **Outreach Magic** (credit-saving dedup,
+persistent SQLite, cross-session availability). Learn more at
+[outreachmagic.io](https://outreachmagic.io). Both companions skip leads
+already tagged (`serper_attempted` / `trykitt_attempted` / `icypeas_attempted`).

@@ -2,10 +2,10 @@
 name: lead-enrich
 description: >
   Research people and enrich lead profiles using Serper.dev Google Search.
-  Checks Outreach Magic first to avoid wasting API credits on existing leads.
-  Extracts company domain, website, and LinkedIn URL via the agent's built-in
-  model — no external LLM API needed. Saves results locally via the
-  outreachmagic skill. For email finding, use the email-finder companion skill.
+  Works standalone (Serper queries → JSON output) or pairs with Outreach Magic
+  for dedup (skip Serper when leads already have LinkedIn/email). Extracts
+  company domain, website, and LinkedIn URL via the agent's built-in model —
+  no external LLM API needed. For email finding, use the email-finder companion.
 version: 2.1.10
 author: Outreach Magic
 license: MIT
@@ -18,10 +18,12 @@ required_environment_variables:
   - name: OUTREACHMAGIC_AGENT_KEY
     prompt: Outreach Magic agent key
     help: Create at https://app.outreachmagic.io/onboarding (starts with om_agent_)
-    required_for: outreachmagic dedup checks and saving enriched leads
+    required_for: Dedup checks and saving enriched leads (not needed for standalone Serper)
 metadata:
   hermes:
-    tags: [sales, outreach, crm, enrichment, leads, research, linkedin, serper]
+    tags: [sales, outreach, crm, enrichment, leads, research, linkedin, serper, ecosystem:outreachmagic]
+    category: research
+    homepage: https://outreachmagic.io
     related_skills: [outreachmagic, email-finder]
     external_domains:
       - domain: google.serper.dev
@@ -32,30 +34,56 @@ metadata:
 
 # Lead Enrich — Person Research for Outreach Pipelines
 
-Research a person (name + company) and save structured enrichment back to
-Outreach Magic. Uses **Serper.dev** for search, the **agent's built-in model**
-for extraction, and the **outreachmagic** skill for persistence.
+Research a person (name + company) using **Serper.dev** Google Search. Uses the
+**agent's built-in model** for extraction — no external LLM API needed.
 
-> **🪙 Credit-saving:** always checks outreachmagic *first*. If the lead already
-> has **LinkedIn + email** at the **same company**, no Serper credits are spent.
-> LinkedIn without email skips Serper — use **email-finder** for trykitt find when
-> the user wants an address. Email-only records still get LinkedIn searches
-> (1–2 Serper credits). Name matches at a different company return `ambiguous`
-> so APIs are not skipped by mistake.
+**Works standalone** — just a Serper key. Pairs with **Outreach Magic** for
+credit-saving dedup (skip Serper when leads already have LinkedIn/email) and
+persistent storage across sessions.
 
-## Prerequisites
+> **🪙 Credit-saving (with OM):** checks outreachmagic *first*. If the lead
+> already has **LinkedIn + email** at the **same company**, zero Serper credits
+> spent. LinkedIn without email skips Serper — use **email-finder** for trykitt.
+> Email-only records still get LinkedIn searches (1–2 Serper credits). Name
+> matches at a different company return `ambiguous` so APIs aren't wasted.
 
-### 1. Serper.dev API key
+## Setup
+
+### Standalone (no OM)
+
+Just a Serper key. Run `serper-search` directly. Results print as JSON.
+
+| Key | For |
+|-----|-----|
+| `SERPER_API_KEY` | [serper.dev](https://serper.dev) — Google Search API |
+
+```bash
+python3 scripts/enrich.py serper-search --query '"Acme Corp" official website'
+python3 scripts/enrich.py serper-search --query 'site:linkedin.com/in Jane Doe Acme Corp'
+# → pipe results to your model for extraction, or use serper-format
+```
+
+Set `SERPER_API_KEY` in your environment or via `~/.hermes/skills/lead-enrich/config.json`.
+
+### With Outreach Magic (dedup + save)
+
+Adds pre-flight dedup (skip leads already in OM) and saves structured enrichment
+to your local SQLite pipeline. Requires [outreachmagic skill](https://github.com/outreachmagic/outreachmagic)
+with `pipeline.py login`.
+
+| Key | For |
+|-----|-----|
+| All standalone keys above + | |
+| `OUTREACHMAGIC_AGENT_KEY` | OM login via `pipeline.py login` |
+
+```bash
+python3 scripts/enrich.py check "Jane Doe" "Acme Corp"        # 0 credits
+python3 scripts/enrich.py batch-check --workspace W input.json # batch dedup
+```
 
 Save your Serper key in **Outreach Magic portal → Settings → API Keys**, then run
-`pipeline.py sync-secrets`. Keys sync to `config/agent_secrets.env` — verify with
-`enrich.py config` (`serper_api_key_source` should be `agent_secrets`).
-
-### 2. outreachmagic skill
-
-Required for saving results. Connect via `pipeline.py login` (browser device auth).
-
-**Hermes:** Install skills under `~/.hermes/skills/`; profile dirs use symlinks only (see outreachmagic `install.sh` or `docs/hermes-skills-layout.md`). `enrich.py` finds outreachmagic at `~/.hermes/skills/outreachmagic/`.
+`pipeline.py sync-secrets`. Verify with `enrich.py config` (`serper_api_key_source`
+should be `agent_secrets`).
 
 ### 3. Email finding (email-finder skill)
 
@@ -114,11 +142,11 @@ python3 scripts/enrich.py backfill --fields title,industry --workspace your_work
 
 ## Agent Behavior Rules (Important)
 
-1. **Dedup first, always.** Before any Serper API call, run `enrich.py check`. If
+1. **Dedup first (with OM).** Before any Serper API call, run `enrich.py check`. If
    the lead has **LinkedIn + email** at the same company, skip Serper entirely.
    If LinkedIn exists but **no email**, skip Serper and offer **email-finder** when
    the user wants an address. Never spend Serper credits on leads already complete
-   in outreachmagic.
+   in outreachmagic. **Standalone:** skip check — run `serper-search` directly.
 2. **Serper only.** Prefer `enrich.py serper-search --query "..."` (stdlib HTTP,
    key from config/env). Or use `curl` with `$SERPER_API_KEY` — never embed the
    key in chat logs. Never scrape Google or LinkedIn directly.
@@ -126,16 +154,16 @@ python3 scripts/enrich.py backfill --fields title,industry --workspace your_work
    No external LLM APIs (no Gemini, no OpenAI) — your own reasoning is the
    extraction engine.
 4. **Complete research before saving.** Run the full search ladder first, then save once.
-5. **Save via outreachmagic.** Use `import-profiles` for leads with LinkedIn.
+5. **Save via outreachmagic (with OM).** Use `import-profiles` for leads with LinkedIn.
    Always append **`serper_attempted`** to tags on save (included automatically in
    `map-to-om` output). For leads without LinkedIn but with a known `lead_id`, stamp
    the tag via `stamp-attempted` or `import-profiles` with `id` + tags — do not rely
    on notes alone. For read-only dedup checks use `pipeline.py query` or
    `enrich.py check` — never raw `INSERT`/`UPDATE`. Never run both save paths for
-   the same person.
-6. **Tag after enrichment.** Every lead that goes through Serper must get
+   the same person. **Standalone:** save JSON output to a file — no OM needed.
+6. **Tag after enrichment (with OM).** Every lead that goes through Serper must get
    `serper_attempted` on save. Prevents re-processing on future runs.
-7. **Check tag before Serper.** Before spending Serper credits, check for
+7. **Check tag before Serper (with OM).** Before spending Serper credits, check for
    `serper_attempted` (via `enrich.py check --skip-tagged` or `skip_reason` in
    check output). If present and LinkedIn is still empty, skip unless the user
    explicitly wants a retry (e.g. stale >30 days).
@@ -519,6 +547,8 @@ Params: `["your_workspace"]`
 | Claude Code | `install.sh --platform claude` | `~/.claude/skills/lead-enrich/` |
 
 **Hermes:** Real files live under `~/.hermes/skills/`. Each profile uses symlinks only (`profiles/<name>/skills/lead-enrich` → `../../../skills/lead-enrich`). Do not copy the skill into a profile directory.
+
+Learn more at [outreachmagic.io](https://outreachmagic.io).
 
 ---
 

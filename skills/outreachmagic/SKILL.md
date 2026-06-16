@@ -14,7 +14,7 @@ license: MIT
 platforms: [linux, macos]
 metadata:
   cursor:
-    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm]
+    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm, cold-email, tracking, calendly, ecosystem:outreachmagic]
     related_skills: [lead-enrich, email-finder]
     external_domains:
       - domain: api.outreachmagic.io
@@ -22,8 +22,9 @@ metadata:
       - domain: app.outreachmagic.io
         purpose: Portal API for tokens, billing, and workspace routing config sync
   hermes:
-    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm]
+    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm, cold-email, tracking, calendly, ecosystem:outreachmagic]
     category: productivity
+    homepage: https://outreachmagic.io
     related_skills: [lead-enrich, email-finder]
     external_domains:
       - domain: api.outreachmagic.io

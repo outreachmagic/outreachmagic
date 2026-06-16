@@ -111,7 +111,7 @@ Options:
   --no-profiles            Hermes only: skip profile symlinks
   --all-profiles           Hermes only: symlink all existing profiles (default when profiles/ exists)
   --profile NAME           Hermes only: symlink one profile (repeatable)
-  --tag TAG                outreachmagic release tag (e.g. v1.38.6)
+  --tag TAG                outreachmagic release tag (e.g. v1.38.7)
   --lead-enrich-tag TAG    lead-enrich release tag (default from skill-suite.json)
   --email-finder-tag TAG   email-finder release tag (default from skill-suite.json)
   --dry-run                Print planned actions without writing

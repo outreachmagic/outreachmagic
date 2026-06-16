@@ -13,7 +13,7 @@ from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagi
 Pin a release tag. Download first — do not pipe remote scripts directly into `bash`.
 
 ```bash
-OM_VERSION=v1.38.6
+OM_VERSION=v1.38.7
 INSTALL_DIR=$(mktemp -d)
 
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \

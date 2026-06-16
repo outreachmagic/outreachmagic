@@ -2167,7 +2167,8 @@ def merge_leads(
                         conn.execute("DELETE FROM workspace_leads WHERE id = ?", (row["id"],))
                     else:
                         conn.execute(
-                            "UPDATE workspace_leads SET lead_id = ? WHERE id = ?",
+                            """UPDATE workspace_leads SET lead_id = ?, cloud_pending = 1, updated_at = datetime('now')
+                               WHERE id = ?""",
                             (keep_id, row["id"]),
                         )
             else:

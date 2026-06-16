@@ -1203,7 +1203,7 @@ def apply_lead_review_sync(
         ws_sets: list[str] = []
         ws_params: list[Any] = []
         if row_changes.get("workspace_stage"):
-            ws_sets.extend(["status = ?", "cloud_pending = 1"])
+            ws_sets.append("status = ?")
             ws_params.append(row_changes["workspace_stage"])
         if row_changes.get("lead_status"):
             ws_sets.append("current_status_label = ?")
@@ -1215,7 +1215,7 @@ def apply_lead_review_sync(
             ws_sets.append("contact_priority = ?")
             ws_params.append(row_changes["contact_order"])
         if ws_sets:
-            ws_sets.append("updated_at = datetime('now')")
+            ws_sets.extend(["cloud_pending = 1", "updated_at = datetime('now')"])
             ws_params.extend([workspace_id, lead_id])
             conn.execute(
                 f"UPDATE workspace_leads SET {', '.join(ws_sets)} "

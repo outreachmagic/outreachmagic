@@ -78,7 +78,7 @@ Don't see your tool? [Open a GitHub issue](https://github.com/outreachmagic/outr
 ## Manual install
 
 ```bash
-OM_VERSION=v1.38.5
+OM_VERSION=v1.38.6
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"

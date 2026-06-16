@@ -11,9 +11,9 @@
     "scripts/progress.py": "81a99a1a6a4d5f238d5fd0f40853ce617fc1e305c332d30a3c37978f8f04de65",
     "scripts/providers.py": "d6a34e2c464a41283902e81027882c9041b7c12439814d5f8744f95894239d94",
     ".gitignore": "341c76ab4124d205ea796850984d042aefae420226f5017983fab00e435d746e",
-    "README.md": "b16bfac612970a72a1e4644a0bd75bce8592374628ad2a0e2de50a2560a1ef07",
+    "README.md": "934f6f8fc393bbfb33aedb0113dd4eae722d7abd65386d80387826bfd90a75df",
     "SECURITY.md": "4c09df7f7942ca74f6c569b46919afed9c9edc70665a542d5026e96295cc0408",
-    "SKILL.md": "ffe14f8e667d23f9d3b32e2365dcd385149eaed7caf7aad1538c6d88a96e7f38",
+    "SKILL.md": "8c6ab4a3ff3706d920c4f0bd7759bc3ef9941c9ecfbb424c563555787cfec01b",
     "config.example.json": "9d87bf65becd3c419659bf876e25bd25bfefbf904fef445bba428254a80e00b7",
     "default.env": "9ad001bca5c49187f82a543ba9ee787a9684caf1b6c64043354546e8305e7c54",
     "references/email-finding-research.md": "5ac996ad83a9ea456cb70210b1310cd4a148ab899e93f54d93cdc1594f4224ec"

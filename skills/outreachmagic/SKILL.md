@@ -2,12 +2,13 @@
 name: outreachmagic
 description: >
   The outreach data layer for AI agents. Syncs events, replies, and lead
-  attributes from Smartlead, Instantly, Heyreach, PlusVibe, and EmailBison
-  into a local SQLite database your agent can query directly. Use for pipeline
-  views, client briefings, deliverability diagnostics, campaign breakdowns,
-  segment performance, and reply copy insights. Webhook payloads pass through
-  api.outreachmagic.io; your data lives in a local SQLite file on your machine.
-  Free tier: local tracking plus 1,000 webhook events/mo. Pro: 50k webhook and sync events/mo. Agency: 250k/mo.
+  attributes from Smartlead, Instantly, Heyreach, PlusVibe, EmailBison, Prosp,
+  MasterInbox, and Calendly into a local SQLite database your agent can query
+  directly. Use for pipeline views, client briefings, deliverability diagnostics,
+  campaign breakdowns, segment performance, and reply copy insights. Webhook
+  payloads pass through api.outreachmagic.io; your data lives in a local SQLite
+  file on your machine. Free tier: local tracking plus 1,000 webhook events/mo.
+  Pro: 50k webhook and sync events/mo. Agency: 250k/mo.
 version: 1.38.0
 author: Outreach Magic
 license: MIT
@@ -36,7 +37,8 @@ metadata:
 # Outreach Magic — Pipeline Visibility
 
 The outreach data layer for AI agents. Auto-logs outreach to a local SQLite database.
-Free forever for local work. Connect Smartlead, Heyreach, Instantly via paid relay.
+Free forever for local work. Connect Smartlead, Heyreach, Instantly, PlusVibe,
+EmailBison, Prosp, MasterInbox, and Calendly via paid relay.
 
 **Outreach Magic suite:** Pair with **lead-enrich** (Serper research + free dedup) and
 **email-finder** (trykitt find). See [skill suite docs](https://github.com/outreachmagic/outreachmagic/blob/main/docs/skill-suite.md).

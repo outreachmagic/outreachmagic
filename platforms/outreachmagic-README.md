@@ -48,6 +48,8 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 
 Configure providers and sequencer connections in the [Outreach Magic portal](https://app.outreachmagic.io) after `pipeline.py login`. Keys sync locally via `pipeline.py sync-secrets`. Do not set shell env vars for interactive installs.
 
+Supports: Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, Calendly, and more.
+
 Don't see your email finder, enrichment provider, or sequencer in our supported list? [Open a GitHub issue](https://github.com/outreachmagic/outreachmagic/issues) and we'll look at adding it.
 
 ## Layout

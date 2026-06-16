@@ -1,6 +1,6 @@
 # Outreach Magic for Hermes
 
-Pipeline visibility for AI agents. Auto-logs outreach to a local SQLite database. Connect Smartlead, Heyreach, Instantly, PlusVibe via paid relay.
+Pipeline visibility for AI agents. Auto-logs outreach to a local SQLite database. Connect Smartlead, Heyreach, Instantly, PlusVibe, EmailBison, Prosp, MasterInbox, and Calendly via paid relay.
 
 Installs **outreachmagic**, **lead-enrich**, and **email-finder** from the unified repo. Skills live in `~/.hermes/skills/`; Hermes profiles get symlinks only.
 

@@ -126,7 +126,7 @@ Never paste secrets into chat.
 
 Once signed in at https://app.outreachmagic.io, open **Settings** to:
 
-- Connect sequencer tools (Smartlead, Instantly, Heyreach, PlusVibe, EmailBison)
+- Connect sequencer tools (Smartlead, Instantly, Heyreach, PlusVibe, EmailBison, Prosp, MasterInbox, Calendly)
 - Enable email-finder providers (TryKitt, Icypeas) and set API keys
 - Enable lead research (Serper) and set your API key
 - Optionally add MillionVerifier for bulk email re-verification

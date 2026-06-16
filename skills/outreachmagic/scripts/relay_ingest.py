@@ -721,7 +721,8 @@ def ingest_relay_event(
 
     ws_status = target_stage or "prospecting"
     ws_lead_id = om.upsert_workspace_lead(
-        conn, DEFAULT_ORG_ID, workspace_id, lead_id, status=ws_status
+        conn, DEFAULT_ORG_ID, workspace_id, lead_id, status=ws_status,
+        mark_cloud_pending=False,
     )
     if target_stage:
         stage_ts = event_time or datetime.now(timezone.utc).isoformat()

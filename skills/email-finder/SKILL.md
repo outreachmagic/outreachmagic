@@ -4,7 +4,7 @@ description: >
   Waterfall email enrichment with trykitt.ai and Icypeas. Works standalone
   (prints to stdout) or pairs with Outreach Magic for dedup, credit-saving, and
   persistent SQLite storage. Optional MillionVerifier for bulk re-check.
-version: 2.2.25
+version: 2.2.26
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -121,6 +121,8 @@ Keys sync via Dashboard → `pipeline.py sync-secrets`. Verify source:
 ```json
 [{"lead_id": 12345, "name": "Jane Doe", "company_domain": "acme.com"}]
 ```
+
+Optionally include `"linkedin_url"` when available — trykitt uses it for higher match rates.
 
 ## Commands
 

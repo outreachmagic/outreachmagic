@@ -1363,8 +1363,8 @@ def email_finder_candidates_from_leads(leads: list[dict]) -> list[dict]:
             "company_domain": domain,
             "company": lead.get("company_display") or lead.get("company") or "",
         }
-        linkedin = lead.get("linkedin") or lead.get("linkedin_url") or ""
-        if linkedin:
-            row["linkedin"] = linkedin
+        linkedin_url = lead.get("linkedin_url") or lead.get("linkedin") or ""
+        if linkedin_url:
+            row["linkedin_url"] = linkedin_url
         out.append(row)
     return out

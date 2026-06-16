@@ -3562,6 +3562,11 @@ def tag_add(workspace_id: str, lead_id: int, tag: str) -> dict:
                VALUES (?, ?, ?, ?)""",
             (tag_id, workspace_id, lead_id, tag),
         )
+        conn.execute(
+            """UPDATE workspace_leads SET cloud_pending = 1, updated_at = datetime('now')
+               WHERE workspace_id = ? AND lead_id = ?""",
+            (workspace_id, lead_id),
+        )
         conn.commit()
         return {"status": "added", "tag": tag, "lead_id": lead_id}
     except sqlite3.IntegrityError:
@@ -3577,6 +3582,12 @@ def tag_remove(workspace_id: str, lead_id: int, tag: str) -> dict:
         "DELETE FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ? AND tag = ?",
         (workspace_id, lead_id, normalize_tag(tag)),
     )
+    if cur.rowcount:
+        conn.execute(
+            """UPDATE workspace_leads SET cloud_pending = 1, updated_at = datetime('now')
+               WHERE workspace_id = ? AND lead_id = ?""",
+            (workspace_id, lead_id),
+        )
     conn.commit()
     conn.close()
     if cur.rowcount:
@@ -3603,6 +3614,12 @@ def tag_set(workspace_id: str, lead_id: int, tags: list[str]) -> dict:
             (tag_id, workspace_id, lead_id, tag),
         )
         added.append(tag)
+    if added:
+        conn.execute(
+            """UPDATE workspace_leads SET cloud_pending = 1, updated_at = datetime('now')
+               WHERE workspace_id = ? AND lead_id = ?""",
+            (workspace_id, lead_id),
+        )
     conn.commit()
     conn.close()
     return {"status": "set", "tags": added, "lead_id": lead_id}
@@ -3782,6 +3799,13 @@ def tag_bulk(workspace_id: str, lead_ids: list[int], tags: list[str], *, remove:
                     changed += 1
                 except sqlite3.IntegrityError:
                     pass
+    if changed:
+        for lead_id in lead_ids:
+            conn.execute(
+                """UPDATE workspace_leads SET cloud_pending = 1, updated_at = datetime('now')
+                   WHERE workspace_id = ? AND lead_id = ?""",
+                (workspace_id, lead_id),
+            )
     conn.commit()
     conn.close()
     action = "removed" if remove else "added"
@@ -12051,7 +12075,7 @@ def main():
                 conn, DEFAULT_ORG_ID, ws_row["id"], args.id, status=args.stage)
             stage_ts = datetime.now(timezone.utc).isoformat()
             conn.execute(
-                "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
+                "UPDATE workspace_leads SET status = ?, stage_entered_at = ?, cloud_pending = 1 WHERE id = ?",
                 (args.stage, stage_ts, ws_lead_id))
             conn.commit()
             conn.close()

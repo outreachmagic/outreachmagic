@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -12,6 +14,7 @@ EF_SCRIPTS = ROOT / "skills" / "email-finder" / "scripts"
 sys.path.insert(0, str(EF_SCRIPTS))
 
 from batch_runner import (  # noqa: E402
+    BATCH_CSV_COLUMNS,
     IncrementalWriter,
     checkpoint_row_is_complete,
     count_checkpoint_errors,
@@ -107,3 +110,69 @@ def test_finalize_rewrites_json():
         data = json.loads(Path(f"{base}.json").read_text())
         assert len(data) == 1
         assert data[0]["email"] == "a@acme.com"
+
+
+def _seed_csv(path: str, rows: list[dict[str, str]], *, header: str | None = None) -> None:
+    """Write a CSV with BATCH_CSV_COLUMNS (or a custom header) for test fixtures."""
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        if header:
+            writer.writerow([header])
+        else:
+            writer.writerow(BATCH_CSV_COLUMNS)
+        for row in rows:
+            writer.writerow([row.get(c, "") for c in BATCH_CSV_COLUMNS])
+
+
+def test_load_existing_corrupted_header_preserves_data():
+    """When the CSV header is corrupted (e.g. by an external editor), data rows
+    should still be loaded instead of renaming the file and losing them."""
+    rows = [
+        {"resume_key": "k1", "lead_id": "1", "name": "Alice", "domain": "acme.com",
+         "email": "a@acme.com", "validity": "valid", "error": "",
+         "provider": "trykitt", "api_calls": "1", "status": "found",
+         "icypeas_status": "", "timestamp": "t1"},
+        {"resume_key": "k2", "lead_id": "2", "name": "Bob", "domain": "bobco.com",
+         "email": "", "validity": "", "error": "",
+         "provider": "trykitt", "api_calls": "1", "status": "not_found",
+         "icypeas_status": "", "timestamp": "t2"},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        base = str(Path(tmp) / "corrupted")
+        csv_path = f"{base}.csv"
+
+        # Simulate an editor that writes a BOM or alters the first column header
+        _seed_csv(csv_path, rows, header="\ufeffresume_key,lead_id,name")
+
+        writer = IncrementalWriter(base)
+        assert len(writer.buffer) == 2
+        assert writer.buffer[0]["resume_key"] == "k1"
+        assert writer.buffer[0]["email"] == "a@acme.com"
+        assert writer.buffer[1]["resume_key"] == "k2"
+        assert writer.buffer[1]["status"] == "not_found"
+        assert "k1" in writer.done_keys
+        assert "k2" in writer.done_keys
+        # Verify the original file was NOT renamed
+        assert os.path.exists(csv_path)
+
+
+def test_load_existing_missing_header_column():
+    """When a different column replaces resume_key, data should still load
+    without trashing the file."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = str(Path(tmp) / "mismatch")
+        csv_path = f"{base}.csv"
+
+        _seed_csv(csv_path, [
+            {"resume_key": "k1", "lead_id": "1", "name": "Alice",
+             "domain": "acme.com", "email": "a@acme.com",
+             "validity": "", "error": "", "provider": "trykitt",
+             "api_calls": "1", "status": "found", "icypeas_status": "",
+             "timestamp": "t1"},
+        ], header="id,name,email,status")
+
+        writer = IncrementalWriter(base)
+        assert len(writer.buffer) == 1
+        assert writer.buffer[0]["resume_key"] == "k1"
+        assert writer.buffer[0]["email"] == "a@acme.com"
+        assert os.path.exists(csv_path)

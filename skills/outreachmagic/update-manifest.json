@@ -1,8 +1,8 @@
 {
-  "version": "1.38.7",
+  "version": "1.38.8",
   "files": {
-    "SKILL.md": "f5832227670efb4ebd89151533973736c2f4869bf1972021ce3a82ddebdd9d47",
-    "VERSION": "d083c4a06190fa885c34a7e07ccf899c708df8d8fa595ed5cb65cf01da1c5b39",
+    "SKILL.md": "42becd6f140184631678f04b0997df1935d2d953146d79514ea86a0727dd8b1e",
+    "VERSION": "bc7259ef3509cb75ecc21ac08d0f84973d2929b1054d2de67f5d2e0884846cb9",
     "activity_sync.py": "a1d36da5b1b35863ecdff8e366d89601ef622729978b148ee1e1cba0da3a04d2",
     "agent_secrets_cloud.py": "fe478a2280b7799d7b7ae551149c38a43f1ec6f0ac05b6b9d3142f29293a56e3",
     "api_key_pool.py": "3174a8f8509ca97fcefe3f1c9a175cfdead450941b8cfb0f19df7af4e7b34caf",
@@ -17,23 +17,23 @@
     "event_classification.py": "95dd951213fa08f27f871fcfa0717bc9598d9d71d01e687ce90ba20fe3d1e9fe",
     "formatters.py": "16c07eb4fc75eff106e81f5d6096a7842dad7f1cfcb70d56d8ba81f998038541",
     "import_formats.py": "3958b48171053e00a7a82d08fa85d4b36cdeafc4ad76de204c221ff26c634ce6",
-    "lead_sync.py": "62fd4b3cc87451551e17cf67f45db19f792ccd746732428823e22ab9bc93a759",
+    "lead_sync.py": "db07a92e4c3f2d3843e34a8c6056206757fc9ab0440c582c2022ca136bcdc0b9",
     "om_paths.py": "5b48b2cd3359de292efd064acb0cf0279a11c8b0a4adba4f9ec71c2344fae3ec",
-    "pipeline.py": "50957a0951a1a03fc7b5b6d2dd9155b29a6138d6bb217b6e0f48d88e56a4dcf2",
+    "pipeline.py": "4a805683b4ed8eddb202369c5bd5f837557e40017705e99889bb03f762c2bc04",
     "pipeline_dedup.py": "2a05954c95307353ca646273373a3c0c2cbffe77b8af22c43b68bb4f65e6bf82",
-    "pipeline_lead_review.py": "f446a420c7ab50ec3bc7626cb6e98c7d3a890c1097319322600a6b59777b60c1",
+    "pipeline_lead_review.py": "fda8f6d4a20422e18ff453240907ad17a0b2b328a25b3bd8fb2453bc8218f114",
     "platform_registry.py": "b118a2f9a509f4dd9b5ea73f6bd51809fabd7d3b84135bbbd5a159663482dbf8",
     "quarantine_resolutions.py": "62f0f3080f3174317cf946453a5b964b963008ceb76b55067a59671b7d53eeca",
     "query_cli.py": "53a00fd4cf65af2e00ce0d70493c1585e224f529e73c3c84b8381ae5309cffc9",
     "read_queries.py": "38a0d2744d64e409e27bc5b1abf2bb21dce0801472bc4286d1c7ef285c0eb6c1",
     "relay_extractors.py": "c742cc48bf1e97f9f4dce55f6fe9fac9c86cd6d796ca41ccd9e0918e65f93820",
-    "relay_ingest.py": "d5a462ff37caacdee568aa7b81d8add2f395fc4d520adf5cffd6a4dfa7dd7b09",
+    "relay_ingest.py": "ec152e4895eb9fb19dd9c59a0c4b2e33cc19ac29ffa3ad9f242d1260d7768bb5",
     "review_cloud.py": "d44c8b646591a911afc38c64a7e75de90c404d8da390e8fadcf9e4f47a11bdd7",
     "routing_cloud.py": "c36722e750c052b77c1c84756680a7380cb18e2af496bd360c3d74c4ee5f02b4",
     "schema.py": "9007534e4295398afb17656e4e5e5c6a819a1440a3ad74bb8d54d6c293fef762",
     "schema_views.py": "0307f3d44c157742dc1092c9914bd9bed2a1684180a73a9afc9dd6f41260ee08",
     "user_messages.py": "f0efa125fd6cf2b07a3d0445fa09084b57a02bbf5c70ef2ebffb207d02ff799d",
     "workspace_archive.py": "d150960581f33c365defed0ba8cf038d6c972ea53a33980d1d3062dd4ebf8934",
-    "workspace_routing.py": "09965485a005fe5c90537c9034dde81a804a7a3ac5a34b06a983f2075354c0f6"
+    "workspace_routing.py": "b4327115ffb4f8775b5f77ecdfa44cf5074bfdcf7878f21de25c897c180385ce"
   }
 }

@@ -778,6 +778,7 @@ def apply_agent_lead_workspace_payload(
         current_status_label=status_label,
         current_status_sentiment=status_sentiment,
         contact_priority=contact_pri,
+        mark_cloud_pending=False,
     )
     if "tags" in payload:
         conn.execute(

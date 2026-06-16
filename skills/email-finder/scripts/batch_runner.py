@@ -565,12 +565,18 @@ class IncrementalWriter:
             with open(self.csv_path, encoding="utf-8", newline="") as fh:
                 first_line = fh.readline()
                 if not first_line.strip().startswith(BATCH_CSV_COLUMNS[0]):
-                    if not by_key:
-                        recovered = self.csv_path.replace(".csv", "-recovered.csv")
-                        try:
-                            os.rename(self.csv_path, recovered)
-                        except OSError:
-                            pass
+                    print(
+                        f"⚠️  CSV header mismatch in {self.csv_path}:",
+                        f"expected '{BATCH_CSV_COLUMNS[0]}' but got "
+                        f"{first_line.strip()[:60]!r}. The file may have been",
+                        "modified by an external editor. Reading rows anyway.",
+                        file=sys.stderr,
+                    )
+                    fh.seek(0)
+                    reader = csv.DictReader(fh, fieldnames=BATCH_CSV_COLUMNS)
+                    next(reader, None)  # skip the corrupted header row
+                    for row in reader:
+                        _merge_row(row)
                 else:
                     fh.seek(0)
                     reader = csv.DictReader(fh)
@@ -620,10 +626,6 @@ class IncrementalWriter:
                 self.error_keys.add(resume_key)
                 self.done_keys.discard(resume_key)
             existing = next((i for i, r in enumerate(self.buffer) if r.get("resume_key") == resume_key), None)
-            if existing is not None:
-                self.buffer[existing] = row_dict
-            else:
-                self.buffer.append(row_dict)
             if existing is not None:
                 self.buffer[existing] = row_dict
             else:

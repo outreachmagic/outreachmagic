@@ -1,5 +1,10 @@
 # Outreach Magic
 
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills)
+[![Cursor](https://img.shields.io/badge/Cursor-ready-black)](https://docs.cursor.com/skills)
+[![Hermes](https://img.shields.io/badge/Hermes-ready-purple)](https://hermes-agent.nousresearch.com/docs/skills)
+
 Pipeline visibility for AI agents. Syncs events from your outreach tools into a local SQLite database your agent can query. Works with **Claude Code**, **Cursor**, and **Hermes**.
 
 ## How it works
@@ -16,35 +21,62 @@ Pipeline visibility for AI agents. Syncs events from your outreach tools into a 
 
 Every reply, click, bounce, and booked call lands in a database on your machine. Your agent reads it directly. No CSV exports, no merged sheets, no API pagination.
 
-**After install, ask your agent things like:**
-- "Show me leads who replied this week"
-- "Which campaign has the highest reply rate?"
-- "Pull the latest events and give me a client briefing"
-- "Are there leads still in interested stage from yesterday?"
+## Getting started
 
-## What's included
+**1. Install the skills**
 
-| Skill | What it does | Standalone? |
-|-------|-------------|-------------|
-| **outreachmagic** | Pipeline DB, sequencer sync, agent queries | — |
-| **lead-enrich** | Serper research, company/LinkedIn lookup | Yes |
-| **email-finder** | trykitt + Icypeas email lookup | Yes |
-
-Install all three, or grab companions alone.
-
-## Install
-
-Paste this into Claude Code, Cursor, or Hermes:
+In Claude Code, Cursor, or Hermes, paste:
 
 ```
 Fetch https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md
 and follow its instructions exactly to install the Outreach Magic skill suite on this machine.
 ```
 
-**Manual install:**
+Or manually:
 
 ```bash
-OM_VERSION=v1.38.3
+npx skills add outreachmagic/outreachmagic
+```
+
+**2. Connect your account**
+
+```bash
+python3 <skill_home>/scripts/pipeline.py login
+```
+
+This opens a browser to sign in. Come back when you're done.
+
+**3. Ask your agent**
+
+```
+"Show me leads who replied this week"
+"Which campaign has the highest reply rate?"
+"Pull the latest events and give me a client briefing"
+"Are there leads still in interested stage from yesterday?"
+```
+
+## What's included
+
+| Skill | What it does | Works standalone? |
+|-------|-------------|-------------------|
+| **outreachmagic** | Pipeline DB, sequencer sync, agent queries | Requires relay account |
+| **lead-enrich** | Serper research, company and LinkedIn lookup | Yes, with just a Serper key |
+| **email-finder** | trykitt + Icypeas email lookup | Yes, with just API keys |
+
+Install all three from this repo, or grab companions alone from their repos.
+
+## API keys
+
+Configure sequencer connections and provider keys in the [portal](https://app.outreachmagic.io) after login. Keys sync locally via `pipeline.py sync-secrets`.
+
+**Supported platforms:** Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, Calendly, and more.
+
+Don't see your tool? [Open a GitHub issue](https://github.com/outreachmagic/outreachmagic/issues).
+
+## Manual install
+
+```bash
+OM_VERSION=v1.38.4
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"
@@ -53,18 +85,6 @@ bash "${INSTALL_DIR}/install.sh" --platform hermes --tag "${OM_VERSION}"
 ```
 
 Use `--platform cursor` or `--platform claude` for other agents.
-
-After install: run `python3 <skill_home>/scripts/pipeline.py login` to connect your account.
-
-Portal: [app.outreachmagic.io/onboarding](https://app.outreachmagic.io/onboarding)
-
-## API keys
-
-Configure sequencer connections and provider keys in the portal after login. Keys sync locally via `pipeline.py sync-secrets`.
-
-Supports: Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, Calendly, and more.
-
-Don't see your tool in the list? [Open a GitHub issue](https://github.com/outreachmagic/outreachmagic/issues).
 
 ## Layout
 

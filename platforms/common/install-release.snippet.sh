@@ -1,6 +1,6 @@
 # Canonical secure install snippet — synced into docs by scripts/sync_install_docs.py
 # OM_VERSION is substituted at release time from skills/outreachmagic/scripts/VERSION
-OM_VERSION=v1.38.1
+OM_VERSION=v1.38.2
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \
   -o "${INSTALL_DIR}/install.sh"

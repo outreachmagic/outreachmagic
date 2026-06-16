@@ -72,7 +72,7 @@ Adds pre-flight dedup (skip leads already in OM) and saves results to your local
 SQLite pipeline. Requires [outreachmagic skill](https://github.com/outreachmagic/outreachmagic)
 with `pipeline.py login`.
 
-| Key | For |
+| Keys | For |
 |-----|-----|
 | All standalone keys above + | |
 | `OUTREACHMAGIC_AGENT_KEY` | OM login via `pipeline.py login` |
@@ -81,6 +81,10 @@ with `pipeline.py login`.
 python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com --save --workspace CLIENT
 python3 scripts/email_finder.py batch-find --workspace CLIENT --yes --workers 3 --delay 3 input.json
 ```
+
+Before find/batch with OM, confirm keys:
+`python3 <SKILLS>/outreachmagic/scripts/pipeline.py sync-secrets --check --json`
+or `python3 scripts/email_finder.py config`.
 
 Keys sync via Dashboard → `pipeline.py sync-secrets`. Verify source:
 `python3 scripts/email_finder.py config` (`*_api_key_source` should be `agent_secrets`).

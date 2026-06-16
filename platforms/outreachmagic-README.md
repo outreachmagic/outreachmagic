@@ -25,7 +25,7 @@ before starting. Stop and show me any errors.
 **Manual install:**
 
 ```bash
-OM_VERSION=v1.38.1
+OM_VERSION=v1.38.2
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"

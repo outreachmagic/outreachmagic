@@ -6,7 +6,7 @@ description: >
   for dedup (skip Serper when leads already have LinkedIn/email). Extracts
   company domain, website, and LinkedIn URL via the agent's built-in model —
   no external LLM API needed. For email finding, use the email-finder companion.
-version: 2.1.10
+version: 2.1.11
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]

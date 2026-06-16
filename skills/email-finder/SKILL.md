@@ -4,7 +4,7 @@ description: >
   Find work emails with trykitt.ai and Icypeas (waterfall). Works standalone
   (prints to stdout) or pairs with Outreach Magic for dedup, credit-saving, and
   persistent SQLite storage. Optional MillionVerifier for bulk re-check.
-version: 2.2.24
+version: 2.2.25
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]

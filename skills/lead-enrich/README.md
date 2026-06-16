@@ -1,49 +1,61 @@
-# Lead Enrich — Person Research for AI Agents
+# Lead Enrich
 
-Research people and enrich lead profiles using **Serper.dev** Google Search.
-Works with **Hermes**, **Cursor**, and **Claude Code**. Pairs with
-[Outreach Magic](https://github.com/outreachmagic/outreachmagic) for local SQLite
-dedup and save. Use **[email-finder](https://github.com/outreachmagic/email-finder)** for trykitt find.
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills)
+[![Cursor](https://img.shields.io/badge/Cursor-ready-black)](https://docs.cursor.com/skills)
+[![Hermes](https://img.shields.io/badge/Hermes-ready-purple)](https://hermes-agent.nousresearch.com/docs/skills)
 
-> **Credit-saving:** checks your local outreachmagic database first. Skips Serper
-> when the same person **and company** already have LinkedIn (and email when present).
-> Stamps **`serper_attempted`** on every enrichment run so re-runs skip already-tried leads.
+Person research for AI agents. Uses **Serper.dev** Google Search to find company domains, websites, and LinkedIn profiles. Your agent's built-in model handles extraction — no external LLM API needed.
 
-## What it does
+Works standalone or pairs with [Outreach Magic](https://github.com/outreachmagic/outreachmagic) for credit-saving dedup and persistent storage.
 
-Given a name + company, the agent:
+Part of the [Outreach Magic skill suite](https://github.com/outreachmagic/outreachmagic).
 
-1. Checks outreachmagic (`enrich.py check` / `batch-check`) — tag-aware dedup, 0 credits when complete or already attempted
-2. Runs targeted Serper searches (company website, LinkedIn profile)
-3. Extracts structured fields using the agent's built-in model (no external LLM)
-4. Saves via outreachmagic `import-profiles` with `serper_attempted` tag
-5. Optionally runs **email-finder** when the user wants an address
+## How it works
 
-## Batch workflow
-
-```bash
-python3 scripts/enrich.py batch-check --workspace YOUR_WS input.csv
-python3 scripts/enrich.py batch-check --workspace YOUR_WS --skip-tagged input.csv
-python3 scripts/enrich.py stamp-attempted --workspace YOUR_WS --lead-ids 1,2,3
 ```
+name + company ──► Serper.dev search ──► agent model ──► structured JSON ──► stdout (standalone)
+                                                        LinkedIn, domain               │
+                                                        company website          with OM: saves to
+                                                                                 local SQLite DB
+```
+
+Standalone: just a Serper key, results as JSON. With Outreach Magic: checks your pipeline first. If you already have that lead with LinkedIn and email, zero Serper credits spent.
+
+## Quick start
+
+**Standalone (no OM needed):**
+```bash
+python3 scripts/enrich.py serper-search --query '"Acme Corp" official website'
+python3 scripts/enrich.py serper-search --query 'site:linkedin.com/in Jane Doe Acme Corp'
+```
+
+**With Outreach Magic (dedup + save):**
+```bash
+python3 scripts/enrich.py check "Jane Doe" "Acme Corp"       # 0 credits
+python3 scripts/enrich.py batch-check --workspace W input.csv # batch dedup
+```
+
+After research, save to your pipeline with `import-profiles`.
 
 ## Install
 
-Install the full suite (or outreachmagic + this skill) via the main repo agent guide:
+Install via the main repo agent guide: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md)
 
-https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md
-
-Suite install: [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — `install.sh --platform <name>` (installs all three skills).
+Or install the full suite:
+```bash
+npx skills add outreachmagic/outreachmagic
+```
 
 ## API keys
 
-| Key | Required? |
-|-----|-----------|
-| `SERPER_API_KEY` | Yes — [serper.dev](https://serper.dev) |
-| Outreach Magic (`pipeline.py login`) | Yes — dedup + save |
+| Key | For |
+|-----|-----|
+| `SERPER_API_KEY` | [Serper.dev](https://serper.dev) Google Search |
+| Outreach Magic login | Dedup + save (only with OM) |
 
-Email find: install **email-finder** + `TRYKITT_API_KEY` or `ICYPEAS_API_KEY`. Full key table: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md#third-party-api-keys-companions).
+Don't see your enrichment provider? [Open a GitHub issue](https://github.com/outreachmagic/outreachmagic/issues).
 
 ## License
 
-MIT — [Outreach Magic](https://outreachmagic.io)
+MIT. [Outreach Magic](https://outreachmagic.io)

@@ -1,44 +1,68 @@
 # Email Finder
 
-Find work emails with **trykitt.ai** and **Icypeas** (waterfall). Checks **outreachmagic** before spending credits; saves to your local pipeline.
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills)
+[![Cursor](https://img.shields.io/badge/Cursor-ready-black)](https://docs.cursor.com/skills)
+[![Hermes](https://img.shields.io/badge/Hermes-ready-purple)](https://hermes-agent.nousresearch.com/docs/skills)
+
+Find work emails through **trykitt** and **Icypeas**. Works standalone or pairs with [Outreach Magic](https://github.com/outreachmagic/outreachmagic) for credit-saving dedup and persistent storage.
 
 Part of the [Outreach Magic skill suite](https://github.com/outreachmagic/outreachmagic).
 
-## Install
+## How it works
 
-Install via the main repo agent guide:
+```
+                    trykitt ──┐
+name + domain ────►          ├── waterfall ──► email result ──► stdout (standalone)
+                    Icypeas ──┘                                      │
+                                                               with OM: saves to
+                                                                local SQLite DB
+```
 
-https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md
-
-Suite install: [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — `install.sh --platform <name>` (installs all three skills).
-
-## API keys
-
-| Key | Required? |
-|-----|-----------|
-| `TRYKITT_API_KEY` | One of trykitt / Icypeas for find — [trykitt.ai](https://trykitt.ai) |
-| `ICYPEAS_API_KEY` | |
-| Outreach Magic (`pipeline.py login`) | Yes — dedup + save |
-| `MILLIONVERIFIER_API_KEY` | Optional (`verify*` commands) |
-
-Full key table: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md#third-party-api-keys-companions).
+Standalone: just API keys, results print to stdout. With Outreach Magic: checks your local DB first, skips leads you already have, saves the result so you don't run the same search twice.
 
 ## Quick start
 
+**Standalone (no OM needed):**
 ```bash
-# Waterfall (default)
-python3 scripts/email_finder.py batch-find --workspace YOUR_WS --yes \
-  --output-base outreachmagic/exports/emails --workers 3 --delay 3 leads.json
-
-# IcyPeas only (stricter rate limits)
-python3 scripts/email_finder.py batch-find --provider icypeas --workspace YOUR_WS --yes \
-  --workers 2 --delay 3 --output-base outreachmagic/exports/icypeas leads.json
+python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com
 ```
 
-Every batch row needs **`lead_id`**; pass **`--workspace`** so OM save runs via `apply-email-find-results` (fast path). Without `lead_id`, save uses tiered `import-profiles`. See `config.example.json` for poll/rate-limit tuning.
+**With Outreach Magic (dedup + save):**
+```bash
+python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com --save --workspace CLIENT
+```
 
-If OM save fails, re-sync with `import-to-om --file {output-base}.csv --workspace YOUR_WS` (reads the batch checkpoint directly).
+**Batch (standalone):**
+```bash
+python3 scripts/email_finder.py batch-find --skip-om --yes --dry-run input.json
+```
+
+**Batch (with OM):**
+```bash
+python3 scripts/email_finder.py batch-find --workspace CLIENT --yes --workers 3 --delay 3 input.json
+```
+
+## Install
+
+Install via the main repo agent guide: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md)
+
+Or install the full suite:
+```bash
+npx skills add outreachmagic/outreachmagic
+```
+
+## API keys
+
+| Key | For |
+|-----|-----|
+| `TRYKITT_API_KEY` | trykitt.ai (first in waterfall) |
+| `ICYPEAS_API_KEY` | Icypeas (fallback) |
+| `MILLIONVERIFIER_API_KEY` | Optional bulk verification |
+| Outreach Magic login | Dedup + save (only with OM) |
+
+Don't see your email finder provider? [Open a GitHub issue](https://github.com/outreachmagic/outreachmagic/issues).
 
 ## License
 
-MIT — [Outreach Magic](https://outreachmagic.io)
+MIT. [Outreach Magic](https://outreachmagic.io)

@@ -23,7 +23,7 @@ Skills live in `~/.hermes/skills/<name>/` — Hermes's built-in skills directory
 ## Install
 
 ```bash
-OM_VERSION=v1.38.2
+OM_VERSION=v1.38.3
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"

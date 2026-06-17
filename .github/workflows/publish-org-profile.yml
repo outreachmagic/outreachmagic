@@ -1,0 +1,48 @@
+name: Publish GitHub org profile
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "yes" to publish the org profile to outreachmagic/.github'
+        required: true
+        default: ''
+
+concurrency:
+  group: publish-org-profile
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish org profile README
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "yes" ]; then
+            echo "Aborted: type 'yes' in the confirm input to publish."
+            exit 1
+          fi
+
+      - name: Stage profile files
+        run: |
+          STAGING=staging-org-profile
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING/profile"
+          cp docs/github-org-profile.md "$STAGING/profile/README.md"
+
+      - name: Push to outreachmagic/.github
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          cd staging-org-profile
+          git init -b main
+          git config user.name "Outreach Magic Bot"
+          git config user.email "bot@outreachmagic.io"
+          git add -A
+          git commit -m "Update org profile README"
+          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/.github.git"
+          git push origin main --force

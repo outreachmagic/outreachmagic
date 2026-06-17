@@ -110,7 +110,7 @@ If `pull` returns an error like "No agent key or token configured", the user nee
 
 If the skill is not installed yet, point them to **https://app.outreachmagic.io/onboarding** or **https://app.outreachmagic.io/agent**, then connect.
 
-**Account access error:** If login fails with an account error (`account_revoked` in CLI/API), tell the user there was a sign-in problem and they should email support@outreachmagic.io. Do not mention blocked or revoked access.
+**Account access error:** If login fails with an account error (`account_revoked` in CLI/API), tell the user there was a sign-in problem and direct them to support@outreachmagic.io for help.
 
 ## Common workflows (plain English)
 
@@ -759,7 +759,7 @@ python3 scripts/pipeline.py review sync --sheet-id SHEET_ID --commit
 
 ### Lead review sheet (export → edit → sync)
 
-Requires login. Sheets are created on `app.outreachmagic.io` with ✏️/🔒 header icons (no column colors). All usage notes live in the `lead_id` header cell note; freeze row and dropdowns apply before the export URL is returned. Detail levels: `--detail basic|standard|full|custom`. Use `review presets` for the current column catalog (full adds `lev_*`, `be_*`, `latest_source*`, `linkedin_sender_<handle>` keys). Dropdowns: `workspace_stage`, `lead_sentiment`. Export prints row progress and API timing to stderr.
+Requires login. Sheets are created on `app.outreachmagic.io` with pencil/lock header icons (no column colors). All usage notes live in the `lead_id` header cell note; freeze row and dropdowns apply before the export URL is returned. Detail levels: `--detail basic|standard|full|custom`. Use `review presets` for the current column catalog (full adds `lev_*`, `be_*`, `latest_source*`, `linkedin_sender_<handle>` keys). Dropdowns: `workspace_stage`, `lead_sentiment`. Export prints row progress and API timing to stderr.
 
 ```bash
 python3 scripts/pipeline.py review presets --template lead-review

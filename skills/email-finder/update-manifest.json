@@ -1,5 +1,5 @@
 {
-  "version": "2.2.26",
+  "version": "1.0.0",
   "files": {
     "scripts/batch_runner.py": "5223be36971ab001e2a074b8a281d1956b2b971ca5d5c52afe94edc672307ed1",
     "scripts/companion_common.py": "bc63f3e2f1e79d6d634afc3ef1074357238139df5c5dfb8b9f25bd59d03b78bc",
@@ -13,7 +13,7 @@
     ".gitignore": "341c76ab4124d205ea796850984d042aefae420226f5017983fab00e435d746e",
     "README.md": "934f6f8fc393bbfb33aedb0113dd4eae722d7abd65386d80387826bfd90a75df",
     "SECURITY.md": "4c09df7f7942ca74f6c569b46919afed9c9edc70665a542d5026e96295cc0408",
-    "SKILL.md": "66c3ffb986b9bc9a656dcf3f945040c37aa2f3ac077688bb3197ccc86ef2e6b8",
+    "SKILL.md": "eea1de67ee622ae10082a9211f73c482a38e4ca2e3acdf6d651d413697e88208",
     "config.example.json": "9d87bf65becd3c419659bf876e25bd25bfefbf904fef445bba428254a80e00b7",
     "default.env": "9ad001bca5c49187f82a543ba9ee787a9684caf1b6c64043354546e8305e7c54",
     "references/email-finding-research.md": "5ac996ad83a9ea456cb70210b1310cd4a148ab899e93f54d93cdc1594f4224ec"

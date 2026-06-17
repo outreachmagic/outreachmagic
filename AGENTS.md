@@ -40,6 +40,12 @@ git push origin main --tags
 
 Companion tags: `email-finder-v*` / `lead-enrich-v*` (see `skill-suite.json` → `release_tag_prefix`).
 
+## Testing before tagging
+
+- **`dev_repo` config** — point `outreachmagic_config.json` at a local clone. `pipeline.py update` copies from disk.
+- **`--channel main`** — merge to monorepo `main`, then run `pipeline.py update --channel main` on the test machine. CI pushes `main` to the public repo on every merge.
+- **RC tags** — tag `vX.Y.Z-rc.1` to publish a prerelease to the public repo. Testers run `pipeline.py update --tag vX.Y.Z-rc.1`.
+
 ## Public vs private
 
 GitHub Actions publish **only** whitelisted skill files to `outreachmagic/*` public repos. Never put secrets under `skills/*/scripts/`. User secrets live in `skills/outreachmagic/config/` (not published).

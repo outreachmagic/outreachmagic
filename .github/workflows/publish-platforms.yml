@@ -2,6 +2,8 @@ name: Publish outreachmagic
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
@@ -68,13 +70,20 @@ jobs:
           git config user.name "Outreach Magic Bot"
           git config user.email "bot@outreachmagic.io"
           git add -A
-          git commit -m "Release ${{ github.ref_name }}"
-          git tag "${{ github.ref_name }}"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            git commit -m "Release ${{ github.ref_name }}"
+            git tag "${{ github.ref_name }}"
+          else
+            git commit -m "Update to ${{ github.sha }}"
+          fi
           git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/outreachmagic.git"
           git push origin main --force
-          git push origin "${{ github.ref_name }}" --force
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            git push origin "${{ github.ref_name }}" --force
+          fi
 
       - name: Publish GitHub Release install assets
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: |
@@ -85,9 +94,17 @@ jobs:
             gh release upload "$TAG" --repo "$REPO" --clobber \
               staging/install.sh staging/SHA256SUMS
           else
-            gh release create "$TAG" --repo "$REPO" \
-              --title "$TAG" \
-              --notes "Outreach Magic release $TAG" \
-              --latest \
-              staging/install.sh staging/SHA256SUMS
+            if [[ "$TAG" == *-* ]]; then
+              gh release create "$TAG" --repo "$REPO" \
+                --title "$TAG" \
+                --notes "Outreach Magic release $TAG" \
+                --prerelease \
+                staging/install.sh staging/SHA256SUMS
+            else
+              gh release create "$TAG" --repo "$REPO" \
+                --title "$TAG" \
+                --notes "Outreach Magic release $TAG" \
+                --latest \
+                staging/install.sh staging/SHA256SUMS
+            fi
           fi

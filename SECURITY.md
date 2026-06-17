@@ -94,7 +94,7 @@ Development overrides (in `outreachmagic_config.json`, not environment variables
 Install from a pinned release (download → verify → run — never `curl | bash`):
 
 ```bash
-OM_VERSION=v1.38.9
+OM_VERSION=v1.0.0
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" \
   -o "${INSTALL_DIR}/install.sh"

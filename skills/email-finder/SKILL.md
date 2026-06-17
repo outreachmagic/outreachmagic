@@ -4,7 +4,7 @@ description: >
   Waterfall email enrichment with trykitt.ai and Icypeas. Works standalone
   (prints to stdout) or pairs with Outreach Magic for dedup, credit-saving, and
   persistent SQLite storage. Optional MillionVerifier for bulk re-check.
-version: 2.2.26
+version: 1.0.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]

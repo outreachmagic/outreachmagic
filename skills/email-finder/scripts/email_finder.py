@@ -334,6 +334,23 @@ def cmd_find(
                 "existing": existing,
             }, indent=2))
             return
+    if not om_dir and save:
+        cc.print_om_setup_box()
+        print(
+            "⚠️  Outreach Magic is not connected.\n"
+            "   The email provider API will run, but results will NOT be saved.\n"
+            "   Install Outreach Magic to save results and avoid wasting credits on\n"
+            "   leads that may already have an email in your database.\n"
+            "   Install: https://github.com/outreachmagic/outreachmagic\n"
+            "   Or run: pipeline.py update (if already installed)\n",
+            file=sys.stderr,
+        )
+    elif not om_dir:
+        print(
+            "⚠️  Outreach Magic is not connected. Results will NOT be saved.\n"
+            "   Install from: https://github.com/outreachmagic/outreachmagic\n",
+            file=sys.stderr,
+        )
     result = run_find_with_fallback(cfg, full_name=name, domain=domain, linkedin=linkedin)
     existing_lead_id = None
     if om_dir and existing.get("lead_id"):

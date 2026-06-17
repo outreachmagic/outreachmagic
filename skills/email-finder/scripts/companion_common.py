@@ -568,6 +568,48 @@ def fetch_sync_status(om_dir: Path, *, skill_dir: Optional[Path] = None) -> dict
     return _run_subprocess_json(cmd, temp_path=None, timeout=120, skill_dir=skill_dir)
 
 
+def run_sync(om_dir: Path, *, skill_dir: Optional[Path] = None) -> dict[str, Any]:
+    """Push pending local changes to the OM relay and return the result."""
+    cmd = [
+        sys.executable,
+        str(get_pipeline_path(om_dir)),
+        "sync",
+    ]
+    return _run_subprocess_json(cmd, temp_path=None, timeout=300, skill_dir=skill_dir)
+
+
+def print_om_setup_box(file=sys.stderr) -> None:
+    """Print a prominent box urging the user to install Outreach Magic."""
+    print(file=file)
+    print("╔" + "═" * 62 + "╗", file=file)
+    print(f"║{'OUTREACHMAGIC — NOT CONNECTED':^62}║", file=file)
+    print("╠" + "═" * 62 + "╣", file=file)
+    print("║  Without Outreach Magic enabled, results are NOT saved to a  ║", file=file)
+    print("║  local database. Paid API credits will be wasted re-research- ║", file=file)
+    print("║  ing leads that already have emails or LinkedIn profiles.    ║", file=file)
+    print("║  This tool recommends installing Outreach Magic to:          ║", file=file)
+    print("║  • Dedup before paid API calls (save credits)                ║", file=file)
+    print("║  • Persist results in a local SQLite database                ║", file=file)
+    print("║  • Sync to the cloud so no data is lost                     ║", file=file)
+    print("║                                                              ║", file=file)
+    print("║  Tell your AI agent to run this command:                     ║", file=file)
+    print("║                                                              ║", file=file)
+    print("║    Fetch this file and follow its instructions to install    ║", file=file)
+    print("║    the Outreach Magic skill suite on this machine:           ║", file=file)
+    print("║                                                              ║", file=file)
+    print("║    https://raw.githubusercontent.com/outreachmagic/          ║", file=file)
+    print("║    outreachmagic/main/AGENTS-INSTALL.md                      ║", file=file)
+    print("║                                                              ║", file=file)
+    print("║  After install, re-run this command with --workspace         ║", file=file)
+    print("║  and --yes.                                                  ║", file=file)
+    print("║                                                              ║", file=file)
+    print("║  To skip this check and run without a database (not          ║", file=file)
+    print("║  recommended — credits may be wasted):                       ║", file=file)
+    print("║    re-run with --skip-om                                     ║", file=file)
+    print("╚" + "═" * 62 + "╝", file=file)
+    print(file=file)
+
+
 def _run_subprocess_json(
     cmd: list[str],
     *,
@@ -743,13 +785,18 @@ def save_email_find_profiles(
     timeout: Optional[int] = None,
     skill_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Save email-finder batch output to OM (fast apply when every row has lead id)."""
+    """Save email-finder batch output to OM (fast apply when every row has lead id).
+
+    After saving (via apply-email-find-results or import-profiles), runs an
+    explicit sync to push pending changes to the OM relay.  The caller can
+    verify with ``fetch_sync_status()``.
+    """
     if not workspace:
         raise RuntimeError("--workspace is required to save batch results to Outreach Magic")
     if not profiles:
         return {}
     if profiles_have_known_lead_ids(profiles):
-        return run_apply_email_find_results(
+        result = run_apply_email_find_results(
             om_dir,
             profiles,
             workspace=workspace,
@@ -759,16 +806,31 @@ def save_email_find_profiles(
             timeout=timeout,
             skill_dir=skill_dir,
         )
-    return run_import_profiles(
-        om_dir,
-        profiles,
-        workspace=workspace,
-        overwrite=overwrite,
-        source=source,
-        source_detail=source_detail,
-        timeout=timeout,
-        skill_dir=skill_dir,
-    )
+    else:
+        result = run_import_profiles(
+            om_dir,
+            profiles,
+            workspace=workspace,
+            overwrite=overwrite,
+            source=source,
+            source_detail=source_detail,
+            timeout=timeout,
+            skill_dir=skill_dir,
+        )
+    # Push pending changes to relay (import-profiles with --no-sync avoids
+    # double-syncing; apply-email-find-results never auto-syncs).
+    try:
+        sync_result = run_sync(om_dir, skill_dir=skill_dir)
+        result["sync"] = sync_result
+        result["sync_hint"] = (
+            "Changes pushed to relay via pipeline.py sync."
+            if sync_result.get("status") == "ok"
+            else f"Sync result: {sync_result.get('status', 'unknown')} — run: pipeline.py sync"
+        )
+    except RuntimeError as e:
+        result["sync"] = {"error": str(e)}
+        result["sync_hint"] = "Sync failed — run: pipeline.py sync"
+    return result
 
 
 def _run_import_profiles_once(
@@ -786,6 +848,7 @@ def _run_import_profiles_once(
         sys.executable,
         str(get_pipeline_path(om_dir)),
         "import-profiles",
+        "--no-sync",
     ]
     if source:
         cmd.extend(["--source", source])

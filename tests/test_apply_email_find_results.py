@@ -477,9 +477,11 @@ class TestCompanionFastPath(unittest.TestCase):
             workspace="ws1",
             source="trykitt",
         )
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_run.call_args_list[0][0][0]
         self.assertIn("apply-email-find-results", cmd)
         self.assertNotIn("import-profiles", cmd)
+        # Second call should be sync (explicit push from save_email_find_profiles)
+        self.assertIn("sync", mock_run.call_args_list[1][0][0])
 
     @patch.object(ef_cc, "_run_subprocess_json")
     @patch.object(ef_cc, "_append_json_or_file")

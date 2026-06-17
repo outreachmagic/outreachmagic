@@ -2860,6 +2860,13 @@ IMPORT_EXTRA_FIELDS = (
     "member linkedin sales nav id", "linkedin_sales_nav_id", "sales_nav_id",
 )
 
+# Canonical → alias mapping applied before _extract_extra_import_fields.
+# Keys in this dict are checked first; if the canonical key is absent from
+# the raw row and an alias exists, the value is copied to the canonical key.
+_EXTRA_FIELD_ALIASES: dict[str, str] = {
+    "domain": "company_domain",
+}
+
 RESERVED_IMPORT_FIELDS = frozenset([
     "company_domain", "is_connected_linkedin", "is_linkedin_request_pending",
     "lead_status", "lead_sentiment", "import_name", "list_source",
@@ -2885,6 +2892,10 @@ def csv_import_source_fields(
 def _extract_extra_import_fields(raw: dict) -> dict[str, str]:
     """Extract non-PROFILE_ALIASES fields from the raw CSV/JSON row."""
     out: dict[str, str] = {}
+    # Normalise common aliases before the direct-lookup loop.
+    for alias, canonical in _EXTRA_FIELD_ALIASES.items():
+        if canonical not in raw and alias in raw:
+            raw[canonical] = raw[alias]
     for key in IMPORT_EXTRA_FIELDS:
         val = raw.get(key)
         if val is not None:
@@ -5844,12 +5855,16 @@ def _init_relay_sync_log() -> None:
 
 
 def _relay_log(msg: str) -> None:
-    """Stdout + optional log file, always flushed (safe for tail -f)."""
+    """Stderr + optional log file, always flushed (safe for tail -f).
+
+    Uses stderr so callers parsing stdout (e.g. companion subprocess JSON
+    readers) never see progress lines mixed into their JSON stream.
+    """
     global _SYNC_LOG_FILE
     if _SYNC_LOG_FILE is None and os.environ.get("OM_SYNC_LOG", "").strip():
         _init_relay_sync_log()
     line = f"[{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}] {msg}"
-    print(line, flush=True)
+    print(line, file=sys.stderr, flush=True)
     if _SYNC_LOG_FILE:
         try:
             with _SYNC_LOG_FILE.open("a", encoding="utf-8") as fh:

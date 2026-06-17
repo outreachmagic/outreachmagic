@@ -323,26 +323,10 @@ def _waterfall_lines(wf: dict[str, Any]) -> list[str]:
 
 
 def print_om_setup_box(file=sys.stderr) -> None:
-    print(file=file)
-    print("╔" + "═" * 62 + "╗", file=file)
-    print(f"║{'OUTREACHMAGIC — NOT CONNECTED':^62}║", file=file)
-    print("╠" + "═" * 62 + "╣", file=file)
-    print("║  This tool needs OutreachMagic to check if a lead already has  ║", file=file)
-    print("║  an email — this prevents double-paying for enrichment.        ║", file=file)
-    print("║                                                              ║", file=file)
-    print("║  Tell your AI assistant:                                     ║", file=file)
-    print("║  ┌────────────────────────────────────────────────────────┐  ║", file=file)
-    print("║  │ Install OutreachMagic and set it up, then re-run       │  ║", file=file)
-    print("║  │ email_finder.py batch-find. Install from:              │  ║", file=file)
-    print("║  │ https://github.com/outreachmagic/outreachmagic           │  ║", file=file)
-    print("║  │ 1. Clone or run install.sh --platform hermes             │  ║", file=file)
-    print("║  │ 2. Create account at https://app.outreachmagic.io        │  ║", file=file)
-    print("║  │ 3. Ask Outreach Magic to log in and connect              │  ║", file=file)
-    print("║  │ 4. Re-run batch-find with --workspace and --yes          │  ║", file=file)
-    print("║  └────────────────────────────────────────────────────────┘  ║", file=file)
-    print("║  Or run with --skip-om (CSV/JSON only, no dedup).             ║", file=file)
-    print("╚" + "═" * 62 + "╝", file=file)
-    print(file=file)
+    """Re-exported from companion_common for backward compat."""
+    # Imported here to avoid circular dependency at module level.
+    import companion_common as _cc  # fmt: skip
+    _cc.print_om_setup_box(file=file)
 
 
 def print_dry_run_box(

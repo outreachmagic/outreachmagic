@@ -1154,7 +1154,8 @@ def cmd_check(
     cfg = load_config()
     om_dir = find_outreachmagic(cfg)
     if not om_dir:
-        print(json.dumps({"error": "outreachmagic not found"}))
+        cc.print_om_setup_box()
+        print(json.dumps({"error": "outreachmagic not found — credits may be wasted without OM"}))
         sys.exit(1)
 
     result = check_lead_exists(
@@ -1180,7 +1181,8 @@ def cmd_batch_check(
     cfg = load_config()
     om_dir = find_outreachmagic(cfg)
     if not om_dir:
-        print(json.dumps({"error": "outreachmagic not found"}))
+        cc.print_om_setup_box()
+        print(json.dumps({"error": "outreachmagic not found — dedup check requires OM"}))
         sys.exit(1)
 
     data = load_people_file(input_file)
@@ -1217,7 +1219,8 @@ def cmd_stamp_attempted(
     cfg = load_config()
     om_dir = find_outreachmagic(cfg)
     if not om_dir:
-        print(json.dumps({"error": "outreachmagic not found"}))
+        cc.print_om_setup_box()
+        print(json.dumps({"error": "outreachmagic not found — stamp-attempted requires OM"}))
         sys.exit(1)
     if not workspace:
         print(json.dumps({"error": "--workspace is required"}))
@@ -1265,7 +1268,8 @@ def cmd_backfill(
     cfg = load_config()
     om_dir = find_outreachmagic(cfg)
     if not om_dir:
-        print(json.dumps({"error": "outreachmagic not found"}))
+        cc.print_om_setup_box()
+        print(json.dumps({"error": "outreachmagic not found — backfill requires OM"}))
         sys.exit(1)
 
     rows_data = load_people_file(input_file)

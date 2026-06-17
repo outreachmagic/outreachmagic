@@ -248,9 +248,13 @@ def print_final_summary(
     credits_used = int(stats.get("credits_used", 0))
     emails_verified = sum(int(verify.get(k, 0)) for k in ("valid", "catch_all", "invalid", "unknown"))
     print(f"║{'':62}║", file=file)
+    trykitt_balance = stats.get("trykitt_remaining_credits")
     print(f"║  CREDITS (1 per email found){'':33}║", file=file)
     print(f"║    Found:          {stats.get('found', 0):<5}  → {credits_used:<5} credits{'':>22}║", file=file)
     print(f"║    Not found:      {stats.get('not_found', 0):<5}  → 0 credits{'':>26}║", file=file)
+    if trykitt_balance is not None:
+        bal_str = f"${trykitt_balance:.3f}"
+        print(f"║    Trykitt balance: ~{bal_str:<8} remaining{'':>19}║", file=file)
     if found_n:
         print(f"║{'':62}║", file=file)
         print(f"║  VERIFIED (of found){'':42}║", file=file)

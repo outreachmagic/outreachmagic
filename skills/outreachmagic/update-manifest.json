@@ -7,7 +7,7 @@
     "agent_secrets_cloud.py": "fe478a2280b7799d7b7ae551149c38a43f1ec6f0ac05b6b9d3142f29293a56e3",
     "api_key_pool.py": "3174a8f8509ca97fcefe3f1c9a175cfdead450941b8cfb0f19df7af4e7b34caf",
     "bounces.py": "910432b263dc90e776f605c1c0af55e5646ba8cb5a52a7811c97ccbfb6439963",
-    "campaign_stats.py": "a7f4bd367ad661a8565b3d99957c83de3f5ab3a3d7d80df56c278511c4ecbddc",
+    "campaign_stats.py": "9ed663214ec00a7204991a7f7ac68656616c1054964c3409fd8a60abb081af08",
     "connections_cloud.py": "6637b182ffd9dcd36781aae1b5bfb78d6f692e8498a5f7ac733ddf2194f86a3e",
     "constants.py": "62a2a7753671b02e3f58fe220cf99e8c0a088e5bddb84a9ad35bfa6f8de54254",
     "data_freshness.py": "f1946e15b0d50fb1fcadc56994e2358e065b522c90cee250a5d5650eeef00497",

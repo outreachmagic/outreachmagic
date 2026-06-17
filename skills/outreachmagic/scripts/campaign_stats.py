@@ -523,6 +523,16 @@ def build_sentiment_sheet(
 # ── Top-level payload builder ──────────────────────────────────────
 
 
+def _resolve_since(since: Optional[str]) -> tuple[Optional[str], str]:
+    """Resolve since value: 'all' → None (no filter), return (since_for_sql, label)."""
+    if since and since.strip().lower() in ("all", "all-time", "forever", "any"):
+        return None, "all"
+    label = normalize_since(since) or str(since or "all")
+    if isinstance(label, str) and label.startswith("datetime("):
+        label = str(since or "all")
+    return since, label
+
+
 def build_campaign_stats_payload(
     conn: sqlite3.Connection,
     *,
@@ -534,13 +544,10 @@ def build_campaign_stats_payload(
     Returns a dict suitable for JSON serialization:
         {template, title, workspace, since, sheets: [{title, headers, rows}, ...]}
     """
-    sheet1 = build_overview_sheet(conn, workspace, since)
-    sheet2 = build_funnels_sheet(conn, workspace, since)
-    sheet3 = build_sentiment_sheet(conn, workspace, since)
-
-    since_label = normalize_since(since) or since or "all"
-    if isinstance(since_label, str) and since_label.startswith("datetime("):
-        since_label = since or "all"
+    since_sql, since_label = _resolve_since(since)
+    sheet1 = build_overview_sheet(conn, workspace, since_sql)
+    sheet2 = build_funnels_sheet(conn, workspace, since_sql)
+    sheet3 = build_sentiment_sheet(conn, workspace, since_sql)
     title = f"{workspace.capitalize()} Campaign Stats — {since_label}"
 
     return {

@@ -652,7 +652,9 @@ def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release"
             except (OSError, json.JSONDecodeError):
                 manifest = None
     else:
-        manifest = fetch_update_manifest(repo_base, skill_path) if source_label != "main" else None
+        # Always use remote manifest (including --channel main) so new script modules
+        # are installed even when missing from the local scripts/ directory.
+        manifest = fetch_update_manifest(repo_base, skill_path)
 
     download_names = update_download_names(manifest)
 

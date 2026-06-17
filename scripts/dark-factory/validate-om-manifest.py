@@ -48,8 +48,14 @@ def main() -> int:
         errors.append("run python3 scripts/generate_skill_manifest.py outreachmagic")
 
     download_names = set(om.update_download_names(manifest))
-    if not {"pipeline_lead_review.py", "pipeline_dedup.py", "review_cloud.py"}.issubset(download_names):
-        errors.append("update_download_names() would skip review/dedup modules")
+    required_modules = {
+        "pipeline_lead_review.py",
+        "pipeline_dedup.py",
+        "review_cloud.py",
+        "campaign_stats.py",
+    }
+    if not required_modules.issubset(download_names):
+        errors.append(f"update_download_names() would skip: {sorted(required_modules - download_names)}")
 
     if errors:
         for err in errors:

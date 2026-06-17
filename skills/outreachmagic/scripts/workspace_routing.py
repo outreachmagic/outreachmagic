@@ -103,6 +103,41 @@ def normalize_campaign_name(name: Optional[str]) -> Optional[str]:
     return text or None
 
 
+_CALENDLY_EVENT_TYPE_ID_RE = re.compile(r"event_types/([a-f0-9-]+)", re.I)
+
+
+def parse_calendly_event_type_id(value: Any) -> Optional[str]:
+    """UUID from Calendly event_types URI or bare id string."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if re.match(r"^[a-f0-9-]{36}$", text, re.I):
+        return text
+    match = _CALENDLY_EVENT_TYPE_ID_RE.search(text)
+    return match.group(1) if match else None
+
+
+def enrich_calendly_campaign_fields(
+    raw: dict,
+    campaign_id: Optional[str],
+    campaign_name: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Calendly: event type UUID + display name for workspace routing."""
+    payload = raw.get("payload") or {}
+    scheduled = payload.get("scheduled_event") or {}
+    if not campaign_id:
+        campaign_id = parse_calendly_event_type_id(scheduled.get("event_type"))
+        if not campaign_id:
+            campaign_id = parse_calendly_event_type_id(raw.get("campaign_id"))
+    if not campaign_name:
+        scheduled_name = str(scheduled.get("name") or "").strip()
+        if scheduled_name:
+            campaign_name = scheduled_name
+    return campaign_id, campaign_name
+
+
 def normalize_email(email: Optional[str]) -> Optional[str]:
     if not email or "@" not in str(email):
         return None
@@ -591,6 +626,15 @@ def extract_campaign_context(
                 if text != (campaign_id or ""):
                     campaign_name = text
                     break
+
+    if (platform or "").lower() == "calendly":
+        campaign_id, campaign_name = enrich_calendly_campaign_fields(
+            raw, campaign_id, campaign_name
+        )
+        if campaign_id:
+            parsed_id = parse_calendly_event_type_id(campaign_id)
+            if parsed_id:
+                campaign_id = parsed_id
 
     return CampaignContext(
         source_platform=platform,

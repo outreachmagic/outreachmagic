@@ -107,6 +107,120 @@ def build_calendly_status_metadata(envelope_event_type: str) -> dict:
     return meta
 
 
+def _format_calendly_timestamp(iso_value: str) -> str:
+    text = (iso_value or "").strip()
+    if not text:
+        return ""
+    try:
+        from datetime import datetime
+
+        normalized = text.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        return dt.strftime("%b %d, %Y %I:%M %p").replace(" 0", " ").lstrip()
+    except ValueError:
+        return text[:19].replace("T", " ")
+
+
+def _calendly_location_label(location: dict) -> str:
+    loc_type = (location.get("type") or "").strip().lower()
+    if loc_type == "google_conference":
+        return "Google Meet"
+    if loc_type:
+        return loc_type.replace("_", " ").title()
+    return ""
+
+
+def build_calendly_meeting_note(raw: dict, envelope_event_type: str = "") -> str:
+    """Flat meeting summary for events.body — time, people, UTMs, form answers."""
+    payload = raw.get("payload") or {}
+    if not payload:
+        return ""
+
+    scheduled = payload.get("scheduled_event") or {}
+    lines: list[str] = []
+
+    event_name = (scheduled.get("name") or "").strip()
+    if event_name:
+        lines.append(event_name)
+
+    et = (envelope_event_type or raw.get("event") or "").strip().lower()
+    if et == "invitee.canceled":
+        lines.append("Status: canceled")
+    elif (payload.get("status") or scheduled.get("status") or "").strip():
+        status = (payload.get("status") or scheduled.get("status") or "").strip()
+        lines.append(f"Status: {status}")
+
+    start = (scheduled.get("start_time") or "").strip()
+    end = (scheduled.get("end_time") or "").strip()
+    tz = (payload.get("timezone") or "").strip()
+    if start:
+        start_fmt = _format_calendly_timestamp(start)
+        if end:
+            end_fmt = _format_calendly_timestamp(end)
+            window = f"{start_fmt} – {end_fmt}"
+        else:
+            window = start_fmt
+        if tz:
+            window = f"{window} ({tz})"
+        lines.append(window)
+
+    invitee_name = (payload.get("name") or "").strip()
+    invitee_email = (payload.get("email") or "").strip()
+    if invitee_name and invitee_email:
+        lines.append(f"Invitee: {invitee_name} ({invitee_email})")
+    elif invitee_email:
+        lines.append(f"Invitee: {invitee_email}")
+    elif invitee_name:
+        lines.append(f"Invitee: {invitee_name}")
+
+    hosts: list[str] = []
+    for member in scheduled.get("event_memberships") or []:
+        if not isinstance(member, dict):
+            continue
+        name = (member.get("user_name") or "").strip()
+        email = (member.get("user_email") or "").strip()
+        if name and email:
+            hosts.append(f"{name} ({email})")
+        elif name or email:
+            hosts.append(name or email)
+    if hosts:
+        lines.append("Hosts: " + ", ".join(hosts))
+
+    location = scheduled.get("location") or {}
+    if isinstance(location, dict):
+        label = _calendly_location_label(location)
+        if label:
+            lines.append(f"Location: {label}")
+
+    tracking = payload.get("tracking") or {}
+    utm_parts: list[str] = []
+    for key, short in (
+        ("utm_campaign", "campaign"),
+        ("utm_source", "source"),
+        ("utm_medium", "medium"),
+        ("utm_content", "content"),
+        ("utm_term", "term"),
+    ):
+        val = tracking.get(key)
+        if val is not None and str(val).strip():
+            utm_parts.append(f"{short}={str(val).strip()}")
+    if utm_parts:
+        lines.append("UTM: " + " · ".join(utm_parts))
+
+    for qa in payload.get("questions_and_answers") or []:
+        if not isinstance(qa, dict):
+            continue
+        question = (qa.get("question") or "").strip()
+        answer = (qa.get("answer") or "").strip()
+        if question and answer:
+            lines.append(f"Question: {question} → {answer}")
+
+    if payload.get("rescheduled"):
+        lines.append("Rescheduled: yes")
+
+    return "\n".join(lines)
+
+
 def relay_target_stage(
     platform: str,
     envelope_event_type: str,
@@ -632,6 +746,8 @@ def ingest_relay_event(
 
     subject = event_fields.get("subject") or f"{platform}: {envelope_event_type}"
     body = event_fields.get("body") or ""
+    if platform == "calendly":
+        body = build_calendly_meeting_note(raw, envelope_event_type)
     if local_type == "email_bounce" and bounce_payload and bounce_payload.get("bounce_message"):
         body = bounce_payload["bounce_message"]
     if body:

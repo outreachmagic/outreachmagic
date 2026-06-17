@@ -446,9 +446,10 @@ PLATFORMS: dict[str, PlatformDef] = {
                 "job_title": ("payload.invitee.job_title",),
             },
             "event": {
-                "campaign": ("payload.event_type.name",),
-                "campaign_name": ("payload.event_type.name",),
-                "subject": ("payload.event_type.name",),
+                "campaign": ("payload.scheduled_event.name",),
+                "campaign_name": ("payload.scheduled_event.name",),
+                "campaign_id": ("payload.scheduled_event.event_type",),
+                "subject": ("payload.scheduled_event.name",),
             },
             "signals": {
                 "status": ("payload.status",),

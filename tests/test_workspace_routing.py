@@ -124,6 +124,79 @@ def test_campaign_routing():
     assert result.match_strategy == "id_exact"
 
 
+def test_calendly_scheduled_event_fields_are_extracted():
+    raw = {
+        "event": "invitee.created",
+        "payload": {
+            "email": "spencer@outreachmagic.io",
+            "name": "Spencer Testing",
+            "tracking": {"utm_campaign": None},
+            "scheduled_event": {
+                "name": "Acme Corp Discovery Call ",
+                "event_type": "https://api.calendly.com/event_types/9907c70d-fd3d-4f8f-8613-d834ddf4dae4",
+            },
+        },
+    }
+    extracted = extract_relay_fields("calendly", raw)
+    event_fields = extracted.get("event", {})
+    assert event_fields.get("campaign_name") == "Acme Corp Discovery Call"
+    assert "9907c70d" in (event_fields.get("campaign_id") or "")
+
+    ctx = extract_campaign_context("calendly", event_fields, raw)
+    assert ctx.campaign_id == "9907c70d-fd3d-4f8f-8613-d834ddf4dae4"
+    assert ctx.campaign_name_raw == "Acme Corp Discovery Call"
+    assert ctx.campaign_name_normalized == "acme corp discovery call"
+
+
+def test_calendly_utm_does_not_change_routing_campaign():
+    raw = {
+        "event": "invitee.created",
+        "payload": {
+            "scheduled_event": {
+                "name": "Shared Demo",
+                "event_type": "https://api.calendly.com/event_types/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            },
+            "tracking": {"utm_campaign": "acme", "utm_source": "instantly"},
+        },
+    }
+    ctx = extract_campaign_context("calendly", {}, raw)
+    assert ctx.campaign_id == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    assert ctx.campaign_name_raw == "Shared Demo"
+    assert ctx.campaign_name_normalized == "shared demo"
+
+
+def test_calendly_meeting_note_includes_details_and_utm():
+    from relay_ingest import build_calendly_meeting_note
+
+    raw = {
+        "event": "invitee.created",
+        "payload": {
+            "name": "Jane Doe",
+            "email": "jane@acme.com",
+            "timezone": "America/New_York",
+            "scheduled_event": {
+                "name": "Acme Corp Discovery Call",
+                "start_time": "2026-06-18T19:30:00.000000Z",
+                "end_time": "2026-06-18T20:00:00.000000Z",
+                "status": "active",
+                "event_memberships": [
+                    {"user_name": "Alex Host", "user_email": "alex@acme.com"},
+                ],
+                "location": {"type": "google_conference"},
+            },
+            "tracking": {"utm_campaign": "acme", "utm_source": "instantly", "utm_medium": "email"},
+            "questions_and_answers": [{"question": "Company", "answer": "Acme Corp"}],
+        },
+    }
+    note = build_calendly_meeting_note(raw, "invitee.created")
+    assert "Acme Corp Discovery Call" in note
+    assert "Invitee: Jane Doe (jane@acme.com)" in note
+    assert "Hosts: Alex Host (alex@acme.com)" in note
+    assert "Location: Google Meet" in note
+    assert "UTM: campaign=acme · source=instantly · medium=email" in note
+    assert "Question: Company → Acme Corp" in note
+
+
 def test_prosp_camelcase_campaign_fields_are_extracted():
     raw = {
         "eventType": "send_connection",

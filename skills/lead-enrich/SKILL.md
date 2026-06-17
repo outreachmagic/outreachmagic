@@ -32,16 +32,16 @@ metadata:
         purpose: Via outreachmagic skill — save enriched profiles to local SQLite
 ---
 
-# Lead Enrich — Person Research for Outreach Pipelines
+# Lead Enrich
 
 Research a person (name + company) using **Serper.dev** Google Search. Uses the
-**agent's built-in model** for extraction — no external LLM API needed.
+**agent's built-in model** for extraction. No external LLM API needed.
 
 **Works standalone** — just a Serper key. Pairs with **Outreach Magic** for
 credit-saving dedup (skip Serper when leads already have LinkedIn/email) and
 persistent storage across sessions.
 
-> **🪙 Credit-saving (with OM):** checks outreachmagic *first*. If the lead
+> **Credit-saving (with OM):** checks outreachmagic *first*. If the lead
 > already has **LinkedIn + email** at the **same company**, zero Serper credits
 > spent. LinkedIn without email skips Serper — use **email-finder** for trykitt.
 > Email-only records still get LinkedIn searches (1–2 Serper credits). Name
@@ -87,7 +87,7 @@ should be `agent_secrets`).
 
 ### 3. Email finding (email-finder skill)
 
-Email find is **not** in lead-enrich v2+. Install **email-finder** with outreachmagic using the platform install guide: [install-companions.md](https://github.com/magic-creators/outreachmagic-skill/blob/main/docs/install-companions.md) (Hermes, Cursor, Claude).
+Email find is **not** in lead-enrich v2+. Install **email-finder** with outreachmagic using the platform install guide. Or install standalone via `npx skills add outreachmagic/email-finder`.
 
 After Serper enrichment saves `company_domain`, run:
 

@@ -46,7 +46,7 @@ metadata:
 
 Find work emails when you have **name + company domain**. **trykitt** first, **Icypeas** on miss.
 
-**Works standalone** — just needs API keys. Pairs with **Outreach Magic** for
+**Works standalone.** Just needs API keys. Pairs with **Outreach Magic** for
 credit-saving dedup, persistent storage, and cross-session availability.
 
 ## Setup

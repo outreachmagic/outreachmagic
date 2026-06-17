@@ -34,14 +34,11 @@ metadata:
         purpose: Portal API for tokens, billing, and workspace routing config sync
 ---
 
-# Outreach Magic — Pipeline Visibility
+# Outreach Magic
 
-The outreach data layer for AI agents. Auto-logs outreach to a local SQLite database.
-Free forever for local work. Connect Smartlead, Heyreach, Instantly, PlusVibe,
-EmailBison, Prosp, MasterInbox, and Calendly via paid relay.
+Your agent goes blind after send. We sync Smartlead, Instantly, HeyReach, and 5 more sequencers into one local SQLite database your agent can query directly.
 
-**Outreach Magic suite:** Pair with **lead-enrich** (Serper research + free dedup) and
-**email-finder** (trykitt find). See [skill suite docs](https://github.com/outreachmagic/outreachmagic/blob/main/docs/skill-suite.md).
+**The full suite:** Pair with **lead-enrich** for Serper-based person research and **email-finder** for waterfall email enrichment. Both work standalone or together.
 
 ## CLI convention
 
@@ -93,7 +90,7 @@ Install to `~/.claude/skills/outreachmagic/`. SKILL.md is the source of truth.
 
 Environment variable: `OUTREACHMAGIC_AGENT_KEY` — overrides the config file `agent_key`. Set via `.env`, shell profile, or CI/CD.
 
-## First-Time Setup (IMPORTANT — read this first)
+## First-Time Setup (read this first)
 
 On startup, **always check if the agent is already connected** by running:
 

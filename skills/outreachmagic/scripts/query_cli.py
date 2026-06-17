@@ -16,6 +16,11 @@ try:
 except ImportError:
     _pipeline = None  # type: ignore
 
+try:
+    from campaign_stats import build_campaign_stats_payload
+except ImportError:
+    build_campaign_stats_payload = None  # type: ignore
+
 
 def register_query_parser(sub) -> None:
     q = sub.add_parser(
@@ -25,7 +30,7 @@ def register_query_parser(sub) -> None:
     q.add_argument(
         "preset",
         nargs="?",
-        choices=("engagement", "replies", "interested"),
+        choices=("engagement", "replies", "interested", "campaign-stats"),
         help="Blessed analytics preset (preferred)",
     )
     q.add_argument("--workspace", help="Workspace slug; campaign names use '<slug> | …'")
@@ -94,6 +99,24 @@ def cmd_query(args) -> None:
                 campaign_prefix=getattr(args, "campaign_prefix", None),
                 since=getattr(args, "since", None),
             )
+        elif args.preset == "campaign-stats":
+            if not getattr(args, "workspace", None):
+                print(json.dumps({"error": "--workspace required for campaign-stats"}))
+                sys.exit(1)
+            if build_campaign_stats_payload is None:
+                print(json.dumps({"error": "campaign_stats module not available"}))
+                sys.exit(1)
+            from db_conn import get_conn
+            conn = get_conn()
+            try:
+                raw = build_campaign_stats_payload(
+                    conn,
+                    workspace=args.workspace,
+                    since=getattr(args, "since", None),
+                )
+            finally:
+                conn.close()
+            result = {"preset": "campaign-stats", "data": raw}
         elif getattr(args, "sql", None):
             params = _parse_params(getattr(args, "params", None))
             result = read_queries.run_readonly_sql(
@@ -113,7 +136,7 @@ def cmd_query(args) -> None:
             result["file"] = str(path)
         else:
             print(
-                "Usage: pipeline.py query <engagement|replies|interested> --workspace <slug> --since 48h\n"
+                "Usage: pipeline.py query <engagement|replies|interested|campaign-stats> --workspace <slug> --since 48h\n"
                 "   or: pipeline.py query --sql 'SELECT ...' [--params '[...]'] --json",
                 file=sys.stderr,
             )

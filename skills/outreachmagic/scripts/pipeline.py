@@ -2301,7 +2301,7 @@ def resolve_lead(
                 identities.append(("email", email_norm))
             identities.extend(li_parsed)
 
-    if not identities:
+    if not identities and force_lead_id is None:
         return {"status": "error", "error": "no identity: need email, linkedin, external_id, or name+company"}
 
     own_conn = conn is None
@@ -2814,7 +2814,7 @@ def upsert_lead_profile(
     idents = build_import_identities(
         profile, extra, import_batch=import_batch, company_domain=company_domain,
     )
-    if not idents:
+    if not idents and force_lead_id is None:
         return {"status": "error", "error": "no identity: need email, linkedin, external_id, or name+company"}
 
     return resolve_lead(
@@ -3365,10 +3365,11 @@ def import_profiles(
         extra = _extract_extra_import_fields(raw)
         row_company_domain = normalize_company_domain(extra.get("company_domain"))
         row_notes = extra.get("notes") or notes
+        lead_id_hint = _lead_id_hint_from_raw(raw)
         idents = build_import_identities(
             profile, extra, import_batch=import_batch_id, company_domain=row_company_domain,
         )
-        if not idents:
+        if not idents and not lead_id_hint:
             summary["skipped_no_identity"] += 1
             summary["errors"].append({"row": i + 1, "error": "no identity"})
             continue
@@ -3382,8 +3383,6 @@ def import_profiles(
         row_hq_city = extra.get("hq_city")
         row_hq_state = extra.get("hq_state")
         row_hq_country = extra.get("hq_country")
-
-        lead_id_hint = _lead_id_hint_from_raw(raw)
 
         try:
             result = upsert_lead_profile(
@@ -10255,6 +10254,70 @@ def _remap_to_lead_review_export(args) -> None:
             setattr(args, name, default)
 
 
+def _cmd_sheets_campaign_stats(args) -> None:
+    """Handler for `sheets campaign-stats` — build payload and POST to backend."""
+    ws = getattr(args, "workspace", None)
+    if not ws:
+        print(json.dumps({"error": "--workspace required for sheets campaign-stats"}))
+        sys.exit(1)
+
+    from campaign_stats import build_campaign_stats_payload
+    from db_conn import get_conn
+
+    conn = get_conn()
+    try:
+        payload = build_campaign_stats_payload(
+            conn,
+            workspace=ws,
+            since=getattr(args, "since", None),
+        )
+    finally:
+        conn.close()
+
+    # Dry-run or JSON preview: print payload and exit
+    if getattr(args, "dry_run", False) or getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+        return
+
+    tok = get_agent_key()
+    if not tok:
+        print(json.dumps({"error": "login required — ask Outreach Magic to log in"}))
+        sys.exit(1)
+
+    api_base = review_cloud.get_api_base(load_config)
+
+    share_email, public_link = resolve_sheets_export_access(args)
+    sheet_id = getattr(args, "sheet_id", None)
+
+    result = review_cloud.export_review(
+        api_base,
+        tok,
+        template=payload["template"],
+        title=payload["title"],
+        sheets=payload["sheets"],
+        workspace=ws,
+        share_email=share_email,
+        public_link=public_link,
+        sheet_id=str(sheet_id).strip() if sheet_id else None,
+    )
+
+    if isinstance(result, dict) and result.get("sheet_id"):
+        try:
+            meta_path = save_sheets_export_record(
+                workspace=ws,
+                title=payload["title"],
+                sheet_id=str(result["sheet_id"]),
+                url=str(result.get("url") or result.get("spreadsheet_url") or ""),
+                detail="campaign-stats",
+            )
+            result = dict(result)
+            result["metadata_path"] = str(meta_path)
+        except OSError:
+            pass
+
+    print(json.dumps(result, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Outreach Magic — Pipeline visibility for Hermes")
     sub = parser.add_subparsers(dest="command", help="Commands")
@@ -10398,6 +10461,7 @@ def main():
         help='JSON array string, or "-" to read JSON array from stdin',
     )
     imp_p.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
+    imp_p.add_argument("--yes", action="store_true", help="Skip confirmation prompt (no-op: import-profiles is non-destructive)")
     imp_p.add_argument("--overwrite", action="store_true", help="Overwrite non-empty profile fields")
     imp_p.add_argument("--channel", default="email")
     imp_p.add_argument("--stage", default="prospecting")
@@ -10995,6 +11059,33 @@ def main():
     sheets_export_p.add_argument("--never-contacted", action="store_true")
     sheets_export_p.add_argument("--no-email", action="store_true")
     sheets_export_p.add_argument("--require-domain", action="store_true")
+
+    sheets_cs_p = sheets_sub.add_parser(
+        "campaign-stats",
+        help="Export campaign performance data to a multi-sheet Google Workbook",
+    )
+    sheets_cs_p.add_argument("--workspace", required=True, help="Workspace slug")
+    sheets_cs_p.add_argument(
+        "--since", default="14d",
+        help="Time window: 14d, 30d, 7d, all, or YYYY-MM-DD",
+    )
+    sheets_cs_p.add_argument("--share-email", help="Email to share sheet with (default: org owner)")
+    sheets_cs_p.add_argument(
+        "--anyone-with-link",
+        action="store_true",
+        help="Unlisted URL — anyone with the link can edit (no email share)",
+    )
+    sheets_cs_p.add_argument(
+        "--public",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    sheets_cs_p.add_argument(
+        "--sheet-id",
+        help="Refresh an existing Google Sheet instead of creating a new one",
+    )
+    sheets_cs_p.add_argument("--dry-run", action="store_true", help="Print payload without uploading")
+    sheets_cs_p.add_argument("--json", action="store_true", help="Print payload as JSON (implies --dry-run)")
 
     merge_p = sub.add_parser("merge-leads", help="Merge two lead records into one")
     merge_p.add_argument("--keep", type=int, help="Lead ID to keep")
@@ -11687,6 +11778,8 @@ def main():
         )
     elif args.command == "query":
         query_cli.cmd_query(args)
+    elif args.command == "sheets" and getattr(args, "sheets_command", None) == "campaign-stats":
+        _cmd_sheets_campaign_stats(args)
     elif args.command == "email-finder-candidates":
         conn = get_conn()
         try:

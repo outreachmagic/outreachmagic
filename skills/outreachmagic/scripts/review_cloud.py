@@ -80,6 +80,7 @@ def export_review(
     detail: Optional[str] = None,
     headers: Optional[list[str]] = None,
     rows: Optional[list[list[Any]]] = None,
+    sheets: Optional[list[dict[str, Any]]] = None,
     workspace: Optional[str] = None,
     columns: Optional[list[dict[str, Any]]] = None,
     freeze_header: Optional[bool] = None,
@@ -95,7 +96,11 @@ def export_review(
         body["share_email"] = share_email
     if public_link:
         body["public_link"] = True
-    if template == "lead-review":
+    if template in ("campaign-stats",) and sheets:
+        body["sheets"] = sheets
+        if workspace:
+            body["workspace"] = workspace
+    elif template == "lead-review":
         body["detail"] = detail or "standard"
         body["headers"] = headers or []
         body["rows"] = rows or []
@@ -110,7 +115,10 @@ def export_review(
     else:
         body["candidates"] = candidates or []
     row_count = len(body.get("rows") or [])
-    if row_count:
+    sheet_count = len(body.get("sheets") or [])
+    if sheet_count:
+        print(f"Uploading {sheet_count} sheets with campaign stats to Google Sheets...", file=sys.stderr)
+    elif row_count:
         print(f"Uploading {row_count} rows to Google Sheets...", file=sys.stderr)
     started = time.monotonic()
     result = _request_json("POST", f"{api_base}/api/review/export", token, body=body)

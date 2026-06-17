@@ -659,7 +659,11 @@ def normalize_person(person: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def normalize_input(data: dict[str, Any]) -> list[dict[str, Any]]:
+def normalize_input(
+    data: dict[str, Any],
+    *,
+    max_people: Optional[int] = None,
+) -> list[dict[str, Any]]:
     """Normalize single or batch input into list of people."""
     # Single person
     if "full_name" in data or "name" in data:
@@ -701,9 +705,10 @@ def normalize_input(data: dict[str, Any]) -> list[dict[str, Any]]:
 
     # Cap batch size
     cfg = load_config()
-    max_people = cfg.get("max_people_per_run", 50)
-    if len(normalized) > max_people:
-        raise ValueError(f"Batch size {len(normalized)} exceeds limit of {max_people}")
+    configured_max = cfg.get("max_people_per_run", 50)
+    effective_max = max_people if max_people is not None else configured_max
+    if len(normalized) > effective_max:
+        raise ValueError(f"Batch size {len(normalized)} exceeds limit of {effective_max}")
 
     return normalized
 
@@ -1176,6 +1181,7 @@ def cmd_batch_check(
     *,
     skip_tagged: bool = False,
     persist_tags: bool = False,
+    max_people: Optional[int] = None,
 ) -> None:
     """Batch dedup check from JSON or CSV."""
     cfg = load_config()
@@ -1188,7 +1194,7 @@ def cmd_batch_check(
     data = load_people_file(input_file)
     if workspace:
         data["workspace"] = workspace
-    people = normalize_input(data)
+    people = normalize_input(data, max_people=max_people)
     ws = data.get("workspace", "")
     results, tag_meta = batch_check(
         om_dir,
@@ -1229,24 +1235,30 @@ def cmd_stamp_attempted(
     if not ids:
         print(json.dumps({"error": "no valid lead ids"}))
         sys.exit(1)
+
+    # Always stamp tags via lightweight tag-bulk (no identity resolution needed)
+    summary = stamp_serper_attempted_leads(
+        om_dir,
+        workspace,
+        ids,
+        exclude_already_tagged=False,
+    )
+
+    # If notes provided, update them via import-profiles with force_lead_id
     if notes:
         profiles = [
-            build_stamp_profile(lid, notes=notes) for lid in ids
+            {"id": lid, "tags": ["serper_attempted"], "notes": notes}
+            for lid in ids
         ]
-        summary = run_import_profiles(
+        import_summary = run_import_profiles(
             om_dir,
             profiles,
             workspace=workspace,
             source="lead_enrich",
             source_detail="lead-enrich/stamp-attempted",
         )
-    else:
-        summary = stamp_serper_attempted_leads(
-            om_dir,
-            workspace,
-            ids,
-            exclude_already_tagged=False,
-        )
+        summary["import_notes"] = import_summary
+
     print(json.dumps(summary, indent=2))
 
 
@@ -1370,14 +1382,18 @@ def cmd_serper_queries(input_file: str) -> None:
     print(json.dumps(output, indent=2))
 
 
-def cmd_serper_search(query: str, label: str = "") -> None:
+def cmd_serper_search(query: str, label: str = "", out_file: str = "") -> None:
     """Run one Serper search and print JSON."""
     cfg = load_config()
     data = serper_search(query, cfg)
     out: dict[str, Any] = {"query": query, "data": data}
     if label:
         out["label"] = label
-    print(json.dumps(out, indent=2))
+    output = json.dumps(out, indent=2)
+    if out_file:
+        Path(out_file).write_text(output)
+        print(f"Wrote results to {out_file}", file=sys.stderr)
+    print(output)
 
 
 def cmd_serper_format(input_file: str) -> None:
@@ -1528,6 +1544,7 @@ def main() -> None:
     elif cmd == "serper-search":
         query = ""
         label = ""
+        out_file = ""
         args = argv[1:]
         i = 0
         while i < len(args):
@@ -1540,24 +1557,56 @@ def main() -> None:
             elif args[i] == "--label" and i + 1 < len(args):
                 label = args[i + 1]
                 i += 2
+            elif args[i] == "--out-file" and i + 1 < len(args):
+                out_file = args[i + 1]
+                i += 2
+            elif args[i].startswith("--out-file="):
+                out_file = args[i].split("=", 1)[1]
+                i += 1
             else:
                 i += 1
         if not query:
-            print("Usage: enrich.py serper-search --query \"search terms\" [--label NAME]")
+            print("Usage: enrich.py serper-search --query \"search terms\" [--label NAME] [--out-file results.json]")
             sys.exit(1)
-        cmd_serper_search(query, label)
+        cmd_serper_search(query, label, out_file=out_file)
     elif cmd == "batch-check":
         if len(argv) < 2:
             print(
                 "Usage: enrich.py batch-check [--workspace W] [--skip-tagged] "
-                "[--no-persist-tags] input.json|input.csv"
+                "[--no-persist-tags] [--limit N] input.json|input.csv"
             )
             sys.exit(1)
+        batch_limit: Optional[int] = None
+        bc_args = list(argv)
+        bc_input = ""
+        i = 1
+        while i < len(bc_args):
+            if bc_args[i] == "--limit" and i + 1 < len(bc_args):
+                try:
+                    batch_limit = int(bc_args[i + 1])
+                except ValueError:
+                    print("error: --limit must be an integer")
+                    sys.exit(1)
+                i += 2
+            elif bc_args[i].startswith("--limit="):
+                try:
+                    batch_limit = int(bc_args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --limit must be an integer")
+                    sys.exit(1)
+                i += 1
+            else:
+                bc_input = bc_args[i]
+                i += 1
+        if not bc_input:
+            print("error: input file required")
+            sys.exit(1)
         cmd_batch_check(
-            argv[1],
+            bc_input,
             workspace,
             skip_tagged=skip_tagged,
             persist_tags=persist_tags,
+            max_people=batch_limit,
         )
     elif cmd == "stamp-attempted":
         lead_ids = ""

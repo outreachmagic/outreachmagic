@@ -35,6 +35,7 @@ class PipelineImportSmokeTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("engagement", proc.stdout)
+        self.assertIn("campaign-stats", proc.stdout)
 
     def test_import_profiles_help_exits_zero(self):
         proc = subprocess.run(

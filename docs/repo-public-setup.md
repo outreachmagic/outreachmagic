@@ -22,6 +22,16 @@ prospecting outreachmagic sales-automation outbound ai-agents cursor go-to-marke
 prospecting outreachmagic sales-automation outbound ai-agents cursor go-to-market claude-code-skills lead-generation enrichment sales agent-skills serper research claude-code hermes-agent
 ```
 
+## outreachmagic/brand
+
+**Description:**
+> Public Outreach Magic logo assets (SVG). Agent-fetchable via raw.githubusercontent.com.
+
+**Topics:**
+```
+outreachmagic brand logos assets
+```
+
 ## outreachmagic/email-finder
 
 **Description:**

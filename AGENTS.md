@@ -46,6 +46,10 @@ Companion tags: `email-finder-v*` / `lead-enrich-v*` (see `skill-suite.json` →
 - **`--channel main`** — merge to monorepo `main`, then run `pipeline.py update --channel main` on the test machine. CI pushes `main` to the public repo on every merge.
 - **RC tags** — tag `vX.Y.Z-rc.1` to publish a prerelease to the public repo. Testers run `pipeline.py update --tag vX.Y.Z-rc.1`.
 
+## Brand assets
+
+Logos live in `brand/` and publish to [outreachmagic/brand](https://github.com/outreachmagic/brand) via `publish-brand.yml` on merge to `main`. Canonical narrative still lives in `outreachmagic-brand/`; sync SVGs here when logos change.
+
 ## Public vs private
 
 GitHub Actions publish **only** whitelisted skill files to `outreachmagic/*` public repos. Never put secrets under `skills/*/scripts/`. User secrets live in `skills/outreachmagic/config/` (not published).

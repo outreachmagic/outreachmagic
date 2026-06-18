@@ -1,0 +1,45 @@
+name: Publish brand assets
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "brand/**"
+      - ".github/workflows/publish-brand.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: publish-brand
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to outreachmagic/brand
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stage brand files
+        run: |
+          set -euo pipefail
+          STAGING=staging-brand
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          cp brand/README.md "$STAGING/"
+          cp -r brand/logos "$STAGING/"
+
+      - name: Push to outreachmagic/brand
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd staging-brand
+          git init -b main
+          git config user.name "Outreach Magic Bot"
+          git config user.email "bot@outreachmagic.io"
+          git add -A
+          git commit -m "Update brand assets (${{ github.sha }})"
+          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/brand.git"
+          git push origin main --force

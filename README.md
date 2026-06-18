@@ -28,9 +28,11 @@ platforms/
   common/install-companions.sh
   overlays/                    # Cursor .mdc, Claude snippet
   hermes|cursor|claude-code/   # Thin install wrappers
+brand/                         # Logo SVGs → outreachmagic/brand on main
 .github/workflows/
   release.yml                  # Build tarball + GitHub Release on v* tag (private repo)
   publish-platforms.yml        # Push to outreachmagic/outreachmagic on v* tag
+  publish-brand.yml            # Push brand/logos to outreachmagic/brand on main
   skill-scan.yml               # SkillScan + tests on PRs
 scripts/                       # Dev scripts (build, sync, scan, verify)
 tests/

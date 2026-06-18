@@ -1,5 +1,9 @@
 {
   "version": 1,
+  "brand": {
+    "path": "brand",
+    "public_repo": "outreachmagic/brand"
+  },
   "skills": {
     "outreachmagic": {
       "path": "skills/outreachmagic",

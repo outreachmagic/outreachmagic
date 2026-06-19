@@ -1,9 +1,9 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "files": {
     "README.md": "4472b5d670ff51566a3670ce38753ffaf80a1f69952d7b3cc2d9d091f393d494",
-    "SKILL.md": "b3c86624057a47cfc1623ae7d03dc8cad0b368590f2f208dc5c59e9b74bcdaa3",
-    "VERSION": "59854984853104df5c353e2f681a15fc7924742f9a2e468c29af248dce45ce03",
+    "SKILL.md": "0538387c4c7cd4bb816dfddb552b7508b9fa24595dc176c0d16a26e302a9df65",
+    "VERSION": "1575e1af4a95f12f70b4ee6a6adce8160953d93ea17dc2611b90883ccc3ad3b8",
     "activity_sync.py": "a1d36da5b1b35863ecdff8e366d89601ef622729978b148ee1e1cba0da3a04d2",
     "agent_secrets_cloud.py": "fe478a2280b7799d7b7ae551149c38a43f1ec6f0ac05b6b9d3142f29293a56e3",
     "api_key_pool.py": "3174a8f8509ca97fcefe3f1c9a175cfdead450941b8cfb0f19df7af4e7b34caf",

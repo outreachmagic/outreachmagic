@@ -37,9 +37,13 @@ jobs:
           set -euo pipefail
           cd staging-brand
           git init -b main
-          git config user.name "Outreach Magic Bot"
+          git config user.name "Outreach Magic Team"
           git config user.email "bot@outreachmagic.io"
           git add -A
-          git commit -m "Update brand assets (${{ github.sha }})"
+          MSG="${{ github.event.head_commit.message }}"
+          if [[ -z "$MSG" ]]; then
+            MSG="Update brand assets (${{ github.sha }})"
+          fi
+          git commit -m "$MSG"
           git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/brand.git"
           git push origin main --force

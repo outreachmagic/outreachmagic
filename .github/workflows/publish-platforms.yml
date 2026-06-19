@@ -68,14 +68,18 @@ jobs:
         run: |
           cd staging
           git init -b main
-          git config user.name "Outreach Magic Bot"
+          git config user.name "Outreach Magic Team"
           git config user.email "bot@outreachmagic.io"
           git add -A
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             git commit -m "Release ${{ github.ref_name }}"
             git tag "${{ github.ref_name }}"
           else
-            git commit -m "Update to ${{ github.sha }}"
+            MSG="${{ github.event.head_commit.message }}"
+            if [[ -z "$MSG" ]]; then
+              MSG="Sync from monorepo (${{ github.sha }})"
+            fi
+            git commit -m "$MSG"
           fi
           git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/outreachmagic.git"
           git push origin main --force

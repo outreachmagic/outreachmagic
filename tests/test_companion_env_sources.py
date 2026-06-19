@@ -15,6 +15,31 @@ sys.path.insert(0, str(OM_SCRIPTS))
 
 import companion_common as cc  # noqa: E402
 
+_PORTAL_ENV_KEYS = (
+    "SERPER_API_KEY",
+    "TRYKITT_API_KEY",
+    "ICYPEAS_API_KEY",
+    "MILLIONVERIFIER_API_KEY",
+)
+
+
+def _clear_portal_env_keys() -> dict[str, str | None]:
+    """Remove dev-shell API keys so strict-mode tests stay isolated."""
+    saved: dict[str, str | None] = {}
+    for key in _PORTAL_ENV_KEYS:
+        saved[key] = os.environ.pop(key, None)
+        for suffix in ("__1", "__2", "__3"):
+            saved[f"{key}{suffix}"] = os.environ.pop(f"{key}{suffix}", None)
+    return saved
+
+
+def _restore_portal_env_keys(saved: dict[str, str | None]) -> None:
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
 
 def _stub_agent_secrets_cloud(skills: Path) -> None:
     (skills / "scripts" / "agent_secrets_cloud.py").write_text(
@@ -61,36 +86,50 @@ def test_icypeas_not_loaded_from_hermes_when_missing_from_agent_secrets():
 
 
 def test_serper_not_loaded_from_hermes_in_strict_mode():
-    with tempfile.TemporaryDirectory() as tmp:
-        home = Path(tmp) / "hermes"
-        skills = home / "skills" / "outreachmagic"
-        (skills / "config").mkdir(parents=True)
-        (skills / "scripts").mkdir(parents=True)
-        (skills / "scripts" / "pipeline.py").write_text("# test stub\n")
-        _stub_agent_secrets_cloud(skills)
-        (home / ".env").write_text("SERPER_API_KEY=from-hermes\n")
-        os.environ.pop("OM_ALLOW_LOCAL_API_KEYS", None)
-        os.environ["HERMES_HOME"] = str(home)
-        os.environ.pop("SERPER_API_KEY", None)
-        cc._AGENT_ENV_LOADED = False
-        cc.ensure_agent_env_loaded(reload=True)
-        assert not os.environ.get("SERPER_API_KEY")
+    saved = _clear_portal_env_keys()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "hermes"
+            skills = home / "skills" / "outreachmagic"
+            (skills / "config").mkdir(parents=True)
+            (skills / "scripts").mkdir(parents=True)
+            (skills / "scripts" / "pipeline.py").write_text("# test stub\n")
+            (skills / "config" / "agent_secrets.env").write_text("# empty\n")
+            _stub_agent_secrets_cloud(skills)
+            (home / ".env").write_text("SERPER_API_KEY=from-hermes\n")
+            os.environ.pop("OM_ALLOW_LOCAL_API_KEYS", None)
+            os.environ["HERMES_HOME"] = str(home)
+            cc._AGENT_ENV_LOADED = False
+            skill_dir = home / "skills" / "email-finder"
+            skill_dir.mkdir(parents=True)
+            cc.ensure_agent_env_loaded(skill_dir, reload=True)
+            assert not os.environ.get("SERPER_API_KEY")
+    finally:
+        _restore_portal_env_keys(saved)
 
 
 def test_serper_loads_from_hermes_when_local_keys_allowed():
-    with tempfile.TemporaryDirectory() as tmp:
-        home = Path(tmp) / "hermes"
-        home.mkdir()
-        (home / ".env").write_text("SERPER_API_KEY=from-hermes\n")
-        os.environ["OM_ALLOW_LOCAL_API_KEYS"] = "1"
-        os.environ["HERMES_HOME"] = str(home)
-        os.environ.pop("SERPER_API_KEY", None)
-        cc._AGENT_ENV_LOADED = False
-        cc.ensure_agent_env_loaded(reload=True)
-        try:
+    saved = _clear_portal_env_keys()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "hermes"
+            skills = home / "skills" / "outreachmagic"
+            (skills / "config").mkdir(parents=True)
+            (skills / "scripts").mkdir(parents=True)
+            (skills / "scripts" / "pipeline.py").write_text("# test stub\n")
+            _stub_agent_secrets_cloud(skills)
+            (skills / "config" / "agent_secrets.env").write_text("# empty\n")
+            (home / ".env").write_text("SERPER_API_KEY=from-hermes\n")
+            os.environ["OM_ALLOW_LOCAL_API_KEYS"] = "1"
+            os.environ["HERMES_HOME"] = str(home)
+            cc._AGENT_ENV_LOADED = False
+            skill_dir = home / "skills" / "lead-enrich"
+            skill_dir.mkdir(parents=True)
+            cc.ensure_agent_env_loaded(skill_dir, reload=True)
             assert os.environ.get("SERPER_API_KEY") == "from-hermes"
-        finally:
-            os.environ.pop("OM_ALLOW_LOCAL_API_KEYS", None)
+    finally:
+        os.environ.pop("OM_ALLOW_LOCAL_API_KEYS", None)
+        _restore_portal_env_keys(saved)
 
 
 def test_stale_shell_key_cleared_when_not_in_agent_secrets():

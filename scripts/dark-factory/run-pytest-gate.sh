@@ -29,6 +29,11 @@ python3 -m pytest \
   "${ROOT}/tests/test_apply_email_find_results.py" \
   "${ROOT}/tests/test_bug_report_20260611.py" \
   "${ROOT}/tests/test_lead_enrich.py" \
+  "${ROOT}/tests/test_campaign_stats_smoke.py" \
+  "${ROOT}/tests/test_campaign_stats_cli.py" \
+  "${ROOT}/tests/test_platform_registry.py" \
+  "${ROOT}/tests/test_brand_publish.py" \
+  "${ROOT}/tests/test_update_manifest_sync.py" \
   -q --tb=short
 
 bash "${ROOT}/scripts/dark-factory/run-billing-gate.sh"

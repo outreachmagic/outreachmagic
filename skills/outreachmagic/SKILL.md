@@ -5,7 +5,7 @@ description: >
   more sequencers into one local SQLite database your agent can query directly.
   Every reply, click, bounce, and booking lands on your machine. No CSV
   exports, no merged sheets, no API round trips.
-version: 1.0.0
+version: 1.1.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
@@ -57,7 +57,7 @@ Optional config keys: `data_root` (share one DB across platforms), `api_base_url
 Install from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) — pin a release tag; download and verify SHA256 before running locally:
 
 ```bash
-OM_VERSION=v1.0.0
+OM_VERSION=v1.1.0
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"
@@ -158,7 +158,7 @@ python3 scripts/pipeline.py update
 hermes skills update
 ```
 
-Check without installing: `pipeline.py update --check`. Install a specific release: `pipeline.py update --tag v1.0.0`.
+Check without installing: `pipeline.py update --check`. Install a specific release: `pipeline.py update --tag v1.1.0`.
 
 Install commands for each platform are in **Platform install** above. After install, run `python3 scripts/pipeline.py login`.
 

@@ -89,6 +89,36 @@ class TestNormalizeInput(unittest.TestCase):
         self.assertEqual(people[0]["tags"], ["nace"])
         self.assertEqual(people[0]["import_name"], "conf-2026")
 
+    def test_max_people_override_beats_config(self):
+        people = [{"full_name": f"Person {i}", "company_name": "Acme"} for i in range(3)]
+        with patch.object(enrich, "load_config", return_value={"max_people_per_run": 2}):
+            normalized = enrich.normalize_input({"people": people}, max_people=4)
+        self.assertEqual(len(normalized), 3)
+
+    def test_max_people_raises_when_exceeded(self):
+        people = [{"full_name": f"Person {i}", "company_name": "Acme"} for i in range(4)]
+        with patch.object(enrich, "load_config", return_value={"max_people_per_run": 50}):
+            with self.assertRaises(ValueError) as ctx:
+                enrich.normalize_input({"people": people}, max_people=2)
+        self.assertIn("exceeds limit of 2", str(ctx.exception))
+
+
+class TestSerperSearchOutFile(unittest.TestCase):
+    @patch.object(enrich, "serper_search", return_value={"organic": []})
+    @patch.object(enrich, "load_config", return_value={})
+    def test_writes_output_file(self, _cfg, _search):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "results.json"
+            buf = StringIO()
+            err = StringIO()
+            with redirect_stdout(buf), redirect_stderr(err):
+                enrich.cmd_serper_search("Jane Doe Acme", label="lead-1", out_file=str(out_path))
+            self.assertTrue(out_path.is_file())
+            data = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["query"], "Jane Doe Acme")
+            self.assertEqual(data["label"], "lead-1")
+            self.assertIn("Wrote results to", err.getvalue())
+
 
 class TestMapToOutreachmagic(unittest.TestCase):
     def test_company_domain_structured(self):

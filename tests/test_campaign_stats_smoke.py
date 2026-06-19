@@ -155,9 +155,9 @@ def run_tests():
 
     fn = p["sheets"][1]
     check("funnels has 1 section", len([r for r in fn["rows"] if len(r) > 0 and r[0] == "Stage"]) == 1)
-    check("funnel has unique_sent row", any(r[0] == "Unique Leads Contacted" for r in fn["rows"]))
-    check("funnel has bounced row", any(r[0] == "Bounced" for r in fn["rows"]))
-    check("funnel has interested row", any(r[0] == "Interested Leads" for r in fn["rows"]))
+    check("funnel has emails sent row", any(len(r) > 0 and r[0] == "Emails Sent (total)" for r in fn["rows"]))
+    check("funnel has bounced row", any(len(r) > 0 and r[0] == "Bounced" for r in fn["rows"]))
+    check("funnel has interested row", any(len(r) > 0 and r[0] == "Interested Leads" for r in fn["rows"]))
 
     st = p["sheets"][2]
     check("sentiment has 1 campaign", len([r for r in st["rows"] if r[0] == "alpha"]) == 1)
@@ -214,9 +214,9 @@ def run_tests():
     ov = p["sheets"][0]
     row = ov["rows"][0]
     check("LI-only: sent=0 (mdash)", row[2] == "—", f"got {row[2]}")
-    check("LI-only: delivered=0", row[3] == 0, f"got {row[3]}")
+    check("LI-only: delivered mdash", row[3] == "—", f"got {row[3]}")
     check("LI-only: li_connects=1", row[10] == 1, f"got {row[10]}")
-    check("LI-only: li_accepts=1", row[11] == 1, f"got {row[11]}")
+    check("LI-only: li_accepts mdash when not in rollup", row[11] == "—", f"got {row[11]}")
     check("LI-only: li_messages=1", row[13] == 1, f"got {row[13]}")
     check("LI-only: li_replies=1", row[14] == 1, f"got {row[14]}")
     check("LI-only: status is exhausted (no email sends)", row[1] == "exhausted")
@@ -322,7 +322,7 @@ def run_tests():
     row = ov["rows"][0]
     check("all-bounce: sent=1", row[2] == 1)
     check("all-bounce: bounced=1", row[4] == 1)
-    check("all-bounce: delivered=0", row[3] == 0)
+    check("all-bounce: delivered mdash", row[3] == "—")
     check("all-bounce: bounce%=100%", row[5] == "100.0%", f"got {row[5]}")
     check("all-bounce: reply% mdash (div by 0)", row[9] == "—")
     conn9.close()
@@ -348,7 +348,7 @@ def run_tests():
     serialized = json.dumps(payload)
     deserialized = json.loads(serialized)
     check("json: 3 sheets", len(deserialized["sheets"]) == 3)
-    check("json: overview title", deserialized["sheets"][0]["title"] == "Campaign Overview")
+    check("json: overview title", deserialized["sheets"][0]["title"] == "Last 7d - Campaign Overview")
     check("json: first overview row has campaign name",
           deserialized["sheets"][0]["rows"][0][0] == "cli-test")
 
@@ -389,7 +389,7 @@ def run_tests():
     row = p["sheets"][0]["rows"][0]
     check("ooo-only: replies=1", row[6] == 1)
     check("ooo-only: ooo=1", row[7] == 1)
-    check("ooo-only: manual=0", row[8] == 0)
+    check("ooo-only: manual mdash", row[8] == "—")
     check("ooo-only: reply%=100%", row[9] == "100.0%", f"got {row[9]}")
     conn12.close()
     tmp12.cleanup()
@@ -404,3 +404,8 @@ def run_tests():
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
+
+
+def test_campaign_stats_smoke_suite():
+    """Pytest entrypoint for Layer 1 gate."""
+    assert run_tests()

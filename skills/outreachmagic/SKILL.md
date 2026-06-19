@@ -461,6 +461,22 @@ Point PlusVibe webhooks at your relay URL (`…/plusvibe/{token}`). Select **all
 
 Each webhook is stored as an event. **Interested / not interested / sentiment come from label webhooks**, not from reply webhooks alone. OOO is classified as **auto-reply** (metadata flag, query with `--auto-reply true`). Bounces set event sentiment `invalid` but **do not** auto-move the lead to stage `lost` (use `--sentiment invalid` to find them).
 
+### EmailBison webhooks
+
+Point EmailBison webhooks at your relay URL (`…/emailbison/{token}`). In EmailBison, go to Settings → Webhook, paste the URL, and toggle the events below. Enable all seven:
+
+- `email.sent` — sent from sender to lead
+- `email.bounced` — delivery failure (hard and soft bounces)
+- `lead.replied` — lead replied to an email
+- `lead.interested` — lead marked as interested (replies with positive intent)
+- `lead.unsubscribed` — lead unsubscribed from the campaign
+- `tag.attached` — a tag was added to the lead
+- `tag.removed` — a tag was removed from the lead
+
+All event types are accepted and stored. **lead.interested** sets stage to `interested` locally. **lead.replied** sets stage to `replied`. Bounces are recorded in the bounce events table with EmailBison-specific bounce field paths (`data.bounce.type`, `data.bounce.reason`, `data.lead.mx_provider`). Tags are stored as `tag_attached` / `tag_removed` event types with their raw vendor type preserved.
+
+Campaign id/name are extracted from `data.campaign.id` / `data.campaign.name` in the payload.
+
 After `pull`, filter the pipeline by **current** status (latest status-bearing event per lead):
 
 ```bash

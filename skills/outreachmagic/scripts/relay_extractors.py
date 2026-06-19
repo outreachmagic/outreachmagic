@@ -33,6 +33,8 @@ def _pick(data: dict, paths: tuple[str, ...]) -> Optional[str]:
         val = _get_path(data, path) if "." in path else data.get(path)
         if val is None:
             continue
+        if isinstance(val, (dict, list)):
+            continue
         text = str(val).strip()
         if text:
             return text

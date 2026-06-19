@@ -1,60 +1,92 @@
-# Email Finder
+# Email Waterfall Finder
 
-[![MIT License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
-[![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills)
-[![Cursor](https://img.shields.io/badge/Cursor-ready-007ACC)](https://docs.cursor.com/skills)
-[![Hermes](https://img.shields.io/badge/Hermes-ready-8B5CF6)](https://hermes-agent.nousresearch.com/docs/skills)
+[![MIT License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE) [![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills) [![Cursor](https://img.shields.io/badge/Cursor-ready-007ACC)](https://docs.cursor.com/skills) [![Hermes](https://img.shields.io/badge/Hermes-ready-8B5CF6)](https://hermes-agent.nousresearch.com/docs/skills)
 
-Find work emails when you have a name and company domain. **trykitt** first, **Icypeas** on miss. Works standalone with just API keys, or pairs with Outreach Magic to save every result and never search for the same lead twice.
+Find work emails when you have a name and company domain. Or verify emails you already have. Works standalone with just API keys, or pairs with Outreach Magic to save every result and never search for the same lead twice.
 
 Part of the [Outreach Magic skill suite](https://github.com/outreachmagic/outreachmagic).
 
 ## How it fits
 
+Two ways to use this skill. They are separate. You pick the one you need.
+
+**Path 1: Find emails with the waterfall.** Give it a name and domain (one off or a whole list). Enable trykitt, Icypeas, or both. The waterfall hits the first enabled platform. No match? Falls back to the next one. If it finds an email, it saves to local agent storage. If Outreach Magic is connected, it saves there instead.
+
 ```
-                     trykitt ──┐
-  name + domain ────►          ├── waterfall ──► email found? ──► stdout (standalone)
-                     Icypeas ──┘       │                              │
-                                        no                             │
-                                          └──► MillionVerifier ───────┤
-                                                                  with OM: saves to
-                                                                  local SQLite DB,
-                                                                  skips next time
+                      ┌────────────────────┐
+name + domain ───────►│   email finder     │
+(single or list)      └─────────┬──────────┘
+                                │
+                   ┌────────────▼────────────┐       hit
+                   │  trykitt (if enabled)   ├────────────────┐
+                   └────────────┬────────────┘                │
+                                │ miss                        │
+                   ┌────────────▼────────────┐       hit      │
+                   │  Icypeas (if enabled)   ├──────────────┐ │
+                   └────────────┬────────────┘              │ │
+                                │ miss                      │ │
+                   ┌────────────▼────────────┐              │ │
+                   │  no email found         │              │ │
+                   └─────────────────────────┘              │ │
+                                                            ▼ ▼
+                                                   ┌──────────────────┐
+                                                   │   email found    │
+                                                   └────────┬─────────┘
+                                                            │
+                                            ┌───────────────┴───────────────┐
+                                            ▼                               ▼
+                                  ┌──────────────────┐          ┌──────────────────┐
+                                  │  agent replies   │          │  OM database     │
+                                  │  (not saved)     │          │  (if connected)  │
+                                  └──────────────────┘          └──────────────────┘
+```
+
+**Path 2: Verify emails you already have.** Got a list of emails you collected somewhere else? Send them through MillionVerifier. It checks deliverability. You do not need trykitt or Icypeas for this. This path does not connect back to the waterfall.
+
+```
+                ┌──────────────────┐
+ email list ───►│  MillionVerifier │──► emails verified
+                └──────────────────┘
 ```
 
 | Mode | What happens | What you need |
 |------|-------------|---------------|
-| Standalone | Searches trykitt, falls back to Icypeas, prints the email | Just API keys |
-| With Outreach Magic | Checks your pipeline first → skips if you already have it → saves the result | OM account + API keys |
-
-The waterfall always runs trykitt first (fastest, cheapest). If it misses, it tries Icypeas. You can add MillionVerifier at the end to check deliverability on bulk finds.
+| Standalone find | Hits trykitt (if enabled), falls back to Icypeas (if enabled), saves result locally | One or more API keys (trykitt, Icypeas, or both) |
+| Standalone verify | Checks emails you already have for deliverability | MillionVerifier API key |
+| With Outreach Magic | Same waterfall, but saves to your pipeline and skips leads you already searched | OM account + API keys |
 
 ## Quick start
 
-**Find one email on your own:**
-```bash
-python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com
+Once it's installed, try prompts like these:
+
+```
+find the email for bill smith at acmecorp.com using trykitt only
 ```
 
-**Find one email and save it to your pipeline:**
-```bash
-python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com --save --workspace CLIENT
+```
+find emails for everyone in leads.csv
 ```
 
-**Find a batch on your own:**
-```bash
-python3 scripts/email_finder.py batch-find --skip-om --yes --dry-run input.json
+```
+verify these emails: bill@acme.com, jane@xyz.io
 ```
 
-**Find a batch and save results:**
-```bash
-python3 scripts/email_finder.py batch-find --workspace CLIENT --yes --workers 3 --delay 3 input.json
+Not sure what it can do? Ask your agent:
+
+```
+tell me everything the email finder skill can do
 ```
 
 ## Install
 
-Install the full skill suite, or just this skill from the main repo:
+You can install just the email finder skill on its own. Or install the full Outreach Magic suite, which gives you the email finder, the local database, and lead enrichment all at once.
 
+**Install just the email finder:**
+```bash
+npx skills add outreachmagic/email-finder
+```
+
+**Install the full Outreach Magic suite (email finder + database + lead enrich):**
 ```bash
 npx skills add outreachmagic/outreachmagic
 ```
@@ -65,10 +97,12 @@ Or follow the agent install guide: [AGENTS-INSTALL.md](https://github.com/outrea
 
 | Key | For | Required? |
 |-----|-----|-----------|
-| `TRYKITT_API_KEY` | trykitt.ai (first in waterfall) | Yes |
-| `ICYPEAS_API_KEY` | Icypeas (fallback) | Yes |
-| `MILLIONVERIFIER_API_KEY` | Optional bulk re-verification | No |
-| Outreach Magic login | Dedup + save results to pipeline | Only with OM |
+| `TRYKITT_API_KEY` | Find emails via trykitt.ai | One or the other, not both |
+| `ICYPEAS_API_KEY` | Fallback find via Icypeas | One or the other, not both |
+| `MILLIONVERIFIER_API_KEY` | Verify emails you already have | Only for the verify path |
+| Outreach Magic login | Dedup and save results to pipeline | Only with OM |
+
+Set your API keys in your agent's environment config. If you use Outreach Magic, you can set them in the portal instead and they get passed through automatically.
 
 ## License
 

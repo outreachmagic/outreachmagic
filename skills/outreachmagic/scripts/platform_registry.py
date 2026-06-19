@@ -100,8 +100,8 @@ _DEFAULT_SPEC = {
         "subject": ("subject", "email_subject", "data.subject"),
         "body": ("body", "email_body", "message", "data.body", "text_body"),
         "campaign": ("campaign_name", "campaign"),
-        "campaign_id": ("campaign_id", "data.campaign_id", "campaign.id"),
-        "campaign_name": ("campaign_name", "campaign", "data.campaign_name"),
+        "campaign_id": ("campaign_id", "data.campaign_id", "campaign.id", "data.campaign.id"),
+        "campaign_name": ("campaign_name", "campaign", "data.campaign_name", "data.campaign.name"),
     },
     "signals": {
         "label": ("label", "lead_status", "data.label"),
@@ -110,6 +110,19 @@ _DEFAULT_SPEC = {
         "webhook_event": ("webhook_event", "event_type"),
     },
     "identity": _IDENTITY_DEFAULT,
+}
+
+_HEYREACH_SPEC = {
+    "lead": _DEFAULT_SPEC["lead"],
+    "event": {
+        "subject": _DEFAULT_SPEC["event"]["subject"],
+        "body": _DEFAULT_SPEC["event"]["body"],
+        "campaign": ("campaign.name",),
+        "campaign_id": ("campaign.id",),
+        "campaign_name": ("campaign.name",),
+    },
+    "signals": _DEFAULT_SPEC["signals"],
+    "identity": _HEYREACH_IDENTITY,
 }
 
 PLATFORM_BOUNCE_SPECS: dict[str, dict[str, tuple[str, ...]]] = {
@@ -278,6 +291,16 @@ def _generic_email_mappings() -> tuple[EventMapping, ...]:
     )
 
 
+def _emailbison_mappings() -> tuple[EventMapping, ...]:
+    return _generic_email_mappings() + (
+        _em("lead_replied", "email_reply", "inbound", "replied", "email_reply"),
+        _em("lead_interested", "lead_status_updated", "inbound", "interested", "lead_status_updated"),
+        _em("lead_unsubscribed", "email_unsubscribe", "inbound", None, "email_unsubscribe"),
+        _em("tag_attached", "tag_attached", "inbound", None, "tag_attached"),
+        _em("tag_removed", "tag_removed", "inbound", None, "tag_removed"),
+    )
+
+
 def _prosp_mappings() -> tuple[EventMapping, ...]:
     return (
         _em("has_msg_replied", "linkedin_message", "inbound", "replied", "linkedin_message_reply",
@@ -311,11 +334,16 @@ def _heyreach_linkedin_mappings() -> tuple[EventMapping, ...]:
         _em("every_message_reply_received", "linkedin_message", "inbound", "replied",
             "linkedin_message_reply", "Includes non-campaign replies when tracking enabled"),
         _em("inmail_reply_received", "linkedin_message", "inbound", "replied", "linkedin_message_reply"),
+        _em("follow_sent", "linkedin_follow_sent", "outbound", None, "linkedin_follow_sent"),
+        _em("liked_post", "linkedin_post_liked", "outbound", None, "linkedin_post_liked"),
+        _em("viewed_profile", "linkedin_profile_visited", "outbound", None, "linkedin_profile_visited"),
+        _em("campaign_completed", "campaign_completed", "inbound", None, "campaign_completed"),
+        _em("lead_tag_updated", "lead_tag_updated", "inbound", None, "lead_tag_updated"),
     )
 
 
 def _heyreach_mappings() -> tuple[EventMapping, ...]:
-    return _generic_email_mappings() + _heyreach_linkedin_mappings()
+    return _heyreach_linkedin_mappings()
 
 
 def _plusvibe_mappings() -> tuple[EventMapping, ...]:
@@ -355,12 +383,7 @@ PLATFORMS: dict[str, PlatformDef] = {
         category="sequencer",
         setup_hint="In HeyReach → Settings → Webhooks, paste the URL. Enable all campaign events.",
         linkedin_platform=True,
-        extractor_spec={
-            "lead": _DEFAULT_SPEC["lead"],
-            "event": _DEFAULT_SPEC["event"],
-            "signals": _DEFAULT_SPEC["signals"],
-            "identity": _HEYREACH_IDENTITY,
-        },
+        extractor_spec=_HEYREACH_SPEC,
         event_mappings=_heyreach_mappings(),
     ),
     "plusvibe": PlatformDef(
@@ -417,7 +440,7 @@ PLATFORMS: dict[str, PlatformDef] = {
         linkedin_platform=False,
         extractor_spec=_DEFAULT_SPEC,
         bounce_spec=PLATFORM_BOUNCE_SPECS["emailbison"],
-        event_mappings=_generic_email_mappings(),
+        event_mappings=_emailbison_mappings(),
     ),
     "masterinbox": PlatformDef(
         id="masterinbox",

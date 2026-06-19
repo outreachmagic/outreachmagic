@@ -124,6 +124,29 @@ def test_campaign_routing():
     assert result.match_strategy == "id_exact"
 
 
+def test_heyreach_campaign_extraction_from_raw_payload():
+    raw = {
+        "event_type": "message_sent",
+        "correlation_id": "test-123",
+        "sender": {"profile_url": "https://linkedin.com/in/sender"},
+        "lead": {"profile_url": "https://linkedin.com/in/lead"},
+        "campaign": {
+            "name": "Malaysia - HC Decrease Signal",
+            "id": 425166,
+            "status": 1,
+        },
+    }
+    extracted = extract_relay_fields("heyreach", raw)
+    event_fields = extracted.get("event", {})
+    assert event_fields.get("campaign_name") == "Malaysia - HC Decrease Signal"
+    assert event_fields.get("campaign_id") == "425166"
+
+    ctx = extract_campaign_context("heyreach", event_fields, raw)
+    assert ctx.campaign_id == "425166"
+    assert ctx.campaign_name_raw == "Malaysia - HC Decrease Signal"
+    assert ctx.campaign_name_normalized == "malaysia - hc decrease signal"
+
+
 def test_calendly_scheduled_event_fields_are_extracted():
     raw = {
         "event": "invitee.created",

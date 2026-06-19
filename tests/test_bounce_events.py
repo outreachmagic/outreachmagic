@@ -76,6 +76,32 @@ class BounceExtractionTests(unittest.TestCase):
             self.assertTrue(om.is_bounce_event_type(et))
             self.assertEqual(om.normalize_bounce_event_type(et), "email_bounce")
 
+    def test_emailbison_bounce_extraction_nested_paths(self):
+        raw = {
+            "event": {"type": "EMAIL_BOUNCED"},
+            "data": {
+                "bounce": {
+                    "type": "hard",
+                    "reason": "550 5.1.1 The email account that you tried to reach does not exist.",
+                    "message": "Mailbox does not exist",
+                },
+                "lead": {"email": "bounce@example.com", "mx_provider": "GOOGLE_WORKSPACE"},
+            },
+        }
+        fields = extract_bounce_fields("emailbison", raw)
+        self.assertIn("does not exist", fields["message"])
+        self.assertEqual(fields["bounce_type"], "hard")
+        self.assertEqual(fields["recipient_mx"], "GOOGLE_WORKSPACE")
+
+    def test_emailbison_bounce_without_nested_bounce(self):
+        raw = {
+            "bounce_reason": "Mailbox full",
+            "bounce_type": "soft",
+        }
+        fields = extract_bounce_fields("emailbison", raw)
+        self.assertEqual(fields["message"], "Mailbox full")
+        self.assertEqual(fields["bounce_type"], "soft")
+
 
 class BounceEventsTableTests(unittest.TestCase):
     def setUp(self):

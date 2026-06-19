@@ -96,11 +96,87 @@ class TestResolveEvent(unittest.TestCase):
         self.assertEqual(reply.local_type, "linkedin_message")
         self.assertEqual(reply.direction, "inbound")
 
+    def test_heyreach_follow_sent(self):
+        resolved = pr.resolve_event("heyreach", "follow_sent", {})
+        self.assertEqual(resolved.local_type, "linkedin_follow_sent")
+        self.assertEqual(resolved.direction, "outbound")
+        self.assertEqual(resolved.reporting_bucket, "linkedin_follow_sent")
+
+    def test_heyreach_liked_post(self):
+        resolved = pr.resolve_event("heyreach", "liked_post", {})
+        self.assertEqual(resolved.local_type, "linkedin_post_liked")
+        self.assertEqual(resolved.direction, "outbound")
+        self.assertEqual(resolved.reporting_bucket, "linkedin_post_liked")
+
+    def test_heyreach_viewed_profile(self):
+        resolved = pr.resolve_event("heyreach", "viewed_profile", {})
+        self.assertEqual(resolved.local_type, "linkedin_profile_visited")
+        self.assertEqual(resolved.direction, "outbound")
+        self.assertEqual(resolved.reporting_bucket, "linkedin_profile_visited")
+
+    def test_heyreach_campaign_completed(self):
+        resolved = pr.resolve_event("heyreach", "campaign_completed", {})
+        self.assertEqual(resolved.local_type, "campaign_completed")
+        self.assertEqual(resolved.direction, "inbound")
+        self.assertEqual(resolved.reporting_bucket, "campaign_completed")
+
+    def test_heyreach_lead_tag_updated(self):
+        resolved = pr.resolve_event("heyreach", "lead_tag_updated", {})
+        self.assertEqual(resolved.local_type, "lead_tag_updated")
+        self.assertEqual(resolved.direction, "inbound")
+        self.assertEqual(resolved.reporting_bucket, "lead_tag_updated")
+
     def test_smartlead_email_reply(self):
         resolved = pr.resolve_event("smartlead", "email_reply", {})
         self.assertEqual(resolved.local_type, "email_reply")
         self.assertEqual(resolved.direction, "inbound")
         self.assertEqual(resolved.target_stage, "replied")
+
+    # ── EmailBison event mappings ──
+
+    def test_emailbison_lead_replied(self):
+        resolved = pr.resolve_event("emailbison", "lead_replied", {})
+        self.assertEqual(resolved.local_type, "email_reply")
+        self.assertEqual(resolved.direction, "inbound")
+        self.assertEqual(resolved.target_stage, "replied")
+        self.assertEqual(resolved.reporting_bucket, "email_reply")
+
+    def test_emailbison_lead_interested(self):
+        resolved = pr.resolve_event("emailbison", "lead_interested", {})
+        self.assertEqual(resolved.local_type, "lead_status_updated")
+        self.assertEqual(resolved.direction, "inbound")
+        self.assertEqual(resolved.target_stage, "interested")
+        self.assertEqual(resolved.reporting_bucket, "lead_status_updated")
+
+    def test_emailbison_lead_unsubscribed(self):
+        resolved = pr.resolve_event("emailbison", "lead_unsubscribed", {})
+        self.assertEqual(resolved.local_type, "email_unsubscribe")
+        self.assertEqual(resolved.direction, "inbound")
+        self.assertIsNone(resolved.target_stage)
+        self.assertEqual(resolved.reporting_bucket, "email_unsubscribe")
+
+    def test_emailbison_tag_attached(self):
+        resolved = pr.resolve_event("emailbison", "tag_attached", {})
+        self.assertEqual(resolved.local_type, "tag_attached")
+        self.assertEqual(resolved.direction, "inbound")
+        self.assertIsNone(resolved.target_stage)
+
+    def test_emailbison_tag_removed(self):
+        resolved = pr.resolve_event("emailbison", "tag_removed", {})
+        self.assertEqual(resolved.local_type, "tag_removed")
+        self.assertEqual(resolved.direction, "inbound")
+        self.assertIsNone(resolved.target_stage)
+
+    def test_emailbison_generic_email_sent_still_works(self):
+        resolved = pr.resolve_event("emailbison", "email_sent", {})
+        self.assertEqual(resolved.local_type, "email_sent")
+        self.assertEqual(resolved.direction, "outbound")
+        self.assertEqual(resolved.target_stage, "contacted")
+
+    def test_emailbison_email_bounced_still_works(self):
+        resolved = pr.resolve_event("emailbison", "email_bounced", {})
+        self.assertEqual(resolved.local_type, "email_bounce")
+        self.assertEqual(resolved.direction, "outbound")
 
 
 class TestReplyHelpers(unittest.TestCase):
@@ -137,6 +213,19 @@ class TestPlatformMapJson(unittest.TestCase):
     def test_filter_unknown(self):
         data = pr.platform_map_json("not-a-platform")
         self.assertIn("error", data)
+
+    def test_emailbison_event_mappings_in_map(self):
+        data = pr.platform_map_json()
+        eb = next(p for p in data["platforms"] if p["id"] == "emailbison")
+        vendor_types = {m["vendor_type"] for m in eb["event_mappings"]}
+        self.assertIn("lead_replied", vendor_types)
+        self.assertIn("lead_interested", vendor_types)
+        self.assertIn("lead_unsubscribed", vendor_types)
+        self.assertIn("tag_attached", vendor_types)
+        self.assertIn("tag_removed", vendor_types)
+        # Generic email types should also be present
+        self.assertIn("email_sent", vendor_types)
+        self.assertIn("email_bounced", vendor_types)
 
 
 class TestExtractReplyBody(unittest.TestCase):
@@ -242,6 +331,48 @@ class TestPlatformMapCli(unittest.TestCase):
         data = json.loads(buf.getvalue())
         self.assertEqual(len(data["platforms"]), 1)
         self.assertEqual(data["platforms"][0]["id"], "prosp")
+
+
+class TestEmailBisonCampaignExtraction(unittest.TestCase):
+    def setUp(self):
+        import relay_extractors  # noqa: E402
+
+        self.extractors = relay_extractors
+        import workspace_routing  # noqa: E402
+
+        self.wr = workspace_routing
+
+    def test_extract_relay_fields_campaign_from_nested_path(self):
+        raw = {
+            "event": {"type": "LEAD_INTERESTED"},
+            "data": {
+                "campaign": {"id": 49, "name": "Votary - [Ai Copy] - Variant 3 -"},
+                "lead": {"email": "yuriy@eviqo.io", "first_name": "Yuriy"},
+                "sender_email": {"email": "braden@votaryfilmscreative.com"},
+            },
+        }
+        fields = self.extractors.extract_relay_fields("emailbison", raw)
+        self.assertEqual(fields["event"]["campaign_id"], "49")
+        self.assertEqual(fields["event"]["campaign_name"], "Votary - [Ai Copy] - Variant 3 -")
+
+    def test_extract_campaign_context_from_nested_path(self):
+        raw = {
+            "data": {"campaign": {"id": 49, "name": "Votary - [Ai Copy] - Variant 3 -"}},
+        }
+        event_fields = {}
+        ctx = self.wr.extract_campaign_context("emailbison", event_fields, raw)
+        self.assertEqual(ctx.campaign_id, "49")
+        self.assertEqual(ctx.campaign_name_raw, "Votary - [Ai Copy] - Variant 3 -")
+
+    def test_extract_campaign_context_without_data_nesting(self):
+        raw = {
+            "campaign_id": "42",
+            "campaign": "Test Campaign",
+        }
+        event_fields = {}
+        ctx = self.wr.extract_campaign_context("emailbison", event_fields, raw)
+        self.assertEqual(ctx.campaign_id, "42")
+        self.assertEqual(ctx.campaign_name_raw, "Test Campaign")
 
 
 if __name__ == "__main__":

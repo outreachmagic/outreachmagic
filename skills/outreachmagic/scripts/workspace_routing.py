@@ -611,6 +611,7 @@ def extract_campaign_context(
             "campaign_id",
             "data.campaign_id",
             "campaign.id",
+            "data.campaign.id",
             "lead.campaign_id",
         ):
             val = _get_path(raw, path) if "." in path else raw.get(path)
@@ -619,7 +620,7 @@ def extract_campaign_context(
                 break
 
     if not campaign_name:
-        for key in ("campaign_name", "campaign", "data.campaign_name"):
+        for key in ("campaign_name", "campaign", "data.campaign_name", "data.campaign.name"):
             val = _get_path(raw, key) if "." in key else raw.get(key)
             if val is not None and str(val).strip():
                 text = str(val).strip()

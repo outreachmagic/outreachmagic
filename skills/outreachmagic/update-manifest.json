@@ -1,13 +1,14 @@
 {
   "version": "1.0.0",
   "files": {
-    "SKILL.md": "30ae3b5901600d40d6c80559349a97742df402d769619b20f1b8051a7d92e198",
+    "README.md": "8af3b3bf6fad2858c3ef9ceac16ec9d11763aca001c4410874e9f5982848e7cc",
+    "SKILL.md": "b3c86624057a47cfc1623ae7d03dc8cad0b368590f2f208dc5c59e9b74bcdaa3",
     "VERSION": "59854984853104df5c353e2f681a15fc7924742f9a2e468c29af248dce45ce03",
     "activity_sync.py": "a1d36da5b1b35863ecdff8e366d89601ef622729978b148ee1e1cba0da3a04d2",
     "agent_secrets_cloud.py": "fe478a2280b7799d7b7ae551149c38a43f1ec6f0ac05b6b9d3142f29293a56e3",
     "api_key_pool.py": "3174a8f8509ca97fcefe3f1c9a175cfdead450941b8cfb0f19df7af4e7b34caf",
     "bounces.py": "910432b263dc90e776f605c1c0af55e5646ba8cb5a52a7811c97ccbfb6439963",
-    "campaign_stats.py": "9ed663214ec00a7204991a7f7ac68656616c1054964c3409fd8a60abb081af08",
+    "campaign_stats.py": "2fcb5a2ca6e63cf207ae2b12f7c0cbe330a0b160fd45a5fd6cab14ba273f05ba",
     "connections_cloud.py": "6637b182ffd9dcd36781aae1b5bfb78d6f692e8498a5f7ac733ddf2194f86a3e",
     "constants.py": "62a2a7753671b02e3f58fe220cf99e8c0a088e5bddb84a9ad35bfa6f8de54254",
     "data_freshness.py": "f1946e15b0d50fb1fcadc56994e2358e065b522c90cee250a5d5650eeef00497",
@@ -23,11 +24,11 @@
     "pipeline.py": "06b801202f142fc3542c185030ddd05d913cb7d4cd78c6765ea0dcc1f7afa036",
     "pipeline_dedup.py": "2a05954c95307353ca646273373a3c0c2cbffe77b8af22c43b68bb4f65e6bf82",
     "pipeline_lead_review.py": "46800b5b7d54c179dbbbd98656a10d0cded2a7532121535c48f1d601dcfe78ed",
-    "platform_registry.py": "4fe69c7e669ce1e65ff1ea1d2009598991c4a1b926743c59a4d4e8e92fbffc1f",
+    "platform_registry.py": "1acc145f7ee035cdb5aea05af0b228c72442111bb9c5b11f1c2a1baaba1dce64",
     "quarantine_resolutions.py": "62f0f3080f3174317cf946453a5b964b963008ceb76b55067a59671b7d53eeca",
     "query_cli.py": "cc5038a81e1ac6f8202942db161a51c0d92915bc1240ad4718997a671b0a6f40",
     "read_queries.py": "38a0d2744d64e409e27bc5b1abf2bb21dce0801472bc4286d1c7ef285c0eb6c1",
-    "relay_extractors.py": "c742cc48bf1e97f9f4dce55f6fe9fac9c86cd6d796ca41ccd9e0918e65f93820",
+    "relay_extractors.py": "ceabe6b92b9eaf33f3798950383af62321c8527ad3ee252e918ffc98e8ce4908",
     "relay_ingest.py": "26e8074db0f7fb6f955725c261831af7523f09fbf2f0a73d7f051fb5df41bd19",
     "review_cloud.py": "1ed60a9674eb577aafbf3106a9504161366220c6c647e0992831f5bc2dff7f72",
     "routing_cloud.py": "c36722e750c052b77c1c84756680a7380cb18e2af496bd360c3d74c4ee5f02b4",
@@ -35,6 +36,6 @@
     "schema_views.py": "0307f3d44c157742dc1092c9914bd9bed2a1684180a73a9afc9dd6f41260ee08",
     "user_messages.py": "f0efa125fd6cf2b07a3d0445fa09084b57a02bbf5c70ef2ebffb207d02ff799d",
     "workspace_archive.py": "d150960581f33c365defed0ba8cf038d6c972ea53a33980d1d3062dd4ebf8934",
-    "workspace_routing.py": "a1d0c0e49aaaefd548237cbd82fd7f5300d66a1095dfa69af6d8b5702138091c"
+    "workspace_routing.py": "be11671da3dcdbaf6efcfeabfc95d96c5a6ef9a4816ccc8ece5160b5baf10e10"
   }
 }

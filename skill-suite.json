@@ -15,7 +15,7 @@
         "path": "scripts/VERSION"
       },
       "script_exclude": [],
-      "extra_files": ["SKILL.md"],
+      "extra_files": ["SKILL.md", "README.md"],
       "install_required": []
     },
     "email-finder": {

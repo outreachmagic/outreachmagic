@@ -159,3 +159,9 @@ def test_companion_clis_have_no_update_files_tuple():
     for skill, cli in [("email-finder", "email_finder.py"), ("lead-enrich", "enrich.py")]:
         text = (skill_dir(skill) / "scripts" / cli).read_text(encoding="utf-8")
         assert "UPDATE_FILES" not in text, f"{skill} still defines UPDATE_FILES — use manifest keys only"
+
+
+def test_outreachmagic_readme_matches_public_repo_copy():
+    canonical = ROOT / "platforms" / "outreachmagic-README.md"
+    skill_readme = skill_dir("outreachmagic") / "README.md"
+    assert canonical.read_text(encoding="utf-8") == skill_readme.read_text(encoding="utf-8")

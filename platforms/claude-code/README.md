@@ -1,6 +1,6 @@
 # Outreach Magic for Claude Code
 
-Pipeline visibility for AI agents. Auto-logs outreach to a local SQLite database. Connect Smartlead, Heyreach, Instantly, PlusVibe, EmailBison, Prosp, MasterInbox, and Calendly via paid relay.
+Your pipeline, in your agent's hands. Sync Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, and Calendly into a local SQLite database your Claude Code agent can query directly. Every reply, click, bounce, and booking lands on your machine — no CSV exports, no merged sheets, no API round trips.
 
 Installs **outreachmagic**, **lead-enrich**, and **email-finder** from the unified repo.
 
@@ -33,7 +33,8 @@ python3 ~/.claude/skills/email-finder/scripts/email_finder.py update
 ## Pricing
 
 - **Free:** Local tracking + CLI pipeline view + 1,000 webhook events/month
-- **Pro ($9/mo):** Sequencer sync (50k webhook and sync events/month cap)
+- **Pro ($9/mo):** Full sequencer sync (50k events/month)
+- **Scale ($29/mo):** 250k events/month + unlimited workspaces + priority support
 
 Sign up at [outreachmagic.io](https://outreachmagic.io) · Billing at [app.outreachmagic.io](https://app.outreachmagic.io/settings/billing)
 

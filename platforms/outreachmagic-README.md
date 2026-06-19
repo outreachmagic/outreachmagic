@@ -1,110 +1,124 @@
-# Outreach Magic — Stop Stitching CSVs
+# Outreach Magic — Your Pipeline, In Your Agent's Hands
 
 [![MIT License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills)
 [![Cursor](https://img.shields.io/badge/Cursor-ready-007ACC)](https://docs.cursor.com/skills)
 [![Hermes](https://img.shields.io/badge/Hermes-ready-8B5CF6)](https://hermes-agent.nousresearch.com/docs/skills)
 
-Stop stitching CSVs across Smartlead, Instantly, HeyReach, PlusVibe, EmailBison,
-Prosp, MasterInbox, and Calendly. Sync them all into one local SQLite database
-your AI agent can query. Works with **Claude Code**, **Cursor**, and **Hermes**.
-
-## How it works
-
 ```
   Smartlead ──┐
   Instantly ──┤
-  PlusVibe  ──┤  webhooks ──►  api.outreachmagic.io  ── pull ──►  local SQLite DB
-  HeyReach  ──┤                                                      ▲
-  EmailBison ─┤                                                      │
-  Prosp     ──┤                                                your agent talks to it
-  Calendly  ──┘
+  HeyReach  ──┤  webhooks ──►  api.outreachmagic.io  ── sync ──►  local SQLite DB
+  PlusVibe  ──┤                                                          ▲
+  EmailBison ─┤                                                          │
+  Prosp     ──┤                                                    your agent reads it
+  Calendly  ──┘                                                        directly
 ```
 
-Every reply, click, bounce, and booked call lands in a database on your machine. Your agent reads it directly. No CSV exports, no merged sheets, no API pagination.
+Outreach Magic turns your outbound pipeline into a local SQLite database your AI agent can query directly. Every reply, click, bounce, and booked call from every sequencer lands in one place — on your machine, in real time.
+
+**Works with Claude Code, Cursor, and Hermes.** No CSV exports, no merged sheets, no API pagination.
+
+---
+
+## How it works
+
+| Step | What happens |
+|------|-------------|
+| You connect your sequencers | Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, Calendly |
+| Webhooks flow to one endpoint | One webhook per platform — no per-client or per-campaign setup |
+| Events sync to a local SQLite DB | Every lead move, reply, bounce, and booking lands on your machine |
+| Your agent reads it directly | Your AI agent queries the database — no API, no dashboard, no round trip |
+
+The result: your agent can answer questions like "who replied this week?" or "which campaign has the highest reply rate?" — without you exporting a CSV or opening a dashboard.
+
+---
+
+## How the skills fit together
+
+```
+  email-finder ──►  lead-enrich  ──►  outreachmagic
+  (find emails)     (research)       (your pipeline DB)
+       │                  │                 │
+       └───── all local ──┴──── queries ────┘
+```
+
+| Skill | What it does | Works alone? |
+|-------|-------------|-------------|
+| **outreachmagic** | Pipeline DB — syncs sequencer data, stores replies + events, agent queries it directly | Needs relay account |
+| **lead-enrich** | Find anyone by name + company — LinkedIn, domain, website | Yes, just a Serper key |
+| **email-finder** | Waterfall email lookup through trykitt and Icypeas | Yes, just API keys |
+
+All three install together. The companion skills check your pipeline before spending credits — if you already have someone's data, they skip the lookup and save you money.
+
+---
 
 ## Getting started
 
-**1. Install the skills**
+**In your agent (Claude Code, Cursor, or Hermes), paste this:**
 
-In Claude Code, Cursor, or Hermes, paste:
+> Fetch https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md and follow its instructions exactly to install the Outreach Magic skill suite on this machine.
 
-```
-Fetch https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md
-and follow its instructions exactly to install the Outreach Magic skill suite on this machine.
-```
+Or run the installer directly:
 
-Or manually:
+> Download `install.sh` from the latest release on this repo, verify the SHA256 checksum, then run `bash install.sh --platform <your-agent>` where platform is `hermes`, `cursor`, or `claude`.
 
-```bash
-npx skills add outreachmagic/outreachmagic
-```
+After install, connect your account:
 
-**2. Connect your account**
+> Run `pipeline.py login` from your terminal — it opens a browser where you sign in. Then connect your sequencers in the portal at app.outreachmagic.io.
 
-```bash
-python3 <skill_home>/scripts/pipeline.py login
-```
+**Once connected, ask your agent things like:**
 
-This opens a browser to sign in. Come back when you're done.
+- "Show me leads who replied this week"
+- "Which campaign has the highest reply rate?"
+- "Pull the latest events and give me a pipeline briefing"
+- "Are there leads still interested from yesterday?"
+- "How many bounces did we get on the A/B test campaign?"
+- "Export leads that haven't been contacted yet"
 
-**3. Ask your agent**
+---
 
-```
-"Show me leads who replied this week"
-"Which campaign has the highest reply rate?"
-"Pull the latest events and give me a client briefing"
-"Are there leads still in interested stage from yesterday?"
-```
+## What people use it for
 
-## What's included
+| Who | Why it clicks |
+|-----|---------------|
+| **GTM engineers** | Stop writing n8n pipelines to merge sequencer data. Your agent reads a local SQLite DB instead. |
+| **SaaS founders** | Know what's working without dashboard-hopping. $9/mo instead of $200/mo in half-solutions. |
+| **Agencies** | One webhook per platform. Route by campaign name. Query across every client from one terminal. |
+| **AI agent builders** | Give your agent pipeline awareness. Let it answer "who replied?" without API integration. |
 
-| Skill | What it does | Works standalone? |
-|-------|-------------|-------------------|
-| **outreachmagic** | Pipeline DB, sequencer sync, agent queries | Requires relay account |
-| **lead-enrich** | Serper research, company and LinkedIn lookup | Yes, with just a Serper key |
-| **email-finder** | trykitt + Icypeas email lookup | Yes, with just API keys |
+---
 
-Install all three from this repo, or grab companions alone from their repos.
+## Pricing
 
-## API keys
+| Plan | What you get | Price |
+|------|-------------|-------|
+| **Free** | Local tracking + CLI pipeline view + 1,000 webhook events/month | $0 |
+| **Pro** | Full sequencer sync + 50,000 events/month + all integrations | $9/mo |
+| **Scale** | 250,000 events/month + unlimited workspaces + priority support | $29/mo |
 
-Configure sequencer connections and provider keys in the [portal](https://app.outreachmagic.io) after login. Keys sync locally via `pipeline.py sync-secrets`.
+Only webhook traffic from sequencers counts toward limits. Local queries, tracking, enrichment, and exports stay unlimited on every plan.
 
-**Supported platforms:** Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, Calendly, and more.
+[View full pricing →](https://outreachmagic.io/pricing)
 
-Don't see your tool? [Open a GitHub issue](https://github.com/outreachmagic/outreachmagic/issues).
+---
 
-## Manual install
+## Supported platforms
 
-```bash
-OM_VERSION=v1.0.0
-INSTALL_DIR=$(mktemp -d)
-curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
-curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"
-grep ' install.sh$' "${INSTALL_DIR}/SHA256SUMS" | (cd "${INSTALL_DIR}" && shasum -a 256 --check)
-bash "${INSTALL_DIR}/install.sh" --platform hermes --tag "${OM_VERSION}"
-```
+Smartlead · Instantly · HeyReach · PlusVibe · EmailBison · Prosp · MasterInbox · Calendly
 
-Use `--platform cursor` or `--platform claude` for other agents.
+Don't see yours? [Open an issue](https://github.com/outreachmagic/outreachmagic/issues).
 
-## Layout
+---
 
-```
-skills/outreachmagic/     # SKILL.md, scripts/, references/, update-manifest.json
-install.sh                # --platform hermes|cursor|claude (full suite)
-AGENTS-INSTALL.md         # Agent-readable install guide
-platforms/overlays/       # Cursor .mdc, Claude snippet
-```
+## Updates
 
-## Update
+Skills update through the pipeline tool itself — no reinstall needed:
 
-```bash
-python3 <skill>/scripts/pipeline.py update
-```
+> Run `pipeline.py update` to pull the latest release. Rollback with `pipeline.py rollback` if something goes wrong.
 
-Downloads from tagged releases on this repo.
+---
 
 ## License
 
-MIT. [Outreach Magic](https://outreachmagic.io)
+MIT — [Outreach Magic](https://outreachmagic.io)

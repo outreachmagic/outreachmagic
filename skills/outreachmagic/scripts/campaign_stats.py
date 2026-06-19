@@ -1,35 +1,47 @@
-"""Campaign analytics — read-only queries and multi-sheet payload builders.
+#!/usr/bin/env python3
+"""
+Campaign Stats — aggregated campaign performance data for Google Sheets export.
 
-Consumed by both the `sheets campaign-stats` export (→ Google Sheets via backend)
-and the `query campaign-stats` command (→ JSON for the AI agent).
+Builds a 3-sheet workbook per the Campaign Stats Export spec:
+  Sheet 1: Campaign Overview — master table (one row per campaign)
+  Sheet 2: Campaign Funnels — per-campaign conversion funnels
+  Sheet 3: Lead Sentiment — sentiment distribution pivot across campaigns
 """
 
-from __future__ import annotations
-
-import json
-import re
 import sqlite3
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
-
-from platform_registry import reply_event_sql_condition
-from read_queries import normalize_since
-
-
-# ── Helpers ──────────────────────────────────────────────────────────
 
 
 def strip_workspace_prefix(campaign_name: str, workspace: str) -> str:
-    """Strip '{workspace} | ' prefix from campaign names for display."""
-    prefix = f"{workspace} | "
+    """Strip '{workspace} |' prefix from campaign names for display."""
+    prefix = f"{workspace} |"
     if campaign_name.lower().startswith(prefix.lower()):
-        return campaign_name[len(prefix):]
+        return campaign_name[len(prefix):].lstrip()
     return campaign_name
 
 
-def detect_status(sends_in_window: int, sends_outside_window: int) -> str:
-    """Classify campaign activity status."""
+def pct(num: int, denom: int) -> str:
+    """Safe percentage string (e.g. '43.9%' or '—')."""
+    if denom and denom > 0:
+        return f"{round(num / denom * 100, 1)}%"
+    return "—"
+
+
+def format_date(dt_str: Optional[str]) -> str:
+    """Format ISO timestamp to short date like 'Jun 13'."""
+    if not dt_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        return dt.strftime("%b %d")
+    except (ValueError, TypeError):
+        return dt_str[:10] if dt_str else "—"
+
+
+def campaign_status(sends_in_window: int, sends_outside_window: int) -> str:
+    """Detect campaign status based on send counts."""
     if sends_in_window > 0:
         return "active"
     if sends_outside_window > 0:
@@ -37,154 +49,135 @@ def detect_status(sends_in_window: int, sends_outside_window: int) -> str:
     return "exhausted"
 
 
-def pct(part: float | int, total: float | int) -> str:
-    """Format a percentage string, or '—' when total is 0."""
-    if not total:
-        return "—"
-    return f"{round(part / total * 100, 1)}%"
+def reply_event_sql_condition() -> str:
+    """Canonical reply event filter from platform_registry."""
+    return """(
+      LOWER(e.event_type) IN ('email_reply', 'linkedin_reply')
+      OR (LOWER(e.direction) = 'inbound' AND LOWER(e.event_type) = 'email')
+    )"""
 
 
-def _fmt_date(iso_str: Optional[str]) -> str:
-    """Format ISO datetime to short display like 'Jun 13'."""
-    if not iso_str:
-        return "—"
-    try:
-        dt = datetime.fromisoformat(iso_str)
-        return dt.strftime("%b %d")
-    except (ValueError, TypeError):
-        return iso_str or "—"
+def build_since_expr(since: Optional[str]) -> tuple[str, str]:
+    """Convert since parameter to (bare_expr, qualified_expr) for SQL.
 
-
-def _since_expr(since: Optional[str]) -> tuple[str, list]:
-    """Build SQL expression and params for time-window filtering.
-
-    Returns (where_clause_fragment, params_list).
-    The fragment starts with ' AND ' or is empty.
+    bare_expr — no table alias (use in CTEs)
+    qualified_expr — with e. prefix (use in top-level queries)
     """
-    expr = normalize_since(since)
-    if not expr:
-        return "", []
-    if expr.startswith("datetime("):
-        return f" AND e.created_at >= {expr}", []
-    return " AND e.created_at >= ?", [expr]
+    if not since or since.lower() == "all":
+        return "1=1", "1=1"
+    if since.endswith("d"):
+        days = int(since.replace("d", ""))
+        return f"created_at >= datetime('now', '-{days} days')", \
+               f"e.created_at >= datetime('now', '-{days} days')"
+    if "-" in since:
+        return f"date(created_at) >= '{since}'", f"date(e.created_at) >= '{since}'"
+    return "created_at >= datetime('now', '-14 days')", \
+           "e.created_at >= datetime('now', '-14 days')"
 
 
-def _since_expr_t(since: Optional[str], alias: str = "e") -> tuple[str, list]:
-    """Like _since_expr but with a configurable table alias."""
-    raw, params = _since_expr(since)
-    if raw and alias != "e":
-        raw = raw.replace("e.created_at", f"{alias}.created_at")
-    return raw, params
-
-
-# ── Campaign name stream collecting (leads → campaign join) ──────────
-
-
-def _load_campaigns(conn: sqlite3.Connection, workspace: str) -> list[dict[str, Any]]:
-    """All campaigns for a workspace, sorted by name."""
-    rows = conn.execute(
-        """SELECT id, name FROM campaigns WHERE name LIKE ? ORDER BY name""",
-        [f"{workspace} |%"],
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
-# ── Sheet 1: Campaign Overview ──────────────────────────────────────
-
-
-def _query_overview(
+def build_campaign_stats_payload(
     conn: sqlite3.Connection,
     workspace: str,
-    since: Optional[str],
-) -> list[dict[str, Any]]:
-    """Wide query: one row per campaign with all event-type counts."""
-    since_sql, since_params = _since_expr(since)
-    reply_where = reply_event_sql_condition()
+    since: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a 3-sheet campaign stats payload for review_cloud.export_review.
 
-    sql = f"""
+    Args:
+        conn: Open SQLite connection to OutreachMagic DB
+        workspace: Workspace slug (e.g. 'popcam')
+        since: Time window — '14d', '30d', '7d', 'all', or 'YYYY-MM-DD'
+
+    Returns:
+        dict with template, title, and sheets list
+    """
+    bare_expr, qualified_expr = build_since_expr(since)
+    reply_cond = reply_event_sql_condition()
+    ws_like = f"{workspace} |%"
+
+    # ── Sheet 1: Campaign Overview ──────────────────────────────────────────
+
+    overview_query = f"""
     WITH campaign_ids AS (
-        SELECT id, name FROM campaigns WHERE name LIKE ?
+      SELECT id, name FROM campaigns WHERE name LIKE ?
     ),
     window_sends AS (
-        SELECT campaign_id, COUNT(*) AS sent_count
-        FROM events WHERE LOWER(event_type) IN ('email_sent', 'email_sent_auto')
-          AND campaign_id IN (SELECT id FROM campaign_ids)
-          {since_sql.replace('e.created_at', 'created_at')}
-        GROUP BY campaign_id
+      SELECT campaign_id, COUNT(*) AS sent_count
+      FROM events WHERE event_type IN ('email_sent', 'email_sent_auto')
+        AND campaign_id IN (SELECT id FROM campaign_ids)
+        AND {bare_expr}
+      GROUP BY campaign_id
     ),
     all_sends AS (
-        SELECT campaign_id, COUNT(*) AS total_sent
-        FROM events WHERE LOWER(event_type) IN ('email_sent', 'email_sent_auto')
-          AND campaign_id IN (SELECT id FROM campaign_ids)
-        GROUP BY campaign_id
+      SELECT campaign_id, COUNT(*) AS total_sent
+      FROM events WHERE event_type IN ('email_sent', 'email_sent_auto')
+        AND campaign_id IN (SELECT id FROM campaign_ids)
+      GROUP BY campaign_id
     ),
     bounces AS (
-        SELECT campaign_id, COUNT(*) AS bounce_count
-        FROM events WHERE LOWER(event_type) IN ('email_bounce', 'bounced_email', 'email_bounced')
-          AND campaign_id IN (SELECT id FROM campaign_ids)
-          {since_sql.replace('e.created_at', 'created_at')}
-        GROUP BY campaign_id
+      SELECT campaign_id, COUNT(*) AS bounce_count
+      FROM events WHERE event_type IN ('email_bounce', 'bounced_email', 'email_bounced')
+        AND campaign_id IN (SELECT id FROM campaign_ids)
+        AND {bare_expr}
+      GROUP BY campaign_id
     ),
     replies AS (
-        SELECT campaign_id, COUNT(*) AS reply_count
-        FROM events e WHERE ({reply_where})
-          AND campaign_id IN (SELECT id FROM campaign_ids)
-          {since_sql}
-        GROUP BY campaign_id
+      SELECT campaign_id, COUNT(*) AS reply_count
+      FROM events e WHERE {reply_cond}
+        AND campaign_id IN (SELECT id FROM campaign_ids)
+        AND {qualified_expr}
+      GROUP BY campaign_id
     ),
     ooo AS (
-        SELECT campaign_id, COUNT(*) AS ooo_count
-        FROM events e WHERE ({reply_where})
-          AND CAST(json_extract(e.metadata_json, '$.is_auto_reply') AS INTEGER) = 1
-          AND campaign_id IN (SELECT id FROM campaign_ids)
-          {since_sql}
-        GROUP BY campaign_id
+      SELECT campaign_id, COUNT(*) AS ooo_count
+      FROM events e WHERE {reply_cond}
+        AND CAST(json_extract(e.metadata_json, '$.is_auto_reply') AS INTEGER) = 1
+        AND campaign_id IN (SELECT id FROM campaign_ids)
+        AND {qualified_expr}
+      GROUP BY campaign_id
     ),
     li_connects AS (
-        SELECT campaign_id, COUNT(*) AS li_connect_count
-        FROM events WHERE event_type = 'linkedin_connect'
-          AND campaign_id IN (SELECT id FROM campaign_ids)
-          {since_sql.replace('e.created_at', 'created_at')}
-        GROUP BY campaign_id
+      SELECT campaign_id, COUNT(*) AS connect_count
+      FROM events WHERE event_type = 'linkedin_connect'
+        AND campaign_id IN (SELECT id FROM campaign_ids)
+        AND {bare_expr}
+      GROUP BY campaign_id
     ),
     li_accepts AS (
-        SELECT campaign_id, COUNT(*) AS li_accept_count
-        FROM events WHERE event_type = 'linkedin_accept'
-          AND campaign_id IN (SELECT id FROM campaign_ids)
-          {since_sql.replace('e.created_at', 'created_at')}
-        GROUP BY campaign_id
+      SELECT campaign_id, COUNT(*) AS accept_count
+      FROM events WHERE event_type = 'linkedin_connection_accepted'
+        AND campaign_id IN (SELECT id FROM campaign_ids)
+        AND {bare_expr}
+      GROUP BY campaign_id
     ),
     li_messages AS (
-        SELECT campaign_id, COUNT(*) AS li_message_count
-        FROM events WHERE event_type = 'linkedin_message'
-          AND campaign_id IN (SELECT id FROM campaign_ids)
-          {since_sql.replace('e.created_at', 'created_at')}
-        GROUP BY campaign_id
+      SELECT campaign_id, COUNT(*) AS message_count
+      FROM events WHERE event_type = 'linkedin_message' AND lower(coalesce(direction,'')) = 'outbound'
+        AND campaign_id IN (SELECT id FROM campaign_ids)
+        AND {bare_expr}
+      GROUP BY campaign_id
     ),
     li_replies AS (
-        SELECT campaign_id, COUNT(*) AS li_reply_count
-        FROM events WHERE event_type = 'linkedin_reply'
-          AND campaign_id IN (SELECT id FROM campaign_ids)
-          {since_sql.replace('e.created_at', 'created_at')}
-        GROUP BY campaign_id
+      SELECT campaign_id, COUNT(*) AS li_reply_count
+      FROM events e WHERE event_type = 'linkedin_reply'
+        AND campaign_id IN (SELECT id FROM campaign_ids)
+        AND {qualified_expr}
+      GROUP BY campaign_id
     ),
     last_activity AS (
-        SELECT campaign_id, MAX(created_at) AS last_at
-        FROM events
-        WHERE campaign_id IN (SELECT id FROM campaign_ids)
-          {since_sql.replace('e.created_at', 'created_at')}
-        GROUP BY campaign_id
+      SELECT campaign_id, MAX(created_at) AS last_at
+      FROM events WHERE campaign_id IN (SELECT id FROM campaign_ids)
+        AND {bare_expr}
+      GROUP BY campaign_id
     )
     SELECT
-      c.id AS campaign_id,
       c.name,
       COALESCE(s.sent_count, 0) AS sent,
       COALESCE(b.bounce_count, 0) AS bounced,
       COALESCE(r.reply_count, 0) AS total_replies,
       COALESCE(o.ooo_count, 0) AS ooo,
-      COALESCE(lc.li_connect_count, 0) AS li_connects,
-      COALESCE(la.li_accept_count, 0) AS li_accepts,
-      COALESCE(lm.li_message_count, 0) AS li_messages,
+      COALESCE(lc.connect_count, 0) AS li_connects,
+      COALESCE(la.accept_count, 0) AS li_accepts,
+      COALESCE(lm.message_count, 0) AS li_messages,
       COALESCE(lr.li_reply_count, 0) AS li_replies,
       laa.last_at AS last_activity,
       COALESCE(ast.total_sent, 0) AS all_time_sent
@@ -203,19 +196,13 @@ def _query_overview(
       CASE WHEN s.sent_count > 0 THEN 0 ELSE 1 END,
       COALESCE(r.reply_count, 0) DESC
     """
-    params: list[Any] = [f"{workspace} |%"] + since_params
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
+    overview_cursor = conn.execute(overview_query, (ws_like,))
+    overview_cols = [desc[0] for desc in overview_cursor.description]
+    overview_rows_raw = [dict(zip(overview_cols, r)) for r in overview_cursor.fetchall()]
 
-def _query_sentiment_per_campaign(
-    conn: sqlite3.Connection,
-    workspace: str,
-    since: Optional[str],
-) -> list[dict[str, Any]]:
-    """Latest sentiment per lead grouped by campaign and sentiment value."""
-    since_sql, since_params = _since_expr_t(since)
-
-    sql = f"""
+    # ── Sentiment data (shared across sheets) ───────────────────────────────
+    sentiment_query = f"""
     WITH ranked_status AS (
       SELECT
         e.lead_id,
@@ -227,7 +214,7 @@ def _query_sentiment_per_campaign(
         ) AS rn
       FROM events e
       WHERE JSON_EXTRACT(e.metadata_json, '$.lead_status_sentiment') IS NOT NULL
-        {since_sql}
+        AND {qualified_expr}
     )
     SELECT
       c.name AS campaign,
@@ -236,324 +223,173 @@ def _query_sentiment_per_campaign(
     FROM ranked_status rs
     JOIN campaigns c ON rs.campaign_id = c.id
     WHERE rs.rn = 1
+      AND rs.sentiment IN ('positive', 'interested', 'neutral', 'negative', 'not_interested', 'invalid')
       AND c.name LIKE ?
     GROUP BY c.name, rs.sentiment
     ORDER BY campaign, lead_count DESC
     """
-    params: list[Any] = [*since_params, f"{workspace} |%"]
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    sent_cursor = conn.execute(sentiment_query, (ws_like,))
+    sent_cols = [desc[0] for desc in sent_cursor.description]
+    sentiment_rows = [dict(zip(sent_cols, r)) for r in sent_cursor.fetchall()]
 
+    # Build sentiment pivot: campaign -> sentiment -> count
+    sentiment_pivot: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for sr in sentiment_rows:
+        sentiment_pivot[sr["campaign"]][sr["sentiment"]] += sr["lead_count"]
 
-def build_overview_sheet(
-    conn: sqlite3.Connection,
-    workspace: str,
-    since: Optional[str],
-) -> dict[str, Any]:
-    """Build the Campaign Overview sheet data."""
-    overview_rows = _query_overview(conn, workspace, since)
-    sentiment_rows = _query_sentiment_per_campaign(conn, workspace, since)
-
-    # Aggregate sentiment by campaign
+    # Gather interested/not_interested counts per campaign
     interested_sentiments = {"positive", "interested"}
     not_interested_sentiments = {"negative", "not_interested"}
-    sentiment_counts: dict[str, dict[str, int]] = defaultdict(
-        lambda: defaultdict(int)
-    )
-    for row in sentiment_rows:
-        cam = strip_workspace_prefix(row["campaign"], workspace)
-        s = (row["sentiment"] or "").lower()
-        if s in interested_sentiments:
-            sentiment_counts[cam]["interested"] += row["lead_count"]
-        elif s in not_interested_sentiments:
-            sentiment_counts[cam]["not_interested"] += row["lead_count"]
+    sentiment_totals: dict[str, dict[str, int]] = defaultdict(lambda: {"interested": 0, "not_interested": 0})
+    for sr in sentiment_rows:
+        camp = sr["campaign"]
+        if sr["sentiment"] in interested_sentiments:
+            sentiment_totals[camp]["interested"] += sr["lead_count"]
+        elif sr["sentiment"] in not_interested_sentiments:
+            sentiment_totals[camp]["not_interested"] += sr["lead_count"]
 
-    headers = [
+    # ── Build Sheet 1: Campaign Overview ──────────────────────────────────
+    overview_headers = [
         "Campaign", "Status", "Sent", "Delivered", "Bounced", "Bounce %",
         "Total Replies", "OOO", "Manual", "Reply %",
-        "LI Connects", "LI Accepts", "Accept %",
-        "LI Messages", "LI Replies",
-        "Interested", "Not Interested", "Sentiment Rate", "Last Activity",
+        "LI Connects", "LI Accepts", "Accept %", "LI Messages", "LI Replies",
+        "Interested", "Not Interested", "Sentiment Rate", "Last Activity"
     ]
-
-    rows = []
-    for c in overview_rows:
-        camp_name = strip_workspace_prefix(c["name"], workspace)
-        sent = c["sent"]
-        bounced = c["bounced"]
-        total_replies = c["total_replies"]
-        ooo = c["ooo"]
+    overview_rows = []
+    for r in overview_rows_raw:
+        name = strip_workspace_prefix(r["name"], workspace)
+        sent = r["sent"]
+        bounced = r["bounced"]
+        total_replies = r["total_replies"]
+        ooo = r["ooo"]
         manual = total_replies - ooo
         delivered = sent - bounced
-        li_connects = c["li_connects"]
-        li_accepts = c["li_accepts"]
-        li_messages = c["li_messages"]
-        li_replies = c["li_replies"]
-        interested = sentiment_counts[camp_name]["interested"]
-        not_interested = sentiment_counts[camp_name]["not_interested"]
-        sentiment_denom = interested + not_interested
+        li_connects = r["li_connects"]
+        li_accepts = r["li_accepts"]
+        li_messages = r["li_messages"]
+        li_replies = r["li_replies"]
+        status = campaign_status(sent, r["all_time_sent"] - sent)
 
-        rows.append([
-            camp_name,
-            detect_status(
-                c["sent"],
-                c["all_time_sent"] - c["sent"],
-            ),
-            sent or "—",
-            delivered,
-            bounced or "—",
+        st = sentiment_totals.get(r["name"], {"interested": 0, "not_interested": 0})
+        interested = st["interested"] or "—"
+        not_interested = st["not_interested"] or "—"
+        denom = st["interested"] + st["not_interested"]
+        sentiment_rate = pct(st["interested"], denom) if denom > 0 else "—"
+
+        overview_rows.append([
+            name, status,
+            sent if sent > 0 else "—",
+            delivered if delivered > 0 else "—",
+            bounced if bounced > 0 else "—",
             pct(bounced, sent),
-            total_replies,
-            ooo,
-            manual,
+            total_replies if total_replies > 0 else "—",
+            ooo if ooo > 0 else "—",
+            manual if manual > 0 else "—",
             pct(total_replies, delivered),
-            li_connects or "—",
-            li_accepts or "—",
+            li_connects if li_connects > 0 else "—",
+            li_accepts if li_accepts > 0 else "—",
             pct(li_accepts, li_connects),
-            li_messages or "—",
-            li_replies or "—",
-            interested or "—",
-            not_interested or "—",
-            pct(interested, sentiment_denom) if sentiment_denom else "—",
-            _fmt_date(c["last_activity"]),
+            li_messages if li_messages > 0 else "—",
+            li_replies if li_replies > 0 else "—",
+            interested, not_interested, sentiment_rate,
+            format_date(r["last_activity"]),
         ])
 
-    return {
-        "title": "Campaign Overview",
-        "headers": headers,
-        "rows": rows,
-    }
+    # ── Build Sheet 2: Campaign Funnels ──────────────────────────────────
+    funnel_headers = ["Stage", "Volume", "%"]
+    funnel_rows = []
+    active_campaigns = [r for r in overview_rows_raw if r["sent"] > 0]
 
+    for camp in active_campaigns:
+        name = strip_workspace_prefix(camp["name"], workspace)
+        sent = camp["sent"]
+        bounced = camp["bounced"]
+        replies = camp["total_replies"]
+        ooo = camp["ooo"]
+        manual = replies - ooo
 
-# ── Sheet 2: Campaign Funnels ──────────────────────────────────────
+        st = sentiment_totals.get(camp["name"], {"interested": 0, "not_interested": 0})
+        li_connects = camp["li_connects"]
+        li_accepts = camp["li_accepts"]
+        li_messages = camp["li_messages"]
+        li_replies = camp["li_replies"]
+        delivered = sent - bounced
 
+        funnel_rows.append([f"{name} — Funnel", "", ""])
+        funnel_rows.append(funnel_headers)
+        funnel_rows.append(["Emails Sent (total)", sent, "100%"]) if sent > 0 else None
+        if delivered >= 0 and sent > 0:
+            funnel_rows.append(["Emails Delivered", delivered, pct(delivered, sent)])
+        funnel_rows.append(["Bounced", bounced, pct(bounced, sent)])
+        funnel_rows.append(["Total Replies", replies, pct(replies, sent)])
+        funnel_rows.append(["OOO Auto-Replies", ooo, pct(ooo, sent)])
+        funnel_rows.append(["Manual Replies", manual, pct(manual, sent)])
 
-def _query_funnel_data(
-    conn: sqlite3.Connection,
-    workspace: str,
-    campaign_name: str,
-    since: Optional[str],
-) -> dict[str, Any]:
-    """Per-campaign funnel counts."""
-    since_sql, since_params = _since_expr(since)
-    reply_where = reply_event_sql_condition()
-    full_name = f"{workspace} | {campaign_name}"
+        if li_connects > 0:
+            funnel_rows.append(["LinkedIn Connects", li_connects, ""])
+        if li_accepts > 0:
+            funnel_rows.append(["LinkedIn Accepts", li_accepts, pct(li_accepts, li_connects) if li_connects > 0 else "—"])
+        if li_messages > 0:
+            funnel_rows.append(["LinkedIn Messages", li_messages, ""])
+        if li_replies > 0:
+            funnel_rows.append(["LinkedIn Replies", li_replies, pct(li_replies, li_messages) if li_messages > 0 else "—"])
 
-    params: list[Any] = [full_name, *since_params]
+        total_int = st["interested"] + st["not_interested"]
+        if total_int > 0:
+            funnel_rows.append(["Interested Leads", st["interested"], pct(st["interested"], sent)])
+            funnel_rows.append(["Not Interested", st["not_interested"], pct(st["not_interested"], sent)])
 
-    sql = f"""
-    WITH campaign AS (
-        SELECT id FROM campaigns WHERE name = ? LIMIT 1
-    ),
-    unique_sent AS (
-        SELECT COUNT(DISTINCT lead_id) AS val FROM events
-        WHERE campaign_id = (SELECT id FROM campaign)
-          AND LOWER(event_type) IN ('email_sent', 'email_sent_auto')
-          {since_sql.replace('e.created_at', 'created_at')}
-    ),
-    delivered AS (
-        SELECT COUNT(*) AS val FROM events
-        WHERE campaign_id = (SELECT id FROM campaign)
-          AND LOWER(event_type) IN ('email_sent', 'email_sent_auto')
-          {since_sql.replace('e.created_at', 'created_at')}
-    )
-    SELECT
-        (SELECT val FROM unique_sent) AS unique_sent,
-        (SELECT val FROM delivered) AS delivered,
-        (SELECT COALESCE(COUNT(*), 0) FROM events
-         WHERE campaign_id = (SELECT id FROM campaign)
-           AND LOWER(event_type) IN ('email_bounce', 'bounced_email', 'email_bounced')
-           {since_sql.replace('e.created_at', 'created_at')}) AS bounced,
-        (SELECT COALESCE(COUNT(*), 0) FROM events e
-         WHERE ({reply_where})
-           AND campaign_id = (SELECT id FROM campaign)
-           {since_sql}) AS total_replies,
-        (SELECT COALESCE(COUNT(*), 0) FROM events e
-         WHERE ({reply_where})
-           AND CAST(json_extract(e.metadata_json, '$.is_auto_reply') AS INTEGER) = 1
-           AND campaign_id = (SELECT id FROM campaign)
-           {since_sql}) AS ooo,
-        (SELECT COALESCE(COUNT(*), 0) FROM events
-         WHERE event_type = 'linkedin_connect'
-           AND campaign_id = (SELECT id FROM campaign)
-           {since_sql.replace('e.created_at', 'created_at')}) AS li_connects,
-        (SELECT COALESCE(COUNT(*), 0) FROM events
-         WHERE event_type = 'linkedin_accept'
-           AND campaign_id = (SELECT id FROM campaign)
-           {since_sql.replace('e.created_at', 'created_at')}) AS li_accepts,
-        (SELECT COALESCE(COUNT(*), 0) FROM events
-         WHERE event_type = 'linkedin_message'
-           AND campaign_id = (SELECT id FROM campaign)
-           {since_sql.replace('e.created_at', 'created_at')}) AS li_messages,
-        (SELECT COALESCE(COUNT(*), 0) FROM events
-         WHERE event_type = 'linkedin_reply'
-           AND campaign_id = (SELECT id FROM campaign)
-           {since_sql.replace('e.created_at', 'created_at')}) AS li_replies
-    """
-    row = conn.execute(sql, params).fetchone()
-    if not row:
-        return {"unique_sent": 0, "delivered": 0, "bounced": 0,
-                "total_replies": 0, "ooo": 0, "li_connects": 0,
-                "li_accepts": 0, "li_messages": 0, "li_replies": 0}
-    return dict(row)
+        funnel_rows.append([])  # spacer
 
+    # ── Build Sheet 3: Lead Sentiment ────────────────────────────────────
+    sentiment_order = ["positive", "interested", "neutral", "negative", "not_interested", "invalid"]
+    sentiment_headers = ["Campaign"] + [s.capitalize() for s in sentiment_order] + ["Total Tagged", "Positivity Rate"]
+    sentiment_body = []
 
-def build_funnels_sheet(
-    conn: sqlite3.Connection,
-    workspace: str,
-    since: Optional[str],
-) -> dict[str, Any]:
-    """Build the Campaign Funnels sheet — one section per active campaign."""
-    overview_rows = _query_overview(conn, workspace, since)
-    active_campaigns = [r for r in overview_rows if r["sent"] > 0]
-
-    # Also get sentiment for interested/not interested per campaign
-    sentiment_rows = _query_sentiment_per_campaign(conn, workspace, since)
-    interested_sentiments = {"positive", "interested"}
-    not_interested_sentiments = {"negative", "not_interested"}
-    sentiment_by_campaign: dict[str, dict[str, int]] = defaultdict(
-        lambda: defaultdict(int)
-    )
-    for row in sentiment_rows:
-        cam = strip_workspace_prefix(row["campaign"], workspace)
-        s = (row["sentiment"] or "").lower()
-        if s in interested_sentiments:
-            sentiment_by_campaign[cam]["interested"] += row["lead_count"]
-        elif s in not_interested_sentiments:
-            sentiment_by_campaign[cam]["not_interested"] += row["lead_count"]
-
-    rows: list[list[Any]] = []
-    for c in active_campaigns:
-        camp_name = strip_workspace_prefix(c["name"], workspace)
-        funnel = _query_funnel_data(conn, workspace, camp_name, since)
-
-        us = funnel["unique_sent"]
-        delivered = funnel["delivered"]
-        bounced = funnel["bounced"]
-        total_replies = funnel["total_replies"]
-        ooo = funnel["ooo"]
-        manual = total_replies - ooo
-        li_connects = funnel["li_connects"]
-        li_accepts = funnel["li_accepts"]
-        li_messages = funnel["li_messages"]
-        li_replies = funnel["li_replies"]
-        interested = sentiment_by_campaign[camp_name]["interested"]
-        not_interested = sentiment_by_campaign[camp_name]["not_interested"]
-
-        rows.append([f"{camp_name} — Funnel", "", ""])
-        rows.append(["Stage", "Volume", "% of Sent"])
-        rows.append(["Unique Leads Contacted", us, "100%"])
-        rows.append(["Emails Sent", delivered, pct(delivered, us)])
-        rows.append(["Delivered", delivered, pct(delivered, us)])
-        rows.append(["Bounced", bounced, pct(bounced, us)])
-        rows.append(["Total Replies", total_replies, pct(total_replies, us)])
-        rows.append(["OOO Auto-Replies", ooo, pct(ooo, us)])
-        rows.append(["Manual Replies", manual, pct(manual, us)])
-        if li_connects:
-            rows.append(["LinkedIn Connects", li_connects, "—"])
-            rows.append(["LinkedIn Accepts", li_accepts, pct(li_accepts, li_connects)])
-            rows.append(["LinkedIn Messages", li_messages, "—"])
-            rows.append(["LinkedIn Replies", li_replies, pct(li_replies, li_messages) if li_messages else "—"])
-        rows.append(["Interested Leads", interested, pct(interested, us)])
-        rows.append(["Not Interested", not_interested, pct(not_interested, us)])
-        rows.append([])  # spacer
-
-    return {
-        "title": "Campaign Funnels",
-        "headers": ["Stage", "Volume", "% of Sent"],
-        "rows": rows,
-    }
-
-
-# ── Sheet 3: Lead Sentiment Summary ─────────────────────────────────
-
-
-def build_sentiment_sheet(
-    conn: sqlite3.Connection,
-    workspace: str,
-    since: Optional[str],
-) -> dict[str, Any]:
-    """Build the Lead Sentiment pivot sheet."""
-    sentiment_rows = _query_sentiment_per_campaign(conn, workspace, since)
-    sentiment_order = ["positive", "interested", "neutral",
-                        "negative", "not_interested", "invalid"]
-
-    pivot: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for row in sentiment_rows:
-        cam = strip_workspace_prefix(row["campaign"], workspace)
-        s = (row["sentiment"] or "").lower()
-        if s in sentiment_order:
-            pivot[cam][s] += row["lead_count"]
-
-    headers = (
-        ["Campaign"]
-        + [s.capitalize() for s in sentiment_order]
-        + ["Total Tagged", "Positivity Rate"]
-    )
-
-    if not pivot:
-        return {
-            "title": "Lead Sentiment",
-            "headers": headers,
-            "rows": [["No sentiment data in this period", "", "", "", "", "", "", "", ""]],
-        }
-
-    rows = []
-    for campaign_name in sorted(pivot.keys()):
-        counts = pivot[campaign_name]
-        total_tagged = sum(counts.values())
-        positive = counts.get("positive", 0) + counts.get("interested", 0)
-        negative = counts.get("negative", 0) + counts.get("not_interested", 0)
-        positivity_denom = positive + negative
-        positivity = pct(positive, positivity_denom) if positivity_denom else "—"
-
-        row = [campaign_name]
+    # Build campaigns that have any sentiment data
+    all_campaigns_with_sentiment = sorted(sentiment_pivot.keys())
+    for camp in all_campaigns_with_sentiment:
+        display_name = strip_workspace_prefix(camp, workspace)
+        row_data = [display_name]
+        total_tagged = 0
         for s in sentiment_order:
-            row.append(counts.get(s, 0))
-        row.append(total_tagged)
-        row.append(positivity)
-        rows.append(row)
+            count = sentiment_pivot[camp].get(s, 0)
+            row_data.append(count)
+            total_tagged += count
 
-    return {
-        "title": "Lead Sentiment",
-        "headers": headers,
-        "rows": rows,
-    }
+        pos = sentiment_pivot[camp].get("positive", 0) + sentiment_pivot[camp].get("interested", 0)
+        neg = sentiment_pivot[camp].get("negative", 0) + sentiment_pivot[camp].get("not_interested", 0)
+        positivity = pct(pos, pos + neg) if (pos + neg) > 0 else "—"
 
+        row_data.append(total_tagged)
+        row_data.append(positivity)
+        sentiment_body.append(row_data)
 
-# ── Top-level payload builder ──────────────────────────────────────
+    if not sentiment_body:
+        sentiment_body.append(["No sentiment data in this period", "", "", "", "", "", "", "", ""])
 
-
-def _resolve_since(since: Optional[str]) -> tuple[Optional[str], str]:
-    """Resolve since value: 'all' → None (no filter), return (since_for_sql, label)."""
-    if since and since.strip().lower() in ("all", "all-time", "forever", "any"):
-        return None, "all"
-    label = normalize_since(since) or str(since or "all")
-    if isinstance(label, str) and label.startswith("datetime("):
-        label = str(since or "all")
-    return since, label
-
-
-def build_campaign_stats_payload(
-    conn: sqlite3.Connection,
-    *,
-    workspace: str,
-    since: Optional[str] = None,
-) -> dict[str, Any]:
-    """Query SQLite and build the full multi-sheet payload.
-
-    Returns a dict suitable for JSON serialization:
-        {template, title, workspace, since, sheets: [{title, headers, rows}, ...]}
-    """
-    since_sql, since_label = _resolve_since(since)
-    sheet1 = build_overview_sheet(conn, workspace, since_sql)
-    sheet2 = build_funnels_sheet(conn, workspace, since_sql)
-    sheet3 = build_sentiment_sheet(conn, workspace, since_sql)
-    title = f"{workspace.capitalize()} Campaign Stats — {since_label}"
+    # ── Assemble payload ──────────────────────────────────────────────────
+    label = f"Last {since}" if (since and since.endswith("d")) else f"{workspace.title()}"
+    sheets = [
+        {
+            "title": f"{label} - Campaign Overview",
+            "headers": overview_headers,
+            "rows": overview_rows,
+        },
+        {
+            "title": f"{label} - Campaign Funnels",
+            "headers": funnel_headers,
+            "rows": funnel_rows,
+        },
+        {
+            "title": f"{label} - Lead Sentiment",
+            "headers": sentiment_headers,
+            "rows": sentiment_body,
+        },
+    ]
 
     return {
         "template": "campaign-stats",
-        "title": title,
-        "workspace": workspace,
-        "since": since,
-        "sheets": [sheet1, sheet2, sheet3],
+        "title": f"{workspace.title()} Campaign Stats - {since or '14d'}",
+        "sheets": sheets,
     }

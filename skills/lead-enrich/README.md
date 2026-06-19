@@ -1,60 +1,72 @@
-# Lead Enrich — Find LinkedIn, Job Titles, and Domains
+# Lead Enrich — Skip the Research You Already Did
 
 [![MIT License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills)
 [![Cursor](https://img.shields.io/badge/Cursor-ready-007ACC)](https://docs.cursor.com/skills)
 [![Hermes](https://img.shields.io/badge/Hermes-ready-8B5CF6)](https://hermes-agent.nousresearch.com/docs/skills)
 
-Research your leads. Find LinkedIn URLs, job titles, and company domains through Serper.dev. Your agent's built-in model handles extraction — no external LLM API needed.
+Research a person by name and company. Get their LinkedIn, job title, company domain, and website through Serper.dev. Your agent's built-in model handles the extraction — no external LLM API needed.
 
-Works standalone or pairs with [Outreach Magic](https://github.com/outreachmagic/outreachmagic) for credit-saving dedup and persistent storage.
+Works standalone with just a Serper key. Pairs with Outreach Magic to check your pipeline first and skip leads you already have.
 
 Part of the [Outreach Magic skill suite](https://github.com/outreachmagic/outreachmagic).
 
-## How it works
+## How it fits
 
 ```
-name + company ──► Serper.dev search ──► agent model ──► structured JSON ──► stdout (standalone)
-                                                        LinkedIn, domain               │
-                                                        company website          with OM: saves to
-                                                                                 local SQLite DB
+                      ┌── already have LinkedIn + email? ──► skip (0 credits)
+  name + company ────►┤
+                      └── Serper.dev search ──► agent model ──► structured JSON
+                                                      │
+                                            LinkedIn URL, job title,
+                                            company domain, website
+                                                      │
+                                                 with OM: saves to
+                                                 local SQLite DB
 ```
 
-Standalone: just a Serper key, results as JSON. With Outreach Magic: checks your pipeline first. If you already have that lead with LinkedIn and email, zero Serper credits spent.
+| Mode | What happens | What you need |
+|------|-------------|---------------|
+| Standalone | Searches Serper, extracts LinkedIn + domain + website via agent model | Just a Serper key |
+| With Outreach Magic | Checks pipeline first → skips leads you already have → saves results so you never lose them | OM account + Serper key |
+
+The dedup logic: if a lead already has LinkedIn + email at the same company, zero Serper credits spent. LinkedIn without email still skips Serper — use the email-finder companion for that. Email-only records keep searching for LinkedIn.
 
 ## Quick start
 
-**Standalone (no OM needed):**
+**Research one person — standalone:**
 ```bash
 python3 scripts/enrich.py serper-search --query '"Acme Corp" official website'
 python3 scripts/enrich.py serper-search --query 'site:linkedin.com/in Jane Doe Acme Corp'
 ```
 
-**With Outreach Magic (dedup + save):**
+**Check your pipeline before spending Serper credits:**
 ```bash
-python3 scripts/enrich.py check "Jane Doe" "Acme Corp"       # 0 credits
+python3 scripts/enrich.py check "Jane Doe" "Acme Corp"      # 0 credits if found
 python3 scripts/enrich.py batch-check --workspace W input.csv # batch dedup
 ```
 
-After research, save to your pipeline with `import-profiles`.
+**Save results to your pipeline:**
+```bash
+python3 scripts/enrich.py import-profiles --file results.json --workspace CLIENT
+```
 
 ## Install
 
-Install via the main repo agent guide: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md)
+Install the full skill suite, or just this skill from the main repo:
 
-Or install the full suite:
 ```bash
 npx skills add outreachmagic/outreachmagic
 ```
 
-## API keys
+Or follow the agent install guide: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md)
 
-| Key | For |
-|-----|-----|
-| `SERPER_API_KEY` | [Serper.dev](https://serper.dev) Google Search |
-| Outreach Magic login | Dedup + save (only with OM) |
+## What you need
 
-Don't see your enrichment provider? [Open a GitHub issue](https://github.com/outreachmagic/outreachmagic/issues).
+| Key | For | Required? |
+|-----|-----|-----------|
+| `SERPER_API_KEY` | Serper.dev Google Search | Yes |
+| Outreach Magic login | Dedup + save enriched leads | Only with OM |
 
 ## License
 

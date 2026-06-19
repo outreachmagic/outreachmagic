@@ -30,23 +30,23 @@ Part of the [Outreach Magic skill suite](https://github.com/outreachmagic/outrea
 | Standalone | Searches Serper, extracts LinkedIn + domain + website via agent model | Just a Serper key |
 | With Outreach Magic | Checks pipeline first → skips leads you already have → saves results so you never lose them | OM account + Serper key |
 
-The dedup logic: if a lead already has LinkedIn + email at the same company, zero Serper credits spent. LinkedIn without email still skips Serper — use the email-finder companion for that. Email-only records keep searching for LinkedIn.
+Here's how the credit saving works. If a lead already has LinkedIn and email at the same company, the check returns right away. Zero Serper credits spent. If they have LinkedIn but no email, it skips Serper too — that's a job for the email-finder companion. If they only have an email, the search still runs to find their LinkedIn profile.
 
 ## Quick start
 
-**Research one person — standalone:**
+**Research one person on your own:**
 ```bash
 python3 scripts/enrich.py serper-search --query '"Acme Corp" official website'
 python3 scripts/enrich.py serper-search --query 'site:linkedin.com/in Jane Doe Acme Corp'
 ```
 
-**Check your pipeline before spending Serper credits:**
+**Check what you already have before spending credits:**
 ```bash
 python3 scripts/enrich.py check "Jane Doe" "Acme Corp"      # 0 credits if found
 python3 scripts/enrich.py batch-check --workspace W input.csv # batch dedup
 ```
 
-**Save results to your pipeline:**
+**Save what you find to your pipeline:**
 ```bash
 python3 scripts/enrich.py import-profiles --file results.json --workspace CLIENT
 ```

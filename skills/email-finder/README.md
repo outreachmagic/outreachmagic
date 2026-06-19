@@ -31,22 +31,22 @@ The waterfall always runs trykitt first (fastest, cheapest). If it misses, it tr
 
 ## Quick start
 
-**Find one email — standalone:**
+**Find one email on your own:**
 ```bash
 python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com
 ```
 
-**Find one email — save to your pipeline:**
+**Find one email and save it to your pipeline:**
 ```bash
 python3 scripts/email_finder.py find --name "Jane Doe" --domain acme.com --save --workspace CLIENT
 ```
 
-**Find a batch of emails — standalone:**
+**Find a batch on your own:**
 ```bash
 python3 scripts/email_finder.py batch-find --skip-om --yes --dry-run input.json
 ```
 
-**Find a batch — save to your pipeline:**
+**Find a batch and save results:**
 ```bash
 python3 scripts/email_finder.py batch-find --workspace CLIENT --yes --workers 3 --delay 3 input.json
 ```

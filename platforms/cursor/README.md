@@ -39,13 +39,7 @@ mkdir -p .cursor/rules
 cp ~/.cursor/skills/outreachmagic/outreachmagic.mdc .cursor/rules/
 ```
 
-## Pricing
-
-- **Free:** Local tracking + CLI pipeline view + 1,000 webhook events/month
-- **Pro ($9/mo):** Full sequencer sync (50k events/month)
-- **Scale ($29/mo):** 250k events/month + unlimited workspaces + priority support
-
-Sign up at [outreachmagic.io](https://outreachmagic.io) · Billing at [app.outreachmagic.io](https://app.outreachmagic.io/settings/billing)
+Sign up at [outreachmagic.io](https://outreachmagic.io) · Billing at [app.outreachmagic.io](https://app.outreachmagic.io/settings/billing) to see plans and limits.
 
 ## License
 

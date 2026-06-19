@@ -1,14 +1,10 @@
 ---
 name: outreachmagic
 description: >
-  The outreach data layer for AI agents. Syncs events, replies, and lead
-  attributes from Smartlead, Instantly, Heyreach, PlusVibe, EmailBison, Prosp,
-  MasterInbox, and Calendly into a local SQLite database your agent can query
-  directly. Use for pipeline views, client briefings, deliverability diagnostics,
-  campaign breakdowns, segment performance, and reply copy insights. Webhook
-  payloads pass through api.outreachmagic.io; your data lives in a local SQLite
-  file on your machine. Free tier: local tracking plus 1,000 webhook events/mo.
-  Pro: 50k webhook and sync events/mo. Agency: 250k/mo.
+  Your agent goes blind after send. Sync Smartlead, Instantly, HeyReach, and 5
+  more sequencers into one local SQLite database your agent can query directly.
+  Every reply, click, bounce, and booking lands on your machine — no CSV
+  exports, no merged sheets, no API round trips.
 version: 1.0.0
 author: Outreach Magic
 license: MIT

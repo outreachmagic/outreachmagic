@@ -44,13 +44,7 @@ readlink ~/.hermes/profiles/<name>/skills/outreachmagic   # → ../../../skills/
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py paths
 ```
 
-## Pricing
-
-- **Free:** Local tracking + CLI pipeline view + 1,000 webhook events/month
-- **Pro ($9/mo):** Full sequencer sync (50k events/month)
-- **Scale ($29/mo):** 250k events/month + unlimited workspaces + priority support
-
-Sign up at [outreachmagic.io](https://outreachmagic.io)
+Sign up at [outreachmagic.io](https://outreachmagic.io) to see plans and limits.
 
 ## License
 

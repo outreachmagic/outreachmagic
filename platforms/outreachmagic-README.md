@@ -89,25 +89,19 @@ After install, connect your account:
 
 ---
 
-## Pricing
-
-| Plan | What you get | Price |
-|------|-------------|-------|
-| **Free** | Local tracking + CLI pipeline view + 1,000 webhook events/month | $0 |
-| **Pro** | Full sequencer sync + 50,000 events/month + all integrations | $9/mo |
-| **Scale** | 250,000 events/month + unlimited workspaces + priority support | $29/mo |
-
-Only webhook traffic from sequencers counts toward limits. Local queries, tracking, enrichment, and exports stay unlimited on every plan.
-
-[View full pricing →](https://outreachmagic.io/pricing)
-
----
-
 ## Supported platforms
 
 Smartlead · Instantly · HeyReach · PlusVibe · EmailBison · Prosp · MasterInbox · Calendly
 
 Don't see yours? [Open an issue](https://github.com/outreachmagic/outreachmagic/issues).
+
+---
+
+## Getting started
+
+**In your agent (Claude Code, Cursor, or Hermes), paste this:**
+
+> Fetch https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md and follow its instructions exactly to install the Outreach Magic skill suite on this machine.
 
 ---
 

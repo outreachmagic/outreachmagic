@@ -165,3 +165,9 @@ def test_outreachmagic_readme_matches_public_repo_copy():
     canonical = ROOT / "platforms" / "outreachmagic-README.md"
     skill_readme = skill_dir("outreachmagic") / "README.md"
     assert canonical.read_text(encoding="utf-8") == skill_readme.read_text(encoding="utf-8")
+
+
+def test_github_org_profile_matches_outreachmagic_readme():
+    profile = ROOT / "docs" / "github-org-profile.md"
+    skill_readme = skill_dir("outreachmagic") / "README.md"
+    assert profile.read_text(encoding="utf-8") == skill_readme.read_text(encoding="utf-8")

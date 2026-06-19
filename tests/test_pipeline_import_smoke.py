@@ -51,8 +51,8 @@ class PipelineImportSmokeTests(unittest.TestCase):
         data = json.loads(MANIFEST.read_text(encoding="utf-8"))
         skill_root = ROOT / "skills" / "outreachmagic"
         for rel in data.get("files", {}):
-            if rel == "SKILL.md":
-                path = skill_root / "SKILL.md"
+            if rel in ("SKILL.md", "README.md"):
+                path = skill_root / rel
             else:
                 path = SCRIPTS / rel
             self.assertTrue(path.is_file(), f"missing manifest file: {rel} -> {path}")

@@ -39,9 +39,10 @@ class TestUpdateManifest(unittest.TestCase):
 
     def test_manifest_files_exist_on_disk(self):
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        skill_root = ROOT / "skills" / "outreachmagic"
         for name in manifest.get("files") or {}:
-            if name == "SKILL.md":
-                path = ROOT / "skills" / "outreachmagic" / "SKILL.md"
+            if name in ("SKILL.md", "README.md"):
+                path = skill_root / name
             else:
                 path = SCRIPTS / name
             self.assertTrue(path.is_file(), f"missing manifest file: {path}")

@@ -22,7 +22,6 @@ SYNC_FILES = [
     ROOT / "platforms" / "hermes" / "README.md",
     ROOT / "platforms" / "cursor" / "README.md",
     ROOT / "platforms" / "claude-code" / "README.md",
-    ROOT / "platforms" / "outreachmagic-README.md",
     ROOT / "skills" / "outreachmagic" / "SKILL.md",
     ROOT / "install.sh",
 ]

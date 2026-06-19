@@ -20,6 +20,12 @@ Read this first when changing skills, install, or release.
 
 Do **not** edit `UPDATE_FILES` or hand-maintained manifest tuples — companions read `update-manifest.json` keys at update time.
 
+## Public README (outreachmagic skill)
+
+**Single file:** [`skills/outreachmagic/README.md`](skills/outreachmagic/README.md) — published to [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) and the [GitHub org profile](https://github.com/outreachmagic). Do not add copies under `platforms/`. See [`docs/github-org-profile.md`](docs/github-org-profile.md).
+
+After README edits: `make manifests` then commit (manifest hash for `README.md` must match).
+
 ## If you change pricing / billing limits
 
 1. `outreachmagic-brand/product/pricing.md`

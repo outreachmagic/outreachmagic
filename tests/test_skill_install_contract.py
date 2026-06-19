@@ -161,13 +161,9 @@ def test_companion_clis_have_no_update_files_tuple():
         assert "UPDATE_FILES" not in text, f"{skill} still defines UPDATE_FILES — use manifest keys only"
 
 
-def test_outreachmagic_readme_matches_public_repo_copy():
-    canonical = ROOT / "platforms" / "outreachmagic-README.md"
-    skill_readme = skill_dir("outreachmagic") / "README.md"
-    assert canonical.read_text(encoding="utf-8") == skill_readme.read_text(encoding="utf-8")
-
-
-def test_github_org_profile_matches_outreachmagic_readme():
-    profile = ROOT / "docs" / "github-org-profile.md"
-    skill_readme = skill_dir("outreachmagic") / "README.md"
-    assert profile.read_text(encoding="utf-8") == skill_readme.read_text(encoding="utf-8")
+def test_outreachmagic_public_readme_is_single_source():
+    """Public repo + org profile publish from skills/outreachmagic/README.md only."""
+    canonical = skill_dir("outreachmagic") / "README.md"
+    assert canonical.is_file()
+    stale = ROOT / "platforms" / "outreachmagic-README.md"
+    assert not stale.is_file(), f"remove {stale}; edit {canonical} only"

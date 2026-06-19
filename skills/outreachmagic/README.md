@@ -16,7 +16,7 @@ Outreach Magic fixes that. Every sequencer sends webhooks to api.outreachmagic.i
 
 ```
                          ┌──────────────────────────────────────────┐
-     Smartlead ─────────►│        webhooks / agent events           │
+     Smartlead ─────────►│        Webhooks / agent events           │
      Instantly ─────────►│        land here and are synced          │
      HeyReach  ─────────►│        across all your agents            │
      PlusVibe  ─────────►│        api.outreachmagic.io              │

@@ -2,6 +2,8 @@ name: Publish email-finder
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "email-finder-v*"
 
@@ -12,6 +14,7 @@ concurrency:
 jobs:
   test:
     name: Tests and SkillScan
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -37,6 +40,7 @@ jobs:
   publish:
     name: Publish outreachmagic/email-finder
     needs: test
+    if: always() && (needs.test.result == 'success' || needs.test.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -61,19 +65,26 @@ jobs:
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME#email-finder-}"
           cd staging
           git init -b main
           git config user.name "Outreach Magic Bot"
           git config user.email "bot@outreachmagic.io"
           git add -A
-          git commit -m "Release ${TAG}"
-          git tag "${TAG}"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME#email-finder-}"
+            git commit -m "Release ${TAG}"
+            git tag "${TAG}"
+          else
+            git commit -m "Update to ${{ github.sha }}"
+          fi
           git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/email-finder.git"
           git push origin main --force
-          git push origin "${TAG}" --force
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            git push origin "${TAG}" --force
+          fi
 
       - name: Create GitHub Release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: |

@@ -3,7 +3,7 @@ name: outreachmagic
 description: >
   Your agent goes blind after send. Sync Smartlead, Instantly, HeyReach, and 5
   more sequencers into one local SQLite database your agent can query directly.
-  Every reply, click, bounce, and booking lands on your machine — no CSV
+  Every reply, click, bounce, and booking lands on your machine. No CSV
   exports, no merged sheets, no API round trips.
 version: 1.0.0
 author: Outreach Magic
@@ -263,7 +263,7 @@ This fetches the latest events from the relay. Skip for offline/local analytics;
 - **`pull` (download):** **1000 rows/page** for events and all snapshots (D1 + local ingest). Progress shows `p2/118` and `% remaining` after a one-time pending probe per snapshot kind. Use `pull --kind events` if snapshots are already synced.
 - Filter downloaded data locally (`show --since`, workspace queries) — the relay does not filter by date or workspace.
 
-### Workspace inventory (local DB — pull optional)
+### Workspace inventory
 
 **`workspace summary`** reads local SQLite only (fast, works offline). Use when the user asks for counts by tag or LinkedIn sender connection state. Optional `pull` first if they need freshly synced tags/connection imports.
 

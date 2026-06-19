@@ -1,11 +1,11 @@
-# Lead Enrich — Skip the Research You Already Did
+# Lead Enrich
 
 [![MIT License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills)
 [![Cursor](https://img.shields.io/badge/Cursor-ready-007ACC)](https://docs.cursor.com/skills)
 [![Hermes](https://img.shields.io/badge/Hermes-ready-8B5CF6)](https://hermes-agent.nousresearch.com/docs/skills)
 
-Research a person by name and company. Get their LinkedIn, job title, company domain, and website through Serper.dev. Your agent's built-in model handles the extraction — no external LLM API needed.
+Research a person by name and company. Get their LinkedIn, job title, company domain, and website through Serper.dev. Your agent's built-in model handles the extraction. No external LLM API needed.
 
 Works standalone with just a Serper key. Pairs with Outreach Magic to check your pipeline first and skip leads you already have.
 

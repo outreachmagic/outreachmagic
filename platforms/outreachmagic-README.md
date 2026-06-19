@@ -1,4 +1,4 @@
-# Outreach Magic — Your Pipeline, In Your Agent's Hands
+# Outreach Magic
 
 [![MIT License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills)
@@ -15,7 +15,7 @@
   Calendly  ──┘                                                        directly
 ```
 
-Outreach Magic turns your outbound pipeline into a local SQLite database your AI agent can query directly. Every reply, click, bounce, and booked call from every sequencer lands in one place — on your machine, in real time.
+Outreach Magic turns your outbound pipeline into a local SQLite database your AI agent can query directly. Every reply, click, bounce, and booked call from every sequencer lands in one place on your machine. In real time.
 
 **Works with Claude Code, Cursor, and Hermes.** No CSV exports, no merged sheets, no API pagination.
 
@@ -65,7 +65,7 @@ Or run the installer directly:
 
 After install, connect your account:
 
-> Run `pipeline.py login` from your terminal — it opens a browser where you sign in. Then connect your sequencers in the portal at app.outreachmagic.io.
+> Run `pipeline.py login` from your terminal. It opens a browser where you sign in. Then connect your sequencers in the portal at app.outreachmagic.io.
 
 **Once connected, ask your agent things like:**
 
@@ -107,9 +107,9 @@ Don't see yours? [Open an issue](https://github.com/outreachmagic/outreachmagic/
 
 ## Updates
 
-Skills update through the pipeline tool itself — no reinstall needed:
+Skills update through the pipeline tool itself. No reinstall needed:
 
-> Run `pipeline.py update` to pull the latest release. Rollback with `pipeline.py rollback` if something goes wrong.
+> Run `pipeline.py update` to get the latest release. Rollback with `pipeline.py rollback` if something goes wrong.
 
 ---
 

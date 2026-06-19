@@ -1,4 +1,4 @@
-# Email Finder — Find Work Emails Without Wasting Credits
+# Email Finder
 
 [![MIT License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills)

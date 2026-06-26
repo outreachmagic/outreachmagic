@@ -167,11 +167,6 @@ class GhlDriver:
         if custom_fields:
             body["customFields"] = custom_fields
 
-        # Additional emails (GHL alternateEmails)
-        add_emails = lead_data.get("additional_emails", [])
-        if add_emails:
-            body["alternateEmails"] = add_emails
-
         try:
             resp = self._request("POST", "/contacts/", body=body)
         except GhlError as e:

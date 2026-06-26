@@ -1438,6 +1438,63 @@ def migrate_db(conn=None):
     from schema_views import ensure_read_views
 
     ensure_read_views(conn)
+
+    # CRM sync tables (Phase 0)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS crm_workspace_config (
+            workspace_id         TEXT NOT NULL,
+            platform             TEXT NOT NULL,
+            api_key              TEXT NOT NULL,
+            location_id          TEXT,
+            pipeline_id          TEXT,
+            stage_mapping        TEXT NOT NULL DEFAULT '{}',
+            contact_field_mapping TEXT,
+            overwrite_existing   INTEGER NOT NULL DEFAULT 0,
+            enabled              INTEGER NOT NULL DEFAULT 1,
+            updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (workspace_id, platform),
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS crm_entity_map (
+            workspace_id         TEXT NOT NULL,
+            lead_id              INTEGER NOT NULL,
+            platform             TEXT NOT NULL,
+            crm_contact_id       TEXT,
+            crm_deal_id          TEXT,
+            crm_company_id       TEXT,
+            crm_owner_id         TEXT,
+            last_synced_at       TEXT,
+            last_event_id_synced TEXT,
+            last_sync_status     TEXT,
+            sync_error           TEXT,
+            sync_hash            TEXT,
+            cloud_pending        INTEGER NOT NULL DEFAULT 0,
+            created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (workspace_id, lead_id, platform),
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+            FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS crm_sync_log (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id         TEXT NOT NULL,
+            platform             TEXT NOT NULL,
+            started_at           TEXT NOT NULL,
+            completed_at         TEXT,
+            leads_checked        INTEGER NOT NULL DEFAULT 0,
+            contacts_created     INTEGER NOT NULL DEFAULT 0,
+            contacts_updated     INTEGER NOT NULL DEFAULT 0,
+            opportunities_created INTEGER NOT NULL DEFAULT 0,
+            opportunities_updated INTEGER NOT NULL DEFAULT 0,
+            events_pushed        INTEGER NOT NULL DEFAULT 0,
+            skipped              INTEGER NOT NULL DEFAULT 0,
+            errors               INTEGER NOT NULL DEFAULT 0,
+            error_details        TEXT,
+            status               TEXT NOT NULL DEFAULT 'running',
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_crm_sync_log_ws ON crm_sync_log(workspace_id, started_at DESC);
+    """)
     conn.commit()
     if own_conn:
         conn.close()

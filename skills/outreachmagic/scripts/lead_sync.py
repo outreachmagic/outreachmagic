@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from activity_sync import (
     apply_activity_sync_payload,
@@ -875,3 +875,26 @@ def inspect_sync_lead(
         "activity_sync_payload": payload.get("activity", {}),
         "full_sync_payload_keys": sorted(payload.keys()),
     }
+
+
+def build_crm_entity_map_payloads(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Build relay payloads for pending crm_entity_map rows.
+
+    Returns rows where ``cloud_pending = 1``, each with a ``kind`` field
+    set to ``"crm_entity_map"``.
+    """
+    rows = conn.execute(
+        """SELECT workspace_id, lead_id, platform,
+                  crm_contact_id, crm_deal_id, crm_company_id,
+                  crm_owner_id, last_synced_at, last_event_id_synced,
+                  last_sync_status, sync_error, sync_hash,
+                  cloud_pending, created_at, updated_at
+           FROM crm_entity_map
+           WHERE cloud_pending = 1"""
+    ).fetchall()
+    payloads = []
+    for row in rows:
+        d = dict(row)
+        d["kind"] = "crm_entity_map"
+        payloads.append(d)
+    return payloads

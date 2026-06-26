@@ -310,3 +310,134 @@ def push_db_health(api_base: str, token: str, payload: dict[str, Any]) -> dict[s
 def push_api_key_status(api_base: str, token: str, payload: dict[str, Any]) -> dict[str, Any]:
     """POST aggregate runtime API key status (no secret values)."""
     return _request_json("POST", f"{api_base}/api/agent/api-key-status", token, body=payload)
+
+
+def fetch_portal_config(api_base: str, token: str) -> dict[str, Any]:
+    """Fetch portal configuration bundle from the cloud."""
+    return _request_json("GET", f"{api_base}/api/portal-config", token)
+
+
+def _apply_crm_config_to_sqlite(
+    conn: sqlite3.Connection,
+    crm_config: dict[str, dict[str, dict[str, Any]]],
+    *,
+    org_id: str,
+) -> None:
+    """Write CRM workspace config rows from a portal config bundle.
+
+    For each workspace in ``crm_config``, upserts one row per platform.
+    Existing rows for the org's workspaces that are not in the incoming
+    config are removed (the caller sends the full picture each sync).
+    """
+    ws_ids = [
+        row[0]
+        for row in conn.execute(
+            "SELECT id FROM workspaces WHERE org_id = ?", (org_id,)
+        ).fetchall()
+    ]
+    if not ws_ids:
+        return
+
+    seen: set[tuple[str, str]] = set()
+
+    for ws_id, platforms in crm_config.items():
+        for platform, cfg in platforms.items():
+            seen.add((ws_id, platform))
+            stage_mapping = json.dumps(cfg.get("stage_mapping") or {})
+            cfm = cfg.get("contact_field_mapping")
+            conn.execute(
+                """INSERT INTO crm_workspace_config
+                   (workspace_id, platform, api_key, location_id, pipeline_id,
+                    stage_mapping, contact_field_mapping, overwrite_existing,
+                    enabled, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT(workspace_id, platform) DO UPDATE SET
+                     api_key = excluded.api_key,
+                     location_id = excluded.location_id,
+                     pipeline_id = excluded.pipeline_id,
+                     stage_mapping = excluded.stage_mapping,
+                     contact_field_mapping = excluded.contact_field_mapping,
+                     overwrite_existing = excluded.overwrite_existing,
+                     enabled = excluded.enabled,
+                     updated_at = datetime('now')""",
+                (
+                    ws_id,
+                    platform,
+                    cfg.get("api_key", ""),
+                    cfg.get("location_id"),
+                    cfg.get("pipeline_id"),
+                    stage_mapping,
+                    json.dumps(cfm) if cfm else None,
+                    cfg.get("overwrite_existing", 0),
+                    cfg.get("enabled", 1),
+                ),
+            )
+
+    # Remove rows for this org's workspaces that are no longer in the config
+    existing = conn.execute(
+        """SELECT DISTINCT workspace_id, platform
+           FROM crm_workspace_config
+           WHERE workspace_id IN ({})""".format(
+            ",".join("?" for _ in ws_ids)
+        ),
+        ws_ids,
+    ).fetchall()
+    for (ws_id, platform) in existing:
+        if (ws_id, platform) not in seen:
+            conn.execute(
+                "DELETE FROM crm_workspace_config WHERE workspace_id = ? AND platform = ?",
+                (ws_id, platform),
+            )
+
+
+def sync_org_config_from_cloud(
+    conn: sqlite3.Connection,
+    *,
+    api_base: str,
+    token: str,
+    org_id: str,
+    load_config_fn,
+    save_config_fn,
+    quiet: bool = False,
+) -> Optional[dict[str, Any]]:
+    """Fetch portal config and apply routing + CRM config + agent secrets to local DB."""
+    from agent_secrets_cloud import (
+        apply_secrets_to_environ,
+        mirror_agent_secrets_to_data_env,
+        write_agent_secrets_env,
+    )
+
+    bundle = fetch_portal_config(api_base, token)
+    apply_routing_bundle_to_sqlite(conn, bundle, org_id=org_id)
+
+    crm_configs = bundle.get("crmConfigs") or {}
+    _apply_crm_config_to_sqlite(conn, crm_configs, org_id=org_id)
+
+    agent_secrets = bundle.get("agentSecrets")
+    if agent_secrets:
+        try:
+            keys_written = write_agent_secrets_env(agent_secrets)
+            if keys_written:
+                mirror_agent_secrets_to_data_env()
+                apply_secrets_to_environ()
+        except Exception:
+            if not quiet:
+                print("Warning: agent secrets processing failed (non-fatal)", file=__import__("sys").stderr)
+
+    conn.commit()
+
+    cfg = load_config_fn()
+    cfg["org_config_version"] = bundle.get("version")
+    save_config_fn(cfg)
+    if not quiet:
+        ws_count = len(bundle.get("workspaces") or [])
+        print(
+            f"Portal config synced (v{bundle.get('version')}, "
+            f"{ws_count} workspaces)."
+        )
+    return bundle
+
+
+def push_crm_sync_status(api_base: str, token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """POST CRM sync status to cloud."""
+    return _request_json("POST", f"{api_base}/api/crm-sync-status", token, body=payload)

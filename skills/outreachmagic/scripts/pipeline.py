@@ -10484,6 +10484,32 @@ def _cmd_sheets_campaign_stats(args) -> None:
     print(json.dumps(result, indent=2))
 
 
+# ---------------------------------------------------------------------------
+# CRM sync subprocess hook
+# ---------------------------------------------------------------------------
+
+CRM_SYNCABLE_STATUSES = frozenset({"interested", "proposal", "won", "lost"})
+
+
+def _maybe_trigger_crm_sync(
+    *,
+    lead_id: int,
+    stage: str | None = None,
+    workspace_slug: str | None = None,
+) -> None:
+    """If --crm-sync was passed and conditions are met, fire crm_sync.py as a subprocess."""
+    if stage is not None and stage not in CRM_SYNCABLE_STATUSES:
+        return
+    if not workspace_slug:
+        return
+    crm_sync_path = Path(__file__).parent / "crm_sync.py"
+    if not crm_sync_path.exists():
+        return
+    args = [sys.executable, str(crm_sync_path), "sync", "--lead-id", str(lead_id), "--workspace", workspace_slug]
+    subprocess.Popen(args)
+    print(f"CRM sync triggered for lead {lead_id} in workspace {workspace_slug}", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Outreach Magic — Pipeline visibility for Hermes")
     sub = parser.add_subparsers(dest="command", help="Commands")
@@ -10814,6 +10840,7 @@ def main():
     up_p.add_argument("--id", type=int, required=True); up_p.add_argument("--stage", required=True)
     up_p.add_argument("--next-action")
     up_p.add_argument("--workspace", help="Workspace for this stage change (required in multi-workspace mode)")
+    up_p.add_argument("--crm-sync", action="store_true", help="Trigger CRM sync after stage update")
 
     log_p = sub.add_parser("log-event", help="Log an outreach event")
     log_p.add_argument("--lead-id", type=int, required=True)
@@ -10821,6 +10848,7 @@ def main():
     log_p.add_argument("--direction", default="outbound"); log_p.add_argument("--channel", default="email")
     log_p.add_argument("--subject"); log_p.add_argument("--body")
     log_p.add_argument("--workspace", help="Workspace for this event (required in multi-workspace mode)")
+    log_p.add_argument("--crm-sync", action="store_true", help="Trigger CRM sync after logging event")
 
     # ── Setup & relay commands ──
     login_p = sub.add_parser("login", help="Connect this machine via browser (device authorization)")
@@ -12456,6 +12484,8 @@ def main():
             conn.close()
             result["workspace"] = ws_row["slug"]
         print(json.dumps(result))
+        if getattr(args, "crm_sync", False) and ws_slug:
+            _maybe_trigger_crm_sync(lead_id=args.id, stage=args.stage, workspace_slug=ws_slug)
     elif args.command == "log-event":
         ws_slug = getattr(args, "workspace", None)
         conn = get_conn()
@@ -12497,6 +12527,8 @@ def main():
             conn.close()
             result["workspace"] = ws_row["slug"]
         print(json.dumps(result))
+        if getattr(args, "crm_sync", False) and ws_slug:
+            _maybe_trigger_crm_sync(lead_id=args.lead_id, workspace_slug=ws_slug)
     elif args.command == "review":
         if args.review_command == "templates" and args.templates_command == "list":
             print(json.dumps({"templates": ["dedup-review", "lead-review"]}, indent=2))

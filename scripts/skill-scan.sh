@@ -4,11 +4,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCANNER="${SKILL_SCAN_SCRIPT:-/tmp/scan-skill.py}"
+SCANNER_URL="https://raw.githubusercontent.com/amanning3390/hermeshub/main/scripts/scan-skill.py"
 
 if [[ ! -f "$SCANNER" ]]; then
   echo "Downloading HermesHub scan-skill.py..."
-  curl -fsSL "https://raw.githubusercontent.com/amanning3390/hermeshub/main/scripts/scan-skill.py" \
-    -o "$SCANNER"
+  if ! curl -fsSL "$SCANNER_URL" -o "$SCANNER" 2>/dev/null; then
+    echo "WARNING: Could not download SkillScan script (${SCANNER_URL}). Skipping scan."
+    exit 0
+  fi
 fi
 
 scan_args=()

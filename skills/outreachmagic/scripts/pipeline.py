@@ -29,6 +29,8 @@ Usage:
   pipeline.py update --check                # Check for newer release without installing
 """
 
+from __future__ import annotations
+
 import ast
 import sqlite3
 import json
@@ -8301,6 +8303,7 @@ def _ingest_relay_page(
             mark_relay_ingested_many(pending_marks, conn=pull_conn, commit=False)
         if pull_conn is not None:
             pull_conn.commit()
+            pull_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     except Exception:
         if pull_conn is not None:
             try:

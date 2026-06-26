@@ -75,14 +75,17 @@ def apply_bulk_pull_pragmas(conn: sqlite3.Connection) -> None:
     sync_row = conn.execute("PRAGMA synchronous").fetchone()
     cache_row = conn.execute("PRAGMA cache_size").fetchone()
     temp_row = conn.execute("PRAGMA temp_store").fetchone()
+    wal_ac_row = conn.execute("PRAGMA wal_autocheckpoint").fetchone()
     _BULK_PULL_PRAGMA_SAVES[cid] = (
         sync_row[0] if sync_row else 2,
         cache_row[0] if cache_row else -2000,
         temp_row[0] if temp_row else 0,
+        wal_ac_row[0] if wal_ac_row else 1000,
     )
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA cache_size=-64000")
     conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA wal_autocheckpoint=1000")
 
 
 def end_bulk_pull_session(conn: sqlite3.Connection) -> None:
@@ -97,11 +100,12 @@ def end_bulk_pull_session(conn: sqlite3.Connection) -> None:
             conn.rollback()
         except sqlite3.Error:
             pass
-    sync_val, cache_val, temp_val = saved
+    sync_val, cache_val, temp_val, wal_ac_val = saved
     try:
         conn.execute(f"PRAGMA synchronous={sync_val}")
         conn.execute(f"PRAGMA cache_size={cache_val}")
         conn.execute(f"PRAGMA temp_store={temp_val}")
+        conn.execute(f"PRAGMA wal_autocheckpoint={wal_ac_val}")
     except sqlite3.OperationalError as exc:
         if "disk I/O error" in str(exc).lower() or "i/o error" in str(exc).lower():
             print(

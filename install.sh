@@ -338,7 +338,9 @@ install_outreachmagic() {
     echo "  (Stores pipeline contacts and event history locally — no data sent to servers during init.)"
   fi
   local tag_label="${OM_TAG:-main}"
-  python3 "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" init --from-tag "$tag_label"
+  python3 "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" init --from-tag "$tag_label" || {
+    echo "warning: pipeline.py init failed (run 'pipeline.py init' later to retry)" >&2
+  }
 }
 
 profile_skill_link() {

@@ -1,5 +1,5 @@
 """
-Sync pipeline workspace routing config with wbhk-app (Neon source of truth).
+Sync pipeline workspace routing config with the portal.
 """
 
 from __future__ import annotations

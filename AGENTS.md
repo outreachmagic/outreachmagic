@@ -28,9 +28,7 @@ After README edits: `make manifests` then commit (manifest hash for `README.md` 
 
 ## If you change pricing / billing limits
 
-1. `outreachmagic-brand/product/pricing.md`
-2. `wbhk-billing/src/plans.ts`
-3. `tests/billing_contract.json`
+1. `tests/billing_contract.json`
 
 ## Release (outreachmagic)
 
@@ -57,7 +55,7 @@ Companion tags: `email-finder-v*` / `lead-enrich-v*` (see `skill-suite.json` →
 
 ## Brand assets
 
-Logos live in `brand/` and publish to [outreachmagic/brand](https://github.com/outreachmagic/brand) via `publish-brand.yml` on merge to `main`. Canonical narrative still lives in `outreachmagic-brand/`; sync SVGs here when logos change.
+Logos live in `brand/` and publish to [outreachmagic/brand](https://github.com/outreachmagic/brand) via `publish-brand.yml` on merge to `main`.
 
 ## Public vs private
 

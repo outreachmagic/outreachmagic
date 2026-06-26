@@ -2,7 +2,7 @@
 
 Push Outreach Magic pipeline data (leads, deals, event history) into external CRMs. Ships with GoHighLevel and HubSpot drivers. Salesforce support is planned.
 
-Internal specs and roadmap: [outreachmagic-brand/product/specs/crm-sync](https://github.com/outreachmagic/outreachmagic-brand/tree/main/product/specs/crm-sync)
+Internal specs and roadmap are maintained in a private repository.
 
 ## Architecture
 

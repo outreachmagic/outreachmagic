@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "source": "outreachmagic-brand/product/pricing.md",
+    "source": "pricing docs",
   "usage_thresholds": {
     "warning_percent": 80,
     "critical_percent": 95

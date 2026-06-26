@@ -130,4 +130,4 @@ Before submitting to HermesHub, we run their SkillScan locally:
 bash scripts/skill-scan.sh
 ```
 
-See [outreachmagic-brand/copy/hub/registry-publish.md](../outreachmagic-brand/copy/hub/registry-publish.md) for the registry submission checklist.
+See the registry submission checklist on [outreachmagic.io](https://outreachmagic.io).

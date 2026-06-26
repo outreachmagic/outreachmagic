@@ -48,7 +48,7 @@ flowchart LR
 | email-finder OM pre-check | |
 | `verify-email` recording | |
 
-Launch limits: **1,000 webhook events/mo free**, **Pro $9/mo** (50k webhook and sync events). See [outreachmagic-brand/product/pricing.md](../outreachmagic-brand/product/pricing.md).
+Launch limits: **1,000 webhook events/mo free**, **Pro $9/mo** (50k webhook and sync events). See [outreachmagic.io/pricing](https://outreachmagic.io/pricing).
 
 ## Naming: find vs verify
 
@@ -65,4 +65,4 @@ Launch limits: **1,000 webhook events/mo free**, **Pro $9/mo** (50k webhook and 
 ## Release docs
 
 - [RELEASING.md](./RELEASING.md) — tags and CI  
-- [outreachmagic-brand/copy/hub/registry-publish.md](../outreachmagic-brand/copy/hub/registry-publish.md) — marketplace order  
+- [outreachmagic.io/pricing](https://outreachmagic.io/pricing) — pricing and plans  

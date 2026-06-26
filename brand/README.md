@@ -2,8 +2,6 @@
 
 Public logo files for agents, docs, and third-party integrations.
 
-**Source of truth (private):** `outreachmagic-brand/assets/logos/` and `outreach-magic-site/public/`
-
 **Published to:** [outreachmagic/brand](https://github.com/outreachmagic/brand) on every merge to `main` that touches `brand/**`.
 
 ## Agent-fetchable URLs

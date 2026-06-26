@@ -6,7 +6,7 @@ One SQLite file. No MongoDB. No BigQuery. Just your leads, visible.
 
 Architecture:
   ~/.hermes/skills/outreachmagic/databases/outreachmagic.db  — Local SQLite database
-  api.outreachmagic.io           — Cloudflare Worker relay (optional)
+  api.outreachmagic.io           — Relay service (optional)
   pipeline.py                    — CLI: show, pull, connect, log-event...
 
 Usage:
@@ -5215,7 +5215,7 @@ def _apply_cloud_routing_bundle(bundle: dict, org_id: str = DEFAULT_ORG_ID) -> N
 
 
 def maybe_sync_routing_from_cloud(*, quiet: bool = False) -> bool:
-    """Pull routing config from wbhk-app when an agent key is configured."""
+    """Pull routing config from the portal when an agent key is configured."""
     tok = get_agent_key()
     if not routing_cloud.cloud_routing_enabled(load_config, tok):
         return False
@@ -5236,7 +5236,7 @@ def maybe_sync_routing_from_cloud(*, quiet: bool = False) -> bool:
 
 
 def maybe_sync_agent_secrets_from_cloud(*, quiet: bool = False) -> bool:
-    """Pull org BYOK API keys from wbhk-app when an agent key is configured."""
+    """Pull org BYOK API keys from the portal when an agent key is configured."""
     return agent_secrets_cloud.maybe_sync_agent_secrets_from_cloud(
         load_config_fn=load_config,
         save_config_fn=save_config,
@@ -6148,7 +6148,7 @@ def _relay_push_batches(
 
 
 def _push_agent_events_to_relay(agent_key: str) -> dict:
-    """Push locally-created events to the Cloudflare relay /push endpoint."""
+    """Push locally-created events to the relay /push endpoint."""
     events_only = _sync_events_only()
     if events_only:
         _relay_log(

@@ -5,7 +5,7 @@
 | Doc | Purpose |
 |-----|---------|
 | [ecosystem.md](./ecosystem.md) | **Which repo owns what** — marketing vs portal vs relay vs skills |
-| [brand.md](./brand.md) | **Brand & GTM** → `outreachmagic-brand` |
+| [brand/README.md](./brand/README.md) | **Brand assets** — logos for agents, docs, and integrations |
 | [../outreach-magic.code-workspace](../outreach-magic.code-workspace) | Cursor multi-root workspace (all sibling repos) |
 
 ## For users

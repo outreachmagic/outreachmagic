@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Billing contract tests — align skill CLI with outreachmagic-brand + wbhk-billing policy."""
+"""Billing contract tests — align skill CLI with billing policy."""
 
 from __future__ import annotations
 
@@ -222,7 +222,7 @@ def test_free_tier_buffer_headroom_matches_brand_math():
     ],
 )
 def test_buffer_policy_examples_documented_in_brand(tier, at_limit, buffered, expect):
-    """Mirror wbhk-billing classifyIngestDelivery — keep in sync with billing-buffer-test.mjs."""
+    """Mirror server-side classifyIngestDelivery — keep in sync with billing-buffer-test.mjs."""
     limits = CONTRACT["plans"][tier]
     monthly = limits["monthly_events"]
     buffer_cap = limits["buffer_cap"]

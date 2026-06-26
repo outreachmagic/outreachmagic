@@ -2,45 +2,97 @@
 
 [![MIT License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE) [![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills) [![Cursor](https://img.shields.io/badge/Cursor-ready-007ACC)](https://docs.cursor.com/skills) [![Hermes](https://img.shields.io/badge/Hermes-ready-8B5CF6)](https://hermes-agent.nousresearch.com/docs/skills)
 
-Your agent goes blind after send. Sync Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, and Calendly into one local SQLite database your agent can query directly. Every reply, bounce, click, and stage change lands there. No CSV exports, no merged Sheets, no DIY n8n pipelines.
+Your agent goes blind after send. Sync Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, and Calendly into one local SQLite database your agent can query directly. Every reply, bounce, stage change, and booked call lands there.
 
-This repo is the source for everything: the main pipeline skill, the email waterfall finder, the lead enrichment tool, the install script, CI, tests, and docs. If you just want to install and use the skills, head to [outreachmagic.io](https://outreachmagic.io). If you want to contribute or understand how it works, you're in the right place.
+Every other GTM skill tells your agent what to write. This one tells your agent what's happening.
 
-## Architecture
+This repo is the source for everything: the pipeline skill, the email waterfall finder, the lead enrichment tool, the install script, CI, tests, and docs. If you just want to install and use the skills, head to [outreachmagic.io](https://outreachmagic.io). If you want to contribute or understand how it works, you're in the right place.
+
+## How it fits
+
+The problem: every Friday you export CSVs from Smartlead, Instantly, and HeyReach, then merge them in Sheets. Your agent wrote great emails but has no idea who replied. You're stitching spreadsheets just to answer "did we get any replies this week?"
+
+Outreach Magic fixes that. Every sequencer sends webhooks to api.outreachmagic.io. Those events sync to your agent's local database. Every reply, bounce, booking, and stage change lands there. Your agent queries it directly. No CSV stitching, no blind spots, and it syncs across multiple agents so nothing gets lost.
 
 ```
-                      ┌──────────────────────────────────────────┐
-  Smartlead ─────────►│        Platform webhook events           │
-  Instantly ─────────►│        sync across all agents            │
-  HeyReach  ─────────►│        api.outreachmagic.io              │
-  PlusVibe  ─────────►│                                          │
-  EmailBison ────────►│                                          │
-  Prosp     ─────────►│                                          │
-  Calendly  ─────────►│                                          │
-                      └──────────────────┬───────────────────────┘
-                                         │
-                                         ▼
-                      ┌──────────────────────────────────────────┐
-                      │  Local SQLite database                   │
-                      │  Cursor, Claude Code, Hermes Agent       │
-                      └──────────────────┬───────────────────────┘
-                                         │
-              ┌──────────────────────────┼──────────────────────────┐
-              ▼                          ▼                          ▼
-     ┌─────────────────┐     ┌──────────────────┐     ┌────────────────────┐
-     │  pipeline.py    │     │  email-finder    │     │  lead-enrich       │
-     │  pull, show,    │     │  waterfall       │     │  Serper research   │
-     │  stats, demo,   │     │  find + verify   │     │  + dedup           │
-     │  serve          │     │                  │     │                    │
-     └────────┬────────┘     └──────────────────┘     └────────────────────┘
-              │
-              ▼
-          ┌──────────────────────────────┐
-          │  CRM Sync                    │
-          │  HubSpot · GoHighLevel       │
-          │  Salesforce (planned)        │
-          └──────────────────────────────┘
+                         ┌──────────────────────────────────────────┐
+     Smartlead ─────────►│        Platform webhook events           │
+     Instantly ─────────►│        sync across all agents            │
+     HeyReach  ─────────►│        so nothing gets lost              │
+     PlusVibe  ─────────►│        api.outreachmagic.io              │
+     EmailBison ────────►│                                          │
+     Prosp     ─────────►│                                          │
+     Calendly  ─────────►│                                          │
+                         └──────────────────┬───────────────────────┘
+                                            │  ▲
+                                            ▼  │
+                         ┌──────────────────────────────────────────┐
+                         │  Your agent's local SQLite database      │
+                         │  Cursor · Claude Code · Hermes Agent     │
+                         └──────────────────┬───────────────────────┘
+                                            |  ▲
+                                            |  │
+           ┌────────────────────────────────┼──|───────────────────────────────────┐
+           ▼                                ▼  |                                   ▼
+    ┌──────────────┐         ┌──────────────────────────────────┐        ┌────────────────────┐
+    │  "show me    │         │  "find job title, linkedin +     │        │  "analyse my most  │
+    │  the best    │         │  email for Bill Smith at         │        │  recent bounces    │
+    │  performing  │         │  Acme Corp"                      │        │  for deliverability│
+    │  copy"       │         │                                  │        │  + export Sheets"  │
+    └──────────────┘         └──────────────────────────────────┘        └────────────────────┘
 ```
+
+## Quick start
+
+Once it's installed, try prompts like these:
+
+```
+use outreach magic skill suite to show me the best performing copy
+```
+
+```
+use outreach magic skill suite to find job title, linkedin + email for Bill Smith at Acme Corp
+```
+
+```
+use outreach magic skill suite to analyse my most recent bounces for deliverability insights
+```
+
+```
+use outreach magic skill suite to do a detailed campaign stats export to Google Sheets
+```
+
+Not sure what it can do? Ask your agent:
+
+```
+tell me everything the outreach magic skill suite can do in natural language with example prompts
+```
+
+## Install
+
+**Using npx:**
+
+```bash
+npx skills add outreachmagic/outreachmagic
+```
+
+**Using an agent prompt:**
+
+```
+Fetch this file and follow its instructions to install the Outreach Magic skill suite on this machine:
+
+https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md
+```
+
+## What you need
+
+| Key | For | Required? |
+|-----|-----|-----------|
+| OM account | Portal access, billing, webhook URLs | Yes |
+| Sequencer webhooks | Smartlead, Instantly, HeyReach, etc. | At least one |
+| Companion API keys | Lead enrichment (Serper) and email waterfall finder (trykitt, Icypeas, MillionVerifier) | When you use those features |
+
+Set keys in your agent's environment config or in the portal. They sync through automatically.
 
 ## Repo layout
 
@@ -52,8 +104,8 @@ install.sh                     # Cross-platform installer (Hermes, Cursor, Claud
 platforms/                     # Platform overlays and install wrappers
 brand/                         # Logo SVGs (published to outreachmagic/brand)
 scripts/                       # Dev scripts — tests, manifests, sync, release check
-tests/                         # pytest suite and billing contract tests
-docs/                          # Dev docs — releasing, ecosystem, skill suite
+tests/                         # pytest suite
+docs/                          # Dev docs — releasing, skill suite
 ```
 
 ## Quick start for contributors

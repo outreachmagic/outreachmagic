@@ -7,7 +7,7 @@
 
 [![MIT License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE) [![Claude Code](https://img.shields.io/badge/Claude%20Code-ready-black)](https://docs.anthropic.com/en/docs/claude-code/skills) [![Cursor](https://img.shields.io/badge/Cursor-ready-007ACC)](https://docs.cursor.com/skills) [![Hermes](https://img.shields.io/badge/Hermes-ready-8B5CF6)](https://hermes-agent.nousresearch.com/docs/skills)
 
-Find work emails when you have a name and company domain. Or verify emails you already have. Works standalone with just API keys, or pairs with Outreach Magic to save every result and never search for the same lead twice.
+Find work emails when you have a name and company domain. Or verify emails you already have through MillionVerifier or deep verification through Scrubby. Works standalone with just API keys, or pairs with Outreach Magic to save every result and never search for the same lead twice.
 
 Part of the [Outreach Magic skill suite](https://github.com/outreachmagic/outreachmagic).
 
@@ -46,18 +46,22 @@ name + domain ───────►│   email finder     │
                                   └──────────────────┘          └──────────────────┘
 ```
 
-**Path 2: Verify emails you already have.** Got a list of emails you collected somewhere else? Send them through MillionVerifier. It checks deliverability. You do not need trykitt or Icypeas for this. This path does not connect back to the waterfall.
+**Path 2: Verify emails you already have.** Got a list of emails you collected somewhere else? Run them through MillionVerifier for instant deliverability checks, or Scrubby for deeper catch-all/unknown detection (24-72 hour turnaround). You do not need trykitt or Icypeas for this. These paths do not connect back to the waterfall.
 
 ```
                 ┌──────────────────┐
- email list ───►│  MillionVerifier │──► emails verified
+ email list ───►│  MillionVerifier │──► instant check
+                └──────────────────┘
+                ┌──────────────────┐
+ email list ───►│  Scrubby         │──► deep verify (24-72h)
                 └──────────────────┘
 ```
 
 | Mode | What happens | What you need |
 |------|-------------|---------------|
 | Standalone find | Hits trykitt (if enabled), falls back to Icypeas (if enabled), saves result locally | One or more API keys (trykitt, Icypeas, or both) |
-| Standalone verify | Checks emails you already have for deliverability | MillionVerifier API key |
+| Standalone verify (instant) | Checks emails you already have for deliverability | MillionVerifier API key |
+| Deep verify (catch-all) | Submits emails for 24-72 hour deep verification | Scrubby API key |
 | With Outreach Magic | Same waterfall, but saves to your pipeline and skips leads you already searched | OM account + API keys |
 
 ## Quick start
@@ -104,7 +108,8 @@ Or follow the agent install guide: [AGENTS-INSTALL.md](https://github.com/outrea
 |-----|-----|-----------|
 | `TRYKITT_API_KEY` | Find emails via trykitt.ai | One or the other, not both |
 | `ICYPEAS_API_KEY` | Fallback find via Icypeas | One or the other, not both |
-| `MILLIONVERIFIER_API_KEY` | Verify emails you already have | Only for the verify path |
+| `MILLIONVERIFIER_API_KEY` | Instant deliverability check | Only for verify paths |
+| `SCRUBBY_API_KEY` | Deep verification (24-72h, catch-all detection) | Only for verify paths |
 | Outreach Magic login | Dedup and save results to pipeline | Only with OM |
 
 Set your API keys in your agent's environment config. If you use Outreach Magic, you can set them in the portal instead and they get passed through automatically.

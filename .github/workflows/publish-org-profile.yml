@@ -55,5 +55,5 @@ jobs:
             COMMIT_MSG="Update org profile README (${{ github.sha }})"
           fi
           git commit -m "$COMMIT_MSG"
-          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/.github.git"
+          git remote add origin "https://oauth2:${PUBLISH_TOKEN}@github.com/outreachmagic/.github.git"
           git push origin main --force

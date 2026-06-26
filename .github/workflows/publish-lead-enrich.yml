@@ -80,7 +80,7 @@ jobs:
             SUBJECT="$(echo "$COMMIT_MSG" | head -1)"
             git commit -m "Sync: ${SUBJECT}" -m "Synced from outreachmagic-skill@${{ github.sha }}"$'\n'"→ https://outreachmagic.io/changelog"
           fi
-          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/lead-enrich.git"
+          git remote add origin "https://oauth2:${PUBLISH_TOKEN}@github.com/outreachmagic/lead-enrich.git"
           git push origin main --force
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             git push origin "${TAG}" --force

@@ -43,5 +43,5 @@ jobs:
           COMMIT_MSG="$(jq -r '.head_commit.message' "$GITHUB_EVENT_PATH")"
           SUBJECT="$(echo "$COMMIT_MSG" | head -1)"
           git commit -m "Sync: ${SUBJECT}" -m "Synced from outreachmagic-skill@${{ github.sha }}"$'\n'"→ https://outreachmagic.io/changelog"
-          git remote add origin "https://x-access-token:${PUBLISH_TOKEN}@github.com/outreachmagic/brand.git"
+          git remote add origin "https://oauth2:${PUBLISH_TOKEN}@github.com/outreachmagic/brand.git"
           git push origin main --force

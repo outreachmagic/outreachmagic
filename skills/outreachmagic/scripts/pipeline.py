@@ -49,6 +49,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+import subprocess
+
 from relay_extractors import (
     build_display_name,
     extract_bounce_fields,
@@ -1465,7 +1467,7 @@ def migrate_db(conn=None):
             crm_owner_id         TEXT,
             last_synced_at       TEXT,
             last_event_id_synced TEXT,
-            last_sync_status     TEXT,
+            last_sync_status     TEXT NOT NULL DEFAULT 'pending',
             sync_error           TEXT,
             sync_hash            TEXT,
             cloud_pending        INTEGER NOT NULL DEFAULT 0,
@@ -1490,10 +1492,19 @@ def migrate_db(conn=None):
             skipped              INTEGER NOT NULL DEFAULT 0,
             errors               INTEGER NOT NULL DEFAULT 0,
             error_details        TEXT,
-            status               TEXT NOT NULL DEFAULT 'running',
+            status               TEXT NOT NULL DEFAULT 'in_progress',
             FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_crm_sync_log_ws ON crm_sync_log(workspace_id, started_at DESC);
+        CREATE TABLE IF NOT EXISTS lead_emails (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+            email           TEXT NOT NULL,
+            is_primary      INTEGER NOT NULL DEFAULT 0,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_lead_emails_lead ON lead_emails(lead_id);
+        CREATE INDEX IF NOT EXISTS idx_lead_emails_email ON lead_emails(email);
     """)
     conn.commit()
     if own_conn:

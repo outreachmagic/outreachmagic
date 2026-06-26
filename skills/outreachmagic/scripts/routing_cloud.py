@@ -416,10 +416,14 @@ def sync_org_config_from_cloud(
     agent_secrets = bundle.get("agentSecrets")
     if agent_secrets:
         try:
-            keys_written = write_agent_secrets_env(agent_secrets)
+            from agent_secrets_cloud import agent_secrets_path
+            path = agent_secrets_path()
+            secrets_data = agent_secrets.get("secrets", {})
+            version = agent_secrets.get("version", 1)
+            keys_written = write_agent_secrets_env(path, secrets_data, version=version)
             if keys_written:
-                mirror_agent_secrets_to_data_env()
-                apply_secrets_to_environ()
+                mirror_agent_secrets_to_data_env(secrets_data)
+                apply_secrets_to_environ(secrets_data)
         except Exception:
             if not quiet:
                 print("Warning: agent secrets processing failed (non-fatal)", file=__import__("sys").stderr)

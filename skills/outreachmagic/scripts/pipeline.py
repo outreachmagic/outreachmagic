@@ -5262,6 +5262,48 @@ def maybe_sync_agent_secrets_from_cloud(*, quiet: bool = False) -> bool:
     )
 
 
+def maybe_sync_crm_config_from_cloud(*, quiet: bool = False) -> bool:
+    """Pull CRM workspace config from the portal (api keys, location ids, pipeline mapping).
+
+    CRM config is stored on the portal but is NOT included in the routing-only
+    endpoint (``/api/routing-config``). This function hits ``/api/portal-config``
+    which carries the full bundle including ``crmConfigs``.
+    """
+    tok = get_agent_key()
+    if not routing_cloud.cloud_routing_enabled(load_config, tok):
+        return False
+    conn = get_conn()
+    try:
+        try:
+            bundle = routing_cloud.fetch_portal_config(
+                routing_cloud.get_api_base(load_config), tok
+            )
+        except Exception:
+            if not quiet:
+                print(
+                    "CRM config sync skipped: portal config endpoint unavailable.",
+                    flush=True,
+                )
+            return False
+        crm_configs = bundle.get("crmConfigs") or {}
+        if not crm_configs:
+            if not quiet:
+                print("No CRM config found in portal bundle.", flush=True)
+            return False
+        routing_cloud._apply_crm_config_to_sqlite(conn, crm_configs, org_id=DEFAULT_ORG_ID)
+        conn.commit()
+        if not quiet:
+            ws_count = len(crm_configs)
+            plat_count = sum(len(ps) for ps in crm_configs.values())
+            print(
+                f"CRM config synced ({ws_count} workspace(s), {plat_count} platform(s)).",
+                flush=True,
+            )
+        return True
+    finally:
+        conn.close()
+
+
 def sync_agent_secrets_cli(
     *,
     check_only: bool = False,
@@ -8425,6 +8467,11 @@ def sync_from_relay_org(
         except Exception:
             if not quiet:
                 print("API key sync skipped (non-fatal).", flush=True)
+        try:
+            maybe_sync_crm_config_from_cloud(quiet=quiet)
+        except Exception:
+            if not quiet:
+                print("CRM config sync skipped (non-fatal).", flush=True)
     elif not quiet and needs_routing_sync:
         print("Skipped routing config sync (--skip-routing-sync).", flush=True)
     if not quiet:
@@ -9085,6 +9132,10 @@ def refresh_local_database(
         result["routing_summary"] = routing_summary
         if not quiet:
             print(format_routing_refresh_summary(routing_summary), flush=True)
+        try:
+            maybe_sync_crm_config_from_cloud(quiet=quiet)
+        except Exception:
+            pass
     except RuntimeError as exc:
         return {
             **result,
@@ -9138,6 +9189,10 @@ def refresh_local_database(
             }
         try:
             maybe_sync_agent_secrets_from_cloud(quiet=quiet)
+        except Exception:
+            pass
+        try:
+            maybe_sync_crm_config_from_cloud(quiet=quiet)
         except Exception:
             pass
 
@@ -9548,6 +9603,10 @@ def _save_agent_key_and_validate(agent_key: str, *, reconnect: bool = False):
         pass
     try:
         maybe_sync_agent_secrets_from_cloud(quiet=True)
+    except Exception:
+        pass
+    try:
+        maybe_sync_crm_config_from_cloud(quiet=True)
     except Exception:
         pass
 

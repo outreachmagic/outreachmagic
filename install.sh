@@ -95,6 +95,17 @@ _bootstrap_install_if_needed() {
 _here=""
 _bootstrap_install_if_needed "$@"
 
+# When bootstrapped from main (no --tag), use the cloned checkout directly
+# instead of re-cloning from a potentially-stale release tag. This ensures
+# the installed scripts match the running installer, and avoids cascading
+# the outreachmagic release tag to companion repos that use different tags.
+if [[ $LOCAL -eq 0 && -z "$OM_TAG" ]]; then
+  if [[ -n "$_here" && -f "$_here/platforms/common/install-companions.sh" ]]; then
+    LOCAL=1
+    _log_step "Using bootstrap clone directly (no --tag specified)"
+  fi
+fi
+
 # shellcheck source=platforms/common/install-companions.sh
 source "$_here/platforms/common/install-companions.sh"
 

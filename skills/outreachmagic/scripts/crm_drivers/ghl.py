@@ -457,6 +457,9 @@ class GhlDriver:
                 note = _format_event_note(event)
                 if not note:
                     continue
+                context = _extract_event_context_lines(event)
+                if context:
+                    note += "\n" + context
                 note += _note_footer(contact_id=contact_id, deal_id=deal_id)
                 self._request(
                     "POST",
@@ -550,3 +553,44 @@ def _format_event_note(event: dict) -> str:
     title = event_type.replace("_", " ").title()
     detail = f": {body[:200]}" if body else ""
     return f"{title}{detail}"
+
+
+def _extract_event_context_lines(event: dict) -> str:
+    """Extract extra context lines (source platform, UTM params) from an event.
+
+    Returns lines like:
+      via Calendly
+      UTM: utm_source=google | utm_campaign=spring
+
+    or empty string if nothing extra to add.
+    """
+    result_parts = []
+
+    # Parse metadata
+    meta_raw = event.get("metadata_json") or "{}"
+    try:
+        meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+    except (json.JSONDecodeError, TypeError):
+        meta = {}
+
+    # Platform info
+    event_type = event.get("event_type", "")
+    platform = meta.get("platform", "")
+
+    if event_type == "meeting_booked" and platform:
+        result_parts.append(f"via {platform.title()}")
+
+    # UTM params
+    utm_fields = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"]
+    utm_parts = []
+    for field in utm_fields:
+        val = meta.get(field) or event.get(field) or ""
+        if val:
+            utm_parts.append(f"{field}={val}")
+
+    if utm_parts:
+        result_parts.append("UTM: " + " | ".join(utm_parts))
+    elif event_type == "meeting_booked":
+        result_parts.append("UTM: none")
+
+    return "\n".join(result_parts) if result_parts else ""

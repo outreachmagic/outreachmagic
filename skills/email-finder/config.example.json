@@ -1,0 +1,18 @@
+{
+  "_comment_keys": "API keys: Outreach Magic portal → pipeline.py sync-secrets → agent_secrets.env",
+  "trykitt_api_key": "",
+  "icypeas_api_key": "",
+  "trykitt_endpoint": "https://api.trykitt.ai/job/find_email",
+  "icypeas_endpoint": "https://app.icypeas.com/api/email-search",
+  "icypeas_read_endpoint": "https://app.icypeas.com/api/bulk-single-searchs/read",
+  "trykitt_enabled": true,
+  "icypeas_enabled": true,
+  "icypeas_poll_attempts": 30,
+  "icypeas_poll_delay_seconds": 3,
+  "icypeas_request_delay_seconds": 1.5,
+  "icypeas_rate_limit_retry_seconds": 3,
+  "trykitt_request_delay_seconds": 0.2,
+  "batch_delay_seconds": 8,
+  "outreachmagic_home": "",
+  "max_people_per_run": 50
+}

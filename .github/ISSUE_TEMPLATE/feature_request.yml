@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest an improvement or new capability
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Describe the problem you're trying to solve, not the solution you have in mind. Understanding the problem helps us find the right fix.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that you can't do today?
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current workaround
+      description: How are you handling this now? Spreadsheets, manual steps, another tool?
+  - type: textarea
+    id: ideal
+    attributes:
+      label: What would help
+      description: How would you like this to work? Be as specific as you can.

@@ -1,0 +1,62 @@
+# Changelog
+
+## [1.2.0] - 2026-06-26
+
+### Added
+
+- **Scrubby Deep Verification.** Optional second-pass email verification that takes 24–72 hours for higher accuracy on catch-all and unknown emails. Submit batches with `scrubby-deep-submit`, poll results with `scrubby-deep-fetch`, or use `verify-with-scrubby` for a combined MillionVerifier + Scrubby workflow. 3 credits per email. Job state is persisted locally for cross-session polling.
+- Multiple emails per lead. Each lead can have one primary email and any number of secondary emails stored in the new `lead_emails` table. Emails are unique per org across all leads.
+- `additional_emails` column in lead review exports. Secondary emails appear as a semicolon-separated list with inline verification status (e.g. `alice@example.com [valid]; bob@example.com [bounced]`).
+- Editable `additional_emails` sync-back. Add or remove secondary emails directly in Google Sheets review sheets — changes sync back to OutreachMagic on review sync. `[status]` brackets are stripped automatically on sync-back.
+- Multi-tab Google Sheets export support via `addTabToSheet` / `writeValuesToTab` for building workbooks with multiple review tabs under one spreadsheet.
+- Per-email verification in `bounces.py`. Verification records now link to specific `lead_emails.id` and materialize verification status per email on the `lead_emails` table.
+- Secondary emails sync to CRMs (GHL alternateEmails, HubSpot hs_additional_emails) and via relay.
+- Daily Breakdown tab in campaign stats sheets (`sheets campaign-stats`). Same metrics as Campaign Overview (sent, delivered, bounced, replies, OOO vs human, LinkedIn activity) but one row per campaign per day. Timezone offset configurable via `DAY_SPLIT_OFFSET_HOURS`.
+- Settings metadata note in cell A1 of every sheet tab -- workspace, time window, generation timestamp, and timezone offset.
+- Frozen header rows enabled by default on all campaign stats sheets.
+
+### Changed
+
+- `find_lead_by_email` searches `lead_emails` first, then `leads.email`.
+- `resolve_lead` stores primary email in `lead_emails` on create and update.
+- `merge_leads` moves secondary emails from the deleted lead to the kept lead.
+- `apply_email_find_results` adds found emails as secondaries when the lead already has a primary.
+- CRM sync hash includes additional emails so add/remove triggers re-sync.
+- "Manual" renamed to "Human" across all campaign stats sheets. Column headers, funnel stage labels, and tab references now read OOO vs Human instead of OOO vs Manual.
+- Tab titles cleaned up. Removed date-range prefix from individual tab names (e.g. "Last 14d - Campaign Overview" is now just "Campaign Overview"). Time window stays in the workbook-level title.
+
+## [1.1.0] - 2026-06-19
+
+### Added
+
+- Campaign stats module with Google Sheets export. Run `sheets campaign-stats` from the pipeline to push workspace-level stats to a hosted workbook. Stats include campaign overview, conversion funnels, and lead sentiment per campaign.
+- Brand asset pipeline. Logo SVGs publish to outreachmagic/brand on merge.
+
+### Changed
+
+- Platform registry maps more Prosp event types to local fields. Relay pull now handles `send_connection`, `send_msg`, and reply events from Prosp workspaces.
+- Public READMEs rewritten for the full product suite. The GitHub org profile at github.com/outreachmagic now mirrors the same README, so visitors see a single consistent story wherever they land.
+- Install docs synced to v1.1.0 across all docs sites.
+
+### Fixed
+
+- Lead enrich: `normalize_input` now accepts a `max_people` override. The `stamp-attempted` path always tags leads via the lightweight bulk endpoint and only touches import-profiles when notes are provided. The `serper-search` command writes to an `--out-file` when you pass one.
+- Companion env loading tests now isolate from dev-shell API keys. Two tests that checked SERPER_API_KEY loading in strict mode were failing locally because they read from your running shell instead of the temp Hermes tree.
+- Layer 1 test gate now includes campaign stats, platform registry, brand publish, and manifest sync tests. These were already in the full suite but missing from the fast pre-tag gate.
+
+## [1.0.0] - 2026-06-17
+
+### Added
+
+- Initial release of the Outreach Magic skill suite.
+- `pipeline.py` with relay pull from Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, and Calendly. SQLite-backed workspace routing, lead dedup, and campaign stats.
+- Email finder companion skill with fallback provider chain.
+- Lead enrich companion skill with Serper.dev integration.
+- Update mechanism via `pipeline.py update` — pulls from GitHub releases, validates hashes, keeps a rollback copy.
+- Install script at install.sh with platform detection (Hermes, Cursor, Claude Code, Claude desktop).
+- Companion common module shared between email-finder and lead-enrich for env loading, API key pool rotation, and agent integration.
+- Manifest system: every skill publishes an update-manifest.json with SHA256 hashes. The update command verifies integrity before applying changes.
+- Billing contract tests at the database level.
+
+[//]: # (Keep entries user-facing and specific. When you add a version, write what it does
+       for someone running pipeline.py, not what changed in the codebase.)

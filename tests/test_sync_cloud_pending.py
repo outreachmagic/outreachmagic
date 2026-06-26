@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Tests for relay vs local cloud_pending and sync defaults."""
+
+import os
+import sys
+import tempfile
+import unittest
+from unittest import mock
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+_tmp = tempfile.mkdtemp()
+from om_paths import set_data_root_override  # noqa: E402
+
+set_data_root_override(Path(_tmp))
+
+import pipeline as om  # noqa: E402
+
+
+class CloudPendingLogicTests(unittest.TestCase):
+    def setUp(self):
+        om.init_db()
+        conn = om.get_conn()
+        om.ensure_organization(conn)
+        conn.close()
+
+    def test_lead_should_cloud_pending_relay_sources(self):
+        self.assertFalse(om._lead_should_cloud_pending("relay_sync", "smartlead"))
+        self.assertFalse(om._lead_should_cloud_pending("agent_sync", "relay"))
+        self.assertTrue(om._lead_should_cloud_pending("csv", "csv"))
+        self.assertTrue(om._lead_should_cloud_pending(None, None))
+
+    def test_resolve_lead_relay_sync_does_not_mark_pending(self):
+        result = om.resolve_lead(
+            email="relay@example.com",
+            name="Relay User",
+            company="Acme",
+            source="relay_sync",
+            source_platform="smartlead",
+        )
+        self.assertEqual(result["status"], "created")
+        conn = om.get_conn()
+        row = conn.execute(
+            "SELECT cloud_pending FROM leads WHERE id = ?", (result["id"],)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["cloud_pending"], 0)
+
+    def test_resolve_lead_csv_marks_pending(self):
+        result = om.resolve_lead(
+            email="csv@example.com",
+            name="CSV User",
+            company="Acme",
+            source="csv",
+            source_platform="csv",
+        )
+        conn = om.get_conn()
+        row = conn.execute(
+            "SELECT cloud_pending FROM leads WHERE id = ?", (result["id"],)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["cloud_pending"], 1)
+
+    def test_enrich_lead_local_marks_pending(self):
+        result = om.resolve_lead(
+            email="enrich@example.com",
+            name="Enrich User",
+            company="Acme",
+            source="relay_sync",
+            source_platform="instantly",
+        )
+        lead_id = result["id"]
+        conn = om.get_conn()
+        conn.execute("UPDATE leads SET cloud_pending = 0, title = NULL WHERE id = ?", (lead_id,))
+        conn.commit()
+        conn.close()
+
+        om.enrich_lead(lead_id, title="VP Sales", overwrite=True)
+        conn = om.get_conn()
+        row = conn.execute("SELECT cloud_pending, title FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        conn.close()
+        self.assertEqual(row["title"], "VP Sales")
+        self.assertEqual(row["cloud_pending"], 1)
+
+    def test_enrich_lead_relay_ingest_does_not_mark_pending(self):
+        result = om.resolve_lead(
+            email="pull@example.com",
+            name="Pull User",
+            company="Acme",
+            source="relay_sync",
+            source_platform="emailbison",
+        )
+        lead_id = result["id"]
+        om.enrich_lead(lead_id, title="From Relay", overwrite=True, mark_cloud_pending=False)
+        conn = om.get_conn()
+        row = conn.execute("SELECT cloud_pending, title FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        conn.close()
+        self.assertEqual(row["title"], "From Relay")
+        self.assertEqual(row["cloud_pending"], 0)
+
+    def test_personalize_set_marks_lead_pending(self):
+        result = om.resolve_lead(
+            email="pers@example.com",
+            name="Pers User",
+            company="Acme",
+            source="relay_sync",
+            source_platform="heyreach",
+        )
+        lead_id = result["id"]
+        om.personalize_set(lead_id, "first_name", "Pers")
+        conn = om.get_conn()
+        row = conn.execute("SELECT cloud_pending FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        conn.close()
+        self.assertEqual(row["cloud_pending"], 1)
+
+    def test_company_personalize_marks_company_pending(self):
+        result = om.resolve_lead(
+            email="co@acme.com",
+            name="Co User",
+            company="Acme Corp",
+            source="csv",
+            source_platform="csv",
+        )
+        conn = om.get_conn()
+        cid = conn.execute("SELECT company_id FROM leads WHERE id = ?", (result["id"],)).fetchone()["company_id"]
+        conn.execute("UPDATE companies SET cloud_pending = 0 WHERE id = ?", (cid,))
+        conn.commit()
+        conn.close()
+        om.company_personalize_set("company_name", "Acme", company_id=cid)
+        conn = om.get_conn()
+        row = conn.execute("SELECT cloud_pending FROM companies WHERE id = ?", (cid,)).fetchone()
+        conn.close()
+        self.assertEqual(row["cloud_pending"], 1)
+
+    def test_ingest_relay_event_does_not_mark_cloud_pending(self):
+        ws = om.create_workspace("Relay Co", slug="relay_co")
+        om.add_campaign_map_cli(
+            "plusvibe",
+            "relay_co",
+            campaign_name="Relay Campaign",
+            match_strategy="name_exact",
+        )
+        event = {
+            "platform": "plusvibe",
+            "event_type": "lead_marked_as_interested",
+            "lead": "newpull@example.com",
+            "sender": "sender@example.com",
+            "received_at": "2026-06-03T12:00:00Z",
+            "relay_id": 88001,
+            "raw": {
+                "webhook_event": "lead_marked_as_interested",
+                "lead_email": "newpull@example.com",
+                "sender_email": "sender@example.com",
+                "campaign_name": "Relay Campaign",
+                "label": "interested",
+                "sentiment": "positive",
+            },
+        }
+        lead_id = om.ingest_relay_event(event, force_workspace_id=ws["id"], quiet=True)
+        self.assertIsNotNone(lead_id)
+        conn = om.get_conn()
+        lead = conn.execute(
+            "SELECT cloud_pending, stage, original_source FROM leads WHERE id = ?",
+            (lead_id,),
+        ).fetchone()
+        ws_row = conn.execute(
+            "SELECT cloud_pending FROM workspace_leads WHERE lead_id = ?",
+            (lead_id,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(lead["original_source"], "relay_sync")
+        self.assertEqual(lead["cloud_pending"], 0)
+        self.assertEqual(lead["stage"], "interested")
+        self.assertIsNotNone(ws_row)
+        self.assertEqual(ws_row["cloud_pending"], 0)
+
+    def test_migrate_clears_false_relay_backlog(self):
+        conn = om.get_conn()
+        conn.execute(
+            """INSERT INTO leads (name, email, cloud_pending, original_source, original_source_platform)
+               VALUES ('Stale', 'stale@example.com', 1, 'relay_sync', 'smartlead')"""
+        )
+        conn.commit()
+        conn.close()
+        om.migrate_db()
+        conn = om.get_conn()
+        row = conn.execute(
+            "SELECT cloud_pending FROM leads WHERE email = 'stale@example.com'"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["cloud_pending"], 0)
+
+    def test_relay_push_defaults(self):
+        for key in (
+            "OUTREACHMAGIC_SYNC_BATCH_SIZE",
+            "OUTREACHMAGIC_SYNC_TIMEOUT_SECONDS",
+        ):
+            os.environ.pop(key, None)
+        settings = om.get_relay_push_settings()
+        self.assertEqual(settings["batch_size"], 200)
+        self.assertEqual(settings["timeout_seconds"], 120)
+        self.assertFalse(settings.get("bulk"))
+
+        bulk_settings = om.get_relay_push_settings(bulk=True)
+        self.assertEqual(bulk_settings["batch_size"], 5000)
+        self.assertTrue(bulk_settings.get("bulk"))
+
+    def test_push_agent_events_marks_only_fully_successful_batches(self):
+        conn = om.get_conn()
+        conn.execute(
+            """INSERT INTO leads (name, email, channel, stage, original_source, original_source_platform)
+               VALUES ('E1', 'e1@example.com', 'email', 'prospecting', 'csv', 'csv')"""
+        )
+        lid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """INSERT INTO events (lead_id, event_type, direction, channel, created_at, metadata_json)
+               VALUES (?, 'email_sent', 'outbound', 'email', datetime('now'), '{}')""",
+            (lid,),
+        )
+        eid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+        conn.close()
+
+        def fake_batches(agent_key, entries, client_id, **kwargs):
+            on_batch = kwargs.get("on_batch_pushed")
+            if on_batch and entries:
+                on_batch(entries, 0)
+            return {"pushed": 0, "error": None, "throttled": False}
+
+        with mock.patch.object(om, "_relay_push_batches", side_effect=fake_batches):
+            result = om._push_agent_events_to_relay("om_agent_test")
+
+        self.assertEqual(result.get("events_marked_pushed"), 0)
+        conn = om.get_conn()
+        row = conn.execute(
+            "SELECT 1 FROM relay_ingested WHERE dedupe_key = ?", (f"event:{eid}",)
+        ).fetchone()
+        conn.close()
+        self.assertIsNone(row)
+
+
+if __name__ == "__main__":
+    unittest.main()

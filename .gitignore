@@ -1,0 +1,19 @@
+.DS_Store
+.env
+relay/
+dist/
+skills/outreachmagic/config/
+skills/outreachmagic/databases/
+skills/outreachmagic/export/batch_sync.log
+skills/outreachmagic/export/*.log
+skills/outreachmagic/export/*.db
+*-email-results.json
+*-email-results.csv
+.wrangler/
+.agents/
+
+# Awesome lists (cloned forks for PR submissions)
+awesome-agent-skills/
+awesome-claude-code-and-skills/
+awesome-claude-code-toolkit/
+awesome-hermes-agent/

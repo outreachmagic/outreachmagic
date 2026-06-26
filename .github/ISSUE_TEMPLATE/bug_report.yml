@@ -1,0 +1,44 @@
+name: Bug report
+description: Something is not working the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Check existing issues first — someone may have already reported it.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What went wrong? What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands or steps that trigger the bug
+      placeholder: |
+        1. Run 'pipeline.py pull'
+        2. Then 'pipeline.py show --workspace X'
+        3. Error: ...
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `pipeline.py version`
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Agent platform
+      options:
+        - Cursor
+        - Claude Code
+        - Hermes
+        - Other
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Any error messages or log output
+      render: shell

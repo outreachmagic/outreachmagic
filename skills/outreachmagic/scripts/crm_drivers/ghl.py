@@ -156,6 +156,30 @@ class GhlDriver:
         if lead_data.get("company_name") or lead_data.get("company"):
             body["companyName"] = lead_data.get("company_name") or lead_data.get("company")
 
+        # ── Standard contact fields ──
+        # website (from company domain)
+        website_val = lead_data.get("company_domain") or ""
+        if website_val and not website_val.startswith("http"):
+            website_val = "https://" + website_val
+        if website_val:
+            body["website"] = website_val
+
+        # source (from original_source_detail)
+        source_val = lead_data.get("original_source_detail") or ""
+        if source_val:
+            body["source"] = source_val
+
+        # location (lead data preferred, fall back to company HQ)
+        loc_city = lead_data.get("location_city") or lead_data.get("company_city") or ""
+        if loc_city:
+            body["city"] = loc_city
+        loc_state = lead_data.get("location_state") or lead_data.get("company_state") or ""
+        if loc_state:
+            body["state"] = loc_state
+        loc_country = lead_data.get("location_country") or lead_data.get("company_country") or ""
+        if loc_country:
+            body["country"] = loc_country
+
         # Custom fields via mapping
         custom_fields = []
         if field_mapping:
@@ -227,6 +251,30 @@ class GhlDriver:
             if overwrite_existing or not existing_contact.get("companyName"):
                 body["companyName"] = company_val
 
+        # website (from company domain)
+        website_val = lead_data.get("company_domain") or ""
+        if website_val and not website_val.startswith("http"):
+            website_val = "https://" + website_val
+        if website_val and (overwrite_existing or not existing_contact.get("website")):
+            body["website"] = website_val
+
+        # source (from original_source_detail)
+        source_val = lead_data.get("original_source_detail") or ""
+        if source_val:
+            if overwrite_existing or not existing_contact.get("source"):
+                body["source"] = source_val
+
+        # location fields (lead data preferred, fall back to company HQ)
+        loc_fields = [
+            ("location_city", "company_city", "city"),
+            ("location_state", "company_state", "state"),
+            ("location_country", "company_country", "country"),
+        ]
+        for lead_key, company_key, ghl_key in loc_fields:
+            val = lead_data.get(lead_key) or lead_data.get(company_key) or ""
+            if val and (overwrite_existing or not existing_contact.get(ghl_key)):
+                body[ghl_key] = val
+
         # ── Custom fields ──
         existing_cf: dict[str, str] = {}
         if existing_contact:
@@ -251,13 +299,25 @@ class GhlDriver:
         if custom_fields:
             body["customFields"] = custom_fields
 
-        # Additional emails (GHL alternateEmails)
-        add_emails = lead_data.get("additional_emails", [])
-        if add_emails:
-            body["alternateEmails"] = add_emails
+        # NOTE: GHL's public API does NOT support writing alternateEmails
+        # (POST /contacts/, PUT /contacts/{id}, and upsert all reject it
+        # with 422). See gohighlevel GitHub issue #262. If you need secondary
+        # emails on GHL contacts, configure a custom field in the portal and
+        # map it to the 'email' or another lead field.
 
         if body:
             self._request("PUT", f"/contacts/{contact_id}", body=body)
+
+    def add_note(self, contact_id: str, body: str) -> bool:
+        """Add a note to an existing GHL contact. Returns True on success."""
+        if not body:
+            return True
+        try:
+            self._request("POST", f"/contacts/{contact_id}/notes",
+                          body={"body": body})
+            return True
+        except (GhlError, AuthError, NetworkError, RateLimitError):
+            return False
 
     # ------------------------------------------------------------------
     # Company operations
@@ -397,8 +457,7 @@ class GhlDriver:
                 note = _format_event_note(event)
                 if not note:
                     continue
-                if deal_id:
-                    note = f"[Deal: {deal_id}] {note}"
+                note += _note_footer(contact_id=contact_id, deal_id=deal_id)
                 self._request(
                     "POST",
                     f"/contacts/{contact_id}/notes",
@@ -454,6 +513,21 @@ class GhlDriver:
         return True
 
 
+def _note_footer(contact_id: str = "", deal_id: str = "") -> str:
+    """Build the standard note footer for GHL contact notes.
+
+    Returns a string like:
+    \n----------
+    source=om_sync | ghl_deal_id=... | ghl_contact_id=...
+    """
+    parts = ["source=om_sync"]
+    if deal_id:
+        parts.append(f"ghl_deal_id={deal_id}")
+    if contact_id:
+        parts.append(f"ghl_contact_id={contact_id}")
+    return "\n----------\n" + " | ".join(parts)
+
+
 def _format_event_note(event: dict) -> str:
     """Format an OM event as a GHL note with prefix and detail."""
     event_type = event.get("event_type", "unknown")
@@ -461,13 +535,13 @@ def _format_event_note(event: dict) -> str:
     subject = event.get("subject") or ""
 
     prefix_map = {
-        "email_sent": f"[Sent] {subject}",
-        "reply": f"[Replied] {body[:200] if body else subject}",
-        "bounce": "[Bounced]",
-        "stage_change": f"[Stage] {event.get('old_stage', '')} → {event.get('new_stage', '')}",
-        "meeting_booked": f"[Meeting] {body[:200] if body else 'Scheduled'}",
-        "interested": "[Interested]",
-        "not_interested": "[Not Interested]",
+        "email_sent": f"Sent: {subject}",
+        "reply": f"Replied: {body[:200] if body else subject}",
+        "bounce": "Bounced",
+        "stage_change": f"Stage: {event.get('old_stage', '')} \u2192 {event.get('new_stage', '')}",
+        "meeting_booked": f"Meeting: {body[:200] if body else 'Scheduled'}",
+        "interested": "Interested",
+        "not_interested": "Not Interested",
     }
 
     if event_type in prefix_map:
@@ -475,4 +549,4 @@ def _format_event_note(event: dict) -> str:
 
     title = event_type.replace("_", " ").title()
     detail = f": {body[:200]}" if body else ""
-    return f"[{title}]{detail}"
+    return f"{title}{detail}"

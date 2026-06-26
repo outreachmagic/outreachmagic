@@ -161,7 +161,14 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
         SELECT wl.lead_id, wl.status, wl.updated_at,
                l.name, l.email, l.title, l.industry, l.headcount,
                l.linkedin_url, l.company,
-               c.name AS company_name, c.domain AS company_domain
+               l.location_city, l.location_state, l.location_country,
+               l.original_source, l.original_source_detail,
+               l.original_source_platform,
+               l.latest_source, l.latest_source_detail,
+               l.latest_source_platform,
+               c.name AS company_name, c.domain AS company_domain,
+               c.hq_city AS company_city, c.hq_state AS company_state,
+               c.hq_country AS company_country
           FROM workspace_leads wl
           JOIN leads l ON l.id = wl.lead_id
           LEFT JOIN companies c ON c.id = l.company_id
@@ -311,6 +318,15 @@ def _build_sync_hash(lead: dict, contact_field_mapping: dict | None,
         lead.get("company_name", ""),
         lead.get("company_domain", ""),
         lead.get("status", ""),
+        lead.get("location_city", ""),
+        lead.get("location_state", ""),
+        lead.get("location_country", ""),
+        lead.get("company_city", ""),
+        lead.get("company_state", ""),
+        lead.get("company_country", ""),
+        lead.get("original_source_detail", ""),
+        lead.get("original_source_platform", ""),
+        lead.get("latest_source_platform", ""),
         str(company_id),
     ]
     # Include additional emails so adding/removing secondary emails triggers re-sync
@@ -408,6 +424,29 @@ def sync_single_lead(
 
     if not contact_id:
         return ("", "", "error", "error")
+
+    # -- Push alternate emails as a contact note --
+    # GHL's public API does NOT support writing alternateEmails on any endpoint
+    # (POST, PUT, upsert all return 422). Write them as a note instead.
+    add_emails = lead.get("additional_emails", [])
+    if add_emails and platform == "ghl":
+        emails_str = ", ".join(add_emails)
+        note_body = (
+            f"Alternate email(s): {emails_str}\n"
+            "---\n"
+            "GHL API doesn't support writing these. "
+            "Add them manually in the contact editor.\n"
+            f"----------\n"
+            f"source=om_sync | ghl_contact_id={contact_id}"
+        )
+        try:
+            driver.add_note(contact_id, note_body)
+        except Exception as exc:
+            print(
+                f"  Warning: could not post alternate-email note for lead "
+                f"{lead_id_val}: {exc}",
+                file=sys.stderr,
+            )
 
     # -- Deal --
     deal_id = entity["crm_deal_id"] if entity else None

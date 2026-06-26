@@ -46,7 +46,7 @@ Outreach Magic fixes that. Every sequencer sends webhooks to api.outreachmagic.i
 |------|-------------|
 | Pipeline sync | Sequencer webhooks sync to your local database. Query replies, bounces, bookings, and campaign stats directly. |
 | Lead enrichment | Research people by name and company (LinkedIn, domain, job title). Add a [Serper key](https://github.com/outreachmagic/lead-enrich/blob/main/README.md). |
-| Email waterfall finder | Find and verify work emails via trykitt, Icypeas, or MillionVerifier. Add keys per the [email finder README](https://github.com/outreachmagic/email-finder/blob/main/README.md). |
+| Email waterfall finder | Find and verify work emails via trykitt, Icypeas, MillionVerifier, or Scrubby. Add keys per the [email finder README](https://github.com/outreachmagic/email-finder/blob/main/README.md). |
 
 Provide companion API keys when you want lead research or email finding, or set them in the portal and they flow through automatically. The suite skips lookups for leads you already have.
 
@@ -98,7 +98,7 @@ https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTAL
 |-----|-----|-----------|
 | OM account | Portal access, billing, webhook URLs | Yes |
 | Sequencer webhooks | Smartlead, Instantly, HeyReach, etc. | At least one |
-| Companion API keys | Lead enrichment (Serper) and email waterfall finder (trykitt, Icypeas, MillionVerifier) | When you use those features |
+| Companion API keys | Lead enrichment (Serper) and email waterfall finder (trykitt, Icypeas, MillionVerifier, Scrubby) | When you use those features |
 
 Set keys in your agent's environment config or in the portal. They sync through automatically.
 

@@ -129,7 +129,7 @@ Once signed in at https://app.outreachmagic.io, open **Settings** to:
 - Connect sequencer tools (Smartlead, Instantly, Heyreach, PlusVibe, EmailBison, Prosp, MasterInbox, Calendly)
 - Enable email-finder providers (TryKitt, Icypeas) and set API keys
 - Enable lead research (Serper) and set your API key
-- Optionally add MillionVerifier for bulk email re-verification
+- Optionally add MillionVerifier or Scrubby for email verification
 
 API keys are stored in the portal and synced locally on `pipeline.py sync-secrets` (writes
 `<SKILLS>/outreachmagic/config/agent_secrets.env`). **Do not** ask users for raw API keys in chat or set shell env vars for interactive installs.

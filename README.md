@@ -90,7 +90,7 @@ https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTAL
 |-----|-----|-----------|
 | OM account | Portal access, billing, webhook URLs | Yes |
 | Sequencer webhooks | Smartlead, Instantly, HeyReach, etc. | At least one |
-| Companion API keys | Lead enrichment (Serper) and email waterfall finder (trykitt, Icypeas, MillionVerifier) | When you use those features |
+| Companion API keys | Lead enrichment (Serper) and email waterfall finder (trykitt, Icypeas, MillionVerifier, Scrubby) | When you use those features |
 
 Set keys in your agent's environment config or in the portal. They sync through automatically.
 
@@ -137,7 +137,7 @@ Two standalone skills ship from this repo. They work on their own with just API 
 
 | Skill | What it does | Repo |
 |-------|-------------|------|
-| Email finder | Waterfall find + verify work emails through trykitt, Icypeas, and MillionVerifier | [outreachmagic/email-finder](https://github.com/outreachmagic/email-finder) |
+| Email finder | Waterfall find + verify work emails through trykitt, Icypeas, MillionVerifier, and Scrubby | [outreachmagic/email-finder](https://github.com/outreachmagic/email-finder) |
 | Lead enrich | Research people by name and company through Serper.dev | [outreachmagic/lead-enrich](https://github.com/outreachmagic/lead-enrich) |
 
 The companion repos are read-only mirrors published by CI. Development happens here.

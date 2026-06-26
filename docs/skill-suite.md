@@ -52,7 +52,7 @@ Launch limits: **1,000 webhook events/mo free**, **Pro $9/mo** (50k webhook and 
 
 ## Naming: find vs verify
 
-- **`email_finder.py`** — find (`find`, `batch-find`) via trykitt / Icypeas; optional **`verify*`** via MillionVerifier.
+- **`email_finder.py`** — find (`find`, `batch-find`) via trykitt / Icypeas; optional **`verify*`** via MillionVerifier or Scrubby.
 - **`pipeline.py verify-email`** — writes verification status to SQLite (provider-agnostic).
 - **`pipeline.py verification-candidates`** — lists workspace emails due for re-verify (used by `verify-bulk`).
 

@@ -877,7 +877,22 @@ def _warn_duplicate_installs() -> None:
     print(f"     rm -rf '{duplicates[0]['path']}' && ln -s '{active}' '{duplicates[0]['path']}'", file=sys.stderr)
 
 def get_agent_key() -> Optional[str]:
-    return os.environ.get("OUTREACHMAGIC_AGENT_KEY") or load_config().get("agent_key")
+    key = os.environ.get("OUTREACHMAGIC_AGENT_KEY") or load_config().get("agent_key")
+    if key:
+        return key
+    # Fallback: check agent_secrets.env (written by sync-secrets or manually)
+    try:
+        secrets_path = get_agent_secrets_path()
+        if secrets_path.is_file():
+            for line in secrets_path.read_text().splitlines():
+                line = line.strip()
+                if line.startswith("OUTREACHMAGIC_AGENT_KEY="):
+                    val = line.split("=", 1)[1].strip("\"'")
+                    if val:
+                        return val
+    except (OSError, ValueError):
+        pass
+    return None
 
 def get_last_pull() -> Optional[str]:
     return load_config().get("last_pull")

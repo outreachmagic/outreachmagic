@@ -3,13 +3,23 @@ __pycache__/
 .env
 relay/
 dist/
+
+# Outreach Magic — working files (exports, imports, sheets, logs)
+# get_working_root() now defaults to data_root, but safety net just in case.
+/outreachmagic/
+
+# Outreach Magic — local database, config, and secrets
 skills/outreachmagic/config/
 skills/outreachmagic/databases/
 skills/outreachmagic/export/batch_sync.log
 skills/outreachmagic/export/*.log
 skills/outreachmagic/export/*.db
+*.pre_*.db
+
+# Outreach Magic — email finder / enrichment results
 *-email-results.json
 *-email-results.csv
+
 .wrangler/
 .agents/
 

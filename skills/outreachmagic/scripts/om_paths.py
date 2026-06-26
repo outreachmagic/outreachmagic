@@ -4,7 +4,12 @@ Skill install paths. Resolves data root from user choice (not directory scanning
 Resolution priority:
   1. OUTREACHMAGIC_DATA_ROOT env var (always wins — user explicit)
   2. ``data_root`` in config file (set interactively by ``init`` or ``install.sh``)
-  3. Script-location inference (legacy fallback)
+  3. ``project_root`` in config file (for working file directories)
+  4. Script-location inference (legacy fallback)
+
+``get_working_root()`` falls back to ``data_root`` instead of the current
+working directory, preventing imports/exports/logs from accidentally
+polluting a git checkout or other cwd-based directory.
 
 No automatic directory scanning. The user picks their agent directory once during
 setup, and that choice is persisted to ``config/outreachmagic_config.json``.
@@ -176,11 +181,16 @@ def _config_working_root() -> Optional[Path]:
 
 
 def get_working_root() -> Path:
-    """Root for outreachmagic/ working tree: config project_root or process cwd."""
+    """Root for outreachmagic/ working tree: config project_root or data_root.
+
+    Falls back to data_root instead of cwd to prevent working files (imports,
+    exports, sheets, logs) from accidentally polluting the current directory
+    (e.g. a git checkout).
+    """
     configured = _config_working_root()
     if configured:
         return configured.resolve()
-    return Path.cwd()
+    return get_data_root()
 
 
 def get_om_data_dir() -> Path:

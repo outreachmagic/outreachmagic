@@ -430,12 +430,14 @@ def sync_single_lead(
     # (POST, PUT, upsert all return 422). Write them as a note instead.
     add_emails = lead.get("additional_emails", [])
     if add_emails and platform == "ghl":
+        primary_email = lead.get("email", "")
         emails_str = ", ".join(add_emails)
         note_body = (
+            f"Primary email: {primary_email}\n"
             f"Alternate email(s): {emails_str}\n"
             "---\n"
-            "GHL API doesn't support writing these. "
-            "Add them manually in the contact editor.\n"
+            "note: GHL API doesn't support writing alternate emails. "
+            "Please add them manually in the contact editor.\n"
             f"----------\n"
             f"source=om_sync | ghl_contact_id={contact_id}"
         )

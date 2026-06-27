@@ -1118,14 +1118,51 @@ def test_ghl_push_events_note_format():
     note = _format_event_note({"event_type": "custom_event", "body_preview": "Some text"})
     assert "[Custom Event]" in note
 
+    # LinkedIn events — structured multi-line format (plain text)
+    note = _format_event_note({
+        "event_type": "linkedin_connect", "direction": "outbound",
+        "event": {"sender": "linkedin.com/in/treybuck"},
+        "receiver_linkedin_url": "linkedin.com/in/jasonceckert",
+        "body_preview": "sent a connection request",
+        "subject": "sent a connection request",
+    })
+    assert "LinkedIn Connect" in note
+    assert "Direction: outbound" in note
+    assert "Sender: linkedin.com/in/treybuck" in note
+    assert "Receiver: linkedin.com/in/jasonceckert" in note
+    assert "Subject: sent a connection request" in note
+    assert "Body:" in note
+    assert "sent a connection request" in note
+
+    note = _format_event_note({
+        "event_type": "linkedin_connection_accepted", "direction": "inbound",
+        "event": {"sender": "linkedin.com/in/treybuck"},
+        "receiver_linkedin_url": "linkedin.com/in/jasonceckert",
+        "body_preview": "accepted a connection request",
+    })
+    assert "LinkedIn Connection Accepted" in note
+    assert "Direction: inbound" in note
+
+    # LinkedIn message with no body → no Body: line
+    note = _format_event_note({
+        "event_type": "linkedin_message", "direction": "outbound",
+        "event": {"sender": "linkedin.com/in/treybuck"},
+        "receiver_linkedin_url": "",
+    })
+    assert "LinkedIn Message" in note
+    assert "Body:" not in note  # omitted when no body
+
 
 def test_ghl_push_events_note_truncation():
-    """Reply body preview is truncated to 200 chars."""
+    """Reply body preview is truncated to 200 chars in body field."""
     long_body = "A" * 300
     note = _format_event_note({
         "event_type": "reply", "body_preview": long_body,
     })
-    assert len(note) == 200
+    # Reply format now includes date header prefix, so body is truncated within
+    assert len(note) > 0
+    assert "A" * 200 in note
+    assert "A" * 201 not in note
 
 
 def test_ghl_push_events_empty_list():
@@ -1164,23 +1201,29 @@ def test_ghl_push_events_batch():
         result, _ = driver.push_events("c-1", "d-1", events)
         assert result == 3
         assert contact_get_called[0]
-        assert len(conv_bodies) == 2  # email_sent + reply → timeline
-        assert len(note_bodies) == 1  # meeting → note
+        assert len(conv_bodies) == 3  # email_sent + reply → inbound, meeting → InternalComment
+        assert len(note_bodies) == 0  # meeting_booked goes to InternalComment, not note
 
-        # Both go to /conversations/messages/inbound
+        # email_sent → /conversations/messages/inbound, type=Email
         assert conv_bodies[0]["type"] == "Email"
         assert conv_bodies[0]["contactId"] == "c-1"
         assert conv_bodies[0]["emailTo"] == "test@example.com"
-        assert conv_bodies[0]["emailFrom"] == ""
+        assert "emailFrom" not in conv_bodies[0]  # no fake outreach@…; sender empty
         assert "Hello" == conv_bodies[0]["subject"]
         assert "<p>Hi there</p>" == conv_bodies[0]["html"]
 
+        # reply → /conversations/messages/inbound, type=Email
         assert conv_bodies[1]["type"] == "Email"
         assert "(no subject)" == conv_bodies[1]["subject"]
         assert "<p>Thanks</p>" == conv_bodies[1]["html"]
+        assert conv_bodies[1]["emailTo"] == "test@example.com"  # contact email
+        assert "emailFrom" not in conv_bodies[1]  # no emailFrom when sender empty
 
-        # meeting_booked → note with deal info in footer
-        assert "ghl_deal_id=d-1" in note_bodies[0]["body"]
+        # meeting_booked → /conversations/messages, type=InternalComment
+        assert conv_bodies[2]["type"] == "InternalComment"
+        assert conv_bodies[2]["contactId"] == "c-1"
+        assert conv_bodies[2]["message"] == "[Meeting] Scheduled"
+        assert conv_bodies[2]["status"] == "delivered"
 
 
 def test_ghl_push_events_no_deal():
@@ -1205,7 +1248,7 @@ def test_ghl_push_events_no_deal():
 
 
 def test_ghl_push_events_partial_failure():
-    """Conversation API failures gracefully fall back to notes."""
+    """Conversation API failures on email events don't crash; reply falls through to internal comment."""
     driver = GhlDriver(_make_ghl_config())
     events = [
         {"event_type": "email_sent", "direction": "outbound", "subject": "Good", "body_preview": "Hi"},
@@ -1214,7 +1257,8 @@ def test_ghl_push_events_partial_failure():
     ]
 
     import urllib.error
-    fail_reply = [True]  # mutable flag for the "reply" event
+    # Track whether we've failed the reply event already (first (no subject) email)
+    _failed = [False]
 
     def side_effect(req, timeout=30):
         url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
@@ -1222,15 +1266,16 @@ def test_ghl_push_events_partial_failure():
             return _mock_response({"contact": {"email": "test@example.com"}})
         if req.data:
             b = json.loads(req.data)
-            if "/conversations/" in url and "[Reply]" in b.get("subject", "") and fail_reply[0]:
-                fail_reply[0] = False
+            if not _failed[0] and b.get("subject", "") == "(no subject)":
+                _failed[0] = True
                 raise urllib.error.HTTPError("https://test", 500, "Server Error", {}, None)
         return _mock_response({})
 
     with patch("urllib.request.urlopen", side_effect=side_effect):
         with patch("time.sleep"):
             result, _ = driver.push_events("c-1", "d-1", events)
-            # 2 email_sent succeed via conversations, reply fails → falls back to note = all 3
+            # 2 email_sent via inbound, reply email push fails → falls through
+            # to internal comment → all 3 succeed
             assert result == 3
 
 

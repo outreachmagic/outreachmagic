@@ -5,11 +5,14 @@ API: https://highlevel.stoplight.io/docs/integrations/
 
 from __future__ import annotations
 
+import datetime
 import json
+import sys
 import time
 import urllib.request
 import urllib.error
 import urllib.parse
+from zoneinfo import ZoneInfo
 
 BASE_URL = "https://services.leadconnectorhq.com"
 SAFE_RATE = (80, 10)  # 80 requests per 10 seconds (GHL safety headroom)
@@ -89,6 +92,8 @@ class GhlDriver:
             headers.pop("Content-Type", None)
         last_exc = None
 
+        body_snapshot = body
+
         for attempt in range(4):
             self.bucket.acquire()
 
@@ -97,8 +102,25 @@ class GhlDriver:
             try:
                 with urllib.request.urlopen(req) as resp:
                     raw = resp.read()
-                    return json.loads(raw) if raw else {}
+                    result = json.loads(raw) if raw else {}
+                    print(
+                        f"[ghl-api] {method} {path} -> 200 "
+                        f"body_keys={list(body_snapshot.keys()) if body_snapshot else 'none'} "
+                        f"resp_keys={list(result.keys()) if result else 'empty'}",
+                        file=sys.stderr,
+                    )
+                    return result
             except urllib.error.HTTPError as e:
+                try:
+                    err_body = e.read().decode("utf-8", errors="replace")
+                except Exception:
+                    err_body = ""
+                print(
+                    f"[ghl-api] {method} {path} -> {e.code} "
+                    f"body_keys={list(body_snapshot.keys()) if body_snapshot else 'none'} "
+                    f"error={err_body[:300]}",
+                    file=sys.stderr,
+                )
                 if e.code == 401:
                     raise AuthError("API key rejected")
                 if e.code == 429:
@@ -162,6 +184,10 @@ class GhlDriver:
             for om_key, cf_id in field_mapping.items():
                 val = lead_data.get(om_key)
                 if val and cf_id:
+                    # Ensure LinkedIn URLs carry a protocol so they render
+                    # as clickable links in GHL.
+                    if om_key in ("linkedin_url", "linkedin"):
+                        val = _ensure_url_protocol(str(val))
                     custom_fields.append({"id": cf_id, "key": om_key, "field_value": str(val)})
 
         if custom_fields:
@@ -251,6 +277,10 @@ class GhlDriver:
                 if val and cf_id:
                     if not overwrite_existing and (cf_id in existing_cf or om_key in existing_cf):
                         continue
+                    # Ensure LinkedIn URLs carry a protocol so they render
+                    # as clickable links in GHL.
+                    if om_key in ("linkedin_url", "linkedin"):
+                        val = _ensure_url_protocol(str(val))
                     custom_fields.append({"id": cf_id, "key": om_key, "field_value": str(val)})
 
         if custom_fields:
@@ -370,11 +400,9 @@ class GhlDriver:
 
         Email events (sent/reply) are posted as conversation messages so they
         appear in the contact's timeline with subject + body formatting.
-        All other events go to contact notes.
-
-        max_rowid_pushed tracks the highest event rowid that was successfully
-        synced, so the cursor only advances past events that actually landed.
-        Falls back to notes if Conversations API fails (missing scope, etc.).
+        LinkedIn and other non-email events are posted as internal comments
+        (type=InternalComment) so they show up in the timeline with an
+        "internal" badge.
         """
         count = 0
         max_rowid: int | None = None
@@ -383,6 +411,19 @@ class GhlDriver:
         for event in events:
             event_type = event.get("event_type", "")
             event_rowid = event.get("rowid")
+
+            payload_raw = event.get("payload_json") or "{}"
+            if isinstance(payload_raw, str):
+                try:
+                    payload = json.loads(payload_raw)
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+            else:
+                payload = payload_raw
+            for k, v in payload.items():
+                if k not in event:
+                    event[k] = v
+
             try:
                 if event_type in ("email_sent", "reply"):
                     if not contact_email:
@@ -397,24 +438,40 @@ class GhlDriver:
             except GhlError:
                 pass
 
-            # Fallback: push as note
+            # Non-email events: push as internal comment
             try:
-                note = _format_event_note(event)
-                if not note:
+                if self._push_internal_comment(contact_id, event):
+                    count += 1
+                    if event_rowid is not None and (max_rowid is None or event_rowid > max_rowid):
+                        max_rowid = event_rowid
                     continue
-                if deal_id:
-                    note = f"[Deal: {deal_id}] {note}"
-                self._request(
-                    "POST",
-                    f"/contacts/{contact_id}/notes",
-                    body={"body": note},
-                )
-                count += 1
-                if event_rowid is not None and (max_rowid is None or event_rowid > max_rowid):
-                    max_rowid = event_rowid
-            except Exception:
-                continue
+            except (AuthError, GhlError, NetworkError, RateLimitError):
+                pass
         return count, max_rowid
+
+    def _push_internal_comment(self, contact_id: str, event: dict) -> bool:
+        """Push a non-email event as an internal comment on the conversation timeline.
+
+        The original event time is embedded in the comment body as a human-readable
+        date header rather than the API ``date`` field, since GHL does not support
+        backdating InternalComment messages.
+        """
+        body = _format_event_note(event)
+        if not body:
+            return False
+
+        self._request(
+            "POST",
+            "/conversations/messages",
+            body={
+                "contactId": contact_id,
+                "type": "InternalComment",
+                "message": body,
+                "mentions": [],
+                "status": "delivered",
+            },
+        )
+        return True
 
     def _get_contact_email(self, contact_id: str) -> str:
         """Fetch a contact's email from GHL. Returns empty string on failure."""
@@ -427,52 +484,213 @@ class GhlDriver:
     def _push_email_event(self, contact_id: str, contact_email: str, event: dict) -> bool:
         """Push an email event to GHL as a conversation message. Returns True on success."""
         event_type = event.get("event_type", "")
-        subject = event.get("subject", "")
+        subject = event.get("subject", "") or ""
         body_text = event.get("body_preview") or event.get("body") or ""
+        sender = event.get("sender", "")
 
         if event_type == "email_sent":
-            direction = "OUTBOUND"
-            prefix = "Sent"
+            # Outbound: OM sent to contact
+            email_from = sender
         elif event_type == "reply":
-            direction = "INBOUND"
-            prefix = "Reply"
+            # Inbound: contact replied — sender is the contact who replied
+            email_from = sender
         else:
             return False
 
-        # Build body HTML (include prefix so timeline shows direction)
+        # Build body HTML
         body_html = body_text
         if body_text:
             body_html = f"<p>{body_text}</p>"
 
+        payload: dict = {
+            "contactId": contact_id,
+            "type": "Email",
+            "emailTo": contact_email,
+        }
+        if email_from:
+            payload["emailFrom"] = email_from
+        payload["subject"] = subject or "(no subject)"
+
+        # Include original timestamp so GHL orders by actual event time.
+        event_at = event.get("event_at") or event.get("timestamp") or ""
+        if event_at:
+            payload["date"] = event_at
+
+        if body_html:
+            payload["html"] = body_html
+
         self._request(
             "POST",
             "/conversations/messages/inbound",
-            body={
-                "contactId": contact_id,
-                "type": "Email",
-                "emailTo": contact_email,
-                "emailFrom": "Outreach Magic <outreach@outreachmagic.com>",
-                "subject": f"[{prefix}] {subject}" if subject else f"[{prefix}] (no subject)",
-                "html": body_html,
-            },
+            body=payload,
         )
         return True
 
+    # ------------------------------------------------------------------
+    # Sentiment tag management
+    # ------------------------------------------------------------------
+
+    SENTIMENT_TAG_PREFIX = "om_"
+    SENTIMENT_VALUES = {"positive", "negative", "autoreply", "invalid"}
+    _sentiment_tags_loaded: bool = False
+    _existing_tag_names: set[str] = set()
+
+    def _ensure_sentiment_tags(self) -> None:
+        """Idempotent: load existing tags once per driver instance."""
+        if self._sentiment_tags_loaded:
+            return
+        try:
+            resp = self._request("GET",
+                                 f"/locations/{self.location_id}/tags")
+            tags = resp.get("tags", [])
+            self._existing_tag_names = {t.get("name", "") for t in tags if isinstance(t, dict)}
+        except (GhlError, AuthError):
+            pass
+        self._sentiment_tags_loaded = True
+
+    def _create_tag(self, name: str) -> None:
+        """Create a new tag in GHL."""
+        self._request(
+            "POST",
+            f"/locations/{self.location_id}/tags",
+            body={"name": name},
+        )
+        self._existing_tag_names.add(name)
+
+    def list_location_tags(self) -> list[dict]:
+        """List all tags for the configured location. Returns list of tag dicts."""
+        resp = self._request("GET", f"/locations/{self.location_id}/tags")
+        return resp.get("tags", [])
+
+    def create_location_tag(self, name: str) -> str:
+        """Create a new tag. Returns the tag ID."""
+        resp = self._request(
+            "POST",
+            f"/locations/{self.location_id}/tags",
+            body={"name": name},
+        )
+        self._existing_tag_names.add(name)
+        return resp.get("id", "")
+
+    def sync_sentiment_tag(self, contact_id: str, sentiment: str) -> None:
+        """Sync a sentiment tag to the GHL contact.
+
+        Creates the tag if it doesn't exist, then applies it to the contact.
+        Empty sentiment is sent as ``(empty)`` so the timeline shows the
+        tag was cleared.
+        """
+        tag_name = f"{self.SENTIMENT_TAG_PREFIX}{sentiment or '(empty)'}"
+
+        self._ensure_sentiment_tags()
+        if tag_name not in self._existing_tag_names:
+            self._create_tag(tag_name)
+
+        self._request(
+            "PUT",
+            f"/contacts/{contact_id}/tags",
+            body={"tags": [tag_name]},
+        )
+
+
+def _ensure_url_protocol(value: str) -> str:
+    """Prepend ``https://`` to URL values that lack a protocol."""
+    if value and not value.startswith("http://") and not value.startswith("https://"):
+        return f"https://{value}"
+    return value
+
+
+def _format_event_date(iso_str: str) -> str:
+    """Convert ISO 8601 timestamp to a human-readable ET date header.
+
+    Returns something like ``Monday, June 2nd, 2026 9:23AM ET``,
+    or an empty string if the input cannot be parsed.
+    """
+    if not iso_str:
+        return ""
+    # Python 3.9 fromisoformat doesn't handle trailing Z
+    s = iso_str.replace("Z", "+00:00")
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return ""
+
+    # Convert to US Eastern time
+    try:
+        et = ZoneInfo("America/New_York")
+        dt_et = dt.astimezone(et)
+    except Exception:
+        dt_et = dt
+
+    day_name = dt_et.strftime("%A")
+    month_name = dt_et.strftime("%B")
+    day = dt_et.day
+    year = dt_et.year
+    minute = dt_et.strftime("%M")
+
+    hour = dt_et.hour
+    ampm = "AM" if hour < 12 else "PM"
+    hour12 = hour % 12
+    if hour12 == 0:
+        hour12 = 12
+
+    # Day ordinal suffix
+    if 4 <= day <= 20 or 24 <= day <= 30:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+
+    return f"{day_name}, {month_name} {day}{suffix}, {year} {hour12}:{minute}{ampm} ET"
+
 
 def _format_event_note(event: dict) -> str:
-    """Format an OM event as a GHL note with prefix and detail."""
+    """Format an OM event as a GHL internal-comment body."""
     event_type = event.get("event_type", "unknown")
     body = event.get("body_preview") or event.get("body") or ""
     subject = event.get("subject") or ""
+    direction = event.get("direction", "")
+
+    # -- LinkedIn events: structured multi-line format --
+    if event_type.startswith("linkedin_"):
+        # linkedin_connect → LinkedIn Connect
+        label = event_type.replace("_", " ").title().replace("Linkedin", "LinkedIn")
+        payload_event = event.get("event", {})
+        sender = payload_event.get("sender", "") if isinstance(payload_event, dict) else ""
+        receiver = event.get("receiver_linkedin_url", "")
+
+        # Prepend date header
+        event_at = event.get("event_at") or event.get("timestamp") or ""
+        date_str = _format_event_date(event_at)
+
+        lines = []
+        if date_str:
+            lines.append(date_str)
+            lines.append("")
+        lines.append(label)
+        lines.append(f"Direction: {direction}")
+        if sender:
+            lines.append(f"Sender: {sender}")
+        if receiver:
+            lines.append(f"Receiver: {receiver}")
+        if subject:
+            lines.append(f"Subject: {subject}")
+        if body:
+            lines.append(f"Body:\n{body[:2000]}")
+        lines.append("---")
+
+        return "\n".join(lines)
+
+    # -- Standard events (email, stage_change, etc.) --
+    date_str = _format_event_date(event.get("event_at") or event.get("timestamp") or "")
+    prefix = f"{date_str}\n" if date_str else ""
 
     prefix_map = {
-        "email_sent": f"[Sent] {subject}",
-        "reply": f"[Replied] {body[:200] if body else subject}",
-        "bounce": "[Bounced]",
-        "stage_change": f"[Stage] {event.get('old_stage', '')} → {event.get('new_stage', '')}",
-        "meeting_booked": f"[Meeting] {body[:200] if body else 'Scheduled'}",
-        "interested": "[Interested]",
-        "not_interested": "[Not Interested]",
+        "email_sent": f"{prefix}{subject or '(no subject)'}",
+        "reply": f"{prefix}{body[:200] if body else subject or '(no subject)'}",
+        "bounce": f"{prefix}[Bounced]",
+        "stage_change": f"{prefix}[Stage] {event.get('old_stage', '')} → {event.get('new_stage', '')}",
+        "meeting_booked": f"{prefix}[Meeting] {body[:200] if body else 'Scheduled'}",
+        "interested": f"{prefix}[Interested]",
+        "not_interested": f"{prefix}[Not Interested]",
     }
 
     if event_type in prefix_map:
@@ -480,4 +698,4 @@ def _format_event_note(event: dict) -> str:
 
     title = event_type.replace("_", " ").title()
     detail = f": {body[:200]}" if body else ""
-    return f"[{title}]{detail}"
+    return f"{prefix}[{title}]{detail}"

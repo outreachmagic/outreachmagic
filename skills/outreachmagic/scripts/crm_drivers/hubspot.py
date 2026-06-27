@@ -14,6 +14,13 @@ import urllib.parse
 SAFE_RATE = (400, 10)  # 400 requests per 10 seconds (HubSpot allows more)
 
 
+def _ensure_url_protocol(value: str) -> str:
+    """Prepend ``https://`` to URL values that lack a protocol."""
+    if value and not value.startswith("http://") and not value.startswith("https://"):
+        return f"https://{value}"
+    return value
+
+
 class AuthError(Exception):
     """401 Unauthorized — API key invalid."""
 
@@ -176,7 +183,7 @@ class HubspotDriver:
             properties["jobtitle"] = str(lead_data["title"])
 
         if lead_data.get("linkedin_url"):
-            properties["linkedinbio"] = str(lead_data["linkedin_url"])
+            properties["linkedinbio"] = _ensure_url_protocol(str(lead_data["linkedin_url"]))
 
         if lead_data.get("industry"):
             properties["industry"] = str(lead_data["industry"])
@@ -236,7 +243,9 @@ class HubspotDriver:
                     continue
             elif not overwrite_existing and existing_props.get(hs_key):
                 continue
-            properties[hs_key] = str(val)
+            properties[hs_key] = (
+                _ensure_url_protocol(str(val)) if om_key == "linkedin_url" else str(val)
+            )
 
         # company_name → company
         company_val = lead_data.get("company_name") or lead_data.get("company")

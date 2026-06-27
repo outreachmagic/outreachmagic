@@ -568,6 +568,10 @@ def sync_workspace(
                     conn, ws_id, lead_id_val, last_event_id,
                 )
                 if events:
+                    # Inject lead's linkedin URL into events for note formatting
+                    receiver_li = lead.get("linkedin_url", "")
+                    for ev in events:
+                        ev["receiver_linkedin_url"] = receiver_li
                     try:
                         count, max_pushed = driver.push_events(contact_id, deal_id, events)
                         results["events_pushed"] += count

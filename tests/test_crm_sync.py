@@ -1179,8 +1179,8 @@ def test_ghl_push_events_batch():
         assert "[Reply]" in conv_bodies[1]["subject"]
         assert "<p>Thanks</p>" == conv_bodies[1]["html"]
 
-        # meeting_booked → note with deal prefix
-        assert "[Deal: d-1]" in note_bodies[0]["body"]
+        # meeting_booked → note with deal info in footer
+        assert "ghl_deal_id=d-1" in note_bodies[0]["body"]
 
 
 def test_ghl_push_events_no_deal():
@@ -1433,7 +1433,7 @@ def test_hubspot_create_contact_all_fields():
         "company_name": "Acme Corp",
         "title": "CEO",
         "industry": "SaaS",
-        "headcount": "1-10",
+        "headcount_numeric": 30,
         "linkedin_url": "https://linkedin.com/in/jane",
         "company_domain": "acme.com",
     }
@@ -1459,7 +1459,7 @@ def test_hubspot_create_contact_all_fields():
     assert props["lastname"] == "Doe"
     assert props["jobtitle"] == "CEO"
     assert props["industry"] == "SaaS"
-    assert props["numemployees"] == "1-10"
+    assert props["numemployees"] == "30"
     assert props["linkedinbio"] == "https://linkedin.com/in/jane"
     assert props["website"] == "acme.com"
     assert props["company"] == "Acme Corp"

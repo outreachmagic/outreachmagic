@@ -507,11 +507,13 @@ class GhlDriver:
         )
 
         if event_type == "email_sent":
-            email_from = sender
+            email_from = sender or "Outreach Magic <outreach@outreachmagic.com>"
             email_to = contact_email
+            timeline_subject = f"[Sent] {subject}"
         elif event_type in ("email_reply", "reply"):
             email_from = contact_email
             email_to = sender
+            timeline_subject = f"[Reply] {subject}"
         else:
             return False
 
@@ -539,7 +541,7 @@ class GhlDriver:
                 "type": "Email",
                 "emailTo": email_to,
                 "emailFrom": email_from,
-                "subject": subject or "(no subject)",
+                "subject": timeline_subject or "(no subject)",
                 "html": body_html,
             },
         )
@@ -568,21 +570,21 @@ def _format_event_note(event: dict) -> str:
     subject = event.get("subject") or ""
 
     prefix_map = {
-        "email_sent": f"Sent: {subject}",
-        "reply": f"Replied: {body[:200] if body else subject}",
-        "bounce": "Bounced",
-        "stage_change": f"Stage: {event.get('old_stage', '')} \u2192 {event.get('new_stage', '')}",
-        "meeting_booked": f"Meeting: {body[:200] if body else 'Scheduled'}",
-        "interested": "Interested",
-        "not_interested": "Not Interested",
+        "email_sent": f"[Sent] {subject}",
+        "reply": f"[Replied] {body[:200] if body else subject}",
+        "bounce": "[Bounced]",
+        "stage_change": f"[Stage] {event.get('old_stage', '')} \u2192 {event.get('new_stage', '')}",
+        "meeting_booked": f"[Meeting] {body[:200] if body else 'Scheduled'}",
+        "interested": "[Interested]",
+        "not_interested": "[Not Interested]",
     }
 
     if event_type in prefix_map:
         return prefix_map[event_type]
 
     title = event_type.replace("_", " ").title()
-    detail = f": {body[:200]}" if body else ""
-    return f"{title}{detail}"
+    detail = f" {body[:200]}" if body else ""
+    return f"[{title}]{detail}"
 
 
 def _extract_event_context_lines(event: dict) -> str:

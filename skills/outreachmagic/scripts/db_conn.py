@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 import sys
 
+from typing import Optional, Union
+
 from om_paths import get_db_path
 
 # Saved when apply_bulk_pull_pragmas runs (restore on end_bulk_pull_session).
@@ -22,7 +24,7 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
-def database_has_schema(path: sqlite3.Connection | str | None = None) -> bool:
+def database_has_schema(path: Union[sqlite3.Connection, Optional[str]] = None) -> bool:
     """True when the database file exists and has core outreachmagic tables."""
     if path is None:
         db_path = get_db_path()

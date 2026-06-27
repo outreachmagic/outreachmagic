@@ -5,6 +5,8 @@ API: https://highlevel.stoplight.io/docs/integrations/
 
 from __future__ import annotations
 
+from typing import Optional
+
 import json
 import re
 import time
@@ -126,7 +128,7 @@ class GhlDriver:
     # Contact operations
     # ------------------------------------------------------------------
 
-    def lookup_contact(self, email: str) -> str | None:
+    def lookup_contact(self, email: str) -> Optional[str]:
         """Look up a contact by email. Returns contactId or None."""
         try:
             resp = self._request("GET", "/contacts/lookup",
@@ -324,7 +326,7 @@ class GhlDriver:
     # Company operations
     # ------------------------------------------------------------------
 
-    def _search_business_by_name(self, name: str) -> str | None:
+    def _search_business_by_name(self, name: str) -> Optional[str]:
         """Search for a GHL business by name. Returns businessId or None."""
         try:
             response = self._request(
@@ -341,7 +343,7 @@ class GhlDriver:
 
     def upsert_company(
         self, workspace_id: str, lead_data: dict, entity: dict | None = None,
-    ) -> str | None:
+    ) -> Optional[str]:
         """Create or find a GHL business (company). Returns businessId or None."""
         company_name = (
             lead_data.get("company_name")

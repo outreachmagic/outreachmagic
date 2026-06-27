@@ -134,7 +134,7 @@ def load_driver(platform: str, config: dict):
 # Lead selection
 # ---------------------------------------------------------------------------
 
-def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
+def select_leads(conn, workspace_id: str, last_sync_at: Optional[str] = None,
                  lead_id: int | None = None) -> list[dict]:
     """Select leads ready for CRM sync from a workspace.
 
@@ -296,7 +296,7 @@ def sync_company(
     if not company_name:
         return ""
 
-    entity_co_id: str | None = None
+    entity_co_id: Optional[str] = None
     if entity:
         try:
             entity_co_id = entity["crm_company_id"]
@@ -418,6 +418,21 @@ def sync_single_lead(
                 )
             except Exception:
                 pass  # Non-fatal if entity_map write fails
+            # Bump lead/workspace timestamps so the next sync pushes
+            # the partial CRM mapping to the relay snapshot.
+            try:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    "UPDATE leads SET updated_at = ? WHERE id = ?",
+                    (now_iso, lead_id_val),
+                )
+                conn.execute(
+                    """UPDATE workspace_leads SET updated_at = ?
+                       WHERE workspace_id = ? AND lead_id = ?""",
+                    (now_iso, ws_id, lead_id_val),
+                )
+            except Exception:
+                pass
 
     # -- Contact --
     contact_id = entity["crm_contact_id"] if entity else None
@@ -508,6 +523,21 @@ def sync_single_lead(
             (ws_id, lead_id_val, platform, contact_id, deal_id,
              company_id or None, new_hash),
         )
+        # Bump lead/workspace timestamps so the next sync pushes
+        # the CRM entity map to the relay snapshot.
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "UPDATE leads SET updated_at = ? WHERE id = ?",
+                (now_iso, lead_id_val),
+            )
+            conn.execute(
+                """UPDATE workspace_leads SET updated_at = ?
+                   WHERE workspace_id = ? AND lead_id = ?""",
+                (now_iso, ws_id, lead_id_val),
+            )
+        except Exception:
+            pass
 
     return (contact_id, deal_id, c_action, d_action)
 

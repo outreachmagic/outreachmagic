@@ -9,7 +9,7 @@ import sys
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 T = TypeVar("T")
 
@@ -81,7 +81,7 @@ def record_key_usage(
     provider: str,
     slot: int,
     success: bool,
-    error: str | None = None,
+    error: Optional[str] = None,
 ) -> None:
     path = status_file_path()
     data = load_key_status()
@@ -253,7 +253,7 @@ def build_api_key_status_push_payload(client_id: str) -> dict[str, Any]:
 def maybe_push_api_key_status_to_cloud(
     *,
     load_config_fn: Callable[[], dict],
-    get_agent_key_fn: Callable[[], str | None],
+    get_agent_key_fn: Callable[[], Optional[str]],
     get_client_id_fn: Callable[[], str],
     push_fn: Callable[[str, str, dict[str, Any]], dict],
     quiet: bool = True,

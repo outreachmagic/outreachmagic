@@ -5,6 +5,8 @@ API: https://developers.hubspot.com/docs/api/crm/
 
 from __future__ import annotations
 
+from typing import Optional
+
 import json
 import time
 import urllib.request
@@ -123,7 +125,7 @@ class HubspotDriver:
     # Contact operations
     # ------------------------------------------------------------------
 
-    def search_contact(self, email: str) -> str | None:
+    def search_contact(self, email: str) -> Optional[str]:
         """Search HubSpot contacts by email. Returns contactId or None."""
         body = {
             "filterGroups": [
@@ -152,7 +154,7 @@ class HubspotDriver:
         except HubspotError:
             return None
 
-    def lookup_contact(self, email: str) -> str | None:
+    def lookup_contact(self, email: str) -> Optional[str]:
         """Look up a contact by email. Returns contactId or None."""
         return self.search_contact(email)
 
@@ -283,7 +285,7 @@ class HubspotDriver:
 
     def upsert_company(
         self, workspace_id: str, lead_data: dict, entity: dict | None = None,
-    ) -> str | None:
+    ) -> Optional[str]:
         """Create or find a HubSpot company. Returns companyId or None."""
         company_name = (
             lead_data.get("company_name")
@@ -312,7 +314,7 @@ class HubspotDriver:
     # Deal operations
     # ------------------------------------------------------------------
 
-    def _search_deal_by_contact(self, contact_id: str, pipeline_id: str) -> str | None:
+    def _search_deal_by_contact(self, contact_id: str, pipeline_id: str) -> Optional[str]:
         """Search for an existing deal associated with this contact+pipeline."""
         body = {
             "filterGroups": [

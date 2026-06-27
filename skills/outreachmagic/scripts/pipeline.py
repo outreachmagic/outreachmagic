@@ -10473,8 +10473,8 @@ CRM_SYNCABLE_STATUSES = frozenset({"interested", "proposal", "won", "lost"})
 def _maybe_trigger_crm_sync(
     *,
     lead_id: int,
-    stage: str | None = None,
-    workspace_slug: str | None = None,
+    stage: Optional[str] = None,
+    workspace_slug: Optional[str] = None,
 ) -> None:
     """If --crm-sync was passed and conditions are met, fire crm_sync.py as a subprocess."""
     if stage is not None and stage not in CRM_SYNCABLE_STATUSES:

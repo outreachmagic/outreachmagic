@@ -355,4 +355,72 @@ CREATE INDEX IF NOT EXISTS idx_bounce_events_lead ON bounce_events(lead_id);
 CREATE INDEX IF NOT EXISTS idx_bounce_events_platform ON bounce_events(platform, bounce_type);
 CREATE INDEX IF NOT EXISTS idx_bounce_events_sender ON bounce_events(sender_email);
 CREATE INDEX IF NOT EXISTS idx_bounce_events_seen ON bounce_events(last_seen_at DESC);
+
+-- CRM sync tables (Phase 0)
+CREATE TABLE IF NOT EXISTS crm_workspace_config (
+    workspace_id         TEXT NOT NULL,
+    platform             TEXT NOT NULL,
+    api_key              TEXT NOT NULL,
+    location_id          TEXT,
+    pipeline_id          TEXT,
+    stage_mapping        TEXT NOT NULL DEFAULT '{}',
+    contact_field_mapping TEXT,
+    overwrite_existing   INTEGER NOT NULL DEFAULT 0,
+    enabled              INTEGER NOT NULL DEFAULT 1,
+    updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (workspace_id, platform),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS crm_entity_map (
+    workspace_id         TEXT NOT NULL,
+    lead_id              INTEGER NOT NULL,
+    platform             TEXT NOT NULL,
+    crm_contact_id       TEXT,
+    crm_deal_id          TEXT,
+    crm_company_id       TEXT,
+    crm_owner_id         TEXT,
+    last_synced_at       TEXT,
+    last_event_id_synced TEXT,
+    last_sync_status     TEXT NOT NULL DEFAULT 'pending',
+    sync_error           TEXT,
+    sync_hash            TEXT,
+    cloud_pending        INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (workspace_id, lead_id, platform),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+    FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS crm_sync_log (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id         TEXT NOT NULL,
+    platform             TEXT NOT NULL,
+    started_at           TEXT NOT NULL,
+    completed_at         TEXT,
+    leads_checked        INTEGER NOT NULL DEFAULT 0,
+    contacts_created     INTEGER NOT NULL DEFAULT 0,
+    contacts_updated     INTEGER NOT NULL DEFAULT 0,
+    opportunities_created INTEGER NOT NULL DEFAULT 0,
+    opportunities_updated INTEGER NOT NULL DEFAULT 0,
+    events_pushed        INTEGER NOT NULL DEFAULT 0,
+    skipped              INTEGER NOT NULL DEFAULT 0,
+    errors               INTEGER NOT NULL DEFAULT 0,
+    error_details        TEXT,
+    status               TEXT NOT NULL DEFAULT 'in_progress',
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_crm_sync_log_ws ON crm_sync_log(workspace_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS lead_emails (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    email           TEXT NOT NULL,
+    is_primary      INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_lead_emails_lead ON lead_emails(lead_id);
+CREATE INDEX IF NOT EXISTS idx_lead_emails_email ON lead_emails(email);
 """

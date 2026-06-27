@@ -6,6 +6,7 @@ API: https://highlevel.stoplight.io/docs/integrations/
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.request
 import urllib.error
@@ -439,7 +440,7 @@ class GhlDriver:
             event_type = event.get("event_type", "")
             event_rowid = event.get("rowid")
             try:
-                if event_type in ("email_sent", "reply"):
+                if event_type in ("email_sent", "email_reply", "reply"):
                     if not contact_email:
                         contact_email = self._get_contact_email(contact_id)
                     if self._push_email_event(contact_id, contact_email, event):
@@ -482,24 +483,53 @@ class GhlDriver:
             return ""
 
     def _push_email_event(self, contact_id: str, contact_email: str, event: dict) -> bool:
-        """Push an email event to GHL as a conversation message. Returns True on success."""
+        """Push an email event to GHL conversation timeline without sending.
+
+        Uses POST /conversations/messages/inbound for both outbound sends and
+        inbound replies. This logs the message in the timeline without actually
+        dispatching an email.
+        """
         event_type = event.get("event_type", "")
         subject = event.get("subject", "")
-        body_text = event.get("body_preview") or event.get("body") or ""
+        sender = event.get("sender", "")
+
+        # Use full body from metadata if available, fall back to body_preview
+        meta_raw = event.get("metadata_json") or "{}"
+        try:
+            meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        body_text = (
+            meta.get("body") 
+            or event.get("body") 
+            or event.get("body_preview") 
+            or ""
+        )
 
         if event_type == "email_sent":
-            direction = "OUTBOUND"
-            prefix = "Sent"
-        elif event_type == "reply":
-            direction = "INBOUND"
-            prefix = "Reply"
+            email_from = sender
+            email_to = contact_email
+        elif event_type in ("email_reply", "reply"):
+            email_from = contact_email
+            email_to = sender
         else:
             return False
 
-        # Build body HTML (include prefix so timeline shows direction)
-        body_html = body_text
-        if body_text:
-            body_html = f"<p>{body_text}</p>"
+        # Convert plain text to HTML for GHL timeline rendering.
+        # If body is already HTML (starts with <), pass through as-is.
+        body_html = body_text[:5000]
+        if body_html:
+            if not body_html.startswith("<"):
+                # Split on double newlines for paragraph breaks, convert single
+                # newlines within a paragraph to <br>
+                paragraphs = re.split(r"\n{2,}", body_html)
+                escaped = []
+                for para in paragraphs:
+                    para = para.strip()
+                    if para:
+                        para = para.replace("\n", "<br>")
+                        escaped.append(f"<p>{para}</p>")
+                body_html = "\n".join(escaped)
 
         self._request(
             "POST",
@@ -507,9 +537,9 @@ class GhlDriver:
             body={
                 "contactId": contact_id,
                 "type": "Email",
-                "emailTo": contact_email,
-                "emailFrom": "Outreach Magic <outreach@outreachmagic.com>",
-                "subject": f"[{prefix}] {subject}" if subject else f"[{prefix}] (no subject)",
+                "emailTo": email_to,
+                "emailFrom": email_from,
+                "subject": subject or "(no subject)",
                 "html": body_html,
             },
         )

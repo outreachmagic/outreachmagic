@@ -160,6 +160,7 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
     query = f"""
         SELECT wl.lead_id, wl.status, wl.updated_at,
                l.name, l.email, l.title, l.industry, l.headcount,
+               l.headcount_numeric,
                l.linkedin_url, l.company,
                l.location_city, l.location_state, l.location_country,
                l.original_source, l.original_source_detail,
@@ -208,10 +209,11 @@ def format_event_for_crm(event: dict) -> dict:
     """
     event_type = event.get("event_type", "unknown")
 
-    if event_type in ("email_sent", "reply"):
+    if event_type in ("email_sent", "email_reply", "reply"):
         direction = event.get("direction", "inbound")
         title = event.get("subject", event.get("body_preview", ""))
-        if event_type == "reply" and "Replied" not in title:
+        if event_type in ("email_reply", "reply") and "Replied" not in title:
+            title = "Replied: " + title
             title = "Replied: " + title
         return {
             "crm_type": "email",
@@ -233,10 +235,32 @@ def format_event_for_crm(event: dict) -> dict:
 
 def collect_pending_events(conn, workspace_id: str, lead_id: int,
                            last_event_id: int | None = None) -> list[dict]:
-    """Collect unsynced events for a lead."""
+    """Collect unsynced events for a lead. Flattens payload_json to top level."""
+    import json
+
+    def _flatten(row: dict) -> dict:
+        """Parse payload_json and merge event fields to top level."""
+        result = dict(row)
+        raw = result.pop("payload_json", "{}")
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        # Merge top-level payload fields
+        for k, v in payload.items():
+            if k not in result or not result[k]:
+                result[k] = v
+        # Merge nested event fields (e.g. payload.event.sender)
+        event_obj = payload.get("event", {})
+        if isinstance(event_obj, dict):
+            for k, v in event_obj.items():
+                if k not in result or not result[k]:
+                    result[k] = v
+        return result
+
     if last_event_id is not None:
         return [
-            dict(r)
+            _flatten(dict(r))
             for r in conn.execute(
                 """SELECT rowid, * FROM workspace_lead_events
                    WHERE workspace_id = ? AND lead_id = ?
@@ -248,7 +272,7 @@ def collect_pending_events(conn, workspace_id: str, lead_id: int,
         ]
     else:
         return [
-            dict(r)
+            _flatten(dict(r))
             for r in conn.execute(
                 """SELECT rowid, * FROM workspace_lead_events
                    WHERE workspace_id = ? AND lead_id = ?
@@ -314,6 +338,7 @@ def _build_sync_hash(lead: dict, contact_field_mapping: dict | None,
         lead.get("title", ""),
         lead.get("industry", ""),
         lead.get("headcount", ""),
+        lead.get("headcount_numeric", ""),
         lead.get("linkedin_url", ""),
         lead.get("company_name", ""),
         lead.get("company_domain", ""),

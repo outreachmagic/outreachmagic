@@ -1794,10 +1794,21 @@ def parse_tags_value(val) -> list[str]:
 
 
 def parse_headcount_numeric(raw: Optional[str]) -> Optional[int]:
-    """Extract a numeric midpoint from headcount strings like '11-50' or '500+'."""
+    """Extract a numeric midpoint from headcount strings like '11-50' or '500+'.
+
+    Handles:
+      - Range formats: '2-10', '11-50', '201-500'  → midpoint
+      - Exact figures: '6', '9'                       → as-is
+      - Plus formats: '500+', '1000+'                → lower bound
+      - Text labels:  'myself only', 'just me'        → 1
+    """
     if not raw:
         return None
-    text = re.sub(r'[^\d\-+]', '', str(raw).strip())
+    s = str(raw).strip().lower()
+    # Handle text-only labels
+    if s in ("myself only", "just me", "self employed", "1"):
+        return 1
+    text = re.sub(r'[^\d\-+]', '', s)
     if not text:
         return None
     range_match = re.match(r'(\d+)-(\d+)', text)

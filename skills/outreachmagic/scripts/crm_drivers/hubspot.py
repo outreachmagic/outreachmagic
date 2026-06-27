@@ -181,8 +181,8 @@ class HubspotDriver:
         if lead_data.get("industry"):
             properties["industry"] = str(lead_data["industry"])
 
-        if lead_data.get("headcount"):
-            properties["numemployees"] = str(lead_data["headcount"])
+        if lead_data.get("headcount_numeric"):
+            properties["numemployees"] = str(lead_data["headcount_numeric"])
 
         if lead_data.get("company_domain"):
             properties["website"] = str(lead_data["company_domain"])
@@ -212,7 +212,7 @@ class HubspotDriver:
             "title": "jobtitle",
             "linkedin_url": "linkedinbio",
             "industry": "industry",
-            "headcount": "numemployees",
+            "headcount_numeric": "numemployees",
             "company_domain": "website",
         }
 

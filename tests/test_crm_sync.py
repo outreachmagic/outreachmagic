@@ -1171,7 +1171,7 @@ def test_ghl_push_events_batch():
         assert conv_bodies[0]["type"] == "Email"
         assert conv_bodies[0]["contactId"] == "c-1"
         assert conv_bodies[0]["emailTo"] == "test@example.com"
-        assert conv_bodies[0]["emailFrom"] == "Outreach Magic <outreach@outreachmagic.com>"
+        assert conv_bodies[0]["emailFrom"] == ""
         assert "[Sent] Hello" == conv_bodies[0]["subject"]
         assert "<p>Hi there</p>" == conv_bodies[0]["html"]
 

@@ -507,7 +507,7 @@ class GhlDriver:
         )
 
         if event_type == "email_sent":
-            email_from = sender or "Outreach Magic <outreach@outreachmagic.com>"
+            email_from = sender
             email_to = contact_email
             timeline_subject = f"[Sent] {subject}"
         elif event_type in ("email_reply", "reply"):

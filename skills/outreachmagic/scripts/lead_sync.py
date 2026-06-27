@@ -219,6 +219,17 @@ def _assemble_lead_workspace_sync_payload(
     attach_activity_to_sync_payload(
         payload, conn, lead_id, workspace_id=ws_id, wl_row=wl_row,
     )
+    # Include CRM entity map so fresh-install pulls restore GHL/HubSpot linkage
+    crm_rows = conn.execute(
+        """SELECT platform, crm_contact_id, crm_deal_id, crm_company_id,
+                  crm_owner_id, last_synced_at, last_event_id_synced,
+                  last_sync_status, sync_hash
+           FROM crm_entity_map
+           WHERE workspace_id = ? AND lead_id = ?""",
+        (ws_id, lead_id),
+    ).fetchall()
+    if crm_rows:
+        payload["crm_entity_map"] = [dict(r) for r in crm_rows]
     return payload
 
 
@@ -823,6 +834,30 @@ def apply_agent_lead_workspace_payload(
         apply_activity_sync_payload(
             conn, lead_id, workspace_id, activity, merge=True,
         )
+    crm_map = payload.get("crm_entity_map")
+    if crm_map:
+        for entry in crm_map:
+            platform = entry.get("platform", "")
+            if not platform:
+                continue
+            conn.execute(
+                """INSERT OR REPLACE INTO crm_entity_map
+                   (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
+                    crm_company_id, crm_owner_id, last_synced_at, last_event_id_synced,
+                    last_sync_status, sync_hash, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (
+                    workspace_id, lead_id, platform,
+                    entry.get("crm_contact_id"),
+                    entry.get("crm_deal_id"),
+                    entry.get("crm_company_id"),
+                    entry.get("crm_owner_id"),
+                    entry.get("last_synced_at"),
+                    entry.get("last_event_id_synced"),
+                    entry.get("last_sync_status", "synced"),
+                    entry.get("sync_hash"),
+                ),
+            )
     if own_conn:
         conn.commit()
         conn.close()

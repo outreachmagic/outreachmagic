@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Pre-push hook: ensure update-manifest.json hashes are in sync with scripts.
+#
+# Runs `make manifests` and checks if any update-manifest.json differs from
+# what's staged/committed.  Aborts the push if they're stale.
+#
+# Install with:
+#   git config core.hooksPath .githooks
+# or symlink into .git/hooks/pre-push.
+
+set -euo pipefail
+
+MANIFEST_FILES=(
+    skills/outreachmagic/update-manifest.json
+    skills/email-finder/update-manifest.json
+    skills/lead-enrich/update-manifest.json
+)
+
+# Regenerate manifests
+make manifests >/dev/null 2>&1
+
+# Check if any manifest file has unstaged changes
+DIRTY=0
+for mf in "${MANIFEST_FILES[@]}"; do
+    if ! git diff --quiet -- "$mf"; then
+        echo "❌ Manifest out of date: $mf"
+        echo "   Regenerated hashes differ from what's committed."
+        echo "   Run:  git add $mf && git commit -m \"update manifest\""
+        DIRTY=1
+    fi
+done
+
+if [ "$DIRTY" -ne 0 ]; then
+    echo ""
+    echo "Push aborted.  Commit the updated manifest(s) and try again."
+    exit 1
+fi
+
+exit 0

@@ -859,6 +859,19 @@ def save_config(cfg: dict):
     _chmod_best_effort(path, 0o600)
 
 
+def set_last_sync(timestamp: str) -> None:
+    """Set the last sync timestamp in config."""
+    cfg = load_config()
+    cfg["last_sync"] = timestamp
+    save_config(cfg)
+
+
+def get_last_sync() -> str | None:
+    """Get the last sync timestamp from config, or None."""
+    cfg = load_config()
+    return cfg.get("last_sync")
+
+
 def _warn_duplicate_installs() -> None:
     """Print a warning to stderr if duplicate skill installations are detected."""
     duplicates = check_duplicate_installs()
@@ -1563,7 +1576,7 @@ def mark_all_lead_snapshots_pending(conn: Optional[sqlite3.Connection] = None) -
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
-    conn.execute("UPDATE leads SET cloud_pending = 1")
+    conn.execute("UPDATE leads SET cloud_pending = 1, updated_at = datetime('now')")
     conn.execute("UPDATE workspace_leads SET cloud_pending = 1")
     if own_conn:
         conn.commit()

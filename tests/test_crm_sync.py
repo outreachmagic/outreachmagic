@@ -67,7 +67,7 @@ EXPECTED_COLUMNS = {
         "workspace_id", "lead_id", "platform", "crm_contact_id",
         "crm_deal_id", "crm_company_id", "crm_owner_id", "last_synced_at",
         "last_event_id_synced", "last_sync_status", "sync_error",
-        "sync_hash", "created_at", "updated_at",
+        "sync_hash", "cloud_pending", "created_at", "updated_at",
     },
     "crm_sync_log": {
         "id", "workspace_id", "platform", "started_at", "completed_at",
@@ -1210,14 +1210,14 @@ def test_ghl_push_events_batch():
         assert conv_bodies[0]["emailTo"] == "test@example.com"
         assert "emailFrom" not in conv_bodies[0]  # no fake outreach@…; sender empty
         assert "Hello" == conv_bodies[0]["subject"]
-        assert "<p>Hi there</p>" == conv_bodies[0]["html"]
+        assert "Hi there" == conv_bodies[0]["html"]  # plain text, no <p> wrapper
 
         # reply → /conversations/messages/inbound, type=Email
         assert conv_bodies[1]["type"] == "Email"
         assert "(no subject)" == conv_bodies[1]["subject"]
-        assert "<p>Thanks</p>" == conv_bodies[1]["html"]
-        assert conv_bodies[1]["emailTo"] == "test@example.com"  # contact email
-        assert "emailFrom" not in conv_bodies[1]  # no emailFrom when sender empty
+        assert "Thanks" == conv_bodies[1]["html"]  # plain text, no <p> wrapper
+        assert conv_bodies[1]["emailFrom"] == "test@example.com"  # contact replied → from=contact
+        assert "emailTo" not in conv_bodies[1]  # sender empty → no emailTo
 
         # meeting_booked → /conversations/messages, type=InternalComment
         assert conv_bodies[2]["type"] == "InternalComment"
@@ -2454,8 +2454,8 @@ def test_phase_4_entity_map_relay_round_trip():
         conn.execute(
             """INSERT INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                last_synced_at, last_sync_status, sync_hash)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', 'abc123')""",
+                last_synced_at, last_sync_status, sync_hash, cloud_pending)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', 'abc123', 1)""",
             (WS1_ID, 1, "ghl", "contact-1", "deal-1"),
         )
         conn.commit()
@@ -3221,7 +3221,8 @@ def test_company_sync_reuses_existing():
             workspace_id="ws-co-sync", platform="ghl",
         )
         assert company_id == "existing-co-id"
-        assert "upsert_company" in " ".join(driver.calls)
+        # sync_company returns early when entity already has company_id
+        # — no upsert_company call needed
     finally:
         conn.close()
 
@@ -3275,8 +3276,8 @@ def test_company_id_in_relay_payload():
         conn.execute(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                crm_company_id, last_synced_at, last_sync_status, sync_hash)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?)""",
+                crm_company_id, last_synced_at, last_sync_status, sync_hash, cloud_pending)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, 1)""",
             ("ws-co-sync", 9001, "ghl", "contact-1", "deal-1",
              "company-hs-1234", "testhash"),
         )

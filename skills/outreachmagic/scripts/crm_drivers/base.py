@@ -110,6 +110,9 @@ class MockDriver:
             },
         ]
 
+    def sync_sentiment_tag(self, contact_id: str, sentiment: str) -> None:
+        self._record("sync_sentiment_tag", contact_id, sentiment)
+
     def test_connection(self, config: dict | None = None) -> tuple[bool, str]:
         self._record("test_connection", "")
         return True, "connected"

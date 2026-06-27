@@ -128,11 +128,7 @@ class GhlDriver:
                     time.sleep(wait)
                     last_exc = RateLimitError("GHL rate limited")
                     continue
-                try:
-                    body_text = e.read().decode("utf-8", errors="replace")
-                except Exception:
-                    body_text = ""
-                last_exc = GhlError(f"GHL HTTP {e.code}: {body_text[:500]}")
+                last_exc = GhlError(f"GHL HTTP {e.code}: {err_body[:500]}")
             except (urllib.error.URLError, OSError) as e:
                 last_exc = NetworkError(f"GHL network error: {e}")
                 time.sleep(2 ** attempt)
@@ -153,7 +149,8 @@ class GhlDriver:
             resp = self._request("GET", "/contacts/lookup",
                                  params={"email": email, "locationId": self.location_id})
         except GhlError as e:
-            if "404" in str(e) or "not found" in str(e).lower():
+            err_str = str(e).lower()
+            if "404" in err_str or "not found" in err_str or "not_found" in err_str:
                 return None
             raise
 
@@ -424,8 +421,16 @@ class GhlDriver:
                 if k not in event:
                     event[k] = v
 
+            # Extract nested fields from payload.event (sender, body)
+            inner_event = payload.get("event") or {}
+            if isinstance(inner_event, dict):
+                for key in ("sender", "body"):
+                    val = inner_event.get(key)
+                    if val and not event.get(key):
+                        event[key] = val
+
             try:
-                if event_type in ("email_sent", "reply"):
+                if event_type in ("email_sent", "email_reply", "reply"):
                     if not contact_email:
                         contact_email = self._get_contact_email(contact_id)
                     if self._push_email_event(contact_id, contact_email, event):
@@ -485,30 +490,39 @@ class GhlDriver:
         """Push an email event to GHL as a conversation message. Returns True on success."""
         event_type = event.get("event_type", "")
         subject = event.get("subject", "") or ""
-        body_text = event.get("body_preview") or event.get("body") or ""
+        body_text = event.get("body") or event.get("body_preview") or ""
         sender = event.get("sender", "")
 
         if event_type == "email_sent":
-            # Outbound: OM sent to contact
-            email_from = sender
-        elif event_type == "reply":
-            # Inbound: contact replied — sender is the contact who replied
-            email_from = sender
+            # Outbound: Outreach sender → contact
+            email_from = sender  # e.g. isabella@rentpopcam.com
+            email_to = contact_email
+        elif event_type in ("email_reply", "reply"):
+            # Inbound: contact replied → outreach sender
+            email_from = contact_email
+            email_to = sender
         else:
             return False
 
         # Build body HTML
         body_html = body_text
         if body_text:
-            body_html = f"<p>{body_text}</p>"
+            # If the body is already HTML (contains tags), use it as-is.
+            # Otherwise, it's plain text — convert newlines to <br> so GHL
+            # renders line breaks properly.
+            if "<" in body_text and ">" in body_text:
+                body_html = body_text
+            else:
+                body_html = body_text.replace("\n", "<br>")
 
         payload: dict = {
             "contactId": contact_id,
             "type": "Email",
-            "emailTo": contact_email,
         }
         if email_from:
             payload["emailFrom"] = email_from
+        if email_to:
+            payload["emailTo"] = email_to
         payload["subject"] = subject or "(no subject)"
 
         # Include original timestamp so GHL orders by actual event time.
@@ -586,7 +600,7 @@ class GhlDriver:
             self._create_tag(tag_name)
 
         self._request(
-            "PUT",
+            "POST",
             f"/contacts/{contact_id}/tags",
             body={"tags": [tag_name]},
         )
@@ -645,14 +659,25 @@ def _format_event_date(iso_str: str) -> str:
 def _format_event_note(event: dict) -> str:
     """Format an OM event as a GHL internal-comment body."""
     event_type = event.get("event_type", "unknown")
-    body = event.get("body_preview") or event.get("body") or ""
+    body = event.get("body") or event.get("body_preview") or ""
     subject = event.get("subject") or ""
     direction = event.get("direction", "")
 
-    # -- LinkedIn events: structured multi-line format --
-    if event_type.startswith("linkedin_"):
-        # linkedin_connect → LinkedIn Connect
-        label = event_type.replace("_", " ").title().replace("Linkedin", "LinkedIn")
+    # Events that get a structured multi-line format
+    structured_types = {"linkedin_connect", "linkedin_message", "linkedin_connection_accepted",
+                        "linkedin_inmail", "lead_status_updated"}
+
+    if event_type in structured_types:
+        # Build a human-readable label
+        label_map = {
+            "linkedin_connect": "LinkedIn Connect",
+            "linkedin_message": "LinkedIn Message",
+            "linkedin_connection_accepted": "LinkedIn Connection Accepted",
+            "linkedin_inmail": "LinkedIn InMail",
+            "lead_status_updated": "Lead Status Updated",
+        }
+        label = label_map.get(event_type, event_type.replace("_", " ").title())
+
         payload_event = event.get("event", {})
         sender = payload_event.get("sender", "") if isinstance(payload_event, dict) else ""
         receiver = event.get("receiver_linkedin_url", "")
@@ -671,9 +696,19 @@ def _format_event_note(event: dict) -> str:
             lines.append(f"Sender: {sender}")
         if receiver:
             lines.append(f"Receiver: {receiver}")
-        if subject:
+
+        # Extra fields for lead_status_updated
+        if event_type == "lead_status_updated" and isinstance(payload_event, dict):
+            status = payload_event.get("lead_status_display", "") or payload_event.get("lead_status_raw", "")
+            sentiment = payload_event.get("lead_status_sentiment", "")
+            if status:
+                lines.append(f"Status: {status}")
+            if sentiment:
+                lines.append(f"Sentiment: {sentiment}")
+
+        if subject and event_type != "lead_status_updated":
             lines.append(f"Subject: {subject}")
-        if body:
+        if event_type != "lead_status_updated" and body:
             lines.append(f"Body:\n{body[:2000]}")
         lines.append("---")
 
@@ -686,6 +721,7 @@ def _format_event_note(event: dict) -> str:
     prefix_map = {
         "email_sent": f"{prefix}{subject or '(no subject)'}",
         "reply": f"{prefix}{body[:200] if body else subject or '(no subject)'}",
+        "email_reply": f"{prefix}{body[:200] if body else subject or '(no subject)'}",
         "bounce": f"{prefix}[Bounced]",
         "stage_change": f"{prefix}[Stage] {event.get('old_stage', '')} → {event.get('new_stage', '')}",
         "meeting_booked": f"{prefix}[Meeting] {body[:200] if body else 'Scheduled'}",

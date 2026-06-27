@@ -158,7 +158,7 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
             params.append(last_sync_at)
 
     query = f"""
-        SELECT wl.lead_id, wl.status, wl.updated_at,
+        SELECT wl.lead_id, wl.status, wl.updated_at, wl.current_status_sentiment,
                l.name, l.email, l.title, l.industry, l.headcount,
                l.linkedin_url, l.company,
                c.name AS company_name, c.domain AS company_domain
@@ -311,6 +311,7 @@ def _build_sync_hash(lead: dict, contact_field_mapping: dict | None,
         lead.get("company_name", ""),
         lead.get("company_domain", ""),
         lead.get("status", ""),
+        lead.get("current_status_sentiment", ""),
         str(company_id),
     ]
     # Include additional emails so adding/removing secondary emails triggers re-sync
@@ -442,6 +443,14 @@ def sync_single_lead(
             (ws_id, lead_id_val, platform, contact_id, deal_id,
              company_id or None, new_hash),
         )
+
+    # -- Sentiment tag --
+    sentiment = lead.get("current_status_sentiment", "") or "(empty)"
+    if contact_id:
+        try:
+            driver.sync_sentiment_tag(contact_id, sentiment)
+        except Exception:
+            pass  # Non-fatal
 
     return (contact_id, deal_id, c_action, d_action)
 

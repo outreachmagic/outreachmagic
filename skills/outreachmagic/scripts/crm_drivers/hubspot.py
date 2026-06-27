@@ -188,8 +188,10 @@ class HubspotDriver:
         if lead_data.get("industry"):
             properties["industry"] = str(lead_data["industry"])
 
-        if lead_data.get("headcount"):
-            properties["numemployees"] = str(lead_data["headcount"])
+        if lead_data.get("headcount") or lead_data.get("headcount_numeric"):
+            properties["numemployees"] = str(
+                lead_data.get("headcount_numeric") or lead_data.get("headcount")
+            )
 
         if lead_data.get("company_domain"):
             properties["website"] = str(lead_data["company_domain"])

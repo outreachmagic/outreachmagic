@@ -544,7 +544,7 @@
   "lead_sentiment_values": [
     "positive",
     "negative",
-    "neutral",
+    "autoreply",
     "invalid"
   ],
   "field_display_names": {

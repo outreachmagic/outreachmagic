@@ -72,6 +72,8 @@ def build_plusvibe_status_metadata(
         sentiment = "positive"
     elif forced_label in ("not_interested", "not interested", "wrong_person", "closed"):
         sentiment = "negative"
+    if is_auto_reply_label(label):
+        sentiment = "autoreply"
     if not sentiment and label == "email_bounced":
         sentiment = "invalid"
 

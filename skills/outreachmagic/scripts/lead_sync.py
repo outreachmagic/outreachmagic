@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -763,6 +764,9 @@ def apply_agent_lead_workspace_payload(
 
     status_label = (payload.get("lead_status") or "").strip().lower().replace("_", " ") or None
     status_sentiment = (payload.get("lead_sentiment") or "").strip().lower() or None
+    if status_sentiment == "neutral":
+        print(f"[warn] lead_sentiment 'neutral' is no longer supported (use 'autoreply'). Skipping for lead_id={lead_id}.", file=sys.stderr)
+        status_sentiment = None
     contact_pri = None
     if payload.get("contact_order") is not None:
         try:

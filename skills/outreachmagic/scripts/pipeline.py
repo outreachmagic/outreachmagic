@@ -3612,6 +3612,9 @@ def import_profiles(
         for lead_id, extra in ws_pending:
             status_label = (extra.get("lead_status") or "").strip().lower().replace("_", " ") or None
             status_sentiment = (extra.get("lead_sentiment") or "").strip().lower() or None
+            if status_sentiment == "neutral":
+                print(f"[warn] lead_sentiment 'neutral' is no longer supported (use 'autoreply'). Skipping for lead_id={lead_id}.", file=sys.stderr)
+                status_sentiment = None
             contact_pri = None
             if extra.get("contact_order"):
                 try:
@@ -10646,7 +10649,7 @@ def main():
         help="With --pull, always contact relay (ignore 5m freshness cache)",
     )
     show_p.add_argument("--stage")
-    show_p.add_argument("--sentiment", choices=("positive", "negative", "neutral", "invalid"),
+    show_p.add_argument("--sentiment", choices=("positive", "negative", "autoreply", "invalid"),
                         help="Filter by current lead status sentiment (latest status event)")
     show_p.add_argument("--auto-reply", dest="auto_reply", choices=("true", "false"),
                         help="Filter by current auto-reply flag (OOO, etc.)")
@@ -10670,7 +10673,7 @@ def main():
         help="With --pull, always contact relay (ignore 5m freshness cache)",
     )
     lead_table_p.add_argument("--stage")
-    lead_table_p.add_argument("--sentiment", choices=("positive", "negative", "neutral", "invalid"),
+    lead_table_p.add_argument("--sentiment", choices=("positive", "negative", "autoreply", "invalid"),
                               help="Filter by current lead status sentiment (latest status event)")
     lead_table_p.add_argument("--auto-reply", dest="auto_reply", choices=("true", "false"),
                               help="Filter by current auto-reply flag (OOO, etc.)")
@@ -11422,7 +11425,7 @@ def main():
     )
     segment_p.add_argument(
         "--positive-sentiment",
-        choices=("positive", "negative", "neutral", "invalid"),
+        choices=("positive", "negative", "autoreply", "invalid"),
         help="Optional sentiment to combine with --positive-lead-status",
     )
     segment_p.add_argument(

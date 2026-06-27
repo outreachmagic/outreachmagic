@@ -9,7 +9,7 @@
 
 This feature produces a **4-sheet Google Workbook** that gives anyone (client, team lead, operations manager) an instant view of every campaign's health -- send volume, reply rates, OOO detection, lead sentiment, conversion funnels, and daily breakdowns -- in a format that's easy to scan, sort, and present.
 
-The workbook is **fully dynamic**: it queries the database by workspace slug, uses whatever campaign names exist, and reflects whatever lead status values your sequencer emits. The only hardcoded dimension is **lead sentiment** -- the sentiment field (`lead_status_sentiment`) is always one of: `positive`, `negative`, `neutral`, `interested`, `not_interested`, `invalid`.
+The workbook is **fully dynamic**: it queries the database by workspace slug, uses whatever campaign names exist, and reflects whatever lead status values your sequencer emits. The only hardcoded dimension is **lead sentiment** -- the sentiment field (`lead_status_sentiment`) is always one of: `positive`, `negative`, `autoreply`, `invalid`.
 
 Every sheet tab includes a **settings note in cell A1** with workspace, time window, generation timestamp, and timezone offset.
 
@@ -82,10 +82,8 @@ These are the only `lead_status_sentiment` values that exist in the database. Do
 | Sentiment | Meaning |
 |---|---|
 | `positive` | Lead expressed interest, wants more info |
-| `interested` | Lead explicitly interested (sequencer-specific label) |
-| `neutral` | Lead replied but undecided / gathering info |
 | `negative` | Lead not interested, "stop emailing" |
-| `not_interested` | Lead explicitly opted out |
+| `autoreply` | Out-of-office or automatic reply detected |
 | `invalid` | Bounced / wrong person / bad email |
 
 The export should use these values for the sentiment columns. Campaign names, lead status display labels, and other string fields vary per workspace and must be read dynamically.
@@ -486,7 +484,7 @@ for campaign in active_campaigns:
 **Lead Sentiment Sheet** -- pivot table. Use `collections.defaultdict` to build the matrix:
 
 ```python
-sentiment_order = ["positive", "interested", "neutral", "negative", "not_interested", "invalid"]
+sentiment_order = ["positive", "negative", "autoreply", "invalid"]
 pivot = defaultdict(lambda: defaultdict(int))
 
 for row in sentiment_rows:

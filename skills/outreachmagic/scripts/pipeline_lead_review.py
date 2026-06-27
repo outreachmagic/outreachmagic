@@ -11,7 +11,7 @@ from typing import Any, Callable, Optional
 from constants import COMPANY_DOMAIN_SQL, PIPELINE_STAGES, require_professional_domain_clause
 from workspace_routing import resolve_workspace_identity
 
-LEAD_SENTIMENT_VALUES = ("positive", "negative", "neutral", "invalid")
+LEAD_SENTIMENT_VALUES = ("positive", "negative", "autoreply", "invalid")
 
 SHEET_LEGEND_NOTE = """Outreach Magic lead review sheet
 
@@ -1113,6 +1113,9 @@ def apply_lead_review_sync(
             val = _find_in_row(raw, field)
             if val is not None and str(val).strip():
                 val = str(val).strip()
+                if val.lower() == "neutral":
+                    print(f"[warn] lead_sentiment 'neutral' is no longer supported (use 'autoreply'). Skipping change for lead_id={lead_id}.", file=sys.stderr)
+                    continue
                 if not _sheet_value_equal(field, current.get(field), val):
                     row_changes[field] = val
 

@@ -248,9 +248,9 @@ def run_tests():
     tmp5, conn5 = _setup()
     c5 = _campaign(conn5, "acme", "sentiment-mix")
     for i, (name, sentiment) in enumerate([
-        ("P1", "positive"), ("P2", "interested"),
-        ("N1", "negative"), ("N2", "not_interested"),
-        ("Neu", "neutral"), ("Inv", "invalid"),
+        ("P1", "positive"), ("P2", "positive"),
+        ("N1", "negative"), ("N2", "negative"),
+        ("A1", "autoreply"), ("Inv", "invalid"),
     ]):
         lid = _lead(conn5, name, f"{name.lower()}5@t.com")
         _event(conn5, lid, c5, "email_sent")
@@ -265,16 +265,14 @@ def run_tests():
 
     st = p["sheets"][2]
     sm_row = [r for r in st["rows"] if r[0] == "sentiment-mix"][0]
-    check("sentiment tab has 6 columns + campaign + total + rate",
-          len(sm_row) == 9, f"got {len(sm_row)} cols: {sm_row}")
-    check("positive count", sm_row[1] == 1, f"got {sm_row[1]}")
-    check("interested count", sm_row[2] == 1, f"got {sm_row[2]}")
-    check("neutral count", sm_row[3] == 1, f"got {sm_row[3]}")
-    check("negative count", sm_row[4] == 1, f"got {sm_row[4]}")
-    check("not_interested count", sm_row[5] == 1, f"got {sm_row[5]}")
-    check("invalid count", sm_row[6] == 1, f"got {sm_row[6]}")
-    check("total tagged=6", sm_row[7] == 6, f"got {sm_row[7]}")
-    check("positivity rate=50%", sm_row[8] == "50.0%", f"got {sm_row[8]}")
+    check("sentiment tab has 4 columns + campaign + total + rate",
+          len(sm_row) == 7, f"got {len(sm_row)} cols: {sm_row}")
+    check("positive count", sm_row[1] == 2, f"got {sm_row[1]}")
+    check("negative count", sm_row[2] == 2, f"got {sm_row[2]}")
+    check("autoreply count", sm_row[3] == 1, f"got {sm_row[3]}")
+    check("invalid count", sm_row[4] == 1, f"got {sm_row[4]}")
+    check("total tagged=6", sm_row[5] == 6, f"got {sm_row[5]}")
+    check("positivity rate=50%", sm_row[6] == "50.0%", f"got {sm_row[6]}")
     conn5.close()
     tmp5.cleanup()
 

@@ -109,9 +109,8 @@ class TestWorkspaceSummaryPerf(unittest.TestCase):
             "workspaces": 0,
             "rules": 0,
             "local_agent_events": 0,
-            "cloud_pending_lead_core": 0,
-            "cloud_pending_lead_workspaces": 0,
-            "cloud_pending_leads": 0,
+            "leads_pending": 0,
+            "workspace_leads_pending": 0,
             "total": 0,
         }
         stdout = io.StringIO()

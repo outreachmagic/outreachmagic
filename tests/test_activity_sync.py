@@ -81,7 +81,6 @@ class ActivitySyncTests(unittest.TestCase):
             linkedin_sent_count=1,
             total_replies_count=0,
             merge=False,
-            mark_cloud_pending=False,
         )
         self.assertEqual(summary["total_contacted_count"], 3)
 
@@ -211,13 +210,11 @@ class ActivitySyncTests(unittest.TestCase):
             lead_id, ws_default,
             email_sent_count=5,
             merge=False,
-            mark_cloud_pending=False,
         )
         om.set_lead_activity_summary(
             lead_id, ws_b,
             email_sent_count=2,
             merge=False,
-            mark_cloud_pending=False,
         )
 
         conn = om.get_conn()

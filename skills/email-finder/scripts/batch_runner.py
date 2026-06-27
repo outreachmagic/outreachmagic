@@ -1178,13 +1178,6 @@ def run_batch(
             f"{resync_note}",
             file=sys.stderr,
         )
-    cloud_pending = 0
-    if om_dir and not opts.skip_om and import_status and import_status.get("reason") == "success":
-        try:
-            sync_status = cc.fetch_sync_status(om_dir, skill_dir=skill_dir)
-            cloud_pending = int(sync_status.get("cloud_pending_leads") or 0)
-        except (RuntimeError, json.JSONDecodeError, TypeError, ValueError):
-            cloud_pending = 0
     print_final_summary(
         stats,
         elapsed,
@@ -1192,7 +1185,6 @@ def run_batch(
         provider=provider_label,
         import_status=import_status,
         skipped_names=skipped_names,
-        cloud_pending_leads=cloud_pending,
     )
 
     return {

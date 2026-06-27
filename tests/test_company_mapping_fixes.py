@@ -4,8 +4,7 @@
 Covers:
   1. import-profiles with lead_id hints + company_name does not deadlock
   2. link_lead_company warns on email_domain vs companies.domain mismatch
-  3. touch CLI command sets cloud_pending
-  4. link_lead_company correctly changes company_id
+  3. link_lead_company correctly changes company_id
 """
 
 from __future__ import annotations
@@ -184,63 +183,7 @@ def test_company_id_change():
         tmp.cleanup()
 
 
-def test_touch_command():
-    """touch CLI command sets cloud_pending on specified leads."""
-    tmp, conn = _setup()
-    try:
-        # Create leads
-        lids = []
-        for i in range(3):
-            lid = conn.execute(
-                "INSERT INTO leads (name, email, email_domain, channel, stage, cloud_pending) "
-                "VALUES (?, ?, ?, 'email', 'prospecting', 0)",
-                [f"Lead {i}", f"lead{i}@test.com", "test.com"],
-            ).lastrowid
-            lids.append(lid)
-        conn.commit()
-
-        # Verify all start with cloud_pending=0
-        for lid in lids:
-            row = conn.execute(
-                "SELECT cloud_pending FROM leads WHERE id = ?", (lid,),
-            ).fetchone()
-            assert row["cloud_pending"] == 0, f"Lead {lid} should start with cloud_pending=0"
-
-        import argparse
-
-        # Simulate the touch handler — update leads 1 and 3
-        lead_ids = f"{lids[0]},{lids[2]}"
-        ids = [int(x.strip()) for x in lead_ids.split(",") if x.strip()]
-        ph = ",".join("?" for _ in ids)
-        conn.execute(
-            f"UPDATE leads SET cloud_pending = 1 WHERE id IN ({ph})",
-            ids,
-        )
-        conn.commit()
-
-        # Check the touched leads
-        row0 = conn.execute(
-            "SELECT cloud_pending FROM leads WHERE id = ?", (lids[0],),
-        ).fetchone()
-        assert row0["cloud_pending"] == 1, f"Lead {lids[0]} should be cloud_pending=1"
-
-        row1 = conn.execute(
-            "SELECT cloud_pending FROM leads WHERE id = ?", (lids[1],),
-        ).fetchone()
-        assert row1["cloud_pending"] == 0, f"Lead {lids[1]} should remain cloud_pending=0"
-
-        row2 = conn.execute(
-            "SELECT cloud_pending FROM leads WHERE id = ?", (lids[2],),
-        ).fetchone()
-        assert row2["cloud_pending"] == 1, f"Lead {lids[2]} should be cloud_pending=1"
-
-        print(f"  OK — touch command correctly set cloud_pending on leads {lids[0]} and {lids[2]}, not {lids[1]}")
-    finally:
-        conn.close()
-        tmp.cleanup()
-
-
-def test_no_deadlock_without_lead_id_hints():
+# ── Tests ──────────────────────────────────────────────────────────────():
     """import-profiles WITHOUT lead_id hints should also handle company_name without deadlock."""
     tmp, conn = _setup()
     try:

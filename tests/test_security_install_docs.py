@@ -63,7 +63,7 @@ def test_format_local_sync_hint_actionable():
             "workspaces": 0,
             "rules": 0,
             "local_agent_events": 0,
-            "cloud_pending_leads": 3,
+            "leads_pending": 3,
         }
     )
     assert "pipeline.py sync" in hint

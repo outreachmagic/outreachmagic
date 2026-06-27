@@ -51,68 +51,6 @@ def _fresh_db(tmp_path):
     yield work
 
 
-def test_verify_email_sets_cloud_pending():
-    lead = om.resolve_lead(
-        email="verify@acme.com",
-        name="Verify Lead",
-        company="Acme",
-        company_domain="acme.com",
-        source="manual",
-    )
-    lead_id = int(lead["id"])
-    conn = om.get_conn()
-    conn.execute("UPDATE leads SET cloud_pending = 0 WHERE id = ?", (lead_id,))
-    conn.commit()
-    conn.close()
-
-    result = bounces.verify_email(
-        lead_id,
-        status="valid",
-        source="trykitt",
-        source_detail="email-finder",
-    )
-    assert result["status"] == "recorded"
-
-    conn = om.get_conn()
-    row = conn.execute(
-        "SELECT cloud_pending, email_verification_status FROM leads WHERE id = ?",
-        (lead_id,),
-    ).fetchone()
-    conn.close()
-    assert row["cloud_pending"] == 1
-    assert row["email_verification_status"] == "valid"
-
-
-def test_verify_email_batch_sets_cloud_pending():
-    ids = []
-    for i in range(2):
-        lead = om.resolve_lead(
-            email=f"batch{i}@acme.com",
-            name=f"Batch {i}",
-            company="Acme",
-            company_domain="acme.com",
-            source="manual",
-        )
-        ids.append(int(lead["id"]))
-    conn = om.get_conn()
-    conn.execute("UPDATE leads SET cloud_pending = 0")
-    conn.commit()
-    conn.close()
-
-    out = bounces.verify_email_batch([
-        {"lead_id": ids[0], "status": "valid", "source": "trykitt"},
-        {"lead_id": ids[1], "status": "valid", "source": "trykitt"},
-    ])
-    assert out["recorded"] == 2
-
-    conn = om.get_conn()
-    pending = conn.execute(
-        "SELECT COUNT(*) AS n FROM leads WHERE cloud_pending = 1"
-    ).fetchone()["n"]
-    conn.close()
-    assert pending == 2
-
-
 def test_om_paths_outreachmagic_layout():
     work = get_om_data_dir().parent
     assert get_om_data_dir() == work / "outreachmagic"
@@ -160,7 +98,7 @@ def test_install_sh_non_tty_auto_inits(tmp_path):
     pipeline.write_text(
         "#!/usr/bin/env python3\nimport sys, json\n"
         "if 'init' in sys.argv: print('ok')\n"
-        "else: print(json.dumps({'cloud_pending_leads': 0}))\n",
+        "else: print(json.dumps({'leads_pending': 0}))\n",
         encoding="utf-8",
     )
     pipeline.chmod(0o755)

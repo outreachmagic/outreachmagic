@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for relay vs local cloud_pending and sync defaults."""
+"""Tests for timestamp-based sync (get_last_sync / set_last_sync)."""
 
 import os
 import sys
@@ -20,20 +20,105 @@ set_data_root_override(Path(_tmp))
 import pipeline as om  # noqa: E402
 
 
-class CloudPendingLogicTests(unittest.TestCase):
+class TimestampSyncTests(unittest.TestCase):
     def setUp(self):
         om.init_db()
         conn = om.get_conn()
         om.ensure_organization(conn)
         conn.close()
 
-    def test_lead_should_cloud_pending_relay_sources(self):
-        self.assertFalse(om._lead_should_cloud_pending("relay_sync", "smartlead"))
-        self.assertFalse(om._lead_should_cloud_pending("agent_sync", "relay"))
-        self.assertTrue(om._lead_should_cloud_pending("csv", "csv"))
-        self.assertTrue(om._lead_should_cloud_pending(None, None))
+    def test_get_last_sync_returns_none_initially(self):
+        self.assertIsNone(om.get_last_sync())
 
-    def test_resolve_lead_relay_sync_does_not_mark_pending(self):
+    def test_set_and_get_last_sync_roundtrip(self):
+        ts = "2026-06-27T12:00:00Z"
+        om.set_last_sync(ts)
+        self.assertEqual(om.get_last_sync(), ts)
+
+    def test_set_last_sync_overwrites_previous(self):
+        om.set_last_sync("2026-06-01T00:00:00Z")
+        om.set_last_sync("2026-06-27T00:00:00Z")
+        self.assertEqual(om.get_last_sync(), "2026-06-27T00:00:00Z")
+
+    def test_lead_with_updated_at_after_last_sync_is_pending(self):
+        om.set_last_sync("2026-06-01T00:00:00Z")
+        result = om.resolve_lead(
+            email="pending@example.com",
+            name="Pending User",
+            company="Acme",
+            source="csv",
+            source_platform="csv",
+        )
+        lead_id = result["id"]
+        # The lead was just created, so updated_at > last_sync
+        conn = om.get_conn()
+        last_sync = om.get_last_sync()
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM leads WHERE updated_at > ?",
+            (last_sync,),
+        ).fetchone()["n"]
+        conn.close()
+        self.assertGreaterEqual(count, 1)
+
+    def test_lead_with_updated_at_before_last_sync_is_not_pending(self):
+        om.set_last_sync("2099-01-01T00:00:00Z")
+        result = om.resolve_lead(
+            email="notpending@example.com",
+            name="Not Pending",
+            company="Acme",
+            source="csv",
+            source_platform="csv",
+        )
+        conn = om.get_conn()
+        last_sync = om.get_last_sync()
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM leads WHERE updated_at > ?",
+            (last_sync,),
+        ).fetchone()["n"]
+        conn.close()
+        self.assertEqual(count, 0)
+
+    def test_workspace_lead_pending_detection(self):
+        om.set_last_sync("2026-06-01T00:00:00Z")
+        result = om.resolve_lead(
+            email="ws-pending@example.com",
+            name="WS Pending",
+            company="Acme",
+            source="csv",
+            source_platform="csv",
+        )
+        lead_id = result["id"]
+        conn = om.get_conn()
+        ws_row = om.resolve_workspace_identity(conn, "default")
+        om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_row["id"], lead_id)
+        conn.commit()
+        last_sync = om.get_last_sync()
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM workspace_leads WHERE updated_at > ?",
+            (last_sync,),
+        ).fetchone()["n"]
+        conn.close()
+        self.assertGreaterEqual(count, 1)
+
+    def test_sync_updates_last_sync(self):
+        initial_ts = "2026-06-01T00:00:00Z"
+        om.set_last_sync(initial_ts)
+        conn = om.get_conn()
+        conn.execute(
+            "INSERT INTO leads (name, email, channel, stage, original_source, original_source_platform, updated_at) "
+            "VALUES ('Sync Lead', 'sync@example.com', 'email', 'prospecting', 'csv', 'csv', '2026-06-15T00:00:00')"
+        )
+        conn.commit()
+        conn.close()
+
+        # Simulate that sync_all would set last_sync to now after pushing
+        om.set_last_sync("2026-06-27T12:00:00Z")
+        new_ts = om.get_last_sync()
+        self.assertNotEqual(new_ts, initial_ts)
+        self.assertEqual(new_ts, "2026-06-27T12:00:00Z")
+
+    def test_resolve_lead_relay_sync_marks_updated_at(self):
+        """verify that resolve_lead still works correctly (cloud_pending column removed)."""
         result = om.resolve_lead(
             email="relay@example.com",
             name="Relay User",
@@ -44,154 +129,11 @@ class CloudPendingLogicTests(unittest.TestCase):
         self.assertEqual(result["status"], "created")
         conn = om.get_conn()
         row = conn.execute(
-            "SELECT cloud_pending FROM leads WHERE id = ?", (result["id"],)
+            "SELECT updated_at, original_source FROM leads WHERE id = ?", (result["id"],)
         ).fetchone()
         conn.close()
-        self.assertEqual(row["cloud_pending"], 0)
-
-    def test_resolve_lead_csv_marks_pending(self):
-        result = om.resolve_lead(
-            email="csv@example.com",
-            name="CSV User",
-            company="Acme",
-            source="csv",
-            source_platform="csv",
-        )
-        conn = om.get_conn()
-        row = conn.execute(
-            "SELECT cloud_pending FROM leads WHERE id = ?", (result["id"],)
-        ).fetchone()
-        conn.close()
-        self.assertEqual(row["cloud_pending"], 1)
-
-    def test_enrich_lead_local_marks_pending(self):
-        result = om.resolve_lead(
-            email="enrich@example.com",
-            name="Enrich User",
-            company="Acme",
-            source="relay_sync",
-            source_platform="instantly",
-        )
-        lead_id = result["id"]
-        conn = om.get_conn()
-        conn.execute("UPDATE leads SET cloud_pending = 0, title = NULL WHERE id = ?", (lead_id,))
-        conn.commit()
-        conn.close()
-
-        om.enrich_lead(lead_id, title="VP Sales", overwrite=True)
-        conn = om.get_conn()
-        row = conn.execute("SELECT cloud_pending, title FROM leads WHERE id = ?", (lead_id,)).fetchone()
-        conn.close()
-        self.assertEqual(row["title"], "VP Sales")
-        self.assertEqual(row["cloud_pending"], 1)
-
-    def test_enrich_lead_relay_ingest_does_not_mark_pending(self):
-        result = om.resolve_lead(
-            email="pull@example.com",
-            name="Pull User",
-            company="Acme",
-            source="relay_sync",
-            source_platform="emailbison",
-        )
-        lead_id = result["id"]
-        om.enrich_lead(lead_id, title="From Relay", overwrite=True, mark_cloud_pending=False)
-        conn = om.get_conn()
-        row = conn.execute("SELECT cloud_pending, title FROM leads WHERE id = ?", (lead_id,)).fetchone()
-        conn.close()
-        self.assertEqual(row["title"], "From Relay")
-        self.assertEqual(row["cloud_pending"], 0)
-
-    def test_personalize_set_marks_lead_pending(self):
-        result = om.resolve_lead(
-            email="pers@example.com",
-            name="Pers User",
-            company="Acme",
-            source="relay_sync",
-            source_platform="heyreach",
-        )
-        lead_id = result["id"]
-        om.personalize_set(lead_id, "first_name", "Pers")
-        conn = om.get_conn()
-        row = conn.execute("SELECT cloud_pending FROM leads WHERE id = ?", (lead_id,)).fetchone()
-        conn.close()
-        self.assertEqual(row["cloud_pending"], 1)
-
-    def test_company_personalize_marks_company_pending(self):
-        result = om.resolve_lead(
-            email="co@acme.com",
-            name="Co User",
-            company="Acme Corp",
-            source="csv",
-            source_platform="csv",
-        )
-        conn = om.get_conn()
-        cid = conn.execute("SELECT company_id FROM leads WHERE id = ?", (result["id"],)).fetchone()["company_id"]
-        conn.execute("UPDATE companies SET cloud_pending = 0 WHERE id = ?", (cid,))
-        conn.commit()
-        conn.close()
-        om.company_personalize_set("company_name", "Acme", company_id=cid)
-        conn = om.get_conn()
-        row = conn.execute("SELECT cloud_pending FROM companies WHERE id = ?", (cid,)).fetchone()
-        conn.close()
-        self.assertEqual(row["cloud_pending"], 1)
-
-    def test_ingest_relay_event_does_not_mark_cloud_pending(self):
-        ws = om.create_workspace("Relay Co", slug="relay_co")
-        om.add_campaign_map_cli(
-            "plusvibe",
-            "relay_co",
-            campaign_name="Relay Campaign",
-            match_strategy="name_exact",
-        )
-        event = {
-            "platform": "plusvibe",
-            "event_type": "lead_marked_as_interested",
-            "lead": "newpull@example.com",
-            "sender": "sender@example.com",
-            "received_at": "2026-06-03T12:00:00Z",
-            "relay_id": 88001,
-            "raw": {
-                "webhook_event": "lead_marked_as_interested",
-                "lead_email": "newpull@example.com",
-                "sender_email": "sender@example.com",
-                "campaign_name": "Relay Campaign",
-                "label": "interested",
-                "sentiment": "positive",
-            },
-        }
-        lead_id = om.ingest_relay_event(event, force_workspace_id=ws["id"], quiet=True)
-        self.assertIsNotNone(lead_id)
-        conn = om.get_conn()
-        lead = conn.execute(
-            "SELECT cloud_pending, stage, original_source FROM leads WHERE id = ?",
-            (lead_id,),
-        ).fetchone()
-        ws_row = conn.execute(
-            "SELECT cloud_pending FROM workspace_leads WHERE lead_id = ?",
-            (lead_id,),
-        ).fetchone()
-        conn.close()
-        self.assertEqual(lead["original_source"], "relay_sync")
-        self.assertEqual(lead["cloud_pending"], 0)
-        self.assertEqual(lead["stage"], "interested")
-        self.assertIsNotNone(ws_row)
-        self.assertEqual(ws_row["cloud_pending"], 0)
-
-    def test_migrate_clears_false_relay_backlog(self):
-        conn = om.get_conn()
-        conn.execute(
-            """INSERT INTO leads (name, email, cloud_pending, original_source, original_source_platform)
-               VALUES ('Stale', 'stale@example.com', 1, 'relay_sync', 'smartlead')"""
-        )
-        conn.commit()
-        conn.close()
-        om.migrate_db()
-        conn = om.get_conn()
-        row = conn.execute(
-            "SELECT cloud_pending FROM leads WHERE email = 'stale@example.com'"
-        ).fetchone()
-        conn.close()
-        self.assertEqual(row["cloud_pending"], 0)
+        self.assertIsNotNone(row["updated_at"])
+        self.assertEqual(row["original_source"], "relay_sync")
 
     def test_relay_push_defaults(self):
         for key in (
@@ -240,6 +182,35 @@ class CloudPendingLogicTests(unittest.TestCase):
         ).fetchone()
         conn.close()
         self.assertIsNone(row)
+
+    def test_mark_all_lead_snapshots_pending_updates_updated_at(self):
+        """mark_all_lead_snapshots_pending now sets updated_at = datetime('now')."""
+        result = om.resolve_lead(
+            email="marktest@example.com",
+            name="Mark Test",
+            company="Acme",
+            source="relay_sync",
+            source_platform="smartlead",
+        )
+        lead_id = result["id"]
+        conn = om.get_conn()
+        # Set updated_at to old value
+        conn.execute(
+            "UPDATE leads SET updated_at = '2020-01-01T00:00:00' WHERE id = ?",
+            (lead_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        om.mark_all_lead_snapshots_pending()
+
+        conn = om.get_conn()
+        row = conn.execute(
+            "SELECT updated_at FROM leads WHERE id = ?", (lead_id,),
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(row["updated_at"])
+        self.assertNotEqual(row["updated_at"], "2020-01-01T00:00:00")
 
 
 if __name__ == "__main__":

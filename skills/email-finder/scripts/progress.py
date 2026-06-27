@@ -203,7 +203,6 @@ def print_final_summary(
     provider: str = "",
     import_status: Optional[dict[str, Any]] = None,
     skipped_names: Optional[list[str]] = None,
-    cloud_pending_leads: int = 0,
     file=sys.stderr,
 ) -> None:
     stats = _init_stats(stats)
@@ -302,13 +301,6 @@ def print_final_summary(
         print(f"║  IMPORT{'':55}║", file=file)
         for line in _import_status_lines(status, output_base=output_base, verify=verify):
             print(f"║    {line[:58]:<58}║", file=file)
-    if cloud_pending_leads:
-        print(f"║{'':62}║", file=file)
-        print(f"║  RELAY{'':56}║", file=file)
-        print(
-            f"║    {cloud_pending_leads} snapshot(s) pending — run pipeline.py sync{'':>8}║",
-            file=file,
-        )
     print("╚" + "═" * 62 + "╝", file=file)
     print(file=file)
 

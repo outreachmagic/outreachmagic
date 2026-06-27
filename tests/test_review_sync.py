@@ -31,8 +31,8 @@ def _reset_db() -> tuple[str, int]:
     conn = om.get_conn()
     om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_id, lead_id)
     conn.execute(
-        """INSERT INTO lead_personalization (lead_id, field_name, field_value, cloud_pending)
-           VALUES (?, 'first_name', 'Alexander', 0)""",
+        """INSERT INTO lead_personalization (lead_id, field_name, field_value)
+           VALUES (?, 'first_name', 'Alexander')""",
         (lead_id,),
     )
     conn.execute(

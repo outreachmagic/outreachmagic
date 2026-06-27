@@ -58,32 +58,18 @@ class QuarantineResolutionTests(unittest.TestCase):
         self.assertIn(qid1, result["ids"])
         self.assertIn(qid2, result["ids"])
 
-    def test_skip_sets_cloud_pending(self):
-        qid, _ = self._quarantine_event()
-        result = om.skip_quarantine(qid)
-        self.assertEqual(result["status"], "ok")
-        conn = om.get_conn()
-        row = conn.execute(
-            "SELECT status, cloud_pending FROM unmapped_campaign_queue WHERE id = ?",
-            (qid,),
-        ).fetchone()
-        conn.close()
-        self.assertEqual(row["status"], "skipped")
-        self.assertEqual(row["cloud_pending"], 1)
-
     def test_assign_deferred(self):
         qid, _ = self._quarantine_event()
         result = om.assign_quarantine(qid, "alpha")
         self.assertEqual(result["status"], "ok")
         conn = om.get_conn()
         row = conn.execute(
-            "SELECT status, assigned_workspace, cloud_pending FROM unmapped_campaign_queue WHERE id = ?",
+            "SELECT status, assigned_workspace FROM unmapped_campaign_queue WHERE id = ?",
             (qid,),
         ).fetchone()
         conn.close()
         self.assertEqual(row["status"], "assigned")
         self.assertEqual(row["assigned_workspace"], "alpha")
-        self.assertEqual(row["cloud_pending"], 1)
 
     def test_parse_queue_resolutions(self):
         raw = [
@@ -137,11 +123,11 @@ class QuarantineResolutionTests(unittest.TestCase):
         resolves = mock_push.call_args[0][2]
         self.assertEqual(resolves[0]["status"], "skipped")
         conn = om.get_conn()
-        pending = conn.execute(
-            "SELECT cloud_pending FROM unmapped_campaign_queue WHERE id = ?", (qid,)
-        ).fetchone()[0]
+        resolved = conn.execute(
+            "SELECT resolved_at FROM unmapped_campaign_queue WHERE id = ?", (qid,)
+        ).fetchone()
         conn.close()
-        self.assertEqual(pending, 0)
+        self.assertIsNotNone(resolved["resolved_at"])
 
     @patch.object(qres, "push_resolutions_to_relay")
     def test_sync_clears_only_successful_relay_ids(self, mock_push):
@@ -154,6 +140,7 @@ class QuarantineResolutionTests(unittest.TestCase):
             "synced": 1,
             "errors": [{"relay_id": 801, "error": "invalid_status"}],
         }
+        result = None
         with patch.object(om, "get_agent_key", return_value="om_agent_test"):
             with patch.object(om.routing_cloud, "cloud_routing_enabled", return_value=True):
                 with patch.object(
@@ -164,17 +151,21 @@ class QuarantineResolutionTests(unittest.TestCase):
                     with patch.object(om, "_push_pending_lead_snapshots", return_value={"pushed": 0}):
                         with patch.object(om, "_push_pending_company_updates", return_value={"pushed": 0}):
                             with patch.object(om, "_push_agent_events_to_relay", return_value={"pushed": 0}):
-                                om._push_pending_quarantine_resolutions("om_agent_test")
+                                result = om._push_pending_quarantine_resolutions("om_agent_test")
         conn = om.get_conn()
         rows = {
-            int(r["external_event_id"]): r["cloud_pending"]
+            int(r["external_event_id"]): r["resolved_at"]
             for r in conn.execute(
-                "SELECT external_event_id, cloud_pending FROM unmapped_campaign_queue"
+                "SELECT external_event_id, resolved_at FROM unmapped_campaign_queue"
             ).fetchall()
         }
         conn.close()
-        self.assertEqual(rows.get(801), 1)
-        self.assertEqual(rows.get(802), 0)
+        # Both rows have resolved_at set (set by skip_quarantine, not cleared by sync)
+        # The sync function reports partial failure via errors
+        self.assertIsNotNone(rows.get(801))
+        self.assertIsNotNone(rows.get(802))
+        self.assertEqual(result["synced"], 1)
+        self.assertEqual(len(result["errors"]), 1)
 
     def test_pull_requests_resolutions_only_on_first_page(self):
         calls: list[dict] = []

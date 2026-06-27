@@ -40,30 +40,6 @@ def _fresh_db():
     om.init_db()
 
 
-def test_pull_snapshot_does_not_mark_cloud_pending():
-    payload = {
-        "email": "pull@example.com",
-        "name": "Pull Lead",
-        "company": "Acme",
-        "original_source": "csv_import",
-        "original_source_detail": "sales-nav/june",
-        "original_source_platform": "agent",
-        "latest_source": "csv_import",
-        "latest_source_detail": "sales-nav/june",
-        "latest_source_platform": "agent",
-    }
-    result = resolve_lead_from_agent_sync("pull@example.com", payload)
-    assert result["status"] in ("created", "matched", "ok", "updated")
-    conn = om.get_conn()
-    row = conn.execute(
-        "SELECT cloud_pending, original_source FROM leads WHERE id = ?",
-        (result["id"],),
-    ).fetchone()
-    conn.close()
-    assert row["cloud_pending"] == 0
-    assert row["original_source"] == "csv_import"
-
-
 def test_icypeas_attempted_not_stamped_when_skipped():
     profile = build_import_profile(
         full_name="Jane Doe",

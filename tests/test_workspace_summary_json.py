@@ -39,9 +39,8 @@ def test_workspace_summary_json_stdout_only():
         "workspaces": 0,
         "rules": 0,
         "local_agent_events": 0,
-        "cloud_pending_lead_core": 2,
-        "cloud_pending_lead_workspaces": 1,
-        "cloud_pending_leads": 3,
+        "leads_pending": 2,
+        "workspace_leads_pending": 1,
         "total": 3,
     }
     stdout = io.StringIO()

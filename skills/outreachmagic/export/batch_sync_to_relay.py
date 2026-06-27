@@ -5,9 +5,8 @@ Push the local Popcam SQLite DB to api.outreachmagic.io in controlled batches.
 How it works (not server-side cron batches — local script batches):
   1. EVENTS phase (once): pipeline.py sync pushes legacy message events to POST /push.
   2. LEADS phase (loop): walk every lead by id in chunks of BATCH_SIZE (default 2500):
-       a. SET cloud_pending=1 on those leads (+ their workspace_leads rows)
-       b. pipeline.py sync uploads snapshots (auto 5000/request when pending ≥ 2500)
-       c. Relay returns success → cloud_pending cleared per successful push page
+       a. pipeline.py sync uploads snapshots (auto 5000/request when pending ≥ 2500)
+       b. Relay returns success → last_sync anchor updated per successful push page
   Each chunk is one "batch N" in batch_sync.log (~46 batches for 114k leads).
 
 Pipeline progress inside each sync (see docs/relay-sync-progress.md):
@@ -66,12 +65,19 @@ def agent_key() -> str:
     raise SystemExit("No OUTREACHMAGIC_AGENT_KEY and no cursor config agent_key")
 
 
+def _get_last_sync_or_never() -> str:
+    """Return last_sync timestamp or epoch-zero."""
+    from pipeline import get_last_sync
+    return get_last_sync() or "1970-01-01T00:00:00Z"
+
+
 def counts(conn: sqlite3.Connection) -> dict:
+    last_sync = _get_last_sync_or_never()
     row = conn.execute(
         """
         SELECT
-          (SELECT COUNT(*) FROM leads WHERE cloud_pending = 1) AS core_pending,
-          (SELECT COUNT(*) FROM workspace_leads WHERE cloud_pending = 1) AS ws_pending,
+          (SELECT COUNT(*) FROM leads WHERE updated_at > ?) AS core_pending,
+          (SELECT COUNT(*) FROM workspace_leads WHERE updated_at > ?) AS ws_pending,
           (SELECT COUNT(*) FROM events e
              WHERE 'event:' || CAST(e.id AS TEXT) NOT IN (
                SELECT dedupe_key FROM relay_ingested WHERE dedupe_key LIKE 'event:%'
@@ -81,7 +87,8 @@ def counts(conn: sqlite3.Connection) -> dict:
              AND e.metadata_json NOT LIKE '%"source": "agent_sync"%'
              AND e.metadata_json NOT LIKE '%"source":"agent_sync"%'
           ) AS events_pending
-        """
+        """,
+        (last_sync, last_sync),
     ).fetchone()
     return {
         "core_pending": row[0],
@@ -207,8 +214,6 @@ def main() -> None:
 
     if phase in ("all", "events"):
         log("--- EVENTS PHASE: push legacy email_sent/reply events (one sync) ---")
-        conn.execute("UPDATE leads SET cloud_pending = 0")
-        conn.execute("UPDATE workspace_leads SET cloud_pending = 0")
         conn.commit()
         c = counts(conn)
         log(f"events to push: {c['events_pending']:,}")
@@ -241,9 +246,7 @@ def main() -> None:
                     sys.exit(code)
                 log_progress(conn, last_id, batch_num, "after-flush")
         else:
-            log("--- LEADS PHASE: fresh run (clears cloud_pending, then batches) ---")
-            conn.execute("UPDATE leads SET cloud_pending = 0")
-            conn.execute("UPDATE workspace_leads SET cloud_pending = 0")
+            log("--- LEADS PHASE: fresh run ---")
             conn.commit()
             log_progress(conn, 0, 0, "leads-start")
 
@@ -260,14 +263,9 @@ def main() -> None:
             last_id = ids[-1]
             batch_num += 1
             ph = ",".join("?" * len(ids))
-            conn.execute(f"UPDATE leads SET cloud_pending = 1 WHERE id IN ({ph})", ids)
-            conn.execute(
-                f"UPDATE workspace_leads SET cloud_pending = 1 WHERE lead_id IN ({ph})",
-                ids,
-            )
             conn.commit()
             log(
-                f"batch {batch_num}: marked {len(ids)} leads "
+                f"batch {batch_num}: batching {len(ids)} leads "
                 f"(ids {ids[0]:,}..{ids[-1]:,}) for upload"
             )
             log_progress(conn, last_id, batch_num, f"batch-{batch_num}-marked")

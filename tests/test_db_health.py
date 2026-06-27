@@ -24,7 +24,7 @@ def test_evaluate_rules_ok():
     status, rules = db_health.evaluate_health_rules(
         file_bytes=10_000_000,
         integrity_ok=True,
-        row_counts={"leads": 100, "events": 50, "relay_ingested": 200, "cloud_pending": 0, "unmapped_campaign_queue": 0},
+        row_counts={"leads": 100, "events": 50, "relay_ingested": 200, "pending_sync": 0, "unmapped_campaign_queue": 0},
     )
     assert status == "ok"
     assert not any(r["id"] == "relay_bloat" for r in rules)

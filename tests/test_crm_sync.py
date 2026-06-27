@@ -67,7 +67,7 @@ EXPECTED_COLUMNS = {
         "workspace_id", "lead_id", "platform", "crm_contact_id",
         "crm_deal_id", "crm_company_id", "crm_owner_id", "last_synced_at",
         "last_event_id_synced", "last_sync_status", "sync_error",
-        "sync_hash", "cloud_pending", "created_at", "updated_at",
+        "sync_hash", "created_at", "updated_at",
     },
     "crm_sync_log": {
         "id", "workspace_id", "platform", "started_at", "completed_at",
@@ -2098,7 +2098,6 @@ def test_phase_4_entity_map_first_sync_creates():
         assert row["crm_contact_id"] == cid
         assert row["crm_deal_id"] == did
         assert row["last_sync_status"] == "synced"
-        assert row["cloud_pending"] == 1
         assert row["sync_hash"] is not None
     finally:
         conn.close()
@@ -2116,8 +2115,8 @@ def test_phase_4_entity_map_second_sync_updates():
         conn.execute(
             """INSERT INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                last_synced_at, last_sync_status, sync_hash, cloud_pending)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', ?, 0)""",
+                last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', ?)""",
             (WS1_ID, 1, "ghl", "contact-old", "deal-old", old_hash),
         )
         conn.commit()
@@ -2167,8 +2166,8 @@ def test_phase_4_entity_map_contact_updated_on_re_sync():
         conn.execute(
             """INSERT INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                last_synced_at, last_sync_status, sync_hash, cloud_pending)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', ?, 0)""",
+                last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', ?)""",
             (WS1_ID, 1, "ghl", "contact-old", "deal-old", "oldhash00000000"),
         )
         conn.commit()
@@ -2206,8 +2205,8 @@ def test_phase_4_entity_map_deal_updated_on_re_sync():
         conn.execute(
             """INSERT INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                last_synced_at, last_sync_status, sync_hash, cloud_pending)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', ?, 0)""",
+                last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', ?)""",
             (WS1_ID, 1, "ghl", "contact-old", "deal-old", old_hash),
         )
         conn.commit()
@@ -2326,8 +2325,8 @@ def test_phase_4_entity_map_lead_deleted():
         conn.execute(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                last_synced_at, last_sync_status, sync_hash, cloud_pending)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', 'abc123', 0)""",
+                last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', 'abc123')""",
             (WS1_ID, 1, "ghl", "contact-1", "deal-1"),
         )
         conn.commit()
@@ -2371,15 +2370,15 @@ def test_phase_4_entity_map_two_leads_same_email():
         conn.execute(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id,
-                sync_hash, cloud_pending)
-               VALUES (?, ?, ?, ?, ?, 0)""",
+                sync_hash)
+               VALUES (?, ?, ?, ?, ?)""",
             (WS1_ID, 1, "ghl", "contact-1", "hash1"),
         )
         conn.execute(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id,
-                sync_hash, cloud_pending)
-               VALUES (?, ?, ?, ?, ?, 0)""",
+                sync_hash)
+               VALUES (?, ?, ?, ?, ?)""",
             (WS1_ID, 99, "ghl", "contact-2", "hash2"),
         )
         conn.commit()
@@ -2398,52 +2397,20 @@ def test_phase_4_entity_map_two_leads_same_email():
         conn.close()
 
 
-def test_phase_4_entity_map_cloud_pending_flag():
-    """After sync, entity_map row has cloud_pending = 1."""
-    om.init_db()
-    conn = get_conn()
-    try:
-        _setup_phase_4_data(conn)
-        mock = MockDriver()
-        cfg = {
-            "workspace_id": WS1_ID,
-            "platform": "ghl",
-            "pipeline_id": "pipe-1",
-            "stage_mapping": {"interested": "stage-1"},
-            "contact_field_mapping": None,
-        }
-        lead = {"lead_id": 1, "name": "Alice", "email": "alice@example.com",
-                "title": "CEO", "industry": "SaaS", "status": "interested",
-                "company": None, "company_name": None, "company_domain": None,
-                "headcount": None, "linkedin_url": None}
-
-        crm_sync.sync_single_lead(lead, cfg, mock, conn=conn, workspace_id=WS1_ID)
-        conn.commit()
-
-        row = conn.execute(
-            "SELECT cloud_pending FROM crm_entity_map WHERE workspace_id = ? AND lead_id = ? AND platform = ?",
-            (WS1_ID, 1, "ghl"),
-        ).fetchone()
-        assert row is not None
-        assert row["cloud_pending"] == 1
-    finally:
-        conn.close()
-
-
 def test_phase_4_entity_map_relay_round_trip():
-    """Cloud_pending row is included in build_crm_entity_map_payloads."""
+    """Entity map row is included in build_crm_entity_map_payloads based on updated_at."""
     from lead_sync import build_crm_entity_map_payloads
 
     om.init_db()
     conn = get_conn()
     try:
         _setup_phase_4_data(conn)
-        # Insert entity map row with cloud_pending = 1
+        # Insert entity map row with recent updated_at
         conn.execute(
             """INSERT INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                last_synced_at, last_sync_status, sync_hash, cloud_pending)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', 'abc123', 1)""",
+                last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', 'abc123')""",
             (WS1_ID, 1, "ghl", "contact-1", "deal-1"),
         )
         conn.commit()
@@ -2456,15 +2423,6 @@ def test_phase_4_entity_map_relay_round_trip():
         assert found[0]["crm_contact_id"] == "contact-1"
         assert found[0]["crm_deal_id"] == "deal-1"
         assert found[0]["kind"] == "crm_entity_map"
-
-        # Row with cloud_pending = 0 should NOT be included
-        conn.execute(
-            "UPDATE crm_entity_map SET cloud_pending = 0 WHERE lead_id = 1",
-        )
-        conn.commit()
-        payloads2 = build_crm_entity_map_payloads(conn)
-        found2 = [p for p in payloads2 if p["lead_id"] == 1]
-        assert len(found2) == 0
     finally:
         conn.close()
 
@@ -2479,8 +2437,8 @@ def test_phase_4_entity_map_rehydrate_after_refresh():
         conn.execute(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                last_synced_at, last_sync_status, sync_hash, cloud_pending, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'synced', ?, 0, datetime('now'), datetime('now'))""",
+                last_synced_at, last_sync_status, sync_hash, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'synced', ?, datetime('now'), datetime('now'))""",
             (WS1_ID, 1, "ghl", "contact-relay", "deal-relay", "2026-01-01T00:00:00", "hash-relay"),
         )
         conn.commit()
@@ -2497,8 +2455,8 @@ def test_phase_4_entity_map_rehydrate_after_refresh():
         conn.execute(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                last_synced_at, last_sync_status, sync_hash, cloud_pending, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'synced', ?, 0, datetime('now'), datetime('now'))""",
+                last_synced_at, last_sync_status, sync_hash, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'synced', ?, datetime('now'), datetime('now'))""",
             (WS1_ID, 1, "ghl", "contact-relay-2", "deal-relay-2", "2026-02-01T00:00:00", "hash-relay-2"),
         )
         conn.commit()
@@ -2858,8 +2816,8 @@ def _setup_phase_5_sync_data(conn):
     conn.execute(
         """INSERT OR IGNORE INTO crm_entity_map
            (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-            last_synced_at, last_sync_status, sync_hash, cloud_pending)
-           VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', 'hash-initial', 0)""",
+            last_synced_at, last_sync_status, sync_hash)
+           VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', 'hash-initial')""",
         (WS1_ID, 1, "ghl", "contact-alice", "deal-alice"),
     )
     conn.commit()
@@ -3128,8 +3086,8 @@ def _setup_company_test_data(conn):
     company_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.execute(
         """INSERT INTO leads (id, name, email, title, industry, headcount, company,
-            linkedin_url, company_id, cloud_pending)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+            linkedin_url, company_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (9001, "Alice Wang", "alice@omnicorp.test", "CEO",
          "Technology", "51-200", "OmniCorp",
          "https://linkedin.com/in/alicewang", company_id),
@@ -3272,9 +3230,8 @@ def test_company_id_in_relay_payload():
         conn.execute(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                crm_company_id, last_synced_at, last_sync_status, sync_hash,
-                cloud_pending)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, 1)""",
+                crm_company_id, last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?)""",
             ("ws-co-sync", 9001, "ghl", "contact-1", "deal-1",
              "company-hs-1234", "testhash"),
         )
@@ -4223,7 +4180,7 @@ def test_multi_platform_entity_map_isolation():
             "INSERT INTO leads (id, name, email, created_at) VALUES (1, 'Test Lead', 'test@example.com', datetime('now'))",
         )
         conn.execute(
-            "INSERT INTO workspace_leads (id, lead_id, workspace_id, org_id, status, created_at, updated_at, cloud_pending) VALUES (1, 1, 'ws1', 'org1', 'interested', datetime('now'), datetime('now'), 1)",
+            "INSERT INTO workspace_leads (id, lead_id, workspace_id, org_id, status, created_at, updated_at) VALUES (1, 1, 'ws1', 'org1', 'interested', datetime('now'), datetime('now'))",
         )
         conn.commit()
 

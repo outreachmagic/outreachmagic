@@ -6,8 +6,6 @@ the interface, never directly inspecting driver internals.
 
 from __future__ import annotations
 
-from typing import Optional
-
 
 class MockDriver:
     """Fake driver for testing. Records calls and returns canned responses."""
@@ -30,7 +28,7 @@ class MockDriver:
     def _record(self, method: str, *details: str):
         self.calls.append(f"{method} {' '.join(details)}")
 
-    def lookup_contact(self, email: str) -> Optional[str]:
+    def lookup_contact(self, email: str) -> str | None:
         self.lookups.append(email)
         self._record("lookup_contact", email)
         return None
@@ -73,7 +71,7 @@ class MockDriver:
 
     def upsert_company(
         self, workspace_id: str, lead_data: dict, entity: dict | None = None,
-    ) -> Optional[str]:
+    ) -> str | None:
         self._company_counter += 1
         self.companies.append((workspace_id, lead_data, entity))
         company_name = (

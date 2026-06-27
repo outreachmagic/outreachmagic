@@ -11,7 +11,7 @@ from typing import Any, Callable, Optional
 from constants import COMPANY_DOMAIN_SQL, PIPELINE_STAGES, require_professional_domain_clause
 from workspace_routing import resolve_workspace_identity
 
-LEAD_SENTIMENT_VALUES = ("positive", "negative", "autoreply", "invalid")
+LEAD_SENTIMENT_VALUES = ("positive", "negative", "neutral", "invalid")
 
 SHEET_LEGEND_NOTE = """Outreach Magic lead review sheet
 
@@ -1069,8 +1069,14 @@ def apply_lead_review_sync(
     upsert_workspace_lead_fn: Callable,
     org_id: str,
     dry_run: bool = True,
+    skip_cloud_pending: bool = False,
 ) -> dict[str, Any]:
-    """Apply syncable fields from sheet rows back to the database."""
+    """Apply syncable fields from sheet rows back to the database.
+
+    When ``skip_cloud_pending`` is True, ``cloud_pending`` is NOT set on any
+    affected rows. Use this when the changed data came from the relay and the
+    relay already has the most recent snapshot — avoids unnecessary re-push.
+    """
     summary: dict[str, Any] = {
         "status": "dry_run" if dry_run else "applied",
         "processed": 0,
@@ -1107,11 +1113,6 @@ def apply_lead_review_sync(
             val = _find_in_row(raw, field)
             if val is not None and str(val).strip():
                 val = str(val).strip()
-                if val.lower() == "neutral":
-                    if field == "lead_sentiment":
-                        val = "autoreply"
-                    else:
-                        continue
                 if not _sheet_value_equal(field, current.get(field), val):
                     row_changes[field] = val
 
@@ -1220,6 +1221,8 @@ def apply_lead_review_sync(
             ws_sets.append("contact_priority = ?")
             ws_params.append(row_changes["contact_order"])
         if ws_sets:
+            cp_ws = 0 if skip_cloud_pending else 1
+            ws_sets.append(f"cloud_pending = {cp_ws}")
             ws_sets.append("updated_at = datetime('now')")
             ws_params.extend([workspace_id, lead_id])
             conn.execute(
@@ -1249,7 +1252,9 @@ def apply_lead_review_sync(
             lead_sets.append("company = ?")
             lead_params.append(row_changes["company"])
         if lead_sets:
+            cp_lead = 0 if skip_cloud_pending else 1
             lead_sets.append("updated_at = datetime('now')")
+            lead_sets.append(f"cloud_pending = {cp_lead}")
             lead_params.append(lead_id)
             conn.execute(
                 f"UPDATE leads SET {', '.join(lead_sets)} WHERE id = ?",
@@ -1274,18 +1279,19 @@ def apply_lead_review_sync(
                 except ValueError as exc:
                     summary["errors"].append({"lead_id": lead_id, "error": str(exc)})
 
+        cp_company = 0 if skip_cloud_pending else 1
         if row_changes.get("company") and row_changes.get("company_scope") and current.get("company_id"):
             conn.execute(
-                "UPDATE companies SET name = ?, updated_at = datetime('now') WHERE id = ?",
+                f"UPDATE companies SET name = ?, updated_at = datetime('now'), cloud_pending = {cp_company} WHERE id = ?",
                 (row_changes["company"], current["company_id"]),
             )
             conn.execute(
-                "UPDATE leads SET company = ?, updated_at = datetime('now') WHERE company_id = ?",
+                f"UPDATE leads SET company = ?, updated_at = datetime('now'), cloud_pending = {cp_company} WHERE company_id = ?",
                 (row_changes["company"], current["company_id"]),
             )
         elif row_changes.get("company"):
             conn.execute(
-                "UPDATE leads SET company = ?, updated_at = datetime('now') WHERE id = ?",
+                f"UPDATE leads SET company = ?, updated_at = datetime('now'), cloud_pending = {cp_company} WHERE id = ?",
                 (row_changes["company"], lead_id),
             )
 
@@ -1295,23 +1301,27 @@ def apply_lead_review_sync(
             pers_name = field_key[len("personalized_"):]
             scope = _field_def(field_key).get("scope")
             if scope == "personalization_company" and current.get("company_id"):
+                cp_pers = 0 if skip_cloud_pending else 1
                 conn.execute(
-                    """INSERT INTO company_personalization
-                       (company_id, field_name, field_value)
-                       VALUES (?, ?, ?)
+                    f"""INSERT INTO company_personalization
+                       (company_id, field_name, field_value, cloud_pending)
+                       VALUES (?, ?, ?, {cp_pers})
                        ON CONFLICT (company_id, field_name) DO UPDATE SET
                          field_value = excluded.field_value,
-                         processed_at = datetime('now')""",
+                         processed_at = datetime('now'),
+                         cloud_pending = {cp_pers}""",
                     (current["company_id"], pers_name, field_val),
                 )
             else:
+                cp_pers = 0 if skip_cloud_pending else 1
                 conn.execute(
-                    """INSERT INTO lead_personalization
-                       (lead_id, field_name, field_value)
-                       VALUES (?, ?, ?)
+                    f"""INSERT INTO lead_personalization
+                       (lead_id, field_name, field_value, cloud_pending)
+                       VALUES (?, ?, ?, {cp_pers})
                        ON CONFLICT (lead_id, field_name) DO UPDATE SET
                          field_value = excluded.field_value,
-                         processed_at = datetime('now')""",
+                         processed_at = datetime('now'),
+                         cloud_pending = {cp_pers}""",
                     (lead_id, pers_name, field_val),
                 )
 

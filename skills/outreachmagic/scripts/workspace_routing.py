@@ -1200,7 +1200,9 @@ def upsert_workspace_lead(
     current_status_label: Optional[str] = None,
     current_status_sentiment: Optional[str] = None,
     contact_priority: Optional[int] = None,
+    mark_cloud_pending: bool = True,
 ) -> str:
+    pending_val = 1 if mark_cloud_pending else 0
     row = conn.execute(
         "SELECT id, status FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
         (workspace_id, lead_id),
@@ -1217,7 +1219,10 @@ def upsert_workspace_lead(
         if contact_priority is not None:
             extra_sets.append("contact_priority = ?")
             extra_params.append(contact_priority)
-        sets = "updated_at = datetime('now')"
+        if mark_cloud_pending:
+            sets = "cloud_pending = 1, updated_at = datetime('now')"
+        else:
+            sets = "updated_at = datetime('now')"
         if extra_sets:
             sets += ", " + ", ".join(extra_sets)
         conn.execute(
@@ -1231,11 +1236,14 @@ def upsert_workspace_lead(
         """INSERT INTO workspace_leads (
                id, org_id, workspace_id, lead_id, status, owner_user_id,
                current_status_label, current_status_sentiment, contact_priority,
+               cloud_pending,
                stage_entered_at, last_activity_at, created_at, updated_at
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     ?,
                      datetime('now'), NULL, datetime('now'), datetime('now'))""",
         (ws_lead_id, org_id, workspace_id, lead_id, status, owner_user_id,
-         current_status_label, current_status_sentiment, contact_priority),
+         current_status_label, current_status_sentiment, contact_priority,
+         pending_val),
     )
     return ws_lead_id
 

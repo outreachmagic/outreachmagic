@@ -1,5 +1,5 @@
 """
-Sync org BYOK API keys from the portal to local agent_secrets.env.
+Sync org BYOK API keys from wbhk-app (Neon vault) to local agent_secrets.env.
 """
 
 from __future__ import annotations

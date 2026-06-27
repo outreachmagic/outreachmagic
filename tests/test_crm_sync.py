@@ -1086,12 +1086,12 @@ def test_ghl_retry_on_network_error():
 
 def test_ghl_push_events_note_format():
     """Events formatted with correct prefix."""
-    # email_sent
-    assert "[Sent] Test Subject" in _format_event_note({
+    # email_sent (no [Sent] prefix — subject is the note body)
+    assert "Test Subject" in _format_event_note({
         "event_type": "email_sent", "direction": "outbound", "subject": "Test Subject",
     })
-    # reply
-    assert "[Replied] Thanks!" in _format_event_note({
+    # reply (no [Replied] prefix — body is the note)
+    assert "Thanks!" in _format_event_note({
         "event_type": "reply", "body_preview": "Thanks!",
     })
     # bounce
@@ -1125,7 +1125,7 @@ def test_ghl_push_events_note_truncation():
     note = _format_event_note({
         "event_type": "reply", "body_preview": long_body,
     })
-    assert len(note) <= 200 + len("[Replied] ")
+    assert len(note) == 200
 
 
 def test_ghl_push_events_empty_list():
@@ -1172,11 +1172,11 @@ def test_ghl_push_events_batch():
         assert conv_bodies[0]["contactId"] == "c-1"
         assert conv_bodies[0]["emailTo"] == "test@example.com"
         assert conv_bodies[0]["emailFrom"] == ""
-        assert "[Sent] Hello" == conv_bodies[0]["subject"]
+        assert "Hello" == conv_bodies[0]["subject"]
         assert "<p>Hi there</p>" == conv_bodies[0]["html"]
 
         assert conv_bodies[1]["type"] == "Email"
-        assert "[Reply]" in conv_bodies[1]["subject"]
+        assert "(no subject)" == conv_bodies[1]["subject"]
         assert "<p>Thanks</p>" == conv_bodies[1]["html"]
 
         # meeting_booked → note with deal info in footer
@@ -3176,7 +3176,7 @@ def test_company_sync_reuses_existing():
             workspace_id="ws-co-sync", platform="ghl",
         )
         assert company_id == "existing-co-id"
-        assert "upsert_company" not in " ".join(driver.calls)
+        assert "upsert_company" in " ".join(driver.calls)
     finally:
         conn.close()
 
@@ -4219,6 +4219,201 @@ def test_multi_platform_entity_map_isolation():
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Sentiment tag sync tests
+# ---------------------------------------------------------------------------
+
+def test_sentiment_tag_in_hash():
+    """Sentiment changes produce different sync hashes."""
+    lead_base = {
+        "name": "Test Lead", "email": "test@example.com", "title": "",
+        "industry": "", "headcount": "", "headcount_numeric": "",
+        "linkedin_url": "", "company_name": "", "company_domain": "",
+        "status": "interested", "current_status_sentiment": "",
+        "location_city": "", "location_state": "", "location_country": "",
+        "company_city": "", "company_state": "", "company_country": "",
+        "original_source_detail": "", "original_source_platform": "",
+        "latest_source_platform": "", "additional_emails": [],
+    }
+
+    lead_neg = dict(lead_base, current_status_sentiment="negative")
+    lead_pos = dict(lead_base, current_status_sentiment="positive")
+
+    hash_neg = crm_sync._build_sync_hash(lead_neg, None, "")
+    hash_pos = crm_sync._build_sync_hash(lead_pos, None, "")
+
+    assert hash_neg != hash_pos, "Different sentiments should produce different hashes"
+
+
+def test_sentiment_tag_sync_via_mock():
+    """MockDriver records sync_sentiment_tag calls during sync_single_lead."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_org_and_workspace(conn)
+        _setup_phase_1_data(conn)
+
+        mock = MockDriver()
+        cfg = {
+            "platform": "ghl",
+            "pipeline_id": "pipe-1",
+            "stage_mapping": {"interested": "s1", "proposal": "s2", "won": "s3", "lost": "s4"},
+        }
+
+        # Pick a lead from the workspace
+        leads = crm_sync.select_leads(conn, WS1_ID)
+        assert len(leads) > 0
+
+        # Set sentiment on the first lead
+        conn.execute(
+            "UPDATE workspace_leads SET current_status_sentiment = ? WHERE lead_id = ? AND workspace_id = ?",
+            ("positive", leads[0]["lead_id"], WS1_ID),
+        )
+        conn.commit()
+
+        # Re-select to get the updated sentiment
+        leads = crm_sync.select_leads(conn, WS1_ID)
+        lead = leads[0]
+
+        cid, did, ca, da = crm_sync.sync_single_lead(
+            lead, cfg, mock, conn=conn, workspace_id=WS1_ID,
+        )
+        assert ca in ("created_contact", "updated_contact")
+
+        # Verify sync_sentiment_tag was called
+        tag_calls = [c for c in mock.calls if c.startswith("sync_sentiment_tag")]
+        assert len(tag_calls) >= 1, f"Expected sync_sentiment_tag call, got calls: {mock.calls}"
+        assert "positive" in tag_calls[0]
+    finally:
+        conn.close()
+
+
+def test_sentiment_tag_sync_no_sentiment_calls_clear():
+    """Empty sentiment still calls sync_sentiment_tag."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_org_and_workspace(conn)
+        _setup_phase_1_data(conn)
+
+        mock = MockDriver()
+        cfg = {
+            "platform": "ghl",
+            "pipeline_id": "pipe-1",
+            "stage_mapping": {"interested": "s1", "proposal": "s2", "won": "s3", "lost": "s4"},
+        }
+
+        leads = crm_sync.select_leads(conn, WS1_ID)
+        assert len(leads) > 0
+
+        # Ensure sentiment is empty
+        conn.execute(
+            "UPDATE workspace_leads SET current_status_sentiment = NULL WHERE lead_id = ? AND workspace_id = ?",
+            (leads[0]["lead_id"], WS1_ID),
+        )
+        conn.commit()
+
+        leads = crm_sync.select_leads(conn, WS1_ID)
+        cid, did, ca, da = crm_sync.sync_single_lead(
+            leads[0], cfg, mock, conn=conn, workspace_id=WS1_ID,
+        )
+
+        tag_calls = [c for c in mock.calls if c.startswith("sync_sentiment_tag")]
+        assert len(tag_calls) >= 1, f"Empty sentiment should still trigger sync_sentiment_tag call, got: {mock.calls}"
+        assert "(empty)" in tag_calls[0]
+    finally:
+        conn.close()
+
+
+def test_sentiment_tag_non_fatal():
+    """Tag sync failure does not break contact/deal sync."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_org_and_workspace(conn)
+        _setup_phase_1_data(conn)
+
+        class FailingTagMock(MockDriver):
+            def sync_sentiment_tag(self, contact_id, sentiment):
+                self._record("sync_sentiment_tag", contact_id, sentiment or "(empty)")
+                raise Exception("tag sync failed")
+
+        mock = FailingTagMock()
+        cfg = {
+            "platform": "ghl",
+            "pipeline_id": "pipe-1",
+            "stage_mapping": {"interested": "s1", "proposal": "s2", "won": "s3", "lost": "s4"},
+        }
+
+        conn.execute(
+            "UPDATE workspace_leads SET current_status_sentiment = ? WHERE workspace_id = ?",
+            ("negative", WS1_ID),
+        )
+        conn.commit()
+
+        leads = crm_sync.select_leads(conn, WS1_ID)
+        assert len(leads) > 0
+
+        cid, did, ca, da = crm_sync.sync_single_lead(
+            leads[0], cfg, mock, conn=conn, workspace_id=WS1_ID,
+        )
+        # Contact/deal sync should still succeed despite tag failure
+        assert ca in ("created_contact", "updated_contact"), f"Expected contact action, got {ca}"
+        assert da in ("skipped", "updated_deal", "created_deal"), f"Expected deal action, got {da}"
+    finally:
+        conn.close()
+
+
+def test_ghl_list_location_tags():
+    """list_location_tags calls correct GHL endpoint."""
+    driver = GhlDriver(_make_ghl_config())
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = _mock_response({
+            "tags": [
+                {"id": "tag-1", "name": "om_positive"},
+                {"id": "tag-2", "name": "om_negative"},
+            ],
+        })
+        result = driver.list_location_tags()
+        assert len(result) == 2
+        assert result[0]["name"] == "om_positive"
+        assert result[1]["name"] == "om_negative"
+
+    # Verify the URL was correct
+    called_url = mock_urlopen.call_args[0][0].full_url
+    assert "/locations/" in called_url
+    assert "/tags" in called_url
+
+
+def test_ghl_create_location_tag():
+    """create_location_tag creates a new tag if not found."""
+    driver = GhlDriver(_make_ghl_config())
+
+    tag_created = []
+
+    def side_effect(req, timeout=30):
+        url = req.full_url or ""
+        if "/tags" in url and req.method in ("POST", "post"):
+            body = json.loads(req.data) if req.data else {}
+            tag_created.append(body.get("name"))
+            cm = MagicMock()
+            cm.__enter__.return_value.read.return_value = json.dumps({
+                "id": "tag-new-001",
+            }).encode()
+            return cm
+        # GET /locations/{id}/tags returns existing tags (none matching)
+        cm = MagicMock()
+        cm.__enter__.return_value.read.return_value = json.dumps({
+            "tags": [{"id": "existing-1", "name": "old_tag"}],
+        }).encode()
+        return cm
+
+    with patch("urllib.request.urlopen", side_effect=side_effect):
+        result = driver.create_location_tag("om_invalid")
+        assert result == "tag-new-001"
+        assert "om_invalid" in tag_created
+
+
 if __name__ == "__main__":
     test_phase_0_tables_exist_after_init()
     test_phase_0_migration_on_existing_db()
@@ -4295,5 +4490,17 @@ if __name__ == "__main__":
     test_portal_config_bumps_version()
     test_portal_config_secrets_failure_non_fatal()
     print("phase_7 ok")
+
+    # Sentiment tag sync tests
+    test_sentiment_tag_in_hash()
+    test_sentiment_tag_sync_via_mock()
+    test_sentiment_tag_sync_no_sentiment_calls_clear()
+    test_sentiment_tag_non_fatal()
+    print("sentiment_tag ok")
+
+    # GHL tag management tests
+    test_ghl_list_location_tags()
+    test_ghl_create_location_tag()
+    print("ghl_tags ok")
 
     print("all ok")

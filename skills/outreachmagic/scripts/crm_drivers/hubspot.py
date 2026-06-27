@@ -5,8 +5,6 @@ API: https://developers.hubspot.com/docs/api/crm/
 
 from __future__ import annotations
 
-from typing import Optional
-
 import json
 import time
 import urllib.request
@@ -125,7 +123,7 @@ class HubspotDriver:
     # Contact operations
     # ------------------------------------------------------------------
 
-    def search_contact(self, email: str) -> Optional[str]:
+    def search_contact(self, email: str) -> str | None:
         """Search HubSpot contacts by email. Returns contactId or None."""
         body = {
             "filterGroups": [
@@ -154,7 +152,7 @@ class HubspotDriver:
         except HubspotError:
             return None
 
-    def lookup_contact(self, email: str) -> Optional[str]:
+    def lookup_contact(self, email: str) -> str | None:
         """Look up a contact by email. Returns contactId or None."""
         return self.search_contact(email)
 
@@ -183,8 +181,8 @@ class HubspotDriver:
         if lead_data.get("industry"):
             properties["industry"] = str(lead_data["industry"])
 
-        if lead_data.get("headcount_numeric"):
-            properties["numemployees"] = str(lead_data["headcount_numeric"])
+        if lead_data.get("headcount"):
+            properties["numemployees"] = str(lead_data["headcount"])
 
         if lead_data.get("company_domain"):
             properties["website"] = str(lead_data["company_domain"])
@@ -214,7 +212,7 @@ class HubspotDriver:
             "title": "jobtitle",
             "linkedin_url": "linkedinbio",
             "industry": "industry",
-            "headcount_numeric": "numemployees",
+            "headcount": "numemployees",
             "company_domain": "website",
         }
 
@@ -285,7 +283,7 @@ class HubspotDriver:
 
     def upsert_company(
         self, workspace_id: str, lead_data: dict, entity: dict | None = None,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Create or find a HubSpot company. Returns companyId or None."""
         company_name = (
             lead_data.get("company_name")
@@ -314,7 +312,7 @@ class HubspotDriver:
     # Deal operations
     # ------------------------------------------------------------------
 
-    def _search_deal_by_contact(self, contact_id: str, pipeline_id: str) -> Optional[str]:
+    def _search_deal_by_contact(self, contact_id: str, pipeline_id: str) -> str | None:
         """Search for an existing deal associated with this contact+pipeline."""
         body = {
             "filterGroups": [

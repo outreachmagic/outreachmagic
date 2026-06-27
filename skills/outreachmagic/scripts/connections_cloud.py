@@ -1,5 +1,5 @@
 """
-Manage webhook connections and fetch agent status via the portal API.
+Manage webhook connections and fetch agent status via the wbhk-app API.
 Mirrors the dashboard UI: create/delete tokens, view per-platform health.
 """
 

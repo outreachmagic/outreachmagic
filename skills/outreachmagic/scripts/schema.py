@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS companies (
     hq_city             TEXT,
     hq_state            TEXT,
     hq_country          TEXT,
+    cloud_pending       INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS leads (
     last_contact_at          TEXT,
     next_action              TEXT,
     next_action_at           TEXT,
+    cloud_pending            INTEGER NOT NULL DEFAULT 0,
     latest_sender            TEXT,
     latest_sender_platform   TEXT
 );
@@ -156,6 +158,7 @@ CREATE TABLE IF NOT EXISTS workspace_leads (
     current_status_sentiment TEXT,
     contact_priority         INTEGER,
     latest_sender            TEXT,
+    cloud_pending            INTEGER NOT NULL DEFAULT 0,
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (workspace_id, lead_id)
@@ -226,6 +229,7 @@ CREATE TABLE IF NOT EXISTS unmapped_campaign_queue (
     payload_json            TEXT NOT NULL,
     received_at             TEXT NOT NULL DEFAULT (datetime('now')),
     resolved_at             TEXT,
+    cloud_pending           INTEGER NOT NULL DEFAULT 0,
     assigned_workspace      TEXT
 );
 
@@ -233,6 +237,8 @@ CREATE INDEX IF NOT EXISTS idx_quarantine_status ON unmapped_campaign_queue(org_
 CREATE INDEX IF NOT EXISTS idx_quarantine_campaign ON unmapped_campaign_queue(
     org_id, source_platform, campaign_id, status
 );
+CREATE INDEX IF NOT EXISTS idx_quarantine_cloud_pending ON unmapped_campaign_queue(cloud_pending)
+    WHERE cloud_pending = 1;
 
 CREATE TABLE IF NOT EXISTS lead_merge_jobs (
     id              TEXT PRIMARY KEY,
@@ -252,8 +258,10 @@ CREATE TABLE IF NOT EXISTS lead_personalization (
     field_date      TEXT,
     source_hash     TEXT,
     processed_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    cloud_pending   INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (lead_id, field_name)
 );
+CREATE INDEX IF NOT EXISTS idx_personalization_pending ON lead_personalization(cloud_pending) WHERE cloud_pending = 1;
 
 CREATE TABLE IF NOT EXISTS company_personalization (
     company_id      INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -262,8 +270,10 @@ CREATE TABLE IF NOT EXISTS company_personalization (
     field_date      TEXT,
     source_hash     TEXT,
     processed_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    cloud_pending   INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (company_id, field_name)
 );
+CREATE INDEX IF NOT EXISTS idx_company_pers_pending ON company_personalization(cloud_pending) WHERE cloud_pending = 1;
 
 CREATE TABLE IF NOT EXISTS workspace_lead_tags (
     id              TEXT PRIMARY KEY,
@@ -345,71 +355,4 @@ CREATE INDEX IF NOT EXISTS idx_bounce_events_lead ON bounce_events(lead_id);
 CREATE INDEX IF NOT EXISTS idx_bounce_events_platform ON bounce_events(platform, bounce_type);
 CREATE INDEX IF NOT EXISTS idx_bounce_events_sender ON bounce_events(sender_email);
 CREATE INDEX IF NOT EXISTS idx_bounce_events_seen ON bounce_events(last_seen_at DESC);
-
--- CRM sync tables (Phase 0)
-CREATE TABLE IF NOT EXISTS crm_workspace_config (
-    workspace_id         TEXT NOT NULL,
-    platform             TEXT NOT NULL,
-    api_key              TEXT NOT NULL,
-    location_id          TEXT,
-    pipeline_id          TEXT,
-    stage_mapping        TEXT NOT NULL DEFAULT '{}',
-    contact_field_mapping TEXT,
-    overwrite_existing   INTEGER NOT NULL DEFAULT 0,
-    enabled              INTEGER NOT NULL DEFAULT 1,
-    updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (workspace_id, platform),
-    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS crm_entity_map (
-    workspace_id         TEXT NOT NULL,
-    lead_id              INTEGER NOT NULL,
-    platform             TEXT NOT NULL,
-    crm_contact_id       TEXT,
-    crm_deal_id          TEXT,
-    crm_company_id       TEXT,
-    crm_owner_id         TEXT,
-    last_synced_at       TEXT,
-    last_event_id_synced TEXT,
-    last_sync_status     TEXT NOT NULL DEFAULT 'pending',
-    sync_error           TEXT,
-    sync_hash            TEXT,
-    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (workspace_id, lead_id, platform),
-    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
-    FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS crm_sync_log (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    workspace_id         TEXT NOT NULL,
-    platform             TEXT NOT NULL,
-    started_at           TEXT NOT NULL,
-    completed_at         TEXT,
-    leads_checked        INTEGER NOT NULL DEFAULT 0,
-    contacts_created     INTEGER NOT NULL DEFAULT 0,
-    contacts_updated     INTEGER NOT NULL DEFAULT 0,
-    opportunities_created INTEGER NOT NULL DEFAULT 0,
-    opportunities_updated INTEGER NOT NULL DEFAULT 0,
-    events_pushed        INTEGER NOT NULL DEFAULT 0,
-    skipped              INTEGER NOT NULL DEFAULT 0,
-    errors               INTEGER NOT NULL DEFAULT 0,
-    error_details        TEXT,
-    status               TEXT NOT NULL DEFAULT 'in_progress',
-    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_crm_sync_log_ws ON crm_sync_log(workspace_id, started_at DESC);
-
-CREATE TABLE IF NOT EXISTS lead_emails (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-    email           TEXT NOT NULL,
-    is_primary      INTEGER NOT NULL DEFAULT 0,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_lead_emails_lead ON lead_emails(lead_id);
-CREATE INDEX IF NOT EXISTS idx_lead_emails_email ON lead_emails(email);
 """

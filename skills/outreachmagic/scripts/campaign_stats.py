@@ -234,7 +234,7 @@ def build_campaign_stats_payload(
     FROM ranked_status rs
     JOIN campaigns c ON rs.campaign_id = c.id
     WHERE rs.rn = 1
-      AND rs.sentiment IN ('positive', 'negative', 'autoreply', 'invalid')
+      AND rs.sentiment IN ('positive', 'interested', 'neutral', 'negative', 'not_interested', 'invalid')
       AND c.name LIKE ?
     GROUP BY c.name, rs.sentiment
     ORDER BY campaign, lead_count DESC
@@ -248,9 +248,9 @@ def build_campaign_stats_payload(
     for sr in sentiment_rows:
         sentiment_pivot[sr["campaign"]][sr["sentiment"]] += sr["lead_count"]
 
-    # Gather interested/not_interested counts per campaign (from canonical sentiments)
-    interested_sentiments = {"positive"}
-    not_interested_sentiments = {"negative"}
+    # Gather interested/not_interested counts per campaign
+    interested_sentiments = {"positive", "interested"}
+    not_interested_sentiments = {"negative", "not_interested"}
     sentiment_totals: dict[str, dict[str, int]] = defaultdict(lambda: {"interested": 0, "not_interested": 0})
     for sr in sentiment_rows:
         camp = sr["campaign"]
@@ -353,7 +353,7 @@ def build_campaign_stats_payload(
         funnel_rows.append([])  # spacer
 
     # \u2500\u2500 Build Sheet 3: Lead Sentiment \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    sentiment_order = ["positive", "negative", "autoreply", "invalid"]
+    sentiment_order = ["positive", "interested", "neutral", "negative", "not_interested", "invalid"]
     sentiment_headers = ["Campaign"] + [s.capitalize() for s in sentiment_order] + ["Total Tagged", "Positivity Rate"]
     sentiment_body = []
 
@@ -367,8 +367,8 @@ def build_campaign_stats_payload(
             row_data.append(count)
             total_tagged += count
 
-        pos = sentiment_pivot[camp].get("positive", 0)
-        neg = sentiment_pivot[camp].get("negative", 0)
+        pos = sentiment_pivot[camp].get("positive", 0) + sentiment_pivot[camp].get("interested", 0)
+        neg = sentiment_pivot[camp].get("negative", 0) + sentiment_pivot[camp].get("not_interested", 0)
         positivity = pct(pos, pos + neg) if (pos + neg) > 0 else "\u2014"
 
         row_data.append(total_tagged)
@@ -376,7 +376,7 @@ def build_campaign_stats_payload(
         sentiment_body.append(row_data)
 
     if not sentiment_body:
-        sentiment_body.append(["No sentiment data in this period", "", "", "", "", "", ""])
+        sentiment_body.append(["No sentiment data in this period", "", "", "", "", "", "", "", ""])
 
     # \u2500\u2500 Build Sheet 4: Daily Breakdown \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
@@ -474,8 +474,8 @@ def build_campaign_stats_payload(
     ),
     daily_sentiment AS (
       SELECT campaign_id, day,
-             SUM(CASE WHEN sentiment IN ('positive') THEN 1 ELSE 0 END) AS interested_count,
-             SUM(CASE WHEN sentiment IN ('negative') THEN 1 ELSE 0 END) AS not_interested_count
+             SUM(CASE WHEN sentiment IN ('positive', 'interested') THEN 1 ELSE 0 END) AS interested_count,
+             SUM(CASE WHEN sentiment IN ('negative', 'not_interested') THEN 1 ELSE 0 END) AS not_interested_count
       FROM ranked_daily_sentiment
       WHERE rn = 1
       GROUP BY campaign_id, day

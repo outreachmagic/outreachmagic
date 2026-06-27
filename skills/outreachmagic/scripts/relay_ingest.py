@@ -72,8 +72,6 @@ def build_plusvibe_status_metadata(
         sentiment = "positive"
     elif forced_label in ("not_interested", "not interested", "wrong_person", "closed"):
         sentiment = "negative"
-    if is_auto_reply_label(label):
-        sentiment = "autoreply"
     if not sentiment and label == "email_bounced":
         sentiment = "invalid"
 
@@ -834,11 +832,13 @@ def ingest_relay_event(
             event_at=event_time,
             conn=conn,
             commit=False,
+            mark_cloud_pending=False,
         )
 
     ws_status = target_stage or "prospecting"
     ws_lead_id = om.upsert_workspace_lead(
         conn, DEFAULT_ORG_ID, workspace_id, lead_id, status=ws_status,
+        mark_cloud_pending=False,
     )
     if target_stage:
         stage_ts = event_time or datetime.now(timezone.utc).isoformat()

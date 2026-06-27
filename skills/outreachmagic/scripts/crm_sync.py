@@ -134,7 +134,7 @@ def load_driver(platform: str, config: dict):
 # Lead selection
 # ---------------------------------------------------------------------------
 
-def select_leads(conn, workspace_id: str, last_sync_at: Optional[str] = None,
+def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
                  lead_id: int | None = None) -> list[dict]:
     """Select leads ready for CRM sync from a workspace.
 
@@ -160,16 +160,8 @@ def select_leads(conn, workspace_id: str, last_sync_at: Optional[str] = None,
     query = f"""
         SELECT wl.lead_id, wl.status, wl.updated_at,
                l.name, l.email, l.title, l.industry, l.headcount,
-               l.headcount_numeric,
                l.linkedin_url, l.company,
-               l.location_city, l.location_state, l.location_country,
-               l.original_source, l.original_source_detail,
-               l.original_source_platform,
-               l.latest_source, l.latest_source_detail,
-               l.latest_source_platform,
-               c.name AS company_name, c.domain AS company_domain,
-               c.hq_city AS company_city, c.hq_state AS company_state,
-               c.hq_country AS company_country
+               c.name AS company_name, c.domain AS company_domain
           FROM workspace_leads wl
           JOIN leads l ON l.id = wl.lead_id
           LEFT JOIN companies c ON c.id = l.company_id
@@ -209,11 +201,10 @@ def format_event_for_crm(event: dict) -> dict:
     """
     event_type = event.get("event_type", "unknown")
 
-    if event_type in ("email_sent", "email_reply", "reply"):
+    if event_type in ("email_sent", "reply"):
         direction = event.get("direction", "inbound")
         title = event.get("subject", event.get("body_preview", ""))
-        if event_type in ("email_reply", "reply") and "Replied" not in title:
-            title = "Replied: " + title
+        if event_type == "reply" and "Replied" not in title:
             title = "Replied: " + title
         return {
             "crm_type": "email",
@@ -235,32 +226,10 @@ def format_event_for_crm(event: dict) -> dict:
 
 def collect_pending_events(conn, workspace_id: str, lead_id: int,
                            last_event_id: int | None = None) -> list[dict]:
-    """Collect unsynced events for a lead. Flattens payload_json to top level."""
-    import json
-
-    def _flatten(row: dict) -> dict:
-        """Parse payload_json and merge event fields to top level."""
-        result = dict(row)
-        raw = result.pop("payload_json", "{}")
-        try:
-            payload = json.loads(raw) if isinstance(raw, str) else raw
-        except (json.JSONDecodeError, TypeError):
-            payload = {}
-        # Merge top-level payload fields
-        for k, v in payload.items():
-            if k not in result or not result[k]:
-                result[k] = v
-        # Merge nested event fields (e.g. payload.event.sender)
-        event_obj = payload.get("event", {})
-        if isinstance(event_obj, dict):
-            for k, v in event_obj.items():
-                if k not in result or not result[k]:
-                    result[k] = v
-        return result
-
+    """Collect unsynced events for a lead."""
     if last_event_id is not None:
         return [
-            _flatten(dict(r))
+            dict(r)
             for r in conn.execute(
                 """SELECT rowid, * FROM workspace_lead_events
                    WHERE workspace_id = ? AND lead_id = ?
@@ -272,7 +241,7 @@ def collect_pending_events(conn, workspace_id: str, lead_id: int,
         ]
     else:
         return [
-            _flatten(dict(r))
+            dict(r)
             for r in conn.execute(
                 """SELECT rowid, * FROM workspace_lead_events
                    WHERE workspace_id = ? AND lead_id = ?
@@ -296,7 +265,7 @@ def sync_company(
     if not company_name:
         return ""
 
-    entity_co_id: Optional[str] = None
+    entity_co_id: str | None = None
     if entity:
         try:
             entity_co_id = entity["crm_company_id"]
@@ -338,20 +307,10 @@ def _build_sync_hash(lead: dict, contact_field_mapping: dict | None,
         lead.get("title", ""),
         lead.get("industry", ""),
         lead.get("headcount", ""),
-        lead.get("headcount_numeric", ""),
         lead.get("linkedin_url", ""),
         lead.get("company_name", ""),
         lead.get("company_domain", ""),
         lead.get("status", ""),
-        lead.get("location_city", ""),
-        lead.get("location_state", ""),
-        lead.get("location_country", ""),
-        lead.get("company_city", ""),
-        lead.get("company_state", ""),
-        lead.get("company_country", ""),
-        lead.get("original_source_detail", ""),
-        lead.get("original_source_platform", ""),
-        lead.get("latest_source_platform", ""),
         str(company_id),
     ]
     # Include additional emails so adding/removing secondary emails triggers re-sync
@@ -409,8 +368,8 @@ def sync_single_lead(
                     """INSERT OR REPLACE INTO crm_entity_map
                        (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
                         crm_company_id, last_synced_at, last_sync_status, sync_hash,
-                        updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'partial', ?, datetime('now'))""",
+                        cloud_pending, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'partial', ?, 1, datetime('now'))""",
                     (ws_id, lead_id_val, platform,
                      entity["crm_contact_id"] if entity else "",
                      entity["crm_deal_id"] if entity else "",
@@ -418,21 +377,6 @@ def sync_single_lead(
                 )
             except Exception:
                 pass  # Non-fatal if entity_map write fails
-            # Bump lead/workspace timestamps so the next sync pushes
-            # the partial CRM mapping to the relay snapshot.
-            try:
-                now_iso = datetime.now(timezone.utc).isoformat()
-                conn.execute(
-                    "UPDATE leads SET updated_at = ? WHERE id = ?",
-                    (now_iso, lead_id_val),
-                )
-                conn.execute(
-                    """UPDATE workspace_leads SET updated_at = ?
-                       WHERE workspace_id = ? AND lead_id = ?""",
-                    (now_iso, ws_id, lead_id_val),
-                )
-            except Exception:
-                pass
 
     # -- Contact --
     contact_id = entity["crm_contact_id"] if entity else None
@@ -465,31 +409,6 @@ def sync_single_lead(
     if not contact_id:
         return ("", "", "error", "error")
 
-    # -- Push alternate emails as a contact note --
-    # GHL's public API does NOT support writing alternateEmails on any endpoint
-    # (POST, PUT, upsert all return 422). Write them as a note instead.
-    add_emails = lead.get("additional_emails", [])
-    if add_emails and platform == "ghl":
-        primary_email = lead.get("email", "")
-        emails_str = ", ".join(add_emails)
-        note_body = (
-            f"Primary email: {primary_email}\n"
-            f"Alternate email(s): {emails_str}\n"
-            "---\n"
-            "note: GHL API doesn't support writing alternate emails. "
-            "Please add them manually in the contact editor.\n"
-            f"----------\n"
-            f"source=om_sync | ghl_contact_id={contact_id}"
-        )
-        try:
-            driver.add_note(contact_id, note_body)
-        except Exception as exc:
-            print(
-                f"  Warning: could not post alternate-email note for lead "
-                f"{lead_id_val}: {exc}",
-                file=sys.stderr,
-            )
-
     # -- Deal --
     deal_id = entity["crm_deal_id"] if entity else None
     d_action = "skipped"
@@ -518,26 +437,11 @@ def sync_single_lead(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
                 crm_company_id, last_synced_at, last_sync_status, sync_hash,
-                updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, datetime('now'))""",
+                cloud_pending, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, 1, datetime('now'))""",
             (ws_id, lead_id_val, platform, contact_id, deal_id,
              company_id or None, new_hash),
         )
-        # Bump lead/workspace timestamps so the next sync pushes
-        # the CRM entity map to the relay snapshot.
-        try:
-            now_iso = datetime.now(timezone.utc).isoformat()
-            conn.execute(
-                "UPDATE leads SET updated_at = ? WHERE id = ?",
-                (now_iso, lead_id_val),
-            )
-            conn.execute(
-                """UPDATE workspace_leads SET updated_at = ?
-                   WHERE workspace_id = ? AND lead_id = ?""",
-                (now_iso, ws_id, lead_id_val),
-            )
-        except Exception:
-            pass
 
     return (contact_id, deal_id, c_action, d_action)
 

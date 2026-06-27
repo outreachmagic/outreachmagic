@@ -5,10 +5,7 @@ API: https://highlevel.stoplight.io/docs/integrations/
 
 from __future__ import annotations
 
-from typing import Optional
-
 import json
-import re
 import time
 import urllib.request
 import urllib.error
@@ -128,7 +125,7 @@ class GhlDriver:
     # Contact operations
     # ------------------------------------------------------------------
 
-    def lookup_contact(self, email: str) -> Optional[str]:
+    def lookup_contact(self, email: str) -> str | None:
         """Look up a contact by email. Returns contactId or None."""
         try:
             resp = self._request("GET", "/contacts/lookup",
@@ -159,30 +156,6 @@ class GhlDriver:
         if lead_data.get("company_name") or lead_data.get("company"):
             body["companyName"] = lead_data.get("company_name") or lead_data.get("company")
 
-        # ── Standard contact fields ──
-        # website (from company domain)
-        website_val = lead_data.get("company_domain") or ""
-        if website_val and not website_val.startswith("http"):
-            website_val = "https://" + website_val
-        if website_val:
-            body["website"] = website_val
-
-        # source (from original_source_detail)
-        source_val = lead_data.get("original_source_detail") or ""
-        if source_val:
-            body["source"] = source_val
-
-        # location (lead data preferred, fall back to company HQ)
-        loc_city = lead_data.get("location_city") or lead_data.get("company_city") or ""
-        if loc_city:
-            body["city"] = loc_city
-        loc_state = lead_data.get("location_state") or lead_data.get("company_state") or ""
-        if loc_state:
-            body["state"] = loc_state
-        loc_country = lead_data.get("location_country") or lead_data.get("company_country") or ""
-        if loc_country:
-            body["country"] = loc_country
-
         # Custom fields via mapping
         custom_fields = []
         if field_mapping:
@@ -193,6 +166,11 @@ class GhlDriver:
 
         if custom_fields:
             body["customFields"] = custom_fields
+
+        # Additional emails (GHL alternateEmails)
+        add_emails = lead_data.get("additional_emails", [])
+        if add_emails:
+            body["alternateEmails"] = add_emails
 
         try:
             resp = self._request("POST", "/contacts/", body=body)
@@ -254,30 +232,6 @@ class GhlDriver:
             if overwrite_existing or not existing_contact.get("companyName"):
                 body["companyName"] = company_val
 
-        # website (from company domain)
-        website_val = lead_data.get("company_domain") or ""
-        if website_val and not website_val.startswith("http"):
-            website_val = "https://" + website_val
-        if website_val and (overwrite_existing or not existing_contact.get("website")):
-            body["website"] = website_val
-
-        # source (from original_source_detail)
-        source_val = lead_data.get("original_source_detail") or ""
-        if source_val:
-            if overwrite_existing or not existing_contact.get("source"):
-                body["source"] = source_val
-
-        # location fields (lead data preferred, fall back to company HQ)
-        loc_fields = [
-            ("location_city", "company_city", "city"),
-            ("location_state", "company_state", "state"),
-            ("location_country", "company_country", "country"),
-        ]
-        for lead_key, company_key, ghl_key in loc_fields:
-            val = lead_data.get(lead_key) or lead_data.get(company_key) or ""
-            if val and (overwrite_existing or not existing_contact.get(ghl_key)):
-                body[ghl_key] = val
-
         # ── Custom fields ──
         existing_cf: dict[str, str] = {}
         if existing_contact:
@@ -302,31 +256,19 @@ class GhlDriver:
         if custom_fields:
             body["customFields"] = custom_fields
 
-        # NOTE: GHL's public API does NOT support writing alternateEmails
-        # (POST /contacts/, PUT /contacts/{id}, and upsert all reject it
-        # with 422). See gohighlevel GitHub issue #262. If you need secondary
-        # emails on GHL contacts, configure a custom field in the portal and
-        # map it to the 'email' or another lead field.
+        # Additional emails (GHL alternateEmails)
+        add_emails = lead_data.get("additional_emails", [])
+        if add_emails:
+            body["alternateEmails"] = add_emails
 
         if body:
             self._request("PUT", f"/contacts/{contact_id}", body=body)
-
-    def add_note(self, contact_id: str, body: str) -> bool:
-        """Add a note to an existing GHL contact. Returns True on success."""
-        if not body:
-            return True
-        try:
-            self._request("POST", f"/contacts/{contact_id}/notes",
-                          body={"body": body})
-            return True
-        except (GhlError, AuthError, NetworkError, RateLimitError):
-            return False
 
     # ------------------------------------------------------------------
     # Company operations
     # ------------------------------------------------------------------
 
-    def _search_business_by_name(self, name: str) -> Optional[str]:
+    def _search_business_by_name(self, name: str) -> str | None:
         """Search for a GHL business by name. Returns businessId or None."""
         try:
             response = self._request(
@@ -343,7 +285,7 @@ class GhlDriver:
 
     def upsert_company(
         self, workspace_id: str, lead_data: dict, entity: dict | None = None,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Create or find a GHL business (company). Returns businessId or None."""
         company_name = (
             lead_data.get("company_name")
@@ -442,7 +384,7 @@ class GhlDriver:
             event_type = event.get("event_type", "")
             event_rowid = event.get("rowid")
             try:
-                if event_type in ("email_sent", "email_reply", "reply"):
+                if event_type in ("email_sent", "reply"):
                     if not contact_email:
                         contact_email = self._get_contact_email(contact_id)
                     if self._push_email_event(contact_id, contact_email, event):
@@ -460,10 +402,8 @@ class GhlDriver:
                 note = _format_event_note(event)
                 if not note:
                     continue
-                context = _extract_event_context_lines(event)
-                if context:
-                    note += "\n" + context
-                note += _note_footer(contact_id=contact_id, deal_id=deal_id)
+                if deal_id:
+                    note = f"[Deal: {deal_id}] {note}"
                 self._request(
                     "POST",
                     f"/contacts/{contact_id}/notes",
@@ -485,55 +425,24 @@ class GhlDriver:
             return ""
 
     def _push_email_event(self, contact_id: str, contact_email: str, event: dict) -> bool:
-        """Push an email event to GHL conversation timeline without sending.
-
-        Uses POST /conversations/messages/inbound for both outbound sends and
-        inbound replies. This logs the message in the timeline without actually
-        dispatching an email.
-        """
+        """Push an email event to GHL as a conversation message. Returns True on success."""
         event_type = event.get("event_type", "")
         subject = event.get("subject", "")
-        sender = event.get("sender", "")
-
-        # Use full body from metadata if available, fall back to body_preview
-        meta_raw = event.get("metadata_json") or "{}"
-        try:
-            meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
-        except (json.JSONDecodeError, TypeError):
-            meta = {}
-        body_text = (
-            meta.get("body") 
-            or event.get("body") 
-            or event.get("body_preview") 
-            or ""
-        )
+        body_text = event.get("body_preview") or event.get("body") or ""
 
         if event_type == "email_sent":
-            email_from = sender
-            email_to = contact_email
-            timeline_subject = f"[Sent] {subject}"
-        elif event_type in ("email_reply", "reply"):
-            email_from = contact_email
-            email_to = sender
-            timeline_subject = f"[Reply] {subject}"
+            direction = "OUTBOUND"
+            prefix = "Sent"
+        elif event_type == "reply":
+            direction = "INBOUND"
+            prefix = "Reply"
         else:
             return False
 
-        # Convert plain text to HTML for GHL timeline rendering.
-        # If body is already HTML (starts with <), pass through as-is.
-        body_html = body_text[:5000]
-        if body_html:
-            if not body_html.startswith("<"):
-                # Split on double newlines for paragraph breaks, convert single
-                # newlines within a paragraph to <br>
-                paragraphs = re.split(r"\n{2,}", body_html)
-                escaped = []
-                for para in paragraphs:
-                    para = para.strip()
-                    if para:
-                        para = para.replace("\n", "<br>")
-                        escaped.append(f"<p>{para}</p>")
-                body_html = "\n".join(escaped)
+        # Build body HTML (include prefix so timeline shows direction)
+        body_html = body_text
+        if body_text:
+            body_html = f"<p>{body_text}</p>"
 
         self._request(
             "POST",
@@ -541,28 +450,13 @@ class GhlDriver:
             body={
                 "contactId": contact_id,
                 "type": "Email",
-                "emailTo": email_to,
-                "emailFrom": email_from,
-                "subject": timeline_subject or "(no subject)",
+                "emailTo": contact_email,
+                "emailFrom": "Outreach Magic <outreach@outreachmagic.com>",
+                "subject": f"[{prefix}] {subject}" if subject else f"[{prefix}] (no subject)",
                 "html": body_html,
             },
         )
         return True
-
-
-def _note_footer(contact_id: str = "", deal_id: str = "") -> str:
-    """Build the standard note footer for GHL contact notes.
-
-    Returns a string like:
-    \n----------
-    source=om_sync | ghl_deal_id=... | ghl_contact_id=...
-    """
-    parts = ["source=om_sync"]
-    if deal_id:
-        parts.append(f"ghl_deal_id={deal_id}")
-    if contact_id:
-        parts.append(f"ghl_contact_id={contact_id}")
-    return "\n----------\n" + " | ".join(parts)
 
 
 def _format_event_note(event: dict) -> str:
@@ -575,7 +469,7 @@ def _format_event_note(event: dict) -> str:
         "email_sent": f"[Sent] {subject}",
         "reply": f"[Replied] {body[:200] if body else subject}",
         "bounce": "[Bounced]",
-        "stage_change": f"[Stage] {event.get('old_stage', '')} \u2192 {event.get('new_stage', '')}",
+        "stage_change": f"[Stage] {event.get('old_stage', '')} → {event.get('new_stage', '')}",
         "meeting_booked": f"[Meeting] {body[:200] if body else 'Scheduled'}",
         "interested": "[Interested]",
         "not_interested": "[Not Interested]",
@@ -585,46 +479,5 @@ def _format_event_note(event: dict) -> str:
         return prefix_map[event_type]
 
     title = event_type.replace("_", " ").title()
-    detail = f" {body[:200]}" if body else ""
+    detail = f": {body[:200]}" if body else ""
     return f"[{title}]{detail}"
-
-
-def _extract_event_context_lines(event: dict) -> str:
-    """Extract extra context lines (source platform, UTM params) from an event.
-
-    Returns lines like:
-      via Calendly
-      UTM: utm_source=google | utm_campaign=spring
-
-    or empty string if nothing extra to add.
-    """
-    result_parts = []
-
-    # Parse metadata
-    meta_raw = event.get("metadata_json") or "{}"
-    try:
-        meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
-    except (json.JSONDecodeError, TypeError):
-        meta = {}
-
-    # Platform info
-    event_type = event.get("event_type", "")
-    platform = meta.get("platform", "")
-
-    if event_type == "meeting_booked" and platform:
-        result_parts.append(f"via {platform.title()}")
-
-    # UTM params
-    utm_fields = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"]
-    utm_parts = []
-    for field in utm_fields:
-        val = meta.get(field) or event.get(field) or ""
-        if val:
-            utm_parts.append(f"{field}={val}")
-
-    if utm_parts:
-        result_parts.append("UTM: " + " | ".join(utm_parts))
-    elif event_type == "meeting_booked":
-        result_parts.append("UTM: none")
-
-    return "\n".join(result_parts) if result_parts else ""

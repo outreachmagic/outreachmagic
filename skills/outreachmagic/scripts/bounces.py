@@ -477,6 +477,9 @@ def verify_email(
          smtp_provider, now_ts),
     )
     _compute_verification_status(conn, lead_id)
+    from pipeline import _mark_lead_cloud_pending
+
+    _mark_lead_cloud_pending(lead_id, conn=conn)
     if commit is None:
         commit = own_conn
     if commit:
@@ -488,6 +491,8 @@ def verify_email(
 
 def verify_email_batch(results: list[dict]) -> dict:
     """Record multiple verification results at once."""
+    from pipeline import _mark_lead_cloud_pending
+
     conn = get_conn()
     org_id = DEFAULT_ORG_ID
     recorded = 0
@@ -526,6 +531,7 @@ def verify_email_batch(results: list[dict]) -> dict:
              item.get("smtp_provider"), now_ts),
         )
         _compute_verification_status(conn, lid)
+        _mark_lead_cloud_pending(lid, conn=conn)
         recorded += 1
     conn.commit()
     conn.close()

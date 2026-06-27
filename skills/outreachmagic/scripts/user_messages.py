@@ -22,7 +22,7 @@ MSG_NO_AGENT_KEY = f"No agent key configured. {MSG_LOGIN}."
 
 
 def metered_usage_label(plan: str = "") -> str:
-    """Customer-facing usage meter label (see pricing docs)."""
+    """Customer-facing usage meter label (see outreachmagic-brand/product/pricing.md)."""
     if str(plan or "").strip().lower() in ("", "free"):
         return "Webhook events"
     return "Webhook and sync events"

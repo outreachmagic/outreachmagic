@@ -37,9 +37,9 @@ cp "$ROOT/install.sh" "$DIST/install.sh"
 (
   cd "$DIST"
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 install.sh > SHA256SUMS
+    shasum -a 256 install.sh update-manifest.json > SHA256SUMS
   else
-    sha256sum install.sh > SHA256SUMS
+    sha256sum install.sh update-manifest.json > SHA256SUMS
   fi
 )
 

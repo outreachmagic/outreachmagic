@@ -541,10 +541,41 @@ def fetch_update_manifest(repo_base: str, skill_repo_path: Optional[str] = None)
     path = skill_repo_path if skill_repo_path is not None else default_path
     url = update_manifest_url(repo_base, path)
     try:
-        payload = json.loads(_fetch_url(url).decode())
+        manifest_raw = _fetch_url(url)
+        payload = json.loads(manifest_raw.decode())
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError, ValueError):
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+
+    # Defense-in-depth: verify manifest hash against SHA256SUMS (released at
+    # repo root). This raises the bar for HTTPS MITM: an attacker must tamper
+    # with two files consistently. Future: GPG/sigstore signing of SHA256SUMS.
+    try:
+        sums_url = f"{repo_base.rstrip('/')}/SHA256SUMS"
+        sums_raw = _fetch_url(sums_url).decode()
+        manifest_hash = _sha256_hex(manifest_raw)
+        found = False
+        for line in sums_raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Line format: "<hash>  update-manifest.json" (two spaces before filename)
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[1].strip() == "update-manifest.json":
+                if parts[0].strip() == manifest_hash:
+                    found = True
+                break
+        if not found and any("update-manifest.json" in line for line in sums_raw.splitlines()):
+            # SHA256SUMS listed the manifest but hash didn't match — refuse
+            raise RuntimeError(
+                "update-manifest.json hash does not match SHA256SUMS. "
+                "Refusing to install. Report at security@outreachmagic.io."
+            )
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        pass  # SHA256SUMS not available (e.g. old release) — fall through
+
+    return payload
 
 
 def update_download_names(manifest: Optional[dict] = None) -> list[str]:

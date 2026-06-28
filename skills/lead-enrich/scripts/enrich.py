@@ -132,16 +132,46 @@ def _fetch_latest_tag() -> str:
     return _normalize_tag(tag)
 
 
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def _fetch_manifest(tag: str) -> dict[str, Any]:
-    url = f"{_repo_base_for_tag(tag)}/update-manifest.json"
+    repo_base = _repo_base_for_tag(tag)
+    url = f"{repo_base}/update-manifest.json"
     try:
-        payload = json.loads(_fetch_url(url).decode("utf-8"))
+        manifest_raw = _fetch_url(url)
+        payload = json.loads(manifest_raw.decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, UnicodeDecodeError) as e:
         raise RuntimeError(
             f"Failed to fetch update-manifest.json for {tag}. Refusing insecure update."
         ) from e
     if not isinstance(payload, dict) or not isinstance(payload.get("files"), dict):
         raise RuntimeError("Invalid update-manifest.json format.")
+
+    # Defense-in-depth: verify manifest hash against SHA256SUMS
+    try:
+        sums_url = f"{repo_base}/SHA256SUMS"
+        sums_raw = _fetch_url(sums_url).decode("utf-8")
+        manifest_hash = _sha256_hex(manifest_raw)
+        found = False
+        for line in sums_raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[1].strip() == "update-manifest.json":
+                if parts[0].strip() == manifest_hash:
+                    found = True
+                break
+        if not found and any("update-manifest.json" in line for line in sums_raw.splitlines()):
+            raise RuntimeError(
+                "update-manifest.json hash does not match SHA256SUMS. "
+                "Refusing to install."
+            )
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        pass  # SHA256SUMS not yet available
+
     return payload
 
 
@@ -166,7 +196,13 @@ def load_config() -> dict[str, Any]:
         cfg["outreachmagic_home"] = os.environ["OUTREACHMAGIC_HOME"]
 
     # Defaults
-    cfg.setdefault("serper_endpoint", "https://google.serper.dev/search")
+    default_serper = "https://google.serper.dev/search"
+    cfg.setdefault("serper_endpoint", default_serper)
+    if cfg.get("serper_endpoint") != default_serper:
+        cfg["serper_endpoint"] = cc.validate_endpoint_url(
+            cfg["serper_endpoint"],
+            allowed_host_suffixes=["serper.dev"],
+        )
     cfg.setdefault("serper_num_results", 10)
     cfg.setdefault("serper_gl", "us")
     cfg.setdefault("serper_hl", "en")

@@ -9,6 +9,14 @@ version: 1.2.0
 author: Outreach Magic
 license: MIT
 platforms: [linux, macos]
+required_environment_variables:
+  - name: OUTREACHMAGIC_AGENT_KEY
+    prompt: Outreach Magic agent key
+    help: |
+      Create at https://app.outreachmagic.io/onboarding.
+      Required for all cloud operations (login, pull, sync, connect-platform).
+      Starts with om_agent_
+    required_for: Authentication with Outreach Magic portal and relay
 metadata:
   cursor:
     tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm, cold-email, tracking, calendly, ecosystem:outreachmagic]

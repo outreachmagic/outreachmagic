@@ -83,12 +83,28 @@ def workspace_campaign_prefix(workspace: Optional[str], campaign_prefix: Optiona
 
 
 def _since_clause(since: Optional[str], column: str = "e.created_at") -> tuple[str, list]:
-    expr = normalize_since(since)
-    if not expr:
+    """Build a safe, parameterized SQL clause for the since filter.
+
+    Relative expressions (e.g. '48h', '7d', '2w') use parameterised
+    datetime modifiers so user-supplied strings are never interpolated
+    as SQL. Absolute dates ('2026-05-26', 'today') are passed as bound
+    parameters.
+    """
+    raw = (since or "").strip()
+    if not raw:
         return "", []
-    if expr.startswith("datetime("):
-        return f" AND {column} >= {expr}", []
-    return f" AND {column} >= ?", [expr]
+    low = raw.lower()
+    m = re.match(r"^(\d+)\s*h(?:ours?)?$", low)
+    if m:
+        return f" AND {column} >= datetime('now', ?)", [f"-{int(m.group(1))} hours"]
+    m = re.match(r"^(\d+)\s*d(?:ays?)?$", low)
+    if m:
+        return f" AND {column} >= datetime('now', ?)", [f"-{int(m.group(1))} days"]
+    m = re.match(r"^(\d+)\s*w(?:eeks?)?$", low)
+    if m:
+        return f" AND {column} >= datetime('now', ?)", [f"-{int(m.group(1)) * 7} days"]
+    # Absolute date string — parameterize as a simple value
+    return f" AND {column} >= ?", [raw]
 
 
 def engagement_by_campaign(

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
 
@@ -1167,3 +1168,48 @@ def run_tag_bulk(
         "tags": tags,
         "chunks": len(summaries),
     }
+
+
+def validate_endpoint_url(url: str, allowed_host_suffixes: list[str]) -> str:
+    """Validate an endpoint URL hostname matches one of the allowed suffixes.
+
+    Returns the validated URL. Raises ValueError if the URL is malformed or
+    the hostname is not in the allowlist. This prevents SSRF via config
+    overrides by rejecting private IPs and unexpected hostnames.
+    """
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError(f"Invalid endpoint URL (no hostname): {url!r}")
+    # Block IP addresses (both IPv4 and IPv6) — only named hostnames allowed
+    import ipaddress
+
+    is_ip = False
+    try:
+        ipaddress.ip_address(host)
+        is_ip = True
+    except ValueError:
+        pass
+
+    if is_ip:
+        raise ValueError(
+            f"Endpoint URL {url!r} uses raw IP address; "
+            f"only named hostnames are allowed."
+        )
+
+    if not host.replace(".", "").replace("-", "").isalnum():
+        raise ValueError(
+            f"Endpoint URL {url!r} has an invalid hostname: {host!r}"
+        )
+
+    # Check against allowed suffixes
+    host_lower = host.lower()
+    for suffix in allowed_host_suffixes:
+        suffix_lower = suffix.lower().lstrip(".")
+        if host_lower == suffix_lower or host_lower.endswith("." + suffix_lower):
+            return url
+
+    raise ValueError(
+        f"Endpoint URL {url!r} hostname {host!r} does not match any "
+        f"allowed host suffix: {allowed_host_suffixes}"
+    )

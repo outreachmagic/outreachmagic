@@ -153,8 +153,12 @@ def _trykitt_find_with_key(
 ) -> dict[str, Any]:
     body = build_trykitt_payload(full_name, domain, linkedin)
     data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
+    endpoint = cc.validate_endpoint_url(
         cfg.get("trykitt_endpoint", TRYKITT_FIND_URL),
+        allowed_host_suffixes=["trykitt.ai"],
+    )
+    req = urllib.request.Request(
+        endpoint,
         data=data,
         headers={
             "Content-Type": "application/json",
@@ -233,8 +237,12 @@ def _icypeas_find_with_key(
     body = build_icypeas_payload(full_name, domain, linkedin)
     payload: dict[str, Any] = {}
     for post_attempt in range(2):
-        req = urllib.request.Request(
+        endpoint = cc.validate_endpoint_url(
             cfg.get("icypeas_endpoint", ICYPEAS_FIND_URL),
+            allowed_host_suffixes=["icypeas.com"],
+        )
+        req = urllib.request.Request(
+            endpoint,
             data=json.dumps(body).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
@@ -313,7 +321,10 @@ def icypeas_poll_result(
 ) -> dict[str, Any]:
     poll_attempts = max(1, int(cfg.get("icypeas_poll_attempts", 30)))
     poll_delay = float(cfg.get("icypeas_poll_delay_seconds", 3))
-    read_url = cfg.get("icypeas_read_endpoint", ICYPEAS_READ_URL)
+    read_url = cc.validate_endpoint_url(
+        cfg.get("icypeas_read_endpoint", ICYPEAS_READ_URL),
+        allowed_host_suffixes=["icypeas.com"],
+    )
     last_status = ""
     for attempt in range(poll_attempts):
         req = urllib.request.Request(

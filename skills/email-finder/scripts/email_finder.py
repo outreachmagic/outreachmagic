@@ -1162,9 +1162,31 @@ def _fetch_url(url: str) -> bytes:
 def cmd_update(*, check_only: bool = False, explicit_tag: str = "") -> None:
     current = _current_skill_version()
     target_tag = _normalize_tag(explicit_tag) if explicit_tag else _normalize_tag(_fetch_latest_tag())
-    manifest = json.loads(
-        _fetch_url(f"{RAW_BASE}/{GITHUB_REPO}/{target_tag}/update-manifest.json").decode("utf-8")
-    )
+    repo_base = f"{RAW_BASE}/{GITHUB_REPO}/{target_tag}"
+    manifest_raw = _fetch_url(f"{repo_base}/update-manifest.json")
+    manifest = json.loads(manifest_raw.decode("utf-8"))
+
+    # Defense-in-depth: verify manifest hash against SHA256SUMS
+    try:
+        sums_raw = _fetch_url(f"{repo_base}/SHA256SUMS").decode("utf-8")
+        manifest_hash = hashlib.sha256(manifest_raw).hexdigest()
+        found = False
+        for line in sums_raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[1].strip() == "update-manifest.json":
+                if parts[0].strip() == manifest_hash:
+                    found = True
+                break
+        if not found and any("update-manifest.json" in line for line in sums_raw.splitlines()):
+            raise RuntimeError(
+                "update-manifest.json hash does not match SHA256SUMS. "
+                "Refusing to install."
+            )
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        pass  # SHA256SUMS not yet available
     target_version = manifest.get("version", target_tag.lstrip("v"))
     if check_only:
         print(json.dumps({

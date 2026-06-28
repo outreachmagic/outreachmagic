@@ -37,13 +37,17 @@ bash "${INSTALL_DIR}/install.sh" --dry-run --platform <PLATFORM> --tag "${OM_VER
 
 ## Prerequisites
 
-Install **Python 3** and **Git** only. Outreach Magic stores data in a **local SQLite**
-database (`pipeline.py init` — run automatically by the installer).
+Install **Python 3.10+** and **Git** only. Outreach Magic requires Python 3.10 or newer
+(the `str | None` type union syntax is used throughout the codebase). macOS ships with
+Python 3.9 as `/usr/bin/python3` — **do not use that version**. Install a current
+Python from Homebrew or python.org.
 
 **macOS:**
 
 ```bash
-brew install python3 git
+brew install python@3.12 git
+# Verify: must show 3.10 or later
+python3 --version
 ```
 
 **Linux (Debian/Ubuntu):**

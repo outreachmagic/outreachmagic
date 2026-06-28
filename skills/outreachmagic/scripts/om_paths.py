@@ -111,14 +111,18 @@ def check_duplicate_installs() -> list[dict]:
     which one to keep via ``init --agent`` or ``install.sh``.
     """
     active = get_install_dir()
+    seen: set[str] = set()
     results: list[dict] = []
     for dirname in KNOWN_AGENT_DIRS:
         candidate = Path.home() / dirname / "skills" / SKILL_NAME
         if candidate.resolve() != active.resolve() and candidate.exists():
-            results.append({
-                "path": str(candidate.resolve()),
-                "is_symlink": candidate.is_symlink(),
-            })
+            resolved = str(candidate.resolve())
+            if resolved not in seen:
+                seen.add(resolved)
+                results.append({
+                    "path": resolved,
+                    "is_symlink": candidate.is_symlink(),
+                })
     return results
 
 

@@ -31,6 +31,21 @@ Usage:
 
 from __future__ import annotations
 
+import sys as _sys
+
+_MIN_PYTHON = (3, 10)
+if _sys.version_info < _MIN_PYTHON:
+    _ver = ".".join(str(v) for v in _sys.version_info[:2])
+    _need = ".".join(str(v) for v in _MIN_PYTHON)
+    print(
+        f"Outreach Magic requires Python {_need}+ (found {_ver}).\n"
+        f"Install a newer Python from https://www.python.org/downloads/ or via "
+        f"your package manager (brew install python).",
+        file=_sys.stderr,
+    )
+    _sys.exit(1)
+del _sys, _MIN_PYTHON
+
 import ast
 import sqlite3
 import json
@@ -7974,6 +7989,14 @@ def _snapshot_kind_stream(kind: str) -> str:
 def _pull_failure_message(exc: Exception) -> str:
     msg = str(exc).strip()
     if "routing api" in msg.lower():
+        # Check whether the root cause is an invalid / stale agent key,
+        # not just a transient routing API failure.
+        if "401" in msg or "invalid" in msg.lower() or "unauthorized" in msg.lower():
+            from user_messages import MSG_LOGIN
+            return (
+                f"{msg}\n\nYour agent key was rejected by the server — it may be invalid or stale. "
+                f"{MSG_LOGIN} to refresh it."
+            )
         from user_messages import MSG_PULL_SKIP_ROUTING
 
         return f"{msg}\n\nRouting sync failed. {MSG_PULL_SKIP_ROUTING}."
@@ -7990,6 +8013,15 @@ def _pull_failure_message(exc: Exception) -> str:
             f"{msg}\n\nRelay pull HTTP timed out. Events are usually enough: "
             f"{MSG_PULL_SKIP_SNAPSHOTS}, or {MSG_PULL_PROBE.lower()}. "
             "If you need snapshots, retry with a smaller backlog or pull one snapshot kind at a time."
+        )
+    # Catch invalid / stale agent key errors from the relay pull itself
+    # (as opposed to the routing API check above).
+    if "invalid agent key" in msg.lower() or ("401" in msg and "unauthorized" in msg.lower()):
+        from user_messages import MSG_LOGIN
+
+        return (
+            f"{msg}\n\nYour agent key was rejected by the server — it may be invalid or stale. "
+            f"{MSG_LOGIN} to refresh it."
         )
     return msg
 
@@ -11527,8 +11559,30 @@ def main():
             )
             print(f"Updated to v{result['version']} from {result['source']} in {result['path']}")
             print("Files:", ", ".join(result["files"]))
+        except urllib.error.HTTPError as e:
+            msg = str(e)
+            if e.code == 404:
+                tag_hint = ""
+                if not args.tag:
+                    tag_hint = (
+                        "\n\nTry a specific tag: pipeline.py update --tag v<VERSION>\n"
+                        "  e.g. pipeline.py update --tag latest-tag"
+                    )
+                print(
+                    f"Update failed: {msg}\n\n"
+                    f"The update URL returned 404. This may mean:\n"
+                    f"  1. The release tag does not exist or was removed\n"
+                    f"  2. GitHub raw content URLs are temporarily unavailable\n"
+                    f"  3. Your install config points to a repo that has no matching release{tag_hint}\n"
+                    f"  Or try: pipeline.py update --channel main (install from the main branch)",
+                    flush=True,
+                )
+            else:
+                print(f"Update failed: {msg}", flush=True)
+            sys.exit(1)
         except Exception as e:
-            print(f"Update failed: {e}")
+            msg = str(e)
+            print(f"Update failed: {msg}", flush=True)
             sys.exit(1)
         return
 

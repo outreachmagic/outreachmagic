@@ -259,7 +259,7 @@ This fetches the latest events from the relay. Skip for offline/local analytics;
 
 **Relay sync limits:** Same endpoints always — `POST /push` and `GET /pull`. No separate bulk URLs.
 
-- **`sync` (upload):** When local `cloud_pending` snapshots ≥ **2500**, uses **5000 entries per `/push`**; otherwise routine batch size (default 200, max 500 per request).
+- **`sync` (upload):** When pending snapshots ≥ **2500**, uses **5000 entries per `/push`**; otherwise routine batch size (default 200, max 500 per request).
 - **`pull` (download):** **1000 rows/page** for events and all snapshots (D1 + local ingest). Progress shows `p2/118` and `% remaining` after a one-time pending probe per snapshot kind. Use `pull --kind events` if snapshots are already synced.
 - Filter downloaded data locally (`show --since`, workspace queries) — the relay does not filter by date or workspace.
 
@@ -390,7 +390,7 @@ python3 scripts/pipeline.py sync
 
 Relay stores resolutions in D1 (`queue_resolutions`). The first event page of each `pull` requests them (`include_queue_resolutions=1`); later pages reuse the in-memory map.
 
-**`sync --status` counters:** `recommended_mode` is `bulk` when `cloud_pending_leads` ≥ 2500 (else `push`). `relay_untracked_leads` = imported/local leads with no relay pull history (normal after CSV; data is still in the shared DB). `cloud_pending_leads` = rows waiting to push — run `sync`. `local_agent_events` = agent-originated events not yet on relay.
+**`sync --status` counters:** `recommended_mode` is `bulk` when `pending_lead_snapshots` ≥ 2500 (else `push`). `relay_untracked_leads` = imported/local leads with no relay pull history (normal after CSV; data is still in the shared DB). `pending_lead_snapshots` = rows with `updated_at` > last sync — run `sync`. `local_agent_events` = agent-originated events not yet on relay.
 
 ### Local database health
 
@@ -615,7 +615,7 @@ python3 scripts/pipeline.py import-profiles \
   --file nace.csv --workspace acme_corp --import-batch-id nace-2026-05
 ```
 
-**`verify-email`:** Records LEV rows locally and sets `cloud_pending` — run `sync` to push verification fields to the relay (same as other lead mutations).
+**`verify-email`:** Records LEV rows locally and bumps `updated_at` — run `sync` to push verification fields to the relay (same as other lead mutations).
 
 **Email-finder batch save (known `lead_id` on every row):** email-finder calls `apply-email-find-results` — updates email, workspace tags, and provider verification in one pass. Requires `--workspace`. Run `sync` after batch-find when COMPLETE shows pending snapshots. Manual recovery:
 

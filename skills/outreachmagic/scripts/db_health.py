@@ -113,6 +113,14 @@ def _workspace_breakdown(conn: sqlite3.Connection, org_id: str) -> list[dict[str
     return [{"slug": (r["slug"] or "").strip(), "leadCount": int(r["lead_count"])} for r in rows]
 
 
+def _get_last_sync_or_never() -> str:
+    """Return last_sync timestamp or epoch-zero.  Raises no import errors outside of pipeline context."""
+    try:
+        from pipeline import get_last_sync
+        return get_last_sync() or "1970-01-01T00:00:00Z"
+    except ImportError:
+        return "1970-01-01T00:00:00Z"
+
 def evaluate_health_rules(
     *,
     file_bytes: int,
@@ -146,7 +154,7 @@ def evaluate_health_rules(
     if leads > 0 and relay / leads > RELAY_BLOAT_RATIO:
         add("relay_bloat", "warn")
 
-    pending = row_counts.get("cloud_pending") or 0
+    pending = row_counts.get("pending_sync") or 0
     if pending > PENDING_SYNC_LEADS:
         add("pending_sync", "warn")
 
@@ -195,8 +203,9 @@ def collect_db_health(
         "unmapped_campaign_queue": conn.execute(
             "SELECT COUNT(*) FROM unmapped_campaign_queue"
         ).fetchone()[0],
-        "cloud_pending": conn.execute(
-            "SELECT COUNT(*) FROM leads WHERE cloud_pending = 1"
+        "pending_sync": conn.execute(
+            "SELECT COUNT(*) FROM leads WHERE updated_at > ?",
+            (_get_last_sync_or_never(),),
         ).fetchone()[0],
         "leads_with_email": conn.execute(
             "SELECT COUNT(*) FROM leads WHERE email IS NOT NULL AND TRIM(email) != ''"

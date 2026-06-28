@@ -371,8 +371,8 @@ def sync_single_lead(
                     """INSERT OR REPLACE INTO crm_entity_map
                        (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
                         crm_company_id, last_synced_at, last_sync_status, sync_hash,
-                        cloud_pending, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'partial', ?, 1, datetime('now'))""",
+                        updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'partial', ?, datetime('now'))""",
                     (ws_id, lead_id_val, platform,
                      entity["crm_contact_id"] if entity else "",
                      entity["crm_deal_id"] if entity else "",
@@ -440,8 +440,8 @@ def sync_single_lead(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
                 crm_company_id, last_synced_at, last_sync_status, sync_hash,
-                cloud_pending, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, 1, datetime('now'))""",
+                updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, datetime('now'))""",
             (ws_id, lead_id_val, platform, contact_id, deal_id,
              company_id or None, new_hash),
         )

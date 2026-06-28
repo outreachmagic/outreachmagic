@@ -640,7 +640,6 @@ def resolve_lead_from_agent_sync(
         source_detail=source_detail,
         source_platform=source_platform,
         overwrite=True,
-        mark_cloud_pending=False,
         conn=conn,
     )
 
@@ -673,7 +672,7 @@ def apply_agent_lead_core_payload(
     }
     if update_fields:
         enrich_lead(
-            lead_id, overwrite=True, mark_cloud_pending=False, conn=conn, **update_fields,
+            lead_id, overwrite=True, conn=conn, **update_fields,
         )
 
     loc_sets, loc_params = [], []
@@ -779,7 +778,6 @@ def apply_agent_lead_workspace_payload(
         current_status_label=status_label,
         current_status_sentiment=status_sentiment,
         contact_priority=contact_pri,
-        mark_cloud_pending=False,
     )
     if "tags" in payload:
         conn.execute(
@@ -850,7 +848,7 @@ def inspect_sync_lead(
     computed = compute_lead_activity_from_events(conn, lead_id)
     payload = build_lead_sync_payload(conn, org_id, lead_id, workspace_slug=workspace_slug)
     lead_row = conn.execute(
-        "SELECT email, name, cloud_pending, last_contact_at FROM leads WHERE id = ?",
+        "SELECT email, name, last_contact_at FROM leads WHERE id = ?",
         (lead_id,),
     ).fetchone()
     wl_row = None
@@ -864,7 +862,6 @@ def inspect_sync_lead(
         "lead_id": lead_id,
         "email": lead_row["email"] if lead_row else None,
         "name": lead_row["name"] if lead_row else None,
-        "cloud_pending": bool(lead_row["cloud_pending"]) if lead_row else None,
         "workspace_slug": workspace_slug,
         "workspace_id": ws_id,
         "lead_status": wl_row["current_status_label"] if wl_row else None,
@@ -878,19 +875,18 @@ def inspect_sync_lead(
 
 
 def build_crm_entity_map_payloads(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Build relay payloads for pending crm_entity_map rows.
+    """Build relay payloads for crm_entity_map rows.
 
-    Returns rows where ``cloud_pending = 1``, each with a ``kind`` field
-    set to ``"crm_entity_map"``.
+    Returns all rows, each with a ``kind`` field
+    set to ``"crm_entity_map"``. The caller filters by last_sync timestamp.
     """
     rows = conn.execute(
         """SELECT workspace_id, lead_id, platform,
                   crm_contact_id, crm_deal_id, crm_company_id,
                   crm_owner_id, last_synced_at, last_event_id_synced,
                   last_sync_status, sync_error, sync_hash,
-                  cloud_pending, created_at, updated_at
-           FROM crm_entity_map
-           WHERE cloud_pending = 1"""
+                  created_at, updated_at
+           FROM crm_entity_map"""
     ).fetchall()
     payloads = []
     for row in rows:

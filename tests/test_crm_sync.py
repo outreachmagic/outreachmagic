@@ -67,7 +67,7 @@ EXPECTED_COLUMNS = {
         "workspace_id", "lead_id", "platform", "crm_contact_id",
         "crm_deal_id", "crm_company_id", "crm_owner_id", "last_synced_at",
         "last_event_id_synced", "last_sync_status", "sync_error",
-        "sync_hash", "cloud_pending", "created_at", "updated_at",
+        "sync_hash", "created_at", "updated_at",
     },
     "crm_sync_log": {
         "id", "workspace_id", "platform", "started_at", "completed_at",
@@ -2454,8 +2454,8 @@ def test_phase_4_entity_map_relay_round_trip():
         conn.execute(
             """INSERT INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                last_synced_at, last_sync_status, sync_hash, cloud_pending)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', 'abc123', 1)""",
+                last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', 'abc123')""",
             (WS1_ID, 1, "ghl", "contact-1", "deal-1"),
         )
         conn.commit()
@@ -3276,8 +3276,8 @@ def test_company_id_in_relay_payload():
         conn.execute(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                crm_company_id, last_synced_at, last_sync_status, sync_hash, cloud_pending)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, 1)""",
+                crm_company_id, last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?)""",
             ("ws-co-sync", 9001, "ghl", "contact-1", "deal-1",
              "company-hs-1234", "testhash"),
         )

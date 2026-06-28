@@ -444,4 +444,4 @@ def sync_org_config_from_cloud(
 
 def push_crm_sync_status(api_base: str, token: str, payload: dict[str, Any]) -> dict[str, Any]:
     """POST CRM sync status to cloud."""
-    return _request_json("POST", f"{api_base}/api/crm-sync-status", token, body=payload)
+    return _request_json("POST", f"{api_base}/api/agent/crm-sync-status", token, body=payload)

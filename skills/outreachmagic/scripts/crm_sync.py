@@ -161,6 +161,8 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
         SELECT wl.lead_id, wl.status, wl.updated_at, wl.current_status_sentiment,
                l.name, l.email, l.title, l.industry, l.headcount,
                l.linkedin_url, l.company,
+               l.original_source, l.original_source_detail,
+               l.latest_source_detail,
                c.name AS company_name, c.domain AS company_domain
           FROM workspace_leads wl
           JOIN leads l ON l.id = wl.lead_id
@@ -684,13 +686,28 @@ def maybe_push_crm_sync_status(conn, *, workspace_id: str = "") -> dict:
         rows = conn.execute(query, tuple(params)).fetchall()
 
         sync_results: dict = {}
+        FIELD_MAP = {
+            "last_sync_at": "lastSyncAt",
+            "leads_checked": "leadsChecked",
+            "contacts_created": "contactsCreated",
+            "contacts_updated": "contactsUpdated",
+            "opportunities_created": "opportunitiesCreated",
+            "opportunities_updated": "opportunitiesUpdated",
+            "events_pushed": "eventsPushed",
+            "skipped": "skipped",
+            "errors": "errors",
+            "status": "status",
+        }
         for row in rows:
             d = dict(row)
             plat = d.pop("platform")
             if plat not in sync_results:
-                sync_results[plat] = {
-                    k: v for k, v in d.items() if v is not None
-                }
+                mapped = {}
+                for db_key, camel_key in FIELD_MAP.items():
+                    v = d.get(db_key)
+                    if v is not None:
+                        mapped[camel_key] = v
+                sync_results[plat] = mapped
 
         if not sync_results:
             return {"crm_sync_status_reported": "skipped_no_data"}

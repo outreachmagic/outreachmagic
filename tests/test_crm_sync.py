@@ -4078,8 +4078,8 @@ def test_crm_sync_status_push_reported():
                     mock_push.assert_called_once()
                     payload = mock_push.call_args[0][2]
                     assert payload["clientId"] == "test-client-push"
-                    assert payload["syncResults"]["ghl"]["leads_checked"] == 5
-                    assert payload["syncResults"]["ghl"]["contacts_created"] == 2
+                    assert payload["syncResults"]["ghl"]["leadsChecked"] == 5
+                    assert payload["syncResults"]["ghl"]["contactsCreated"] == 2
             finally:
                 conn.close()
     finally:
@@ -4138,10 +4138,10 @@ def test_crm_sync_status_push_payload_shape():
                     sr = payload["syncResults"]
                     assert "ghl" in sr
                     assert "hubspot" in sr
-                    assert sr["ghl"]["leads_checked"] == 10
-                    assert sr["ghl"]["contacts_created"] == 3
-                    assert sr["hubspot"]["leads_checked"] == 7
-                    assert sr["hubspot"]["contacts_updated"] == 2
+                    assert sr["ghl"]["leadsChecked"] == 10
+                    assert sr["ghl"]["contactsCreated"] == 3
+                    assert sr["hubspot"]["leadsChecked"] == 7
+                    assert sr["hubspot"]["contactsUpdated"] == 2
             finally:
                 conn.close()
     finally:

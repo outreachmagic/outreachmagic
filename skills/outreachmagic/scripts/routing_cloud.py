@@ -238,6 +238,21 @@ def sync_routing_from_cloud(
 ) -> Optional[dict[str, Any]]:
     bundle = fetch_routing_bundle(api_base, token)
     apply_routing_bundle_to_sqlite(conn, bundle, org_id=org_id)
+
+    # Also sync CRM workspace configs from the portal config endpoint.
+    # This ensures that CRM platform keys, stage mappings, and other
+    # workspace-level configs reach the local DB alongside routing data.
+    try:
+        portal_bundle = fetch_portal_config(api_base, token)
+        crm_configs = portal_bundle.get("crmConfigs") or {}
+        _apply_crm_config_to_sqlite(conn, crm_configs, org_id=org_id)
+    except Exception:
+        if not quiet:
+            print(
+                "Warning: CRM config sync from portal failed (non-fatal).",
+                file=__import__("sys").stderr,
+            )
+
     conn.commit()
     cfg = load_config_fn()
     cfg[CONFIG_ROUTING_VERSION_KEY] = bundle.get("version")

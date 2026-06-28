@@ -10,6 +10,25 @@
 
 set -euo pipefail
 
+# ── Python version detection ──
+# pipeline.py requires Python 3.10+. Find a suitable interpreter.
+PYTHON=""
+for candidate in python3.12 python3.11 python3.10 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        ver=$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
+        major="${ver%.*}"
+        minor="${ver#*.}"
+        if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ] 2>/dev/null; then
+            PYTHON="$candidate"
+            break
+        fi
+    fi
+done
+if [ -z "$PYTHON" ]; then
+    echo "ERROR: Python 3.10+ is required. Install a current Python and try again."
+    exit 1
+fi
+
 MANIFEST_FILES=(
     skills/outreachmagic/update-manifest.json
     skills/email-finder/update-manifest.json
@@ -53,18 +72,21 @@ done
 
 # ── Conflict marker check ──
 # Don't push code with unresolved merge conflicts.
-if git diff --cached --name-only -z | xargs -0 grep -l '<<<<<<< HEAD\|>>>>>>> [0-9a-f]\{7\}' 2>/dev/null; then
-    echo "ERROR: Unresolved merge conflicts found in staged files."
-    echo "   Resolve all conflicts before pushing."
-    exit 1
+CONFLICT_FILES=$(git diff --cached --name-only 2>/dev/null || true)
+if [ -n "$CONFLICT_FILES" ]; then
+    if echo "$CONFLICT_FILES" | xargs grep -l '<<<<<<< HEAD\|>>>>>>> [0-9a-f]\{7\}' 2>/dev/null; then
+        echo "ERROR: Unresolved merge conflicts found in staged files."
+        echo "   Resolve all conflicts before pushing."
+        exit 1
+    fi
 fi
 
 # ── Manifest sync test ──
 # Ensures the on-disk manifest hashes match what the generator produces.
 echo "Running manifest sync test..."
-if ! python3 -m pytest tests/test_update_manifest_sync.py -q >/dev/null 2>&1; then
+if ! "$PYTHON" -m pytest tests/test_update_manifest_sync.py -q >/dev/null 2>&1; then
     echo "ERROR: Manifest hashes are out of sync."
-    echo "   Run: python3 scripts/generate_skill_manifest.py --all"
+    echo "   Run: $PYTHON scripts/generate_skill_manifest.py --all"
     echo "   Then commit the updated manifest files."
     exit 1
 fi
@@ -73,9 +95,9 @@ fi
 # Core sync infrastructure must pass before push. Any refactoring that
 # breaks set_last_sync or the sync hash is caught here.
 echo "Running CRM + sync tests..."
-if ! python3 -m pytest tests/test_crm_sync.py tests/test_sync_cloud_pending.py -q >/dev/null 2>&1; then
+if ! "$PYTHON" -m pytest tests/test_crm_sync.py tests/test_sync_cloud_pending.py -q >/dev/null 2>&1; then
     echo "ERROR: CRM / sync tests failed."
-    echo "   Run: python3 -m pytest tests/test_crm_sync.py tests/test_sync_cloud_pending.py -v"
+    echo "   Run: $PYTHON -m pytest tests/test_crm_sync.py tests/test_sync_cloud_pending.py -v"
     exit 1
 fi
 

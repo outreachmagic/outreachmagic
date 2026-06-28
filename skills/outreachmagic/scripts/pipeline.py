@@ -10390,6 +10390,8 @@ def _remap_to_lead_review_export(args) -> None:
         ("public", False),
         ("anyone_with_link", False),
         ("sheet_id", None),
+        ("parent_sheet_id", None),
+        ("tab_name", None),
         ("fields", None),
         ("tag", None),
         ("stage", None),
@@ -11147,6 +11149,14 @@ def main():
         "--sheet-id",
         help="Refresh an existing Google Sheet instead of creating a new one",
     )
+    review_export_p.add_argument(
+        "--parent-sheet-id",
+        help="Add as a new tab in an existing spreadsheet (requires --tab-name)",
+    )
+    review_export_p.add_argument(
+        "--tab-name",
+        help="Tab name when using --parent-sheet-id (default: stage or title)",
+    )
     review_export_p.add_argument("--workspace", help="Workspace slug (lead-review)")
     review_export_p.add_argument(
         "--detail",
@@ -11266,6 +11276,14 @@ def main():
     sheets_export_p.add_argument(
         "--sheet-id",
         help="Refresh an existing Google Sheet instead of creating a new one",
+    )
+    sheets_export_p.add_argument(
+        "--parent-sheet-id",
+        help="Add as a new tab in an existing spreadsheet (requires --tab-name)",
+    )
+    sheets_export_p.add_argument(
+        "--tab-name",
+        help="Tab name when using --parent-sheet-id (default: stage or title)",
     )
     sheets_export_p.add_argument(
         "--detail",
@@ -12681,6 +12699,8 @@ def main():
                         sys.exit(1)
                     share_email, public_link = resolve_sheets_export_access(args)
                     sheet_id = getattr(args, "sheet_id", None)
+                    parent_sheet_id = getattr(args, "parent_sheet_id", None)
+                    tab_name = getattr(args, "tab_name", None)
                     result = review_cloud.export_review(
                         api_base,
                         tok,
@@ -12689,6 +12709,8 @@ def main():
                         share_email=share_email,
                         public_link=public_link,
                         sheet_id=str(sheet_id).strip() if sheet_id else None,
+                        parent_sheet_id=str(parent_sheet_id).strip() if parent_sheet_id else None,
+                        tab_title=tab_name or getattr(args, "stage", None),
                         detail=payload.get("detail"),
                         headers=payload.get("headers"),
                         rows=payload.get("rows"),

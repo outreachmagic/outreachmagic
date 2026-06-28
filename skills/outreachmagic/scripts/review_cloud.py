@@ -76,6 +76,8 @@ def export_review(
     share_email: Optional[str] = None,
     public_link: bool = False,
     sheet_id: Optional[str] = None,
+    parent_sheet_id: Optional[str] = None,
+    tab_title: Optional[str] = None,
     candidates: Optional[list[dict[str, Any]]] = None,
     detail: Optional[str] = None,
     headers: Optional[list[str]] = None,
@@ -92,6 +94,10 @@ def export_review(
     }
     if sheet_id:
         body["sheet_id"] = sheet_id
+    if parent_sheet_id:
+        body["parent_sheet_id"] = parent_sheet_id
+    if tab_title:
+        body["tab_title"] = tab_title
     if share_email:
         body["share_email"] = share_email
     if public_link:

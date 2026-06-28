@@ -954,8 +954,15 @@ def set_last_pull(ts: str):
     save_config(cfg)
 
 def get_last_sync() -> Optional[str]:
-    """Timestamp of last successful sync or full pull (ISO 8601). None = never synced."""
-    return load_config().get("last_sync")
+    """Timestamp of last successful sync or full pull (ISO 8601).
+
+    Returns ``last_sync`` from config. Falls back to ``last_pull`` so that
+    a first-time sync after a fresh pull doesn't push every row in the DB.
+    Returns ``None`` only when neither timestamp exists (empty DB — pushing
+    everything is the correct default).
+    """
+    cfg = load_config()
+    return cfg.get("last_sync") or cfg.get("last_pull")
 
 def set_last_sync(ts: str):
     """Set the sync anchor to ts (typically now()). Called after successful sync push or full pull."""
@@ -9994,6 +10001,9 @@ def personalize_set(
             source_hash = excluded.source_hash,
             processed_at = datetime('now')
     """, (lead_id, field_name, field_value, field_date, _lead_source_hash(lead_id, field_name)))
+    # Bump updated_at so timestamp-based relay sync re-pushes the snapshot
+    # with updated personalization data.
+    conn.execute("UPDATE leads SET updated_at = datetime('now') WHERE id = ?", (lead_id,))
     conn.commit()
     conn.close()
     return {"status": "ok", "lead_id": lead_id, "field": field_name}
@@ -10042,6 +10052,8 @@ def company_personalize_set(
             source_hash = excluded.source_hash,
             processed_at = datetime('now')
     """, (cid, field_name, field_value, field_date, _company_source_hash(cid, field_name)))
+    # Bump updated_at so timestamp-based relay sync re-pushes the company snapshot.
+    conn.execute("UPDATE companies SET updated_at = datetime('now') WHERE id = ?", (cid,))
     conn.commit()
     conn.close()
     return {"status": "ok", "company_id": cid, "field": field_name}
@@ -10260,6 +10272,11 @@ def _apply_personalization_payload(
                     processed_at = excluded.processed_at
                 WHERE excluded.processed_at > {table}.processed_at
             """, (entity_id, fname, fval, dates.get(fname), p_at))
+        # Bump the parent record's updated_at so timestamp-based relay sync
+        # knows personalization changed and re-pushes the snapshot.
+        parent_table = "companies" if table == "company_personalization" else "leads"
+        parent_id_col = "id"
+        conn.execute(f"UPDATE {parent_table} SET updated_at = datetime('now') WHERE {parent_id_col} = ?", (entity_id,))
         if own_conn:
             conn.commit()
     finally:

@@ -445,6 +445,17 @@ def sync_single_lead(
             (ws_id, lead_id_val, platform, contact_id, deal_id,
              company_id or None, new_hash),
         )
+        # Bump workspace_leads.updated_at so timestamp-based relay sync
+        # re-pushes the snapshot (which now carries the entity mapping).
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = datetime('now') WHERE workspace_id = ? AND lead_id = ?",
+            (ws_id, lead_id_val),
+        )
+        # Bump leads.updated_at for the same reason on lead_core snapshots.
+        conn.execute(
+            "UPDATE leads SET updated_at = datetime('now') WHERE id = ?",
+            (lead_id_val,),
+        )
 
     # -- Sentiment tag --
     # Pass the raw sentiment value; drivers handle "" as "clear all om_* tags".

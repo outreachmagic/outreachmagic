@@ -119,8 +119,8 @@ Campaign | Status | Sent | Delivered | Bounced | Bounce % | Total Replies | OOO 
 | 13 | **Accept %** | `LI Accepts / LI Connects * 100` | Formula. |
 | 14 | **LI Messages** | `COUNT(*) FROM events WHERE event_type = 'linkedin_message'` | |
 | 15 | **LI Replies** | `COUNT(*) FROM events WHERE event_type = 'linkedin_reply'` | |
-| 16 | **Interested** | Number of unique leads whose latest status-bearing event in this window has `lead_status_sentiment IN ('positive', 'interested')` | Use the `LATEST_STATUS_CTE` pattern from read_queries.py. |
-| 17 | **Not Interested** | Same as above but `lead_status_sentiment IN ('negative', 'not_interested')` | |
+| 16 | **Interested** | Number of unique leads whose latest status-bearing event in this window has `lead_status_sentiment = 'positive'` | Use the `LATEST_STATUS_CTE` pattern from read_queries.py. |
+| 17 | **Not Interested** | Same as above but `lead_status_sentiment = 'negative'` | |
 | 18 | **Sentiment Rate** | `Interested / (Interested + Not Interested) * 100` | Formula. Only when denominator > 0. |
 | 19 | **Last Activity** | `MAX(created_at)` for any event type in this window | Display as `"Jun 13"` format. |
 
@@ -249,17 +249,17 @@ SELECT
 FROM ranked_status rs
 JOIN campaigns c ON rs.campaign_id = c.id
 WHERE rs.rn = 1
-  AND rs.current_sentiment IN ('positive', 'interested', 'negative', 'not_interested')
+  AND rs.current_sentiment IN ('positive', 'negative', 'autoreply', 'invalid')
   AND c.name LIKE '{workspace} |%'
 GROUP BY c.name, rs.current_sentiment
 ORDER BY campaign, lead_count DESC;
 ```
 
-Then in application code, split into `interested` and `not_interested`:
+Then in application code, count `positive` as interested and `negative` as not interested:
 
 ```python
-interested_sentiments = {"positive", "interested"}
-not_interested_sentiments = {"negative", "not_interested"}
+interested_sentiments = {"positive"}
+not_interested_sentiments = {"negative"}
 
 for row in sentiment_rows:
     if row.sentiment in interested_sentiments:

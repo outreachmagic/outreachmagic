@@ -234,7 +234,7 @@ def build_campaign_stats_payload(
     FROM ranked_status rs
     JOIN campaigns c ON rs.campaign_id = c.id
     WHERE rs.rn = 1
-      AND rs.sentiment IN ('positive', 'interested', 'neutral', 'negative', 'not_interested', 'invalid', 'autoreply')
+      AND rs.sentiment IN ('positive', 'negative', 'autoreply', 'invalid')
       AND c.name LIKE ?
     GROUP BY c.name, rs.sentiment
     ORDER BY campaign, lead_count DESC
@@ -319,7 +319,6 @@ def build_campaign_stats_payload(
         ooo = camp["ooo"]
         human = replies - ooo
 
-        st = sentiment_totals.get(camp["name"], {"interested": 0, "not_interested": 0})
         li_connects = camp["li_connects"]
         li_accepts = camp["li_accepts"]
         li_messages = camp["li_messages"]
@@ -345,15 +344,10 @@ def build_campaign_stats_payload(
         if li_replies > 0:
             funnel_rows.append(["LinkedIn Replies", li_replies, pct(li_replies, li_messages) if li_messages > 0 else "\u2014"])
 
-        total_int = st["interested"] + st["not_interested"]
-        if total_int > 0:
-            funnel_rows.append(["Interested Leads", st["interested"], pct(st["interested"], sent)])
-            funnel_rows.append(["Not Interested", st["not_interested"], pct(st["not_interested"], sent)])
-
         funnel_rows.append([])  # spacer
 
     # \u2500\u2500 Build Sheet 3: Lead Sentiment \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    sentiment_order = ["positive", "interested", "neutral", "negative", "not_interested", "invalid", "autoreply"]
+    sentiment_order = ["positive", "negative", "autoreply", "invalid"]
     sentiment_headers = ["Campaign"] + [s.capitalize() for s in sentiment_order] + ["Total Tagged", "Positivity Rate"]
     sentiment_body = []
 

@@ -11,7 +11,7 @@ from typing import Any, Callable, Optional
 from constants import COMPANY_DOMAIN_SQL, PIPELINE_STAGES, require_professional_domain_clause
 from workspace_routing import resolve_workspace_identity
 
-LEAD_SENTIMENT_VALUES = ("positive", "negative", "neutral", "invalid")
+LEAD_SENTIMENT_VALUES = ("positive", "negative", "autoreply", "invalid")
 
 SHEET_LEGEND_NOTE = """Outreach Magic lead review sheet
 

@@ -54,7 +54,7 @@ We do **not** use our servers as the long-term store for webhook payload content
 
 ### No automatic upload
 
-- **`import-profiles`** — local SQLite only; sets `cloud_pending` but does **not** call the network.
+- **`import-profiles`** — local SQLite only; sets sync timestamps (`updated_at`) but does **not** call the network.
 - **`pull`** — downloads from relay only (plus optional routing config **pull** from portal).
 - **`sync`** — the **only** command that POSTs lead data to `api.outreachmagic.io/push`. The agent or user must run it explicitly. At the end of the same `sync`, the CLI may POST aggregate DB health to the portal (throttled ~6h); use `sync --no-health-report` to skip.
 - **`db-health`** — local inspection only unless `--push` is passed explicitly.

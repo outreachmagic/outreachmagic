@@ -67,7 +67,7 @@ Long lead uploads use two levels of “batch”:
 
 | Layer | Example | Meaning |
 |-------|---------|---------|
-| **batch N** in log wrapper | `batch 1: [04:00] ↑ Lead : p1/1 — …` | SQLite walk: mark 2,500 leads `cloud_pending`, run one `sync` |
+| **batch N** in log wrapper | `batch 1: [04:00] ↑ Lead : p1/1 — …` | SQLite walk: mark 2,500 leads with updated timestamps, run one `sync` |
 | **pN/M** inside pipeline lines | `↑ Lead : p1/1` | HTTP pages inside that `sync` |
 
 `PROGRESS [...]` lines report overall lead-walk percent (`leads 2,500/114,226`), separate from per-stream ↑ lines.

@@ -160,7 +160,7 @@ def run_tests():
     check("funnels has 1 section", len([r for r in fn["rows"] if len(r) > 0 and r[0] == "Stage"]) == 1)
     check("funnel has emails sent row", any(len(r) > 0 and r[0] == "Emails Sent (total)" for r in fn["rows"]))
     check("funnel has bounced row", any(len(r) > 0 and r[0] == "Bounced" for r in fn["rows"]))
-    check("funnel has interested row", any(len(r) > 0 and r[0] == "Interested Leads" for r in fn["rows"]))
+    check("funnel has OOO auto-replies row", any(len(r) > 0 and r[0] == "OOO Auto-Replies" for r in fn["rows"]))
 
     st = p["sheets"][2]
     check("sentiment has 1 campaign", len([r for r in st["rows"] if r[0] == "alpha"]) == 1)
@@ -265,17 +265,14 @@ def run_tests():
 
     st = p["sheets"][2]
     sm_row = [r for r in st["rows"] if r[0] == "sentiment-mix"][0]
-    check("sentiment tab has 7 sentiment columns + campaign + total + rate",
-          len(sm_row) == 10, f"got {len(sm_row)} cols: {sm_row}")
+    check("sentiment tab has 4 sentiment columns + campaign + total + rate",
+          len(sm_row) == 7, f"got {len(sm_row)} cols: {sm_row}")
     check("positive count", sm_row[1] == 2, f"got {sm_row[1]}")
-    check("interested count", sm_row[2] == 0, f"got {sm_row[2]}")
-    check("neutral count", sm_row[3] == 0, f"got {sm_row[3]}")
-    check("negative count", sm_row[4] == 2, f"got {sm_row[4]}")
-    check("not_interested count", sm_row[5] == 0, f"got {sm_row[5]}")
-    check("invalid count", sm_row[6] == 1, f"got {sm_row[6]}")
-    check("autoreply count", sm_row[7] == 1, f"got {sm_row[7]}")
-    check("total tagged=6", sm_row[8] == 6, f"got {sm_row[8]}")
-    check("positivity rate=50%", sm_row[9] == "50.0%", f"got {sm_row[9]}")
+    check("negative count", sm_row[2] == 2, f"got {sm_row[2]}")
+    check("autoreply count", sm_row[3] == 1, f"got {sm_row[3]}")
+    check("invalid count", sm_row[4] == 1, f"got {sm_row[4]}")
+    check("total tagged=6", sm_row[5] == 6, f"got {sm_row[5]}")
+    check("positivity rate=50%", sm_row[6] == "50.0%", f"got {sm_row[6]}")
     conn5.close()
     tmp5.cleanup()
 

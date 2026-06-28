@@ -20,6 +20,15 @@ bash scripts/sync-companion-common.sh --check
 echo "== Manifest validators =="
 python3 scripts/validate-companion-manifests.py
 
+echo "== Sentiment integrity =="
+for f in skills/outreachmagic/scripts/campaign_stats.py skills/outreachmagic/scripts/pipeline_lead_review.py skills/outreachmagic/scripts/pipeline.py; do
+    if grep -q "'interested'\|'neutral'" "$f"; then
+        echo "FAIL: $f contains forbidden sentiment values"
+        exit 1
+    fi
+done
+echo "  canonical values: OK"
+
 echo "== Pytest gate =="
 bash scripts/run-tests.sh
 

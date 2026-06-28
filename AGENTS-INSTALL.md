@@ -181,7 +181,7 @@ Use `pipeline.py sheets export` — **not** `review export` (dedup workflow), `g
 
 ## After import-profiles
 
-Import marks leads `cloud_pending` until pushed to the relay. Auto-sync runs after import unless `--no-sync`:
+Import marks leads for sync (timestamps are set for `updated_at` tracking). Auto-sync runs after import unless `--no-sync`:
 
 ```bash
 python3 <SKILLS>/outreachmagic/scripts/pipeline.py import-profiles --file leads.csv --workspace W

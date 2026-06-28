@@ -49,24 +49,58 @@ def test_detect_platform_cursor_agent_over_hermes_dir(tmp_path):
     assert data["platform"] == "cursor"
 
 
-def test_rollback_without_snapshot_exits_nonzero():
-    # Test that rollback produces the expected output format.
-    # The exit code depends on whether a prior update created a snapshot,
-    # which varies by environment. Focus on the response shape.
+def test_rollback_without_snapshot_exits_nonzero(tmp_path):
+    # Run with a fully isolated data root so rollback can never reach a real
+    # snapshot (and can never delete/restore over this repo's scripts dir, which
+    # would clobber the working tree). With no snapshot present, rollback must
+    # report the no_rollback_snapshot error and exit non-zero.
+    import os
+
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "OUTREACHMAGIC_DATA_ROOT": str(tmp_path / "data"),
+    }
     proc = subprocess.run(
         [sys.executable, str(PIPELINE), "rollback"],
         capture_output=True,
         text=True,
         check=False,
-        env={**__import__("os").environ, "HOME": "/tmp/om-test-no-rollback-home"},
+        env=env,
     )
     payload = json.loads(proc.stdout)
-    # Must have a status field. If a snapshot exists, status is "rolled_back".
-    # Without one, status is "error" and the error field tells us why.
-    assert payload.get("status") in ("rolled_back", "error")
-    if payload.get("status") == "error":
-        assert payload.get("error") == "no_rollback_snapshot"
-        assert proc.returncode != 0
+    assert payload.get("status") == "error"
+    assert payload.get("error") == "no_rollback_snapshot"
+    assert proc.returncode != 0
+
+
+def test_rollback_refuses_inside_git_checkout(tmp_path, monkeypatch):
+    # Regression guard: even when a rollback snapshot exists, rollback must refuse
+    # when the skill scripts dir is inside a git working tree, instead of wiping a
+    # development checkout. (A stray rollback in CI previously reverted source.)
+    sys.path.insert(0, str(ROOT / "skills" / "outreachmagic" / "scripts"))
+    import pipeline as om  # noqa: E402
+
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    scripts = checkout / "scripts"
+    scripts.mkdir()
+    sentinel = scripts / "ghl.py"
+    sentinel.write_text("# good code\n", encoding="utf-8")
+
+    monkeypatch.setattr(om, "scripts_rollback_dir", lambda: snapshot)
+    monkeypatch.setattr(om, "skill_scripts_dir", lambda: scripts)
+
+    result = om.rollback_skill()
+
+    assert result["status"] == "error"
+    assert result["error"] == "dev_checkout_protected"
+    # The working tree must be untouched.
+    assert sentinel.read_text(encoding="utf-8") == "# good code\n"
 
 
 def test_resolve_sheets_export_access_public():

@@ -4335,7 +4335,7 @@ def test_sentiment_tag_sync_via_mock():
 
 
 def test_sentiment_tag_sync_no_sentiment_calls_clear():
-    """Empty sentiment still calls sync_sentiment_tag."""
+    """NULL/empty sentiment calls sync_sentiment_tag with empty string (driver clears om_* tags)."""
     om.init_db()
     conn = get_conn()
     try:
@@ -4366,7 +4366,14 @@ def test_sentiment_tag_sync_no_sentiment_calls_clear():
 
         tag_calls = [c for c in mock.calls if c.startswith("sync_sentiment_tag")]
         assert len(tag_calls) >= 1, f"Empty sentiment should still trigger sync_sentiment_tag call, got: {mock.calls}"
-        assert "(empty)" in tag_calls[0]
+        # crm_sync now passes "" (not "(empty)") for missing sentiment.
+        # The mock records "sync_sentiment_tag <contact_id> <sentiment>", so
+        # an empty-string sentiment produces a call that does NOT contain a
+        # sentiment keyword.
+        call = tag_calls[0]
+        assert not any(kw in call for kw in ("positive", "negative", "autoreply", "invalid", "(empty)")), (
+            f"Expected empty-string sentiment, got: {call}"
+        )
     finally:
         conn.close()
 
@@ -4458,6 +4465,212 @@ def test_ghl_create_location_tag():
         result = driver.create_location_tag("om_invalid")
         assert result == "tag-new-001"
         assert "om_invalid" in tag_created
+
+
+def test_ghl_sync_sentiment_tag_replaces_old_tag():
+    """sync_sentiment_tag removes the stale om_* tag before adding the new one."""
+    driver = GhlDriver(_make_ghl_config())
+
+    api_calls = []
+
+    def side_effect(req, timeout=30):
+        url = req.full_url or ""
+        method = req.method or "GET"
+        body = json.loads(req.data) if req.data else {}
+        api_calls.append((method, url, body))
+        cm = MagicMock()
+
+        if "/contacts/c-123" == url.split("?")[0].rstrip("/").rsplit("/locations", 1)[-1].lstrip("/contacts"):
+            pass
+        if method == "GET" and "/contacts/" in url and "/tags" not in url:
+            # get_contact_tags — contact currently has om_positive
+            cm.__enter__.return_value.read.return_value = json.dumps({
+                "contact": {"tags": ["om_positive", "some_other_tag"]},
+            }).encode()
+        elif method == "GET" and "/locations/" in url and "/tags" in url:
+            # _ensure_sentiment_tags — om_negative already exists at location
+            cm.__enter__.return_value.read.return_value = json.dumps({
+                "tags": [{"id": "t1", "name": "om_positive"}, {"id": "t2", "name": "om_negative"}],
+            }).encode()
+        else:
+            cm.__enter__.return_value.read.return_value = json.dumps({}).encode()
+        return cm
+
+    with patch("urllib.request.urlopen", side_effect=side_effect):
+        driver.sync_sentiment_tag("c-123", "negative")
+
+    methods_urls = [(m, u) for m, u, _ in api_calls]
+
+    # Should have deleted om_positive (the stale tag)
+    delete_calls = [(m, b) for m, u, b in api_calls if m == "DELETE"]
+    assert any("om_positive" in str(b) for _, b in delete_calls), (
+        f"Expected DELETE of om_positive, got api_calls: {api_calls}"
+    )
+
+    # Should have added om_negative
+    post_tag_calls = [(m, u, b) for m, u, b in api_calls if m == "POST" and "/tags" in u and "/locations/" not in u]
+    assert any("om_negative" in str(b) for _, _, b in post_tag_calls), (
+        f"Expected POST of om_negative, got api_calls: {api_calls}"
+    )
+
+
+def test_ghl_sync_sentiment_tag_noop_when_already_correct():
+    """sync_sentiment_tag is a no-op when the contact already has exactly the right tag."""
+    driver = GhlDriver(_make_ghl_config())
+
+    api_calls = []
+
+    def side_effect(req, timeout=30):
+        url = req.full_url or ""
+        method = req.method or "GET"
+        body = json.loads(req.data) if req.data else {}
+        api_calls.append((method, url, body))
+        cm = MagicMock()
+
+        if method == "GET" and "/contacts/" in url and "/tags" not in url:
+            # Contact already has exactly om_positive and nothing else om_*.
+            cm.__enter__.return_value.read.return_value = json.dumps({
+                "contact": {"tags": ["om_positive", "non_om_tag"]},
+            }).encode()
+        elif method == "GET" and "/locations/" in url and "/tags" in url:
+            cm.__enter__.return_value.read.return_value = json.dumps({
+                "tags": [{"id": "t1", "name": "om_positive"}],
+            }).encode()
+        else:
+            cm.__enter__.return_value.read.return_value = json.dumps({}).encode()
+        return cm
+
+    with patch("urllib.request.urlopen", side_effect=side_effect):
+        driver.sync_sentiment_tag("c-999", "positive")
+
+    # No DELETE or POST /contacts/{id}/tags calls should have been made.
+    mutation_calls = [
+        (m, u, b) for m, u, b in api_calls
+        if m in ("DELETE", "POST") and "/contacts/" in u and "/tags" in u
+    ]
+    assert mutation_calls == [], f"Expected no mutations for no-op, got: {mutation_calls}"
+
+
+def test_ghl_sync_sentiment_tag_clears_all_on_empty():
+    """Empty sentiment removes all existing om_* tags without adding any."""
+    driver = GhlDriver(_make_ghl_config())
+
+    api_calls = []
+
+    def side_effect(req, timeout=30):
+        url = req.full_url or ""
+        method = req.method or "GET"
+        body = json.loads(req.data) if req.data else {}
+        api_calls.append((method, url, body))
+        cm = MagicMock()
+
+        if method == "GET" and "/contacts/" in url and "/tags" not in url:
+            cm.__enter__.return_value.read.return_value = json.dumps({
+                "contact": {"tags": ["om_positive", "keep_this"]},
+            }).encode()
+        else:
+            cm.__enter__.return_value.read.return_value = json.dumps({}).encode()
+        return cm
+
+    with patch("urllib.request.urlopen", side_effect=side_effect):
+        driver.sync_sentiment_tag("c-empty", "")
+
+    delete_calls = [(m, b) for m, u, b in api_calls if m == "DELETE"]
+    assert any("om_positive" in str(b) for _, b in delete_calls), (
+        f"Expected DELETE of om_positive on clear, got: {api_calls}"
+    )
+    # Must not add any new tag.
+    add_calls = [(m, b) for m, u, b in api_calls if m == "POST" and "/contacts/" in u]
+    assert add_calls == [], f"Expected no POST on clear, got: {add_calls}"
+
+
+def test_hubspot_sync_sentiment_tag_sets_property():
+    """sync_sentiment_tag PATCHes the om_sentiment property on the contact."""
+    from crm_drivers.hubspot import HubspotDriver
+
+    driver = HubspotDriver({"api_key": "test-key", "portal_id": "99"})
+
+    api_calls = []
+
+    def side_effect(req, timeout=30):
+        url = req.full_url or ""
+        method = req.method or "GET"
+        body = json.loads(req.data) if req.data else {}
+        api_calls.append((method, url, body))
+        cm = MagicMock()
+        if method == "GET" and "om_sentiment" in url:
+            # Property already exists — no creation needed.
+            cm.__enter__.return_value.read.return_value = json.dumps(
+                {"name": "om_sentiment"}
+            ).encode()
+        else:
+            cm.__enter__.return_value.read.return_value = json.dumps({}).encode()
+        return cm
+
+    with patch("urllib.request.urlopen", side_effect=side_effect):
+        driver.sync_sentiment_tag("hs-contact-1", "positive")
+
+    patch_calls = [(m, u, b) for m, u, b in api_calls if m == "PATCH"]
+    assert len(patch_calls) == 1
+    method, url, body = patch_calls[0]
+    assert "hs-contact-1" in url
+    assert body.get("properties", {}).get("om_sentiment") == "positive"
+
+
+def test_hubspot_sync_sentiment_tag_clears_on_empty():
+    """Empty sentiment sets om_sentiment to empty string (clears it)."""
+    from crm_drivers.hubspot import HubspotDriver
+
+    driver = HubspotDriver({"api_key": "test-key", "portal_id": "99"})
+    driver._sentiment_property_ensured = True  # skip property creation
+
+    api_calls = []
+
+    def side_effect(req, timeout=30):
+        url = req.full_url or ""
+        method = req.method or "GET"
+        body = json.loads(req.data) if req.data else {}
+        api_calls.append((method, url, body))
+        cm = MagicMock()
+        cm.__enter__.return_value.read.return_value = json.dumps({}).encode()
+        return cm
+
+    with patch("urllib.request.urlopen", side_effect=side_effect):
+        driver.sync_sentiment_tag("hs-contact-2", "")
+
+    patch_calls = [(m, u, b) for m, u, b in api_calls if m == "PATCH"]
+    assert len(patch_calls) == 1
+    assert patch_calls[0][2].get("properties", {}).get("om_sentiment") == ""
+
+
+def test_hubspot_sentiment_property_created_when_missing():
+    """_ensure_sentiment_property creates the property if GET returns 404."""
+    from crm_drivers.hubspot import HubspotDriver, HubspotError
+
+    driver = HubspotDriver({"api_key": "test-key", "portal_id": "99"})
+
+    api_calls = []
+
+    def side_effect(req, timeout=30):
+        url = req.full_url or ""
+        method = req.method or "GET"
+        body = json.loads(req.data) if req.data else {}
+        api_calls.append((method, url, body))
+        cm = MagicMock()
+        if method == "GET" and "om_sentiment" in url:
+            import urllib.error
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        cm.__enter__.return_value.read.return_value = json.dumps({}).encode()
+        return cm
+
+    with patch("urllib.request.urlopen", side_effect=side_effect):
+        driver._ensure_sentiment_property()
+
+    post_calls = [(m, u, b) for m, u, b in api_calls if m == "POST"]
+    assert any("om_sentiment" in str(b) for _, _, b in post_calls), (
+        f"Expected POST to create om_sentiment property, got: {api_calls}"
+    )
+    assert driver._sentiment_property_ensured is True
 
 
 if __name__ == "__main__":

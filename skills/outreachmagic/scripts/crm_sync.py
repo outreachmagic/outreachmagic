@@ -447,7 +447,8 @@ def sync_single_lead(
         )
 
     # -- Sentiment tag --
-    sentiment = lead.get("current_status_sentiment", "") or "(empty)"
+    # Pass the raw sentiment value; drivers handle "" as "clear all om_* tags".
+    sentiment = lead.get("current_status_sentiment") or ""
     if contact_id:
         try:
             driver.sync_sentiment_tag(contact_id, sentiment)

@@ -586,24 +586,72 @@ class GhlDriver:
         self._existing_tag_names.add(name)
         return resp.get("id", "")
 
+    def get_contact_tags(self, contact_id: str) -> list[str]:
+        """Return current tag names on the contact."""
+        resp = self._request("GET", f"/contacts/{contact_id}")
+        contact = resp.get("contact") or resp
+        raw = contact.get("tags") or []
+        return [t for t in raw if isinstance(t, str)]
+
+    def _remove_contact_tags(self, contact_id: str, tag_names: list[str]) -> None:
+        """Remove specific tags from a contact."""
+        if not tag_names:
+            return
+        self._request(
+            "DELETE",
+            f"/contacts/{contact_id}/tags",
+            body={"tags": tag_names},
+        )
+
+    def _add_contact_tags(self, contact_id: str, tag_names: list[str]) -> None:
+        """Add specific tags to a contact."""
+        if not tag_names:
+            return
+        self._request(
+            "POST",
+            f"/contacts/{contact_id}/tags",
+            body={"tags": tag_names},
+        )
+
     def sync_sentiment_tag(self, contact_id: str, sentiment: str) -> None:
-        """Sync a sentiment tag to the GHL contact.
+        """Enforce exactly one om_* sentiment tag on the contact.
 
-        Creates the tag if it doesn't exist, then applies it to the contact.
-        Empty sentiment is sent as ``(empty)`` so the timeline shows the
-        tag was cleared.
+        Algorithm (per phase-10 spec):
+        1. Empty sentiment → remove all om_* tags, done.
+        2. Build target tag name (e.g. ``om_positive``).
+        3. Ensure the tag exists at location level (create if missing).
+        4. Read current contact tags, filter to om_* names.
+        5. If the contact already has exactly {target} and nothing else → no-op.
+        6. Otherwise: remove all existing om_* tags, then add the new one.
+
+        This guarantees only one om_* tag is active at a time — a contact moving
+        from positive → negative gets om_positive removed and om_negative added.
         """
-        tag_name = f"{self.SENTIMENT_TAG_PREFIX}{sentiment or '(empty)'}"
+        prefix = self.SENTIMENT_TAG_PREFIX
 
+        current_tags = self.get_contact_tags(contact_id)
+        om_tags = [t for t in current_tags if t.startswith(prefix)]
+
+        if not sentiment:
+            # Clear all om_* tags.
+            self._remove_contact_tags(contact_id, om_tags)
+            return
+
+        tag_name = f"{prefix}{sentiment}"
+
+        # Ensure tag exists at location level.
         self._ensure_sentiment_tags()
         if tag_name not in self._existing_tag_names:
             self._create_tag(tag_name)
 
-        self._request(
-            "POST",
-            f"/contacts/{contact_id}/tags",
-            body={"tags": [tag_name]},
-        )
+        # No-op if already correct (idempotent).
+        if om_tags == [tag_name]:
+            return
+
+        # Remove stale om_* tags, then add the desired one.
+        stale = [t for t in om_tags if t != tag_name]
+        self._remove_contact_tags(contact_id, stale)
+        self._add_contact_tags(contact_id, [tag_name])
 
 
 def _ensure_url_protocol(value: str) -> str:

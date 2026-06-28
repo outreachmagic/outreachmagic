@@ -559,6 +559,23 @@ def backup_scripts_for_rollback(dest: Path) -> None:
     )
 
 
+def _skill_scripts_in_git_checkout() -> Optional[Path]:
+    """Return the repo root if ``skill_scripts_dir()`` is inside a git working tree.
+
+    Update and rollback rewrite (and delete) files in the skill scripts dir. In a
+    real install that directory is a plain copy, so this returns ``None`` and the
+    operation proceeds. In a development checkout the same directory is tracked by
+    git, and overwriting it silently clobbers uncommitted/committed work (this is
+    how a stray ``rollback`` once reverted source files in CI). Detect that case so
+    callers can refuse instead of destroying the working tree.
+    """
+    p = skill_scripts_dir().resolve()
+    for parent in (p, *p.parents):
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
 def rollback_skill() -> dict:
     """Restore skill scripts from the pre-update backup."""
     backup = scripts_rollback_dir()
@@ -567,6 +584,17 @@ def rollback_skill() -> dict:
             "status": "error",
             "error": "no_rollback_snapshot",
             "message": "No rollback snapshot found. Run pipeline.py update first.",
+        }
+    repo_root = _skill_scripts_in_git_checkout()
+    if repo_root is not None:
+        return {
+            "status": "error",
+            "error": "dev_checkout_protected",
+            "message": (
+                "Refusing to roll back skill scripts inside a git working tree "
+                f"({repo_root}). This is a development checkout — use git to manage "
+                "changes instead of update/rollback."
+            ),
         }
     dest = skill_scripts_dir()
     meta_path = get_config_path().parent / "scripts-rollback-meta.json"
@@ -653,6 +681,16 @@ def resolve_update_source(
 def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release") -> dict:
     """Download or copy a tagged release into this skill install, then migrate DB."""
     dest = skill_scripts_dir()
+    repo_root = _skill_scripts_in_git_checkout()
+    if repo_root is not None:
+        return {
+            "status": "error",
+            "error": "dev_checkout_protected",
+            "message": (
+                "Refusing to update skill scripts inside a git working tree "
+                f"({repo_root}). Update the installed copy, not the dev checkout."
+            ),
+        }
     backup_scripts_for_rollback(dest)
     local_src, scripts_base, repo_base, source_label = resolve_update_source(
         explicit_tag, channel=channel,

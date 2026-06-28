@@ -110,6 +110,16 @@ class MockDriver:
             },
         ]
 
+    def get_contact_tags(self, contact_id: str) -> list[str]:
+        self._record("get_contact_tags", contact_id)
+        return []
+
+    def _remove_contact_tags(self, contact_id: str, tag_names: list[str]) -> None:
+        self._record("_remove_contact_tags", contact_id, tag_names)
+
+    def _add_contact_tags(self, contact_id: str, tag_names: list[str]) -> None:
+        self._record("_add_contact_tags", contact_id, tag_names)
+
     def sync_sentiment_tag(self, contact_id: str, sentiment: str) -> None:
         self._record("sync_sentiment_tag", contact_id, sentiment)
 

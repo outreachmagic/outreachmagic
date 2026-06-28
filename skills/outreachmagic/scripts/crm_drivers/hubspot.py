@@ -532,6 +532,56 @@ class HubspotDriver:
         }
         self._request("POST", "/crm/v3/objects/emails", body=body)
 
+    # ------------------------------------------------------------------
+    # Sentiment sync
+    # ------------------------------------------------------------------
+
+    OM_SENTIMENT_PROPERTY = "om_sentiment"
+    _sentiment_property_ensured: bool = False
+
+    def _ensure_sentiment_property(self) -> None:
+        """Create the om_sentiment contact property if it doesn't exist yet.
+
+        Cached per driver instance so repeated sync calls only hit the API once.
+        Requires scope ``crm.schemas.custom.write`` on the HubSpot private app.
+        """
+        if self._sentiment_property_ensured:
+            return
+        try:
+            self._request("GET", f"/crm/v3/properties/contacts/{self.OM_SENTIMENT_PROPERTY}")
+        except HubspotError as e:
+            if "404" in str(e) or "not_found" in str(e).lower():
+                self._request(
+                    "POST",
+                    "/crm/v3/properties/contacts",
+                    body={
+                        "name": self.OM_SENTIMENT_PROPERTY,
+                        "label": "OM Sentiment",
+                        "type": "string",
+                        "fieldType": "text",
+                        "groupName": "contactinformation",
+                    },
+                )
+            # If any other error (permission, network), proceed — property may already
+            # exist and we don't want to block the full sync.
+        self._sentiment_property_ensured = True
+
+    def sync_sentiment_tag(self, contact_id: str, sentiment: str) -> None:
+        """Sync the om_sentiment property on a HubSpot contact.
+
+        Sets ``om_sentiment`` to the current sentiment value (e.g. ``positive``).
+        Passing an empty string clears the property. Idempotent — writing the same
+        value as before is a harmless no-op from HubSpot's perspective.
+
+        Requires scope ``crm.schemas.custom.write`` for first-time property creation.
+        """
+        self._ensure_sentiment_property()
+        self._request(
+            "PATCH",
+            f"/crm/v3/objects/contacts/{contact_id}",
+            body={"properties": {self.OM_SENTIMENT_PROPERTY: sentiment or ""}},
+        )
+
 
 def _format_event_note(event: dict) -> str:
     """Format an OM event as a HubSpot note with prefix and detail."""

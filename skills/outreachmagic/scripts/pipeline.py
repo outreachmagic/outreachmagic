@@ -272,6 +272,8 @@ UPDATE_SCRIPT_FILES = tuple(
     sorted(p.name for p in Path(__file__).resolve().parent.glob("*.py"))
 )
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
+# Files at skill root (not in scripts/), handled separately by update_skill().
+ROOT_SKILL_FILES = frozenset({"README.md", "install.sh"})
 # Unified public release repo (skills/outreachmagic layout).
 SKILL_REPO_PATH = "skills/outreachmagic"
 GITHUB_REPO = "outreachmagic/outreachmagic"
@@ -531,10 +533,11 @@ def fetch_update_manifest(repo_base: str, skill_repo_path: Optional[str] = None)
 
 
 def update_download_names(manifest: Optional[dict] = None) -> list[str]:
-    """File names to install during update (scripts + VERSION; SKILL.md handled separately)."""
+    """File names to install during update (scripts + VERSION; root files handled separately)."""
     files = (manifest or {}).get("files") if isinstance(manifest, dict) else None
     if isinstance(files, dict) and files:
-        return sorted(name for name in files if name != "SKILL.md")
+        skip = ROOT_SKILL_FILES | {"SKILL.md"}
+        return sorted(name for name in files if name not in skip)
     return list(UPDATE_MANIFEST_FILES)
 
 
@@ -623,6 +626,19 @@ def rollback_skill() -> dict:
     }
 
 
+def _resolve_git_tag(repo_root: Path) -> Optional[str]:
+    """Return the exact git tag at repo_root, or None."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "describe", "--tags", "--exact-match"],
+            capture_output=True, text=True, timeout=5,
+        )
+        tag = result.stdout.strip()
+        return tag if tag else None
+    except Exception:
+        return None
+
+
 def resolve_update_source(
     explicit_tag: Optional[str] = None,
     *,
@@ -639,7 +655,8 @@ def resolve_update_source(
             raise FileNotFoundError(
                 f"dev_repo in config has no {SKILL_REPO_PATH}/scripts/: {src}"
             )
-        return src, "", str(Path(dev_repo)), "local clone"
+        label = _resolve_git_tag(Path(dev_repo)) or f"dev@{Path(dev_repo).name}"
+        return src, "", str(Path(dev_repo)), label
 
     dev_base = dev_update_base_url()
     if dev_base:
@@ -721,6 +738,11 @@ def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release"
         if skill_md_src.is_file():
             shutil.copy2(skill_md_src, dest.parent / "SKILL.md")
             updated.append("SKILL.md")
+        for name in ROOT_SKILL_FILES:
+            root_src = local_src.parent / name
+            if root_src.is_file():
+                shutil.copy2(root_src, dest.parent / name)
+                updated.append(name)
     else:
         for name in download_names:
             content = _fetch_url(f"{scripts_base}/{name}")
@@ -742,6 +764,17 @@ def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release"
             updated.append("SKILL.md")
         except (urllib.error.URLError, urllib.error.HTTPError, OSError):
             pass
+        for name in ROOT_SKILL_FILES:
+            url = f"{repo_base.rstrip('/')}/{skill_path}/{name}"
+            try:
+                content = _fetch_url(url)
+                expected = (manifest or {}).get("files", {}).get(name)
+                if expected and _sha256_hex(content) != expected:
+                    raise RuntimeError(f"Checksum mismatch for {name}. Refusing to install.")
+                (dest.parent / name).write_bytes(content)
+                updated.append(name)
+            except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+                pass
 
     init_db()
     sync_skill_md_version()

@@ -10554,6 +10554,48 @@ def _maybe_trigger_crm_sync(
     print(f"CRM sync triggered for lead {lead_id} in workspace {workspace_slug}", file=sys.stderr)
 
 
+def _cmd_crm_sync(args) -> None:
+    """Dispatch pipeline.py crm-sync to the standalone crm_sync.py subprocess."""
+    crm_sync_path = Path(__file__).parent / "crm_sync.py"
+    if not crm_sync_path.exists():
+        print(json.dumps({"error": "crm_sync.py not found"}))
+        sys.exit(1)
+
+    action = getattr(args, "action", None) or "status"
+    cmd = [sys.executable, str(crm_sync_path), action]
+
+    if action == "sync":
+        if getattr(args, "workspace", None):
+            cmd.extend(["--workspace", args.workspace])
+        elif getattr(args, "all", False):
+            cmd.append("--all")
+        else:
+            print(json.dumps({"error": "Use --workspace=<slug> or --all for sync"}))
+            sys.exit(1)
+        if getattr(args, "dry_run", False):
+            cmd.append("--dry-run")
+        if getattr(args, "lead_id", None):
+            cmd.extend(["--lead-id", str(args.lead_id)])
+        if getattr(args, "skip_events", False):
+            cmd.append("--skip-events")
+        if getattr(args, "platform", None):
+            cmd.extend(["--platform", args.platform])
+    elif action == "discover":
+        ws = getattr(args, "workspace", None)
+        platform = getattr(args, "platform", None)
+        if not ws:
+            print(json.dumps({"error": "--workspace is required for discover"}))
+            sys.exit(1)
+        cmd.extend(["--workspace", ws])
+        if platform:
+            cmd.extend(["--platform", platform])
+
+    # Fire and forget — crm_sync.py prints its own output
+    result = subprocess.run(cmd, capture_output=False, text=True)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Outreach Magic — Pipeline visibility for Hermes")
     sub = parser.add_subparsers(dest="command", help="Commands")
@@ -11095,6 +11137,24 @@ def main():
     archive_p.add_argument("--dry-run", action="store_true", help="Show counts only")
     archive_p.add_argument("--purge", action="store_true", help="Remove exported data from main DB (requires --output)")
     archive_p.add_argument("--vacuum", action="store_true", help="Run VACUUM after --purge")
+
+    crm_sync_p = sub.add_parser(
+        "crm-sync",
+        help="Push leads to CRM (GHL / HubSpot). Delegates to crm_sync.py.",
+    )
+    crm_sync_p.add_argument(
+        "action",
+        nargs="?",
+        choices=["sync", "status", "discover"],
+        default="status",
+        help="Action: sync leads, show status, or discover pipelines (default: status)",
+    )
+    crm_sync_p.add_argument("--workspace", help="Workspace slug (required for sync/discover)")
+    crm_sync_p.add_argument("--all", action="store_true", help="Sync all enabled CRM workspaces")
+    crm_sync_p.add_argument("--dry-run", action="store_true", help="Preview without API calls")
+    crm_sync_p.add_argument("--lead-id", type=int, help="Sync a single lead by ID")
+    crm_sync_p.add_argument("--skip-events", action="store_true", help="Skip event history push")
+    crm_sync_p.add_argument("--platform", choices=["ghl", "hubspot"], help="Filter by platform")
 
     conn_p = sub.add_parser("connections", help="List connected platforms with webhook URLs and stats")
     conn_p.add_argument("--json", action="store_true")
@@ -12009,6 +12069,10 @@ def main():
 
     migrate_db()
     sync_workspace_routing_mode_from_config()
+
+    if args.command == "crm-sync":
+        _cmd_crm_sync(args)
+        return
 
     if args.command == "pull":
         _warn_duplicate_installs()

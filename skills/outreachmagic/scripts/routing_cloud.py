@@ -431,10 +431,21 @@ def sync_org_config_from_cloud(
     agent_secrets = bundle.get("agentSecrets")
     if agent_secrets:
         try:
-            from agent_secrets_cloud import agent_secrets_path
+            from agent_secrets_cloud import (
+                agent_secrets_path,
+                crm_config_to_secrets_dict,
+            )
             path = agent_secrets_path()
             secrets_data = agent_secrets.get("secrets", {})
             version = agent_secrets.get("version", 1)
+
+            # Augment with CRM platform keys (per-workspace GHL/HubSpot configs)
+            crm_secrets = crm_config_to_secrets_dict(
+                crm_configs, bundle.get("workspaces", []),
+            )
+            for k, v in crm_secrets.items():
+                secrets_data.setdefault(k, []).extend(v)
+
             keys_written = write_agent_secrets_env(path, secrets_data, version=version)
             if keys_written:
                 mirror_agent_secrets_to_data_env(secrets_data)

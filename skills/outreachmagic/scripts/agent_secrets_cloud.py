@@ -23,6 +23,7 @@ CATALOG_ENV_KEYS = (
     "TRYKITT_API_KEY",
     "ICYPEAS_API_KEY",
     "MILLIONVERIFIER_API_KEY",
+    "SCRUBBY_API_KEY",
 )
 
 def _parse_pool_env_key(key: str) -> tuple[str, int] | None:
@@ -108,6 +109,59 @@ def write_agent_secrets_env(
     return [k for k, _ in lines]
 
 
+# CRM platform prefix used for env var names in agent_secrets.env
+CRM_PLATFORM_PREFIXES = {
+    "ghl": "GHL",
+    "hubspot": "HUBSPOT",
+}
+
+
+def _crm_env_key(prefix: str, field: str, slug: str) -> str:
+    """Build an env var name like ``GHL_API_KEY_wbhk_demo``."""
+    return f"{prefix}_{field}_{slug}"
+
+
+def crm_config_to_secrets_dict(
+    crm_configs: dict[str, dict[str, dict[str, Any]]],
+    workspaces: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """Convert CRM config bundle into secrets-dict entries for agent_secrets.env.
+
+    Produces flat env vars with workspace slug embedded in the key:
+
+        GHL_API_KEY_wbhk_demo=pit-xxx
+        GHL_LOCATION_ID_wbhk_demo=t9f6...
+        HUBSPOT_API_KEY_my_workspace=...
+    """
+    # Build workspace_id -> slug lookup
+    ws_slugs: dict[str, str] = {}
+    for ws in workspaces:
+        ws_id = ws.get("id", "")
+        slug = ws.get("slug", "")
+        if ws_id and slug:
+            ws_slugs[ws_id] = slug
+
+    result: dict[str, list[str]] = {}
+    for ws_id, platforms in crm_configs.items():
+        slug = ws_slugs.get(ws_id, ws_id)
+        safe_slug = "".join(c if c.isalnum() else "_" for c in slug).strip("_") or ws_id
+        for platform, cfg in platforms.items():
+            prefix = CRM_PLATFORM_PREFIXES.get(platform, platform.upper())
+            api_key = (cfg.get("api_key") or "").strip()
+            location_id = (cfg.get("location_id") or "").strip()
+            pipeline_id = (cfg.get("pipeline_id") or "").strip()
+            if api_key:
+                key = _crm_env_key(prefix, "API_KEY", safe_slug)
+                result.setdefault(key, []).append(api_key)
+            if location_id:
+                key = _crm_env_key(prefix, "LOCATION_ID", safe_slug)
+                result.setdefault(key, []).append(location_id)
+            if pipeline_id:
+                key = _crm_env_key(prefix, "PIPELINE_ID", safe_slug)
+                result.setdefault(key, []).append(pipeline_id)
+    return result
+
+
 def _is_catalog_env_var(key: str) -> bool:
     parsed = _parse_pool_env_key(key)
     if not parsed:
@@ -118,6 +172,11 @@ def _is_catalog_env_var(key: str) -> bool:
 
 def mirror_agent_secrets_to_data_env(secrets: dict[str, list[str]]) -> Path:
     """Mirror synced companion keys into {data_root}/.env for Hermes shell/agent visibility."""
+    # Build the set of keys we manage — everything in the secrets dict plus catalog keys
+    managed_keys: set[str] = set(CATALOG_ENV_KEYS)
+    for env_key in secrets:
+        managed_keys.add(env_key)
+
     path = get_data_root() / ".env"
     preserved: list[str] = []
     if path.is_file():
@@ -127,7 +186,8 @@ def mirror_agent_secrets_to_data_env(secrets: dict[str, list[str]]) -> Path:
                 preserved.append(line)
                 continue
             key = stripped.partition("=")[0].strip()
-            if _is_catalog_env_var(key):
+            # Strip all managed keys so they get rewritten with fresh values below
+            if _is_catalog_env_var(key) or key in managed_keys:
                 continue
             preserved.append(line)
 

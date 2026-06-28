@@ -36,4 +36,37 @@ if [ "$DIRTY" -ne 0 ]; then
     exit 1
 fi
 
+# ── Sentiment integrity check ──
+SENT_CHECK_FILES=(
+    skills/outreachmagic/scripts/campaign_stats.py
+    skills/outreachmagic/scripts/pipeline_lead_review.py
+    skills/outreachmagic/scripts/pipeline.py
+)
+for sf in "${SENT_CHECK_FILES[@]}"; do
+    if git diff HEAD -- "$sf" 2>/dev/null | grep -q "'interested'\|'neutral'\|'not_interested'"; then
+        echo "ERROR: Sentiment regression in $sf"
+        echo "   Forbidden values found in diff to HEAD."
+        echo "   Canonical values: positive, negative, autoreply, invalid"
+        exit 1
+    fi
+done
+
+# ── Conflict marker check ──
+# Don't push code with unresolved merge conflicts.
+if git diff --cached --name-only -z | xargs -0 grep -l '<<<<<<< HEAD\|>>>>>>> [0-9a-f]\{7\}' 2>/dev/null; then
+    echo "ERROR: Unresolved merge conflicts found in staged files."
+    echo "   Resolve all conflicts before pushing."
+    exit 1
+fi
+
+# ── CRM + sync test gate ──
+# Core sync infrastructure must pass before push. Any refactoring that
+# breaks set_last_sync or the sync hash is caught here.
+echo "Running CRM + sync tests..."
+if ! python3 -m pytest tests/test_crm_sync.py tests/test_sync_cloud_pending.py -q >/dev/null 2>&1; then
+    echo "ERROR: CRM / sync tests failed."
+    echo "   Run: python3 -m pytest tests/test_crm_sync.py tests/test_sync_cloud_pending.py -v"
+    exit 1
+fi
+
 exit 0

@@ -53,6 +53,18 @@ Companion tags: `email-finder-v*` / `lead-enrich-v*` (see `skill-suite.json` →
 - **`--channel main`** — merge to `main`, then run `pipeline.py update --channel main` on the test machine. Release tags trigger CI to create GitHub Releases directly on this repo.
 - **RC tags** — tag `vX.Y.Z-rc.1` to publish a prerelease to the public repo. Testers run `pipeline.py update --tag vX.Y.Z-rc.1`.
 
+## Development checkout conventions
+
+- The dev clone should NOT have `skills/outreachmagic/config/outreachmagic_config.json`
+  commitable. Config options in there (like `data_root`) cause `pipeline.py rollback`
+  and `pipeline.py update` to read from the real installed location and write into
+  the dev checkout — silently clobbering source files.
+- `update_skill` and `rollback_skill` are guarded: they refuse to run if
+  `skill_scripts_dir()` is inside a git working tree. This is why test v1.33
+  now uses an isolated `OUTREACHMAGIC_DATA_ROOT`.
+- Always commit to a clean tree. Experiment with reverts/refactors on throwaway
+  branches. Big changes across multiple files should land in their own PRs.
+
 ## Brand assets
 
 Logos live in `brand/` and publish to [outreachmagic/brand](https://github.com/outreachmagic/brand) via `publish-brand.yml` on merge to `main`.

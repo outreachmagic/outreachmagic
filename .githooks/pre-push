@@ -59,6 +59,16 @@ if git diff --cached --name-only -z | xargs -0 grep -l '<<<<<<< HEAD\|>>>>>>> [0
     exit 1
 fi
 
+# ── Manifest sync test ──
+# Ensures the on-disk manifest hashes match what the generator produces.
+echo "Running manifest sync test..."
+if ! python3 -m pytest tests/test_update_manifest_sync.py -q >/dev/null 2>&1; then
+    echo "ERROR: Manifest hashes are out of sync."
+    echo "   Run: python3 scripts/generate_skill_manifest.py --all"
+    echo "   Then commit the updated manifest files."
+    exit 1
+fi
+
 # ── CRM + sync test gate ──
 # Core sync infrastructure must pass before push. Any refactoring that
 # breaks set_last_sync or the sync hash is caught here.

@@ -1,8 +1,8 @@
 {
   "version": "1.1.0",
   "files": {
-    "scripts/companion_common.py": "1a67792122749fd8cd3cfac255fd64354b471485133a6a28dfece16de3925403",
-    "scripts/enrich.py": "8c18fcdf6bec8a2c2509d899a8e2e33f6a90d7703cc2cfc5cfc3919e89bca237",
+    "scripts/companion_common.py": "ae59e0f03ae2c07c46cd04976a5143503b8f8052191b562f6c42c4d16079c4c1",
+    "scripts/enrich.py": "6de98cbd6793664db52a3faaac6ac4481e1a74bb9926711d406edd735811d814",
     ".gitignore": "745e5bfc6d53645da242479825e56d53fb2cffc0a88f26e47bb0fd06740b157b",
     "README.md": "779ff643925a4d7868637320a2e93d33e803a7d814f6c4ee0e217492f7941d09",
     "SECURITY.md": "98dde39bcfd570b84672216209b97eec6a6460568c508c86ca7111f4f980e222",

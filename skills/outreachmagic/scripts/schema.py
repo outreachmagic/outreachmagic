@@ -11,7 +11,6 @@ CREATE TABLE IF NOT EXISTS companies (
     hq_city             TEXT,
     hq_state            TEXT,
     hq_country          TEXT,
-    cloud_pending       INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -49,7 +48,6 @@ CREATE TABLE IF NOT EXISTS leads (
     last_contact_at          TEXT,
     next_action              TEXT,
     next_action_at           TEXT,
-    cloud_pending            INTEGER NOT NULL DEFAULT 0,
     latest_sender            TEXT,
     latest_sender_platform   TEXT
 );
@@ -158,7 +156,6 @@ CREATE TABLE IF NOT EXISTS workspace_leads (
     current_status_sentiment TEXT,
     contact_priority         INTEGER,
     latest_sender            TEXT,
-    cloud_pending            INTEGER NOT NULL DEFAULT 0,
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (workspace_id, lead_id)
@@ -229,7 +226,6 @@ CREATE TABLE IF NOT EXISTS unmapped_campaign_queue (
     payload_json            TEXT NOT NULL,
     received_at             TEXT NOT NULL DEFAULT (datetime('now')),
     resolved_at             TEXT,
-    cloud_pending           INTEGER NOT NULL DEFAULT 0,
     assigned_workspace      TEXT
 );
 
@@ -237,8 +233,6 @@ CREATE INDEX IF NOT EXISTS idx_quarantine_status ON unmapped_campaign_queue(org_
 CREATE INDEX IF NOT EXISTS idx_quarantine_campaign ON unmapped_campaign_queue(
     org_id, source_platform, campaign_id, status
 );
-CREATE INDEX IF NOT EXISTS idx_quarantine_cloud_pending ON unmapped_campaign_queue(cloud_pending)
-    WHERE cloud_pending = 1;
 
 CREATE TABLE IF NOT EXISTS lead_merge_jobs (
     id              TEXT PRIMARY KEY,
@@ -258,10 +252,8 @@ CREATE TABLE IF NOT EXISTS lead_personalization (
     field_date      TEXT,
     source_hash     TEXT,
     processed_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    cloud_pending   INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (lead_id, field_name)
 );
-CREATE INDEX IF NOT EXISTS idx_personalization_pending ON lead_personalization(cloud_pending) WHERE cloud_pending = 1;
 
 CREATE TABLE IF NOT EXISTS company_personalization (
     company_id      INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -270,10 +262,8 @@ CREATE TABLE IF NOT EXISTS company_personalization (
     field_date      TEXT,
     source_hash     TEXT,
     processed_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    cloud_pending   INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (company_id, field_name)
 );
-CREATE INDEX IF NOT EXISTS idx_company_pers_pending ON company_personalization(cloud_pending) WHERE cloud_pending = 1;
 
 CREATE TABLE IF NOT EXISTS workspace_lead_tags (
     id              TEXT PRIMARY KEY,

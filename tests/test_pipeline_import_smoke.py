@@ -51,7 +51,9 @@ class PipelineImportSmokeTests(unittest.TestCase):
         data = json.loads(MANIFEST.read_text(encoding="utf-8"))
         skill_root = ROOT / "skills" / "outreachmagic"
         for rel in data.get("files", {}):
-            if rel in ("SKILL.md", "README.md", "install.sh"):
+            if rel in ("SKILL.md", "README.md", "install.sh", "SECURITY.md"):
+                path = skill_root / rel
+            elif rel.startswith("references/"):
                 path = skill_root / rel
             else:
                 path = SCRIPTS / rel

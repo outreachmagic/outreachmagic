@@ -41,7 +41,9 @@ class TestUpdateManifest(unittest.TestCase):
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         skill_root = ROOT / "skills" / "outreachmagic"
         for name in manifest.get("files") or {}:
-            if name in ("SKILL.md", "README.md", "install.sh"):
+            if name in ("SKILL.md", "README.md", "install.sh", "SECURITY.md"):
+                path = skill_root / name
+            elif name.startswith("references/"):
                 path = skill_root / name
             else:
                 path = SCRIPTS / name

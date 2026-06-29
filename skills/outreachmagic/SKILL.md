@@ -8,7 +8,7 @@ description: >
 version: 1.2.0
 author: Outreach Magic
 license: MIT
-platforms: [linux, macos]
+platforms: [macos, linux]
 required_environment_variables:
   - name: OUTREACHMAGIC_AGENT_KEY
     prompt: Outreach Magic agent key
@@ -17,6 +17,11 @@ required_environment_variables:
       Required for all cloud operations (login, pull, sync, connect-platform).
       Starts with om_agent_
     required_for: Authentication with Outreach Magic portal and relay
+required_credential_files:
+  - path: skills/outreachmagic/config/outreachmagic_config.json
+    description: Outreach Magic agent key and config (created by pipeline.py init / login)
+  - path: skills/outreachmagic/config/agent_secrets.env
+    description: Portal-synced API keys for email-finder, lead-enrich, and CRM providers (created by pipeline.py sync-secrets)
 metadata:
   cursor:
     tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm, cold-email, tracking, calendly, ecosystem:outreachmagic]
@@ -31,6 +36,20 @@ metadata:
     category: productivity
     homepage: https://outreachmagic.io
     related_skills: [lead-enrich, email-finder]
+    config:
+      - key: skills.config.data_root
+        description: >-
+          Root directory for shared data. Defaults to agent home (~/.hermes).
+          Point to ~/.claude or ~/.cursor to share one DB across agents.
+        default: "~/.hermes"
+      - key: skills.config.api_base_url
+        description: Override the portal API base URL (for self-hosting or dev)
+        default: "https://app.outreachmagic.io"
+      - key: skills.config.dev_repo
+        description: >-
+          Path to a local repo checkout for pipeline.py update (development only).
+          Unset or remove from config to use GitHub releases.
+        default: ""
     external_domains:
       - domain: api.outreachmagic.io
         purpose: Relay webhooks and authenticated event pull (payloads imported to local SQLite)

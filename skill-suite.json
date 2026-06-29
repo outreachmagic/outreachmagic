@@ -18,7 +18,8 @@
       "extra_files": [
         "SKILL.md",
         "README.md",
-        "install.sh"
+        "install.sh",
+        "SECURITY.md"
       ],
       "install_required": []
     },

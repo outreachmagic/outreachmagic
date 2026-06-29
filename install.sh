@@ -18,6 +18,37 @@ LE_TAG=""
 EF_TAG=""
 PROFILES=()
 
+# Detect a suitable Python (3.10+) by checking known paths
+_find_python() {
+  local candidates=(
+    "/opt/homebrew/bin/python3.12"
+    "/opt/homebrew/bin/python3.11"
+    "/opt/homebrew/bin/python3.10"
+    "/usr/local/bin/python3.12"
+    "/usr/local/bin/python3.11"
+    "/usr/local/bin/python3.10"
+  )
+  local py
+  for py in "${candidates[@]}"; do
+    if [[ -x "$py" ]]; then
+      echo "$py"
+      return 0
+    fi
+  done
+  # Fallback: check if system python3 is >= 3.10
+  if command -v python3 &>/dev/null; then
+    local ver
+    ver="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+    if [[ -n "$ver" && "$(printf '%s\n' "$ver" "3.10" | sort -V | head -1)" = "3.10" || "$ver" == "3.10"* ]]; then
+      echo "python3"
+      return 0
+    fi
+  fi
+  # Last resort: just return whatever python3 is
+  echo "python3"
+  return 0
+}
+
 _install_ts() {
   date "+%H:%M:%S"
 }
@@ -349,7 +380,13 @@ install_outreachmagic() {
     echo "  (Stores pipeline contacts and event history locally — no data sent to servers during init.)"
   fi
   local tag_label="${OM_TAG:-main}"
-  python3 "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" init --from-tag "$tag_label" || {
+  local PYTHON
+  PYTHON="$(_find_python)"
+  local agent_flag=""
+  if [[ "$PLATFORM" == "hermes" ]]; then
+    agent_flag="--agent hermes"
+  fi
+  "$PYTHON" "$SKILLS_DIR/outreachmagic/scripts/pipeline.py" init --from-tag "$tag_label" $agent_flag || {
     echo "warning: pipeline.py init failed (run 'pipeline.py init' later to retry)" >&2
   }
 }

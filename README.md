@@ -121,7 +121,7 @@ Run the tests:
 
 ```bash
 bash scripts/run-tests.sh
-bash scripts/skill-scan.sh
+bash scripts/skill-scan.sh    # or: hermes skills publish --dry-run
 ```
 
 Build the manifests:

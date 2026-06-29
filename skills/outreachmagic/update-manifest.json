@@ -2,7 +2,8 @@
   "version": "1.2.0",
   "files": {
     "README.md": "230d425e50b5314303d63818c9d9792407aa2f731684a9ecdae7bbece0b0aea1",
-    "SKILL.md": "dbac9531ac0c03ac1b2f010ba1dbc3d5ae8f825bd82bb96de7a3720789c1b04d",
+    "SECURITY.md": "6c5b574603d88cbdad8f0382c62882fb70e0f333ec1639ce4eb694b9a7a1c154",
+    "SKILL.md": "e841bffa0953efb55f5ba960924d12e273abb793a5971124f728126f3cd31b24",
     "VERSION": "1e5b51cde515396a9fa762909cf8ca6584ccc564b325d2eebeea76175fe95c4d",
     "activity_sync.py": "8ca5f23f7fcde99ef820a3934951664712a151b32f0508322fa7b37a491aed6e",
     "agent_secrets_cloud.py": "6b221f34d52187159f55b108f0858df6cf6e9fb8c4f10dda3116a1286bafb6ba",

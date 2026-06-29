@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Run HermesHub SkillScan against skills/*/SKILL.md (or one skill by name).
+# NOTE: `hermes skills publish` now has built-in validation — this script is
+# a convenience wrapper for CI and pre-commit gates.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCANNER="${SKILL_SCAN_SCRIPT:-/tmp/scan-skill.py}"
-SCANNER_URL="https://raw.githubusercontent.com/amanning3390/hermeshub/main/scripts/scan-skill.py"
+SCANNER_URL="https://raw.githubusercontent.com/hermeshub/hermeshub/main/scripts/scan-skill.py"
 
 if [[ ! -f "$SCANNER" ]]; then
   echo "Downloading HermesHub scan-skill.py..."
   if ! curl -fsSL "$SCANNER_URL" -o "$SCANNER" 2>/dev/null; then
-    echo "WARNING: Could not download SkillScan script (${SCANNER_URL}). Skipping scan."
+    echo "WARNING: Could not download SkillScan script (${SCANNER_URL})."
+    echo "Fallback: run validation via 'hermes skills publish --dry-run' instead."
+    echo "Skipping scan."
     exit 0
   fi
 fi

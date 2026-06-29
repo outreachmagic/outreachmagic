@@ -17,7 +17,7 @@ Everything else is local. No cloud database, no Docker. Just Python and SQLite.
 
 ```bash
 bash scripts/run-tests.sh          # Full test suite
-bash scripts/skill-scan.sh          # HermesHub SkillScan validation
+bash scripts/skill-scan.sh          # HermesHub SkillScan validation (or: hermes skills publish --dry-run)
 make layer1                         # Fast pre-tag gate (pull, billing, install contract)
 ```
 

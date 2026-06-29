@@ -833,15 +833,17 @@ def ingest_relay_event(
         resolved_stage=resolved.target_stage,
     )
     if target_stage:
-        # Don't downgrade from a higher stage (e.g. interested → replied)
-        # when a bare reply event lacks interested signals.
-        if target_stage == "replied":
+        # Don't downgrade from a higher stage — e.g. auto-reply email
+        # should not overwrite 'contacted' with 'replied', and a bare
+        # reply should not overwrite 'interested'.
+        if target_stage not in ("not_interested", "lost"):
             current = conn.execute(
                 "SELECT status FROM workspace_leads WHERE lead_id = ? AND org_id = ? ORDER BY id DESC LIMIT 1",
                 (lead_id, DEFAULT_ORG_ID),
             ).fetchone()
-            if current and current[0] in ("interested", "scheduled", "won"):
-                target_stage = current[0]
+            if current and current[0]:
+                from pipeline import furthest_stage
+                target_stage = furthest_stage(current[0], target_stage)
         om.update_lead_stage(
             lead_id,
             target_stage,

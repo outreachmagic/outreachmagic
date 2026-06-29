@@ -47,10 +47,26 @@ def _parse_last_pull_iso(last_pull: Optional[str]) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
-def freshness_from_last_pull(last_pull: Optional[str]) -> dict[str, Any]:
-    """Build freshness metadata from config last_pull ISO timestamp."""
+def freshness_from_last_pull(
+    last_pull: Optional[str],
+    *,
+    total_events: int = 0,
+) -> dict[str, Any]:
+    """Build freshness metadata from config last_pull ISO timestamp.
+
+    When *last_pull* is None but *total_events* is positive, the data was
+    loaded during a previous (possibly interrupted) pull — show a message
+    that acknowledges data exists without claiming it was never fetched.
+    """
     dt = _parse_last_pull_iso(last_pull)
     if dt is None:
+        if total_events > 0:
+            return {
+                "last_pull": None,
+                "stale_minutes": None,
+                "freshness": "partial",
+                "freshness_message": "Data loaded from relay (pull may not have completed). Run pull for latest.",
+            }
         return {
             "last_pull": last_pull,
             "stale_minutes": None,
@@ -96,11 +112,11 @@ def attach_freshness(result: Any, *, last_pull: Optional[str]) -> Any:
     return {"data": result, "leads": result, **meta}
 
 
-def freshness_stderr_line(last_pull: Optional[str]) -> str:
-    return freshness_from_last_pull(last_pull)["freshness_message"]
+def freshness_stderr_line(last_pull: Optional[str], *, total_events: int = 0) -> str:
+    return freshness_from_last_pull(last_pull, total_events=total_events)["freshness_message"]
 
 
-def print_freshness_stderr(last_pull: Optional[str]) -> None:
+def print_freshness_stderr(last_pull: Optional[str], *, total_events: int = 0) -> None:
     import sys
 
-    print(freshness_stderr_line(last_pull), file=sys.stderr)
+    print(freshness_stderr_line(last_pull, total_events=total_events), file=sys.stderr)

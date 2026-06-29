@@ -118,9 +118,9 @@ def format_campaign_stats(stats, include_header=False):
 
 def format_stats(stats):
     lines = [
-        f"Pipeline: {stats['active_pipeline']} active | {stats['won']} won | "
-        f"{stats['lost']} lost | {stats['total_leads']} total leads",
-        f"Events: {stats['total_events']} total | {stats['events_7d']} in last 7 days",
+        f"Pipeline: {stats.get('active_pipeline', 0)} active | {stats.get('won', 0)} won | "
+        f"{stats.get('lost', 0)} lost | {stats.get('total_leads', 0)} total leads",
+        f"Events: {stats.get('total_events', 0)} total | {stats.get('events_7d', 0)} in last 7 days",
         f"Replies: {stats.get('reply_events', 0)} events across {stats.get('replied_leads', 0)} leads "
         f"(stage 'replied' currently {stats.get('stages', {}).get('replied', 0)})",
         "Breakdown: " + ", ".join(f"{s}={c}" for s, c in stats.get("stages", {}).items()),

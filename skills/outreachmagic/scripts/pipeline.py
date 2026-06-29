@@ -12316,11 +12316,13 @@ def main():
             print_freshness_stderr(get_last_pull())
             print(rq.format_daily_digest(digest))
     elif args.command == "stats":
-        print_freshness_stderr(get_last_pull())
+        total_events = get_conn().execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        print_freshness_stderr(get_last_pull(), total_events=total_events)
         stats = attach_freshness(get_stats(), last_pull=get_last_pull())
         print(json.dumps(stats, indent=0) if getattr(args, "json", False) else format_stats(stats))
     elif args.command == "campaigns":
-        print_freshness_stderr(get_last_pull())
+        total_events = get_conn().execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        print_freshness_stderr(get_last_pull(), total_events=total_events)
         stats = attach_freshness(get_campaign_stats(), last_pull=get_last_pull())
         if getattr(args, "json", False):
             print(json.dumps(stats, indent=2))

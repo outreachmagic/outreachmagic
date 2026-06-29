@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -102,6 +103,22 @@ def _config_path_for_agent_dir(agent_dir: str) -> Path:
 KNOWN_AGENT_DIRS = [".cursor", ".agents", ".claude", ".hermes"]
 
 
+def _is_inside_git_worktree(path: Path) -> bool:
+    """Return True if *path* is inside a git working tree (a development clone)."""
+    try:
+        # Walk up from the path looking for a .git directory
+        for parent in [path] + list(path.parents):
+            dot_git = parent / ".git"
+            if dot_git.exists():
+                return True
+            # Stop at the home directory — no .git beyond here
+            if parent == parent.home():
+                break
+    except (PermissionError, OSError):
+        pass
+    return False
+
+
 def check_duplicate_installs() -> list[dict]:
     """Return metadata about duplicate outreachmagic installations.
 
@@ -117,7 +134,7 @@ def check_duplicate_installs() -> list[dict]:
         candidate = Path.home() / dirname / "skills" / SKILL_NAME
         if candidate.resolve() != active.resolve() and candidate.exists():
             resolved = str(candidate.resolve())
-            if resolved not in seen:
+            if resolved not in seen and not _is_inside_git_worktree(Path(resolved)):
                 seen.add(resolved)
                 results.append({
                     "path": resolved,

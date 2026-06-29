@@ -2496,18 +2496,24 @@ def resolve_lead(
         lead_id = keep_id
         created = False
 
+    # Only use confirmed identity types for lead matching — fuzzy composites
+    # (name_company_domain, name_company, import_key, etc.) create false positives
+    # when used as persistent aliases, especially for webhook event ingest.
+    STRONG_IDENTITY_TYPES = frozenset({
+        "email", "linkedin_url", "linkedin_sales_nav_id",
+        "linkedin_member_id", "external_id",
+    })
     if force_lead_id is None:
         for itype, val in identities:
+            if itype not in STRONG_IDENTITY_TYPES:
+                continue
             found = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
             if found:
                 if lead_id is None:
                     lead_id = found
                     match_method = itype
                     created = False
-                elif lead_id != found and itype in (
-                    "email", "linkedin_url", "linkedin_sales_nav_id",
-                    "linkedin_member_id", "external_id",
-                ):
+                elif lead_id != found and itype in STRONG_IDENTITY_TYPES:
                     pass
                 elif lead_id != found:
                     break

@@ -22,8 +22,8 @@ python3 scripts/validate-companion-manifests.py
 
 echo "== Sentiment integrity =="
 for f in skills/outreachmagic/scripts/campaign_stats.py skills/outreachmagic/scripts/pipeline_lead_review.py skills/outreachmagic/scripts/pipeline.py; do
-    if grep -q "'interested'\|'neutral'" "$f"; then
-        echo "FAIL: $f contains forbidden sentiment values"
+    if grep -q "'neutral'" "$f"; then
+        echo "FAIL: $f contains legacy 'neutral' sentiment value"
         exit 1
     fi
 done

@@ -193,7 +193,7 @@ def test_format_pull_summary_includes_lead_count():
     om.init_db()
     summary = om.format_pull_summary(2, 5, {"skipped_duplicates": 3, "skipped_filtered": 2})
     assert "Imported: 2 events" in summary
-    assert "3 dupes" in summary
+    assert "Duplicates: 3" in summary
 
 
 def test_pull_failure_message_routing_hint():
@@ -501,15 +501,22 @@ def test_snapshot_pull_passes_shared_pull_conn(monkeypatch):
 
 def test_parse_pull_kinds():
     assert om.parse_pull_kinds(None) is None
-    assert om.parse_pull_kinds("events,company") == frozenset({"events", "company"})
+    assert om.parse_pull_kinds("events,core") == frozenset({"events", "core"})
     try:
         om.parse_pull_kinds("bogus")
         assert False
     except ValueError:
         pass
+    # "company" was removed from PULL_KINDS_ALL (data embedded in workspace snapshots)
+    try:
+        om.parse_pull_kinds("company")
+        assert False
+    except ValueError:
+        pass
 
 
-def test_sync_skips_event_pull_when_kind_company_only(monkeypatch):
+def test_sync_skips_event_pull_when_kind_core_only(monkeypatch):
+    """Snapshots-only pull still works with core kind."""
     calls = []
 
     def fake_pull(*_args, **kwargs):
@@ -530,7 +537,7 @@ def test_sync_skips_event_pull_when_kind_company_only(monkeypatch):
         full=False,
         quiet=True,
         skip_routing_sync=True,
-        pull_kinds=frozenset({"company"}),
+        pull_kinds=frozenset({"core"}),
     )
     assert all(c.get("snapshots_only") for c in calls)
     assert not any(c.get("snapshots_only") is False for c in calls)

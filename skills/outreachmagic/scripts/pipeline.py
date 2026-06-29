@@ -7762,7 +7762,7 @@ def _snapshot_pull_limit_for_kind(kind: str, base: int) -> int:
     return min(int(base), cap)
 
 
-PULL_KINDS_ALL = frozenset({"events", "core", "workspace", "company"})
+PULL_KINDS_ALL = frozenset({"events", "core", "workspace"})
 
 
 def parse_pull_kinds(raw: Optional[str]) -> Optional[frozenset[str]]:
@@ -8069,10 +8069,10 @@ def format_pull_summary(imported: int, skipped: int, stats: dict) -> str:
     lines = [
         f"Imported: {imported} events ({lead_count} total leads).",
         (
-            f"Processed: {dupes} dupes"
-            + (f", {filtered} filtered" if filtered else "")
-            + (f", {errors} errors" if errors else "")
-            + " (normal on replay)."
+            f"Duplicates: {dupes}"
+            + (f", filtered: {filtered}" if filtered else "")
+            + (f", errors: {errors}" if errors else "")
+            + "."
         ),
     ]
     snap_records = int(stats.get("snapshot_records_seen") or 0)
@@ -8647,15 +8647,6 @@ def sync_from_relay_org(
             elif _pull_phase == "snapshots":
                 for snap_kind in ("core", "workspace", "company"):
                     if snap_kind not in kinds:
-                        continue
-                    if full and snap_kind == "company":
-                        if not quiet:
-                            print(
-                                f"[{_progress_clock()}] {_ARROW_PULL} "
-                                f"{_stream_pad(_SNAPSHOT_KIND_STREAM['company'])}: "
-                                f"skipped (profile data embedded in lead snapshots)",
-                                flush=True,
-                            )
                         continue
                     kind_pages = 0
                     kind_seen = 0
@@ -11013,17 +11004,17 @@ def main():
     pull_p.add_argument(
         "--kind",
         metavar="KINDS",
-        help="Comma-separated streams: events,core,workspace,company (default: all)",
+        help="Comma-separated streams: events,core,workspace (default: all)",
     )
     pull_p.add_argument(
         "--skip-snapshots",
         action="store_true",
-        help="Only pull webhook events (skip lead/workspace/company snapshots)",
+        help="Only pull webhook events (skip lead/workspace snapshots)",
     )
     pull_p.add_argument(
         "--reset-snapshot-cursors",
         action="store_true",
-        help="Zero core/workspace/company snapshot cursors before pull (fix desync after hung partial pulls)",
+        help="Zero core/workspace snapshot cursors before pull (fix desync after hung partial pulls)",
     )
     pull_p.add_argument(
         "--if-stale",
@@ -12138,7 +12129,7 @@ def main():
             clear_snapshot_cursors()
             if not args.cron:
                 print(
-                    "Reset snapshot cursors to 0 (core, workspace, company). "
+                    "Reset snapshot cursors to 0 (core, workspace). "
                     "Use after a hung pull left config ahead of the local DB.",
                     flush=True,
                 )

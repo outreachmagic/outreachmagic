@@ -251,7 +251,7 @@ Diagnostic verdicts:
 - `cursor advanced` — `last_max_id` increased.
 - `cursor stalled` — full page returned but cursor didn't advance; inspect relay pagination.
 
-Pull uses id cursors: `last_max_id` (webhooks) + per-table snapshot cursors (`last_snapshot_core_after_id`, `last_snapshot_workspace_after_id`, `last_snapshot_company_after_id`). No `since` on relay pull.
+Pull uses id cursors: `last_max_id` (webhooks) + per-table snapshot cursors (`last_snapshot_core_after_id`, `last_snapshot_workspace_after_id`). No `since` on relay pull.
 
 ```bash
 pipeline.py history --email "<lead_email>" --json    # inspect specific lead

@@ -25,7 +25,7 @@ def _patch_pull_prefetch(monkeypatch):
 
 
 def test_relay_pull_phases_order():
-    all_kinds = frozenset({"events", "core", "workspace", "company"})
+    all_kinds = frozenset({"events", "core", "workspace"})
     assert om._relay_pull_phases(True, True, all_kinds) == ("snapshots", "events")
     assert om._relay_pull_phases(False, True, all_kinds) == ("events", "snapshots")
     assert om._relay_pull_phases(True, False, frozenset({"core"})) == ("snapshots",)
@@ -179,7 +179,6 @@ def test_full_pull_replays_event_log_after_core_snapshot(monkeypatch):
             }
         ],
         "workspace": [{"events": [], "max_snapshot_id": 0, "has_more_snapshots": False}],
-        "company": [{"events": [], "max_snapshot_id": 0, "has_more_snapshots": False}],
     }
     event_pages = [
         {"events": [log_event], "max_id": 50_002, "has_more_events": False},

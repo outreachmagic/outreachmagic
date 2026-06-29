@@ -52,8 +52,6 @@ def _patch_pull(monkeypatch):
         ({"skip_snapshots": True, "skip_routing_sync": True}, ["events"]),
         ({"skip_snapshots": True, "full": True, "skip_routing_sync": True}, ["events"]),
         ({"pull_kinds": frozenset({"events"}), "skip_routing_sync": True}, ["events"]),
-        ({"pull_kinds": frozenset({"company"}), "skip_routing_sync": True}, ["snapshots"]),
-        ({"pull_kinds": frozenset({"events", "company"}), "skip_routing_sync": True}, ["events", "snapshots"]),
         ({"skip_snapshots": False, "skip_routing_sync": True}, ["events", "snapshots"]),
     ],
 )

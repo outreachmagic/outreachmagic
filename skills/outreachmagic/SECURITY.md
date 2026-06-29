@@ -127,8 +127,8 @@ We aim to acknowledge reports within **3 business days** and provide a remediati
 Before submitting to HermesHub, run local validation:
 
 ```bash
-# Option 1 — built-in Hermes validation (recommended)
-hermes skills publish --dry-run /path/to/skills/outreachmagic
+# Option 1 — validate via hermes skills publish (uploads to registry)
+hermes skills publish --to github --repo outreachmagic/outreachmagic skills/outreachmagic
 
 # Option 2 — standalone SkillScan script
 bash scripts/skill-scan.sh

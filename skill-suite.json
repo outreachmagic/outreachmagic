@@ -19,7 +19,8 @@
         "SKILL.md",
         "README.md",
         "install.sh",
-        "SECURITY.md"
+        "SECURITY.md",
+        "references/command-reference.md"
       ],
       "install_required": []
     },

@@ -23,7 +23,10 @@ from platform_registry import (
     PLUSVIBE_INTERESTED_STAGE_EVENTS,
     PLUSVIBE_NEGATIVE_TERMINAL_EVENTS,
     extract_reply_body,
+    looks_like_html,
+    normalize_event_body_for_storage,
     resolve_event,
+    strip_html_reply,
 )
 from relay_extractors import (
     build_display_name,
@@ -604,6 +607,15 @@ def ingest_relay_event(
     extracted = extract_relay_fields(platform, raw)
     lead_fields = extracted["lead"]
     event_fields = extracted["event"]
+
+    # Normalize HTML bodies to plain text at extraction time so all
+    # downstream comparisons (dedup checks, DB storage) see clean text.
+    body_raw = event_fields.get("body", "")
+    if body_raw and looks_like_html(body_raw):
+        plain, was_html = normalize_event_body_for_storage(body_raw)
+        event_fields["body"] = plain
+        # Tag the deduced event fields so pipeline.py can still detect raw HTML
+        event_fields["_body_was_html"] = True
     signals = extracted.get("signals") or {}
     identity = extract_relay_identity(platform, raw, envelope_lead)
 

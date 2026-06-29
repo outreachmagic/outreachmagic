@@ -175,10 +175,17 @@ class GhlDriver:
         if lead_data.get("company_name") or lead_data.get("company"):
             body["companyName"] = lead_data.get("company_name") or lead_data.get("company")
 
-        # Custom fields via mapping
+        website_val = lead_data.get("company_domain", "")
+        if website_val:
+            body["website"] = website_val
+
+        # Custom fields via mapping (skip fields already set as standard body fields)
+        _BODY_STANDARD_FIELDS = {"company_domain"}  # set directly on body above
         custom_fields = []
         if field_mapping:
             for om_key, cf_id in field_mapping.items():
+                if om_key in _BODY_STANDARD_FIELDS:
+                    continue
                 val = lead_data.get(om_key)
                 if val and cf_id:
                     # Ensure LinkedIn URLs carry a protocol so they render
@@ -255,6 +262,11 @@ class GhlDriver:
             if overwrite_existing or not existing_contact.get("companyName"):
                 body["companyName"] = company_val
 
+        # website
+        website_val = lead_data.get("company_domain", "")
+        if website_val and (overwrite_existing or not existing_contact.get("website")):
+            body["website"] = website_val
+
         # ── Custom fields ──
         existing_cf: dict[str, str] = {}
         if existing_contact:
@@ -270,6 +282,8 @@ class GhlDriver:
         custom_fields = []
         if field_mapping:
             for om_key, cf_id in field_mapping.items():
+                if om_key in ("company_domain",):
+                    continue  # set directly on body as standard field
                 val = lead_data.get(om_key)
                 if val and cf_id:
                     if not overwrite_existing and (cf_id in existing_cf or om_key in existing_cf):

@@ -21,7 +21,7 @@ from db_conn import get_conn
 from platform_registry import (
     CHANNEL_BY_PLATFORM,
     PLUSVIBE_INTERESTED_STAGE_EVENTS,
-    PLUSVIBE_LOST_STAGE_EVENTS,
+    PLUSVIBE_NEGATIVE_TERMINAL_EVENTS,
     extract_reply_body,
     resolve_event,
 )
@@ -74,6 +74,9 @@ def build_plusvibe_status_metadata(
         sentiment = "negative"
     if not sentiment and label == "email_bounced":
         sentiment = "invalid"
+
+    if is_auto_reply_label(label):
+        sentiment = "autoreply"
 
     if label:
         meta["lead_status_raw"] = label
@@ -244,12 +247,12 @@ def relay_target_stage(
         if metadata.get("is_auto_reply") or is_auto_reply_label(label):
             return None
         if (
-            et in PLUSVIBE_LOST_STAGE_EVENTS
+            et in PLUSVIBE_NEGATIVE_TERMINAL_EVENTS
             or "not_interested" in et
             or label in ("not_interested", "not interested", "wrong_person", "closed")
             or (sentiment == "negative" and label not in ("out_of_office", "automatic_reply"))
         ):
-            return "lost"
+            return "not_interested"
         if (
             et in PLUSVIBE_INTERESTED_STAGE_EVENTS
             or local_type in ("meeting_booked", "meeting_completed", "lead_disposition")

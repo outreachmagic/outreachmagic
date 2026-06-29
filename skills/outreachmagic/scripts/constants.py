@@ -29,13 +29,14 @@ USAGE_WARNING_PERCENT = 80
 USAGE_CRITICAL_PERCENT = 95
 
 PIPELINE_STAGES = [
-    "prospecting", "contacted", "replied", "interested",
-    "proposal", "won", "lost",
+    "prospecting", "contacted", "replied", "interested", "scheduled",
+    "won", "not_interested", "lost",
 ]
 
 STAGE_EMOJI = {
     "prospecting": "○", "contacted": "●", "replied": "↔",
-    "interested": "★", "proposal": "■", "won": "✔", "lost": "✖",
+    "interested": "👍", "scheduled": "📅", "won": "✔",
+    "not_interested": "✖", "lost": "🚫",
 }
 
 ATTRIBUTE_INSIGHT_FIELDS = ("title", "industry", "headcount")

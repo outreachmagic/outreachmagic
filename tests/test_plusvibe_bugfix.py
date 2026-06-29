@@ -96,8 +96,8 @@ def test_all_positive_replies_skipped_after_all_email_replies():
         ("lead_marked_as_meeting_completed", "meeting_completed", "interested"),
         ("lead_marked_as_qc_interested", "lead_status_updated", "interested"),
         ("lead_marked_as_qc_crm_only", "lead_disposition", "interested"),
-        ("lead_marked_as_wrong_person", "lead_status_updated", "lost"),
-        ("lead_marked_as_closed", "lead_status_updated", "lost"),
+        ("lead_marked_as_wrong_person", "lead_status_updated", "not_interested"),
+        ("lead_marked_as_closed", "lead_status_updated", "not_interested"),
     ],
 )
 def test_plusvibe_status_events_map_and_advance_stage(event_type, expected_type, expected_stage):

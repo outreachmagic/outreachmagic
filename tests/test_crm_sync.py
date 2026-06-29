@@ -361,8 +361,8 @@ def _setup_phase_1_data(conn):
         (WS1_ID, 1, "interested"),
         (WS1_ID, 2, "interested"),
         (WS1_ID, 3, "interested"),
-        (WS1_ID, 4, "proposal"),
-        (WS1_ID, 5, "proposal"),
+        (WS1_ID, 4, "scheduled"),
+        (WS1_ID, 5, "scheduled"),
         (WS1_ID, 6, "won"),
         (WS1_ID, 7, "lost"),
         (WS1_ID, 8, "contacted"),  # should be excluded
@@ -380,14 +380,14 @@ def _setup_phase_1_data(conn):
     conn.execute(
         "INSERT OR IGNORE INTO crm_workspace_config (workspace_id, platform, api_key, pipeline_id, stage_mapping) VALUES (?, ?, ?, ?, ?)",
         (WS1_ID, "ghl", "mock-key-1", "pipe-1",
-         '{"interested":"stage-interested","proposal":"stage-proposal","won":"stage-won","lost":"stage-lost"}'),
+         '{"interested":"stage-interested","scheduled":"stage-proposal","won":"stage-won","lost":"stage-lost"}'),
     )
 
     # Second config for popcam / hubspot
     conn.execute(
         "INSERT OR IGNORE INTO crm_workspace_config (workspace_id, platform, api_key, pipeline_id, stage_mapping) VALUES (?, ?, ?, ?, ?)",
         (WS1_ID, "hubspot", "mock-key-hs", "hs-pipe-1",
-         '{"interested":"hs-stage-1","proposal":"hs-stage-2","won":"hs-stage-3","lost":"hs-stage-4"}'),
+         '{"interested":"hs-stage-1","scheduled":"hs-stage-2","won":"hs-stage-3","lost":"hs-stage-4"}'),
     )
 
     conn.commit()
@@ -420,7 +420,7 @@ def test_phase_1_lead_selection_status_filter():
         _setup_phase_1_data(conn)
         leads = crm_sync.select_leads(conn, WS1_ID)
         statuses = {l["status"] for l in leads}
-        assert statuses == {"interested", "proposal", "won", "lost"}, f"unexpected statuses: {statuses}"
+        assert statuses == {"interested", "scheduled", "won", "lost"}, f"unexpected statuses: {statuses}"
         assert len(leads) == 7, f"expected 7 leads, got {len(leads)}"
         # "contacted" should not be present
         lead_ids = {l["lead_id"] for l in leads}
@@ -478,7 +478,7 @@ def test_phase_1_stage_mapping():
     cfg = {
         "stage_mapping": {
             "interested": "stage-interested",
-            "proposal": "stage-proposal",
+            "scheduled": "stage-proposal",
         },
         "contact_field_mapping": None,
         "platform": "ghl",
@@ -487,7 +487,7 @@ def test_phase_1_stage_mapping():
     mock = MockDriver()
 
     lead_interested = {"status": "interested", "email": "a@b.com", "name": "Test", "lead_id": 1}
-    lead_proposal = {"status": "proposal", "email": "c@d.com", "name": "Test2", "lead_id": 2}
+    lead_proposal = {"status": "scheduled", "email": "c@d.com", "name": "Test2", "lead_id": 2}
 
     # First lead -> "stage-interested"
     mock.calls.clear()
@@ -518,7 +518,7 @@ def test_phase_1_dry_run_no_calls():
         cfg = {
             "platform": "ghl",
             "pipeline_id": "pipe-1",
-            "stage_mapping": {"interested": "s1", "proposal": "s2", "won": "s3", "lost": "s4"},
+            "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
         }
         results = crm_sync.sync_workspace(
             conn, WS1_ID, "Popcam", cfg, dry_run=True, driver=mock,
@@ -541,7 +541,7 @@ def test_phase_1_dry_run_prints_actions(capsys):
         cfg = {
             "platform": "ghl",
             "pipeline_id": "pipe-1",
-            "stage_mapping": {"interested": "s1", "proposal": "s2", "won": "s3", "lost": "s4"},
+            "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
         }
         crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, dry_run=True, driver=mock)
         captured = capsys.readouterr().out
@@ -621,7 +621,7 @@ def test_phase_1_sync_log_written():
         cfg = {
             "platform": "ghl",
             "pipeline_id": "pipe-1",
-            "stage_mapping": {"interested": "s1", "proposal": "s2", "won": "s3", "lost": "s4"},
+            "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
         }
         results = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock)
 
@@ -1100,7 +1100,7 @@ def test_ghl_push_events_note_format():
     })
     # stage_change
     assert "[Stage] interested" in _format_event_note({
-        "event_type": "stage_change", "old_stage": "interested", "new_stage": "proposal",
+        "event_type": "stage_change", "old_stage": "interested", "new_stage": "scheduled",
     })
     # meeting_booked
     assert "[Meeting]" in _format_event_note({
@@ -1817,7 +1817,7 @@ def test_hubspot_push_events_note():
     """Non-email events create Note objects."""
     driver = HubspotDriver(_make_hs_config())
     events = [
-        {"event_type": "stage_change", "old_stage": "interested", "new_stage": "proposal"},
+        {"event_type": "stage_change", "old_stage": "interested", "new_stage": "scheduled"},
     ]
 
     note_created = [False]
@@ -2084,7 +2084,7 @@ def _setup_phase_4_data(conn):
     conn.execute(
         "INSERT OR IGNORE INTO crm_workspace_config (workspace_id, platform, api_key, pipeline_id, stage_mapping) VALUES (?, ?, ?, ?, ?)",
         (WS1_ID, "ghl", "mock-key", "pipe-1",
-         '{"interested":"stage-1","proposal":"stage-2","won":"stage-3","lost":"stage-4"}'),
+         '{"interested":"stage-1","scheduled":"stage-2","won":"stage-3","lost":"stage-4"}'),
     )
     conn.commit()
 
@@ -2855,7 +2855,7 @@ def _setup_phase_5_sync_data(conn):
     conn.execute(
         "INSERT OR IGNORE INTO crm_workspace_config (workspace_id, platform, api_key, pipeline_id, stage_mapping) VALUES (?, ?, ?, ?, ?)",
         (WS1_ID, "ghl", "mock-key-1", "pipe-1",
-         '{"interested":"stage-1","proposal":"stage-2","won":"stage-3","lost":"stage-4"}'),
+         '{"interested":"stage-1","scheduled":"stage-2","won":"stage-3","lost":"stage-4"}'),
     )
     # Pre-populate entity map with synced contact/deal, no events cursor
     conn.execute(
@@ -3753,7 +3753,7 @@ def test_crm_config_apply_to_sqlite():
                     "api_key": "key-ghl",
                     "location_id": "loc_A",
                     "pipeline_id": "pipe_A",
-                    "stage_mapping": {"proposal": "s1"},
+                    "stage_mapping": {"scheduled": "s1"},
                     "contact_field_mapping": None,
                 }
             }
@@ -3767,7 +3767,7 @@ def test_crm_config_apply_to_sqlite():
         assert row is not None
         assert row[0] == "ghl"
         assert row[1] == "key-ghl"
-        assert json.loads(row[2]) == {"proposal": "s1"}
+        assert json.loads(row[2]) == {"scheduled": "s1"}
     finally:
         conn.close()
         om.set_db_path_override(None)
@@ -4162,11 +4162,11 @@ def test_multi_platform_sync():
         # Insert both platform configs for the same workspace
         conn.execute(
             "INSERT INTO crm_workspace_config (workspace_id, platform, api_key, pipeline_id, stage_mapping) VALUES (?, ?, ?, ?, ?)",
-            ("ws1", "ghl", "ghl-key", "pipe-1", '{"interested": "stage-interested", "proposal": "stage-proposal"}'),
+            ("ws1", "ghl", "ghl-key", "pipe-1", '{"interested": "stage-interested", "scheduled": "stage-proposal"}'),
         )
         conn.execute(
             "INSERT INTO crm_workspace_config (workspace_id, platform, api_key, pipeline_id, stage_mapping) VALUES (?, ?, ?, ?, ?)",
-            ("ws1", "hubspot", "hs-key", "hs-pipe-1", '{"interested": "hs-stage-1", "proposal": "hs-stage-2"}'),
+            ("ws1", "hubspot", "hs-key", "hs-pipe-1", '{"interested": "hs-stage-1", "scheduled": "hs-stage-2"}'),
         )
         conn.commit()
 
@@ -4303,7 +4303,7 @@ def test_sentiment_tag_sync_via_mock():
         cfg = {
             "platform": "ghl",
             "pipeline_id": "pipe-1",
-            "stage_mapping": {"interested": "s1", "proposal": "s2", "won": "s3", "lost": "s4"},
+            "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
         }
 
         # Pick a lead from the workspace
@@ -4346,7 +4346,7 @@ def test_sentiment_tag_sync_no_sentiment_calls_clear():
         cfg = {
             "platform": "ghl",
             "pipeline_id": "pipe-1",
-            "stage_mapping": {"interested": "s1", "proposal": "s2", "won": "s3", "lost": "s4"},
+            "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
         }
 
         leads = crm_sync.select_leads(conn, WS1_ID)
@@ -4395,7 +4395,7 @@ def test_sentiment_tag_non_fatal():
         cfg = {
             "platform": "ghl",
             "pipeline_id": "pipe-1",
-            "stage_mapping": {"interested": "s1", "proposal": "s2", "won": "s3", "lost": "s4"},
+            "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
         }
 
         conn.execute(

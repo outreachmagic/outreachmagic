@@ -210,7 +210,7 @@ def daily_digest(
             LEFT JOIN campaigns c ON e.campaign_id = c.id
             WHERE c.name LIKE ?
               AND (
-                lower(json_extract(e.metadata_json, '$.lead_status_sentiment')) IN ('positive', 'interested')
+                lower(json_extract(e.metadata_json, '$.lead_status_sentiment')) = 'positive'
                 OR lower(json_extract(e.metadata_json, '$.lead_status_raw')) IN ('interested', 'positive')
                 OR lower(e.event_type) LIKE '%interested%'
               )

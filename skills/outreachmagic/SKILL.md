@@ -467,7 +467,7 @@ Point PlusVibe webhooks at your relay URL (`…/plusvibe/{token}`). Select **all
 
 **Do not enable** `ALL_POSITIVE_REPLIES` (duplicates `ALL_EMAIL_REPLIES`) or `FIRST_EMAIL_REPLIES` (subset of `ALL_EMAIL_REPLIES`). Leave “Skip out of office replies” and “Skip autoreplies” **unchecked**.
 
-Each webhook is stored as an event. **Interested / not interested / sentiment come from label webhooks**, not from reply webhooks alone. OOO is classified as **auto-reply** (metadata flag, query with `--auto-reply true`). Bounces set event sentiment `invalid` but **do not** auto-move the lead to stage `lost` (use `--sentiment invalid` to find them).
+Each webhook is stored as an event. **Interested / not interested / sentiment come from label webhooks**, not from reply webhooks alone. OOO is classified as **auto-reply** (metadata flag, query with `--auto-reply true`). Bounces set event sentiment `invalid` but **do not** auto-move the lead to stage `not_interested` or `lost` (use `--sentiment invalid` to find them).
 
 ### EmailBison webhooks
 
@@ -481,7 +481,7 @@ Point EmailBison webhooks at your relay URL (`…/emailbison/{token}`). In Email
 - `tag.attached` — a tag was added to the lead
 - `tag.removed` — a tag was removed from the lead
 
-All event types are accepted and stored. **lead.interested** sets stage to `qualified` locally. **lead.replied** sets stage to `engaged`. Bounces are recorded in the bounce events table with EmailBison-specific bounce field paths (`data.bounce.type`, `data.bounce.reason`, `data.lead.mx_provider`). Tags are stored as `tag_attached` / `tag_removed` event types with their raw vendor type preserved.
+All event types are accepted and stored. **lead.interested** sets stage to `interested` locally. **lead.replied** sets stage to `replied`. Bounces are recorded in the bounce events table with EmailBison-specific bounce field paths (`data.bounce.type`, `data.bounce.reason`, `data.lead.mx_provider`). Tags are stored as `tag_attached` / `tag_removed` event types with their raw vendor type preserved.
 
 Campaign id/name are extracted from `data.campaign.id` / `data.campaign.name` in the payload.
 
@@ -822,16 +822,35 @@ python3 scripts/pipeline.py log-event \
 
 `--workspace` is **required** in multi-workspace mode. Outreach events are workspace-scoped — they belong to a specific pipeline. In single-workspace mode it falls back to the default workspace.
 
+You can also attach status metadata with `--metadata`:
+```bash
+python3 scripts/pipeline.py log-event \
+  --lead-id 1 --type lead_status_updated --direction inbound \
+  --metadata '{"lead_status_raw":"not_interested","lead_status_display":"not interested","lead_status_sentiment":"negative"}' \
+  --workspace thesystemsmethod
+```
+
 ### Update stage and log replies
 
 ```bash
 python3 scripts/pipeline.py update-stage \
-  --id 1 --stage engaged --next-action "Send case study" --workspace thesystemsmethod
+  --id 1 --stage replied --next-action "Send case study" --workspace thesystemsmethod
 ```
 
-`--workspace` is **required** in multi-workspace mode. Stage is per-workspace — a lead can be "contacted" in one workspace and "engaged" in another.
+With sentiment and label:
+```bash
+python3 scripts/pipeline.py update-stage \
+  --id 1 --stage not_interested --sentiment negative --label "not interested" \
+  --workspace thesystemsmethod
+```
 
-Stages: `prospecting` -> `contacted` -> `engaged` -> `qualified` -> `proposal` -> `won` | `lost`
+`--workspace` is **required** in multi-workspace mode. Stage is per-workspace — a lead can be "contacted" in one workspace and "not_interested" in another.
+
+Use `--sentiment` (positive, negative, autoreply, invalid) and `--label` (free-text status) to attach qualitative data when changing stage. The command also logs an event so the timeline is preserved.
+
+Stages: `prospecting` -> `contacted` -> `replied` -> `interested` -> `scheduled` -> `won` | `not_interested` | `lost`
+
+`lost` is manual only (set after a call or meeting where the lead declines). `not_interested` is auto-set by relay ingest for negative email signals (out of office, not interested, wrong person). `interested` is auto-set for positive intent signals (meeting booked, positive reply).
 
 ### Connect sequencers (paid)
 

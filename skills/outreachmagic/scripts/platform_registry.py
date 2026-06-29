@@ -189,7 +189,7 @@ PLUSVIBE_INTERESTED_STAGE_EVENTS = frozenset({
     "lead_marked_as_qc_interested",
     "lead_marked_as_qc_crm_only",
 })
-PLUSVIBE_LOST_STAGE_EVENTS = frozenset({
+PLUSVIBE_NEGATIVE_TERMINAL_EVENTS = frozenset({
     "lead_marked_as_not_interested",
     "lead_marked_as_wrong_person",
     "lead_marked_as_closed",
@@ -360,8 +360,8 @@ def _plusvibe_mappings() -> tuple[EventMapping, ...]:
         _em("lead_marked_as_qc_interested", "lead_status_updated", "inbound", "interested", "lead_status_updated",
             notes="Treat same as lead_marked_as_interested"),
         _em("lead_marked_as_qc_crm_only", "lead_disposition", "inbound", "interested", "lead_disposition"),
-        _em("lead_marked_as_wrong_person", "lead_status_updated", "inbound", "lost", "lead_status_updated"),
-        _em("lead_marked_as_closed", "lead_status_updated", "inbound", "lost", "lead_status_updated"),
+        _em("lead_marked_as_wrong_person", "lead_status_updated", "inbound", "not_interested", "lead_status_updated"),
+        _em("lead_marked_as_closed", "lead_status_updated", "inbound", "not_interested", "lead_status_updated"),
     )
 
 
@@ -600,8 +600,8 @@ def resolve_event(platform: str, vendor_type: str, raw: Optional[dict] = None) -
             return ResolvedEvent("lead_status_updated", "inbound", "interested", "lead_status_updated", et)
         if et == "lead_marked_as_qc_crm_only":
             return ResolvedEvent("lead_disposition", "inbound", "interested", "lead_disposition", et)
-        if et in PLUSVIBE_LOST_STAGE_EVENTS:
-            return ResolvedEvent("lead_status_updated", "inbound", "lost", "lead_status_updated", et)
+        if et in PLUSVIBE_NEGATIVE_TERMINAL_EVENTS:
+            return ResolvedEvent("lead_status_updated", "inbound", "not_interested", "lead_status_updated", et)
         if et in PLUSVIBE_INTERESTED_STAGE_EVENTS:
             return ResolvedEvent("lead_status_updated", "inbound", "interested", "lead_status_updated", et)
         if et.startswith("lead_marked_as_") or et.startswith("marked_as_"):

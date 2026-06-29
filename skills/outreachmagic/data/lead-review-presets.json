@@ -535,10 +535,11 @@
   "pipeline_stages": [
     "prospecting",
     "contacted",
-    "engaged",
-    "qualified",
-    "proposal",
+    "replied",
+    "interested",
+    "scheduled",
     "won",
+    "not_interested",
     "lost"
   ],
   "lead_sentiment_values": [

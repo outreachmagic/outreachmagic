@@ -5130,11 +5130,11 @@ def get_stats():
         f"SELECT COUNT(DISTINCT lead_id) FROM events WHERE {reply_where}"
     ).fetchone()[0]
     stage_counts = get_stage_counts()
-    active = sum(v for k, v in stage_counts.items() if k not in ("won", "lost"))
+    active = sum(v for k, v in stage_counts.items() if k not in ("won", "not_interested"))
     recent = conn.execute("SELECT COUNT(*) FROM events WHERE created_at > datetime('now', '-7 days')").fetchone()[0]
     conn.close()
     stats = {"total_leads": total, "total_events": events, "active_pipeline": active,
-             "won": stage_counts.get("won", 0), "lost": stage_counts.get("lost", 0),
+             "won": stage_counts.get("won", 0), "not_interested": stage_counts.get("not_interested", 0),
              "events_7d": recent, "stages": stage_counts,
              "reply_events": reply_events, "replied_leads": leads_with_replies}
     stats.update(get_campaign_stats())
@@ -10532,7 +10532,7 @@ def _cmd_sheets_campaign_stats(args) -> None:
 # CRM sync subprocess hook
 # ---------------------------------------------------------------------------
 
-CRM_SYNCABLE_STATUSES = frozenset({"interested", "proposal", "won", "lost"})
+CRM_SYNCABLE_STATUSES = frozenset({"interested", "replied", "scheduled", "won", "not_interested", "lost"})
 
 
 def _maybe_trigger_crm_sync(
@@ -10925,6 +10925,9 @@ def main():
     up_p = sub.add_parser("update-stage", help="Update lead stage")
     up_p.add_argument("--id", type=int, required=True); up_p.add_argument("--stage", required=True)
     up_p.add_argument("--next-action")
+    up_p.add_argument("--sentiment", choices=["positive", "negative", "autoreply", "invalid"],
+                      help="Qualitative sentiment for this stage change")
+    up_p.add_argument("--label", help="Human-readable status label (e.g. 'not interested', 'meeting booked')")
     up_p.add_argument("--workspace", help="Workspace for this stage change (required in multi-workspace mode)")
     up_p.add_argument("--crm-sync", action="store_true", help="Trigger CRM sync after stage update")
 
@@ -10933,6 +10936,7 @@ def main():
     log_p.add_argument("--type", dest="event_type", required=True)
     log_p.add_argument("--direction", default="outbound"); log_p.add_argument("--channel", default="email")
     log_p.add_argument("--subject"); log_p.add_argument("--body")
+    log_p.add_argument("--metadata", help='JSON metadata string e.g. \'{"lead_status_raw":"not_interested","lead_status_sentiment":"negative"}\'')
     log_p.add_argument("--workspace", help="Workspace for this event (required in multi-workspace mode)")
     log_p.add_argument("--crm-sync", action="store_true", help="Trigger CRM sync after logging event")
 
@@ -12620,14 +12624,44 @@ def main():
         if ws_row:
             conn = get_conn()
             ws_lead_id = upsert_workspace_lead(
-                conn, DEFAULT_ORG_ID, ws_row["id"], args.id, status=args.stage)
+                conn, DEFAULT_ORG_ID, ws_row["id"], args.id, status=args.stage,
+                current_status_label=getattr(args, "label", None),
+                current_status_sentiment=getattr(args, "sentiment", None))
             stage_ts = datetime.now(timezone.utc).isoformat()
+            update_sets = ["status = ?", "stage_entered_at = ?"]
+            update_params = [args.stage, stage_ts]
+            sentiment_val = getattr(args, "sentiment", None)
+            label_val = getattr(args, "label", None)
+            if sentiment_val:
+                update_sets.append("current_status_sentiment = ?")
+                update_params.append(sentiment_val)
+            if label_val:
+                update_sets.append("current_status_label = ?")
+                update_params.append(label_val)
+            update_params.append(ws_lead_id)
             conn.execute(
-                "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
-                (args.stage, stage_ts, ws_lead_id))
+                f"UPDATE workspace_leads SET {', '.join(update_sets)} WHERE id = ?",
+                update_params)
             conn.commit()
             conn.close()
             result["workspace"] = ws_row["slug"]
+
+        # Log an event for the stage change
+        event_metadata = {
+            "lead_status_raw": args.stage,
+            "lead_status_display": args.stage.replace("_", " "),
+        }
+        if getattr(args, "sentiment", None):
+            event_metadata["lead_status_sentiment"] = args.sentiment
+        if getattr(args, "label", None):
+            event_metadata["lead_status_display"] = args.label
+        log_event(
+            lead_id=args.id,
+            event_type="lead_status_updated",
+            direction="inbound",
+            metadata=event_metadata,
+        )
+
         print(json.dumps(result))
         if getattr(args, "crm_sync", False) and ws_slug:
             _maybe_trigger_crm_sync(lead_id=args.id, stage=args.stage, workspace_slug=ws_slug)
@@ -12650,15 +12684,27 @@ def main():
             ws_row = resolve_workspace_identity(conn, ws_slug)
         conn.close()
 
+        metadata = json.loads(args.metadata) if getattr(args, "metadata", None) else None
         log_event(lead_id=args.lead_id, event_type=args.event_type, direction=args.direction,
-                  channel=args.channel, subject=args.subject, body_preview=args.body)
+                  channel=args.channel, subject=args.subject, body_preview=args.body,
+                  metadata=metadata)
 
         result = {"status": "logged", "lead_id": args.lead_id}
         if ws_row:
             conn = get_conn()
+            status_defaults = {
+                "email_sent": "contacted",
+                "linkedin_connect": "contacted",
+                "linkedin_message": "contacted",
+                "email_reply": "replied",
+                "linkedin_reply": "replied",
+                "linkedin_connection_accepted": "replied",
+                "meeting_booked": "scheduled",
+            }
+            initial_status = status_defaults.get(args.event_type, "prospecting")
             ws_lead_id = upsert_workspace_lead(
                 conn, DEFAULT_ORG_ID, ws_row["id"], args.lead_id,
-                status="contacted" if args.event_type == "email_sent" else "prospecting")
+                status=initial_status)
             idem_key = f"agent_cli_{args.lead_id}_{args.event_type}_{datetime.now(timezone.utc).isoformat()}"
             append_workspace_event(
                 conn, DEFAULT_ORG_ID, ws_row["id"], args.lead_id, ws_lead_id,

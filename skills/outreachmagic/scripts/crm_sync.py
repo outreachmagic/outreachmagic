@@ -39,7 +39,7 @@ _RATE_LIMITS = {
     "hubspot": (400, 10), # 400 req / 10s
 }
 
-SYNCABLE_STATUSES = {"interested", "proposal", "won", "lost"}
+SYNCABLE_STATUSES = {"interested", "replied", "scheduled", "won", "not_interested", "lost"}
 
 # ---------------------------------------------------------------------------
 # Test injection point (set to a MockDriver to intercept CLI calls)

@@ -165,7 +165,6 @@ from constants import (
     MAX_EVENT_BODY_STORAGE_CHARS,
     PIPELINE_STAGES,
     RELAY_BULK_THRESHOLD,
-    RELAY_PULL_COMPANY_MAX,
     RELAY_PULL_EVENT_MAX,
     RELAY_PULL_MAX,
     RELAY_PULL_PAGE_SIZE,
@@ -6740,8 +6739,11 @@ def print_quarantine_guidance() -> None:
     pending = int(routing.get("pending_quarantine") or 0)
     if routing.get("mode") != WORKSPACE_ROUTING_MULTI or pending <= 0:
         return
-    print(MULTI_WORKSPACE_HOLD_MESSAGE, file=sys.stderr)
-    print(format_quarantine_campaign_summary(get_quarantine_campaign_summary()), file=sys.stderr)
+    print(
+        f"⚠ {pending} event(s) in quarantine queue "
+        f"(`quarantine list` to inspect, `quarantine replay` to reprocess).",
+        file=sys.stderr,
+    )
 
 
 def _quarantine_relay_id(row: dict) -> Optional[int]:
@@ -7758,8 +7760,7 @@ def _estimate_relay_pages(pending: Optional[int], page_size: int = RELAY_PULL_PA
 
 
 def _snapshot_pull_limit_for_kind(kind: str, base: int) -> int:
-    cap = RELAY_PULL_COMPANY_MAX if str(kind).lower() == "company" else RELAY_PULL_SNAPSHOT_MAX
-    return min(int(base), cap)
+    return min(int(base), RELAY_PULL_SNAPSHOT_MAX)
 
 
 PULL_KINDS_ALL = frozenset({"events", "core", "workspace"})
@@ -7820,7 +7821,7 @@ def probe_relay_backlog(agent_key: str) -> dict:
         "page_size": RELAY_PULL_EVENT_MAX,
         "est_pages": _estimate_relay_pages(pending, RELAY_PULL_EVENT_MAX),
     }
-    for kind in ("core", "workspace", "company"):
+    for kind in ("core", "workspace"):
         cur = int(get_snapshot_cursor(kind) or 0)
         page_size = _snapshot_pull_limit_for_kind(kind, RELAY_PULL_PAGE_SIZE)
         snap = pull_events_org(
@@ -7855,7 +7856,7 @@ def print_relay_probe(report: dict) -> None:
         f"Events: cursor={ev.get('cursor', 0)} pending={pending_s} "
         f"({pages_s} @ {ev.get('page_size', RELAY_PULL_EVENT_MAX)}/p)"
     )
-    for kind in ("core", "workspace", "company"):
+    for kind in ("core", "workspace"):
         snap = (report.get("snapshots") or {}).get(kind) or {}
         pending = snap.get("pending")
         pages = snap.get("est_pages")
@@ -7867,7 +7868,7 @@ def print_relay_probe(report: dict) -> None:
         )
 
 
-_SNAPSHOT_KIND_STREAM = {"core": "Lead", "workspace": "Workspace", "company": "Company"}
+_SNAPSHOT_KIND_STREAM = {"core": "Lead", "workspace": "Workspace"}
 _RELAY_STREAM_EVENT = "Event"
 _ARROW_PULL = "↓"
 _ARROW_PUSH = "↑"
@@ -8406,7 +8407,7 @@ def _relay_pull_phases(full: bool, do_events: bool, kinds: frozenset) -> tuple[s
     Full rebuild pulls snapshots before events so agent event_log replay can attach
     to leads that only exist after lead_core / lead_workspace snapshots ingest.
     """
-    has_snapshots = bool(kinds & {"core", "workspace", "company"})
+    has_snapshots = bool(kinds & {"core", "workspace"})
     if full and do_events and has_snapshots:
         return ("snapshots", "events")
     phases: list[str] = []
@@ -8434,7 +8435,7 @@ def sync_from_relay_org(
     if skip_snapshots:
         kinds = frozenset(k for k in kinds if k == "events")
     do_events = "events" in kinds
-    do_snapshots = bool(kinds & {"core", "workspace", "company"})
+    do_snapshots = bool(kinds & {"core", "workspace"})
     needs_routing_sync = do_events or (full and do_snapshots)
     if not skip_routing_sync and needs_routing_sync:
         try:
@@ -8451,7 +8452,7 @@ def sync_from_relay_org(
     if not quiet:
         if do_events:
             print("Contacting relay to pull new events...", flush=True)
-        elif kinds & {"core", "workspace", "company"}:
+        elif kinds & {"core", "workspace"}:
             print(f"Contacting relay to pull snapshots ({', '.join(sorted(kinds))})...", flush=True)
 
     imported = skipped = 0
@@ -8467,7 +8468,7 @@ def sync_from_relay_org(
     initial_after_id = page_after_id
     snapshot_cursors = {
         kind: 0 if full else get_snapshot_cursor(kind)
-        for kind in ("core", "workspace", "company")
+        for kind in ("core", "workspace")
     }
     snapshot_cursors_start = dict(snapshot_cursors)
 
@@ -8488,14 +8489,14 @@ def sync_from_relay_org(
     if not quiet and do_events:
         snap_hint = (
             f", snapshots up to {snap_pull_limit}/page"
-            if kinds & {"core", "workspace", "company"}
+            if kinds & {"core", "workspace"}
             else ""
         )
         print(
             f"Pulling from relay (events: {event_pull_limit}/page{snap_hint})...",
             flush=True,
         )
-    elif not quiet and kinds & {"core", "workspace", "company"}:
+    elif not quiet and kinds & {"core", "workspace"}:
         print("Pulling from relay (snapshots only)...", flush=True)
 
     pull_session: Optional[sqlite3.Connection] = None
@@ -8645,7 +8646,7 @@ def sync_from_relay_org(
                         break
 
             elif _pull_phase == "snapshots":
-                for snap_kind in ("core", "workspace", "company"):
+                for snap_kind in ("core", "workspace"):
                     if snap_kind not in kinds:
                         continue
                     kind_pages = 0

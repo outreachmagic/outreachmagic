@@ -18,7 +18,6 @@ RELAY_PULL_EVENT_MAX = 1000
 RELAY_PULL_SNAPSHOT_MAX = 1000  # match RELAY_PUSH_SNAPSHOT_BULK — 5k ingest/D1 spikes on pull
 RELAY_PULL_SNAPSHOT_HTTP_TIMEOUT = 120  # wall-clock budget per snapshot HTTP call
 RELAY_PULL_HARD_TIMEOUT_BUFFER = 15  # thread pool budget above socket timeout
-RELAY_PULL_COMPANY_MAX = 1000  # company_update ingest is heavy on the agent DB
 RELAY_BULK_THRESHOLD = 2500
 RELAY_PUSH_TIMEOUT_SECONDS = 120
 RELAY_PUSH_MAX_ATTEMPTS = 3

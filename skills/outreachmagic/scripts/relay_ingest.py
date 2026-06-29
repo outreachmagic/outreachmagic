@@ -262,6 +262,10 @@ def relay_target_stage(
         ):
             return "interested"
         if local_type == "email_reply" or et in PLUSVIBE_REPLY_EVENTS:
+            # Don't downgrade from interested/replied → replied when this
+            # reply was already classified as interested by an earlier event.
+            if label in ("interested", "qc_interested") or sentiment == "positive":
+                return "interested"
             return "replied"
         if local_type == "email_sent" or et in PLUSVIBE_SENT_EVENTS:
             return "contacted"
@@ -829,6 +833,15 @@ def ingest_relay_event(
         resolved_stage=resolved.target_stage,
     )
     if target_stage:
+        # Don't downgrade from a higher stage (e.g. interested → replied)
+        # when a bare reply event lacks interested signals.
+        if target_stage == "replied":
+            current = conn.execute(
+                "SELECT status FROM workspace_leads WHERE lead_id = ? AND org_id = ? ORDER BY id DESC LIMIT 1",
+                (lead_id, DEFAULT_ORG_ID),
+            ).fetchone()
+            if current and current[0] in ("interested", "scheduled", "won"):
+                target_stage = current[0]
         om.update_lead_stage(
             lead_id,
             target_stage,

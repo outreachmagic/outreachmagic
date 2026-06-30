@@ -26,7 +26,7 @@ class AgentSyncTimestampTests(unittest.TestCase):
         om.set_workspace_routing("single")
 
     def _ingest_event_log(self, *, entity_key: str, timestamp: str, **payload_extra):
-        payload = {
+        data = {
             "event_type": "email_sent",
             "direction": "outbound",
             "channel": "email",
@@ -36,13 +36,17 @@ class AgentSyncTimestampTests(unittest.TestCase):
         return om.ingest_agent_entry(
             {
                 "platform": "agent",
-                "action": "event_log",
-                "client_id": "remote-agent-client",
                 "entity_key": entity_key,
-                "timestamp": timestamp,
+                "event_type": "event_log",
+                "received_at": timestamp,
                 "relay_id": 99001,
-                "workspace": "default",
-                "payload": payload,
+                "payload": {
+                    "action": "event_log",
+                    "client_id": "remote-agent-client",
+                    "workspace": "default",
+                    "timestamp": timestamp,
+                    "data": data,
+                },
             },
             quiet=True,
         )
@@ -137,16 +141,20 @@ class AgentSyncTimestampTests(unittest.TestCase):
         )
         event = {
             "platform": "agent",
-            "action": "event_log",
-            "client_id": "remote-agent-client",
             "entity_key": "idem@example.com",
-            "timestamp": "2026-02-10T08:00:00Z",
+            "event_type": "event_log",
+            "received_at": "2026-02-10T08:00:00Z",
             "relay_id": 99002,
-            "workspace": "default",
             "payload": {
-                "event_type": "email_sent",
-                "direction": "outbound",
-                "channel": "email",
+                "action": "event_log",
+                "client_id": "remote-agent-client",
+                "workspace": "default",
+                "timestamp": "2026-02-10T08:00:00Z",
+                "data": {
+                    "event_type": "email_sent",
+                    "direction": "outbound",
+                    "channel": "email",
+                },
             },
         }
         first = om.ingest_agent_entry(event, quiet=True)
@@ -166,26 +174,34 @@ class AgentSyncTimestampTests(unittest.TestCase):
         core_event = {
             "platform": "agent",
             "relay_id": 50_101,
-            "action": "lead_core_update",
-            "client_id": "upstream-client",
             "entity_key": entity_key,
-            "timestamp": "2026-06-01T10:00:00Z",
-            "payload": {"email": entity_key, "name": "Full TS", "company": "Acme"},
+            "event_type": "lead_core_update",
+            "received_at": "2026-06-01T10:00:00Z",
+            "payload": {
+                "action": "lead_core_update",
+                "client_id": "upstream-client",
+                "timestamp": "2026-06-01T10:00:00Z",
+                "data": {"email": entity_key, "name": "Full TS", "company": "Acme"},
+            },
         }
         log_event = {
             "platform": "agent",
             "relay_id": 50_102,
-            "action": "event_log",
-            "client_id": "upstream-client",
             "entity_key": entity_key,
-            "timestamp": "2026-03-17T11:30:00Z",
-            "workspace": "default",
+            "event_type": "event_log",
+            "received_at": "2026-03-17T11:30:00Z",
             "payload": {
-                "event_type": "email_sent",
-                "direction": "outbound",
-                "channel": "email",
-                "campaign": "popcam | headshot lounge",
-                "sender": "jackson@popcam.com",
+                "action": "event_log",
+                "client_id": "upstream-client",
+                "workspace": "default",
+                "timestamp": "2026-03-17T11:30:00Z",
+                "data": {
+                    "event_type": "email_sent",
+                    "direction": "outbound",
+                    "channel": "email",
+                    "campaign": "popcam | headshot lounge",
+                    "sender": "jackson@popcam.com",
+                },
             },
         }
 

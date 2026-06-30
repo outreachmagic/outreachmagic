@@ -38,7 +38,7 @@ def test_no_campaign_event_quarantined():
         "lead": "nocamp@example.com",
         "received_at": "2026-06-09T12:00:00Z",
         "relay_id": 99001,
-        "raw": {"to_email": "nocamp@example.com"},
+        "payload": {"to_email": "nocamp@example.com"},
     }
     assert om.ingest_relay_event(event, quiet=True) is None
     pending = om.list_quarantine(status="pending", limit=10)
@@ -54,7 +54,7 @@ def test_quarantine_dedup_on_repull():
         "lead": "dup@example.com",
         "received_at": "2026-06-09T12:00:00Z",
         "relay_id": 99002,
-        "raw": {"to_email": "dup@example.com"},
+        "payload": {"to_email": "dup@example.com"},
     }
     om.ingest_relay_event(event, quiet=True)
     om.ingest_relay_event(event, quiet=True)
@@ -70,7 +70,7 @@ def test_skip_by_reason_no_campaign_id():
         "lead": "skip@example.com",
         "received_at": "2026-06-09T12:00:00Z",
         "relay_id": 99003,
-        "raw": {"to_email": "skip@example.com"},
+        "payload": {"to_email": "skip@example.com"},
     }
     om.ingest_relay_event(event, quiet=True)
     result = om.skip_quarantine_bulk(reason="no_campaign_id")
@@ -86,7 +86,7 @@ def test_cloud_skip_prevents_requarantine():
         "lead": "cloud@example.com",
         "received_at": "2026-06-09T12:00:00Z",
         "relay_id": 99004,
-        "raw": {"to_email": "cloud@example.com"},
+        "payload": {"to_email": "cloud@example.com"},
     }
     om.ingest_relay_event(event, quiet=True)
     resolution_map = {99004: {"status": "skipped"}}

@@ -78,7 +78,7 @@ class ExportEnrichmentTests(unittest.TestCase):
             "lead": "linkedin.com/in/lead-one",
             "received_at": "2026-05-27T12:00:00Z",
             "relay_id": 9001,
-            "raw": {
+            "payload": {
                 "eventType": "send_connection",
                 "eventData": {
                     "campaignName": "acme_corp test",

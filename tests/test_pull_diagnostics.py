@@ -429,12 +429,16 @@ def test_agent_event_log_reuses_pull_conn(monkeypatch):
 
     event = {
         "platform": "agent",
-        "client_id": "remote-client",
-        "action": "event_log",
         "entity_key": "email:test@example.com",
-        "timestamp": "2026-01-01T00:00:00Z",
-        "workspace": "default",
-        "payload": {"event_type": "email_sent", "direction": "outbound"},
+        "event_type": "event_log",
+        "received_at": "2026-01-01T00:00:00Z",
+        "payload": {
+            "action": "event_log",
+            "client_id": "remote-client",
+            "workspace": "default",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "data": {"event_type": "email_sent", "direction": "outbound"},
+        },
     }
     om.ingest_agent_entry(
         event,
@@ -507,12 +511,8 @@ def test_parse_pull_kinds():
         assert False
     except ValueError:
         pass
-    # "company" was removed from PULL_KINDS_ALL (data embedded in workspace snapshots)
-    try:
-        om.parse_pull_kinds("company")
-        assert False
-    except ValueError:
-        pass
+    # "company" is still a valid pull kind (data in workspace snapshots pending removal)
+    assert om.parse_pull_kinds("company") == frozenset({"company"})
 
 
 def test_sync_skips_event_pull_when_kind_core_only(monkeypatch):

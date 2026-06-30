@@ -103,20 +103,28 @@ class ActivitySyncTests(unittest.TestCase):
         replay_conn.close()
         om.ingest_agent_entry({
             "platform": "agent",
-            "action": "lead_core_update",
             "entity_key": "activity@example.com",
-            "client_id": "other-client-activity",
-            "timestamp": "2026-05-27T12:00:00Z",
-            "payload": core_payload,
+            "event_type": "lead_core_update",
+            "received_at": "2026-05-27T12:00:00Z",
+            "payload": {
+                "action": "lead_core_update",
+                "client_id": "other-client-activity",
+                "timestamp": "2026-05-27T12:00:00Z",
+                "data": core_payload,
+            },
         })
         replay_id = om.ingest_agent_entry({
             "platform": "agent",
-            "action": "lead_workspace_update",
             "entity_key": "activity@example.com",
-            "client_id": "other-client-activity",
-            "timestamp": "2026-05-27T12:00:00Z",
-            "workspace": "default",
-            "payload": ws_payload,
+            "event_type": "lead_workspace_update",
+            "received_at": "2026-05-27T12:00:00Z",
+            "payload": {
+                "action": "lead_workspace_update",
+                "client_id": "other-client-activity",
+                "workspace": "default",
+                "timestamp": "2026-05-27T12:00:00Z",
+                "data": ws_payload,
+            },
         })
         self.assertIsNotNone(replay_id)
 

@@ -104,17 +104,21 @@ def test_event_log_bootstraps_lead_from_entity_key():
 
     event = {
         "platform": "agent",
-        "client_id": "remote-replay-client",
-        "action": "event_log",
         "entity_key": "replay-bootstrap@example.com",
-        "timestamp": "2026-06-01T12:00:00Z",
-        "workspace": "popcam",
+        "event_type": "event_log",
+        "received_at": "2026-06-01T12:00:00Z",
         "payload": {
-            "event_type": "email_sent",
-            "direction": "outbound",
-            "channel": "email",
-            "campaign": "popcam | headshot lounge",
-            "body_preview": "Hello",
+            "action": "event_log",
+            "client_id": "remote-replay-client",
+            "workspace": "popcam",
+            "timestamp": "2026-06-01T12:00:00Z",
+            "data": {
+                "event_type": "email_sent",
+                "direction": "outbound",
+                "channel": "email",
+                "campaign": "popcam | headshot lounge",
+                "body_preview": "Hello",
+            },
         },
     }
     lead_id = om.ingest_agent_entry(
@@ -143,30 +147,39 @@ def test_full_pull_replays_event_log_after_core_snapshot(monkeypatch):
     core_event = {
         "platform": "agent",
         "relay_id": 50_001,
-        "action": "lead_core_update",
-        "client_id": "upstream-client",
         "entity_key": entity_key,
-        "timestamp": "2026-06-01T10:00:00Z",
+        "event_type": "lead_core_update",
+        "received_at": "2026-06-01T10:00:00Z",
         "payload": {
-            "email": entity_key,
-            "name": "Full Replay",
-            "company": "Acme",
+            "action": "lead_core_update",
+            "client_id": "upstream-client",
+            "timestamp": "2026-06-01T10:00:00Z",
+            "data": {
+                "email": entity_key,
+                "name": "Full Replay",
+                "company": "Acme",
+            },
         },
     }
     log_event = {
         "platform": "agent",
         "relay_id": 50_002,
-        "action": "event_log",
-        "client_id": "upstream-client",
         "entity_key": entity_key,
-        "timestamp": "2026-06-01T11:00:00Z",
+        "event_type": "event_log",
+        "received_at": "2026-06-01T11:00:00Z",
         "workspace": "default",
         "payload": {
-            "event_type": "email_sent",
-            "direction": "outbound",
-            "channel": "email",
-            "campaign": "popcam | headshot lounge",
-            "body_preview": "Hi",
+            "action": "event_log",
+            "client_id": "upstream-client",
+            "workspace": "default",
+            "timestamp": "2026-06-01T11:00:00Z",
+            "data": {
+                "event_type": "email_sent",
+                "direction": "outbound",
+                "channel": "email",
+                "campaign": "popcam | headshot lounge",
+                "body_preview": "Hi",
+            },
         },
     }
 
@@ -243,16 +256,20 @@ def test_event_log_bootstraps_even_when_events_run_before_snapshots(monkeypatch)
     log_event = {
         "platform": "agent",
         "relay_id": 60_001,
-        "action": "event_log",
-        "client_id": "upstream-client",
         "entity_key": "orphan@example.com",
-        "timestamp": "2026-06-01T11:00:00Z",
-        "workspace": "default",
+        "event_type": "event_log",
+        "received_at": "2026-06-01T11:00:00Z",
         "payload": {
-            "event_type": "email_sent",
-            "direction": "outbound",
-            "channel": "email",
-            "campaign": "popcam | career services",
+            "action": "event_log",
+            "client_id": "upstream-client",
+            "workspace": "default",
+            "timestamp": "2026-06-01T11:00:00Z",
+            "data": {
+                "event_type": "email_sent",
+                "direction": "outbound",
+                "channel": "email",
+                "campaign": "popcam | career services",
+            },
         },
     }
 
@@ -289,11 +306,15 @@ def test_many_event_logs_after_snapshots(monkeypatch):
         {
             "platform": "agent",
             "relay_id": 70_000 + i,
-            "action": "lead_core_update",
-            "client_id": "bulk-client",
             "entity_key": email,
-            "timestamp": f"2026-06-01T10:{i:02d}:00Z",
-            "payload": {"email": email, "name": f"Lead {i}"},
+            "event_type": "lead_core_update",
+            "received_at": f"2026-06-01T10:{i:02d}:00Z",
+            "payload": {
+                "action": "lead_core_update",
+                "client_id": "bulk-client",
+                "timestamp": f"2026-06-01T10:{i:02d}:00Z",
+                "data": {"email": email, "name": f"Lead {i}"},
+            },
         }
         for i, email in enumerate(emails)
     ]
@@ -301,16 +322,20 @@ def test_many_event_logs_after_snapshots(monkeypatch):
         {
             "platform": "agent",
             "relay_id": 80_000 + i,
-            "action": "event_log",
-            "client_id": "bulk-client",
             "entity_key": email,
-            "timestamp": f"2026-06-01T11:{i:02d}:00Z",
-            "workspace": "default",
+            "event_type": "event_log",
+            "received_at": f"2026-06-01T11:{i:02d}:00Z",
             "payload": {
-                "event_type": "email_sent",
-                "direction": "outbound",
-                "channel": "email",
-                "campaign": "popcam | marketing",
+                "action": "event_log",
+                "client_id": "bulk-client",
+                "workspace": "default",
+                "timestamp": f"2026-06-01T11:{i:02d}:00Z",
+                "data": {
+                    "event_type": "email_sent",
+                    "direction": "outbound",
+                    "channel": "email",
+                    "campaign": "popcam | marketing",
+                },
             },
         }
         for i, email in enumerate(emails)

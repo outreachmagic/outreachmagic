@@ -580,15 +580,19 @@ def fetch_update_manifest(repo_base: str, skill_repo_path: Optional[str] = None)
 def update_download_names(manifest: Optional[dict] = None) -> list[str]:
     """File names to install during update (scripts + VERSION; root files handled separately).
 
-    Uses ``UPDATE_MANIFEST_FILES`` as a whitelist instead of filtering out known
-    root-level files. This is future-proof: any new root-level file (e.g.
-    ``references/*.md``, ``SECURITY.md``, ``LICENSE``) added to the manifest is
-    automatically excluded because it won't be in ``UPDATE_MANIFEST_FILES``.
+    Uses `.py` extension matching instead of the local file list so that new
+    script modules added in a release are always installed (avoids the
+    bootstrapping problem of ``UPDATE_SCRIPT_FILES`` being computed from the
+    currently installed directory). Root-level files (``*.md``, ``*.sh``,
+    ``*.txt``) are excluded — they install separately via ``ROOT_SKILL_FILES``.
     """
     files = (manifest or {}).get("files") if isinstance(manifest, dict) else None
     if isinstance(files, dict) and files:
-        script_files = set(UPDATE_MANIFEST_FILES)
-        return sorted(name for name in files if name in script_files)
+        return sorted(
+            name for name in files
+            if name != "manifest.json" and not name.endswith((".md", ".sh", ".txt"))
+            and (name.endswith(".py") or name == "VERSION")
+        )
     return list(UPDATE_MANIFEST_FILES)
 
 

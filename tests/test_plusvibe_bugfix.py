@@ -53,7 +53,7 @@ def _reply_event(*, event_type: str, relay_id: int, body: str = "Yes, let's talk
         "event_type": event_type,
         "lead": "lead@example.com",
         "received_at": "2026-06-10T12:00:01Z",
-        "raw": {
+        "payload": {
             "campaign_name": "Test Campaign",
             "campaign_id": "camp-1",
             "text_body": body,
@@ -69,7 +69,7 @@ def _status_event(event_type: str, relay_id: int) -> dict:
         "event_type": event_type,
         "lead": "lead@example.com",
         "received_at": "2026-06-10T12:00:05Z",
-        "raw": {
+        "payload": {
             "campaign_name": "Test Campaign",
             "campaign_id": "camp-1",
         },

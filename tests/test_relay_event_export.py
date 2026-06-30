@@ -69,16 +69,20 @@ class RelayEventExportTests(unittest.TestCase):
         om.ingest_agent_entry(
             {
                 "platform": "agent",
-                "action": "event_log",
-                "client_id": "other-device",
                 "entity_key": entity_key,
-                "timestamp": "2026-06-01T12:00:00Z",
-                "workspace": "default",
+                "event_type": "event_log",
+                "received_at": "2026-06-01T12:00:00Z",
                 "payload": {
-                    "event_type": "email_reply",
-                    "direction": "inbound",
-                    "channel": "email",
-                    "campaign": "popcam | career services",
+                    "action": "event_log",
+                    "client_id": "other-device",
+                    "workspace": "default",
+                    "timestamp": "2026-06-01T12:00:00Z",
+                    "data": {
+                        "event_type": "email_reply",
+                        "direction": "inbound",
+                        "channel": "email",
+                        "campaign": "popcam | career services",
+                    },
                 },
             }
         )

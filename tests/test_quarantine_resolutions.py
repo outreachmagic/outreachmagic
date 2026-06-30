@@ -39,7 +39,7 @@ class QuarantineResolutionTests(unittest.TestCase):
             "lead": email,
             "received_at": "2026-05-23T00:00:00Z",
             "relay_id": relay_id,
-            "raw": {"campaign_id": "missing", "campaign_name": "Ghost", "to_email": email},
+            "payload": {"campaign_id": "missing", "campaign_name": "Ghost", "to_email": email},
         }
         self.assertIsNone(om.ingest_relay_event(event, quiet=True))
         pending = [

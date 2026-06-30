@@ -45,7 +45,7 @@ class RelayPullBulkDedupeTests(unittest.TestCase):
              "client_id": "other", "entity_key": "a@b.com", "timestamp": "2026-01-01T00:00:00Z",
              "payload": {"email": "a@b.com"}},
             {"platform": "smartlead", "relay_id": 2_000_000_088, "event_type": "email_sent",
-             "lead": "b@b.com", "received_at": "2026-01-01T00:00:01Z", "raw": {}},
+             "lead": "b@b.com", "received_at": "2026-01-01T00:00:01Z", "payload": {}},
         ]
         mark_relay_ingested(relay_dedupe_key(events[0]), None)
         mark_relay_ingested(relay_dedupe_key(events[1]), None)

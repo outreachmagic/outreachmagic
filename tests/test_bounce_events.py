@@ -210,7 +210,7 @@ class IngestBounceIntegrationTests(unittest.TestCase):
             "lead": raw["lead_email"],
             "sender": raw["sender_email"],
             "received_at": "2026-05-31T03:49:21Z",
-            "raw": raw,
+            "payload": raw,
             "relay_id": 70015,
         }
         lead_id = om.ingest_relay_event(event, quiet=True)

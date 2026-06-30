@@ -103,7 +103,7 @@ def _build_plusvibe_event(relay_id, event_type, body="", lead_email="plusvibe@ex
         "event_type": event_type,
         "lead": lead_email,
         "received_at": datetime.now(timezone.utc).isoformat(),
-        "raw": {
+        "payload": {
             "body": body,
             "text_body": body,
             "campaign_name": "test-campaign",
@@ -405,13 +405,17 @@ class TestIngestAgentEntryRelayIdCheck:
         )
         event = {
             "platform": "agent",
-            "client_id": "remote-client-42",
-            "action": "event_log",
             "entity_key": "email:agenttest@example.com",
-            "timestamp": "2026-06-01T00:00:00Z",
-            "workspace": "default",
+            "event_type": "event_log",
+            "received_at": "2026-06-01T00:00:00Z",
             "relay_id": 999999,
-            "payload": {"event_type": "email_sent", "direction": "outbound"},
+            "payload": {
+                "action": "event_log",
+                "client_id": "remote-client-42",
+                "workspace": "default",
+                "timestamp": "2026-06-01T00:00:00Z",
+                "data": {"event_type": "email_sent", "direction": "outbound"},
+            },
         }
         result = om.ingest_agent_entry(event, quiet=True)
         # relay_id check may vary; event may still be ingested if a lead+workspace exists
@@ -440,13 +444,17 @@ class TestIngestAgentEntryRelayIdCheck:
         )
         event = {
             "platform": "agent",
-            "client_id": "remote-client-99",
-            "action": "event_log",
             "entity_key": "email:deferred@example.com",
-            "timestamp": "2026-06-01T00:00:00Z",
-            "workspace": "default",
+            "event_type": "event_log",
+            "received_at": "2026-06-01T00:00:00Z",
             "relay_id": 777777,
-            "payload": {"event_type": "email_sent", "direction": "outbound"},
+            "payload": {
+                "action": "event_log",
+                "client_id": "remote-client-99",
+                "workspace": "default",
+                "timestamp": "2026-06-01T00:00:00Z",
+                "data": {"event_type": "email_sent", "direction": "outbound"},
+            },
         }
         pending = []
         result = om.ingest_agent_entry(
@@ -471,13 +479,17 @@ class TestIngestAgentEntryRelayIdCheck:
         )
         event = {
             "platform": "agent",
-            "client_id": "remote-client-77",
-            "action": "event_log",
             "entity_key": "email:agentnew@example.com",
-            "timestamp": "2026-06-01T00:00:00Z",
-            "workspace": "default",
+            "event_type": "event_log",
+            "received_at": "2026-06-01T00:00:00Z",
             "relay_id": 888888,
-            "payload": {"event_type": "email_sent", "direction": "outbound"},
+            "payload": {
+                "action": "event_log",
+                "client_id": "remote-client-77",
+                "workspace": "default",
+                "timestamp": "2026-06-01T00:00:00Z",
+                "data": {"event_type": "email_sent", "direction": "outbound"},
+            },
         }
         result = om.ingest_agent_entry(event, quiet=True)
         assert result is not None
@@ -499,12 +511,16 @@ class TestIngestAgentEntryRelayIdCheck:
         )
         event = {
             "platform": "agent",
-            "client_id": "remote-client-88",
-            "action": "event_log",
             "entity_key": "email:norelay@example.com",
-            "timestamp": "2026-06-01T00:00:00Z",
-            "workspace": "default",
-            "payload": {"event_type": "email_sent", "direction": "outbound"},
+            "event_type": "event_log",
+            "received_at": "2026-06-01T00:00:00Z",
+            "payload": {
+                "action": "event_log",
+                "client_id": "remote-client-88",
+                "workspace": "default",
+                "timestamp": "2026-06-01T00:00:00Z",
+                "data": {"event_type": "email_sent", "direction": "outbound"},
+            },
         }
         result = om.ingest_agent_entry(event, quiet=True)
         assert result is not None

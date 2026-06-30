@@ -66,13 +66,17 @@ class CompanyPersonalizationTests(unittest.TestCase):
         conn.close()
         event = {
             "platform": "agent",
-            "action": "company_update",
-            "client_id": "remote-client",
             "entity_key": "company:domain:syncco.com",
-            "timestamp": "2026-05-31T12:00:00Z",
+            "event_type": "company_update",
+            "received_at": "2026-05-31T12:00:00Z",
             "payload": {
-                "personalization": {"company_icebreaker": "Great team"},
-                "personalization_at": "2026-05-31T12:00:01Z",
+                "action": "company_update",
+                "client_id": "remote-client",
+                "timestamp": "2026-05-31T12:00:00Z",
+                "data": {
+                    "personalization": {"company_icebreaker": "Great team"},
+                    "personalization_at": "2026-05-31T12:00:01Z",
+                },
             },
         }
         om.ingest_relay_event(event, quiet=True)

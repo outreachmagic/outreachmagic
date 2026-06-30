@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -223,7 +224,7 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
         return 0
 
     conn.executemany(
-        "UPDATE events SET metadata_json = ?, updated_at = datetime('now') WHERE relay_id = ?",
+        "UPDATE events SET metadata_json = ? WHERE relay_id = ?",
         [(uj, rid) for uj, rid, _ in updates],
     )
     conn.commit()

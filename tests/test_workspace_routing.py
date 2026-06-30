@@ -257,7 +257,7 @@ def test_single_mode_routes_all_to_default():
         "lead": "alice@test.com",
         "received_at": "2026-05-23T00:00:00Z",
         "relay_id": 200,
-        "raw": {"campaign_id": "unmapped-99", "to_email": "alice@test.com"},
+        "payload": {"campaign_id": "unmapped-99", "to_email": "alice@test.com"},
     }
     lead_id = om.ingest_relay_event(event, quiet=True)
     assert lead_id is not None
@@ -300,7 +300,7 @@ def test_multi_mode_quarantines_unmapped():
         "lead": "ghost@test.com",
         "received_at": "2026-05-23T00:00:00Z",
         "relay_id": 201,
-        "raw": {"campaign_id": "missing", "campaign_name": "Ghost Campaign", "to_email": "ghost@test.com"},
+        "payload": {"campaign_id": "missing", "campaign_name": "Ghost Campaign", "to_email": "ghost@test.com"},
     }
     conn = om.get_conn()
     events_before = conn.execute("SELECT COUNT(*) FROM workspace_lead_events").fetchone()[0]
@@ -366,7 +366,7 @@ def test_ingest_quarantine_and_route():
         "lead": "bob@test.com",
         "received_at": "2026-05-23T00:00:00Z",
         "relay_id": 42,
-        "raw": {"campaign_id": "c1", "to_email": "bob@test.com"},
+        "payload": {"campaign_id": "c1", "to_email": "bob@test.com"},
     }
     lead_id = om.ingest_relay_event(event, quiet=True)
     assert lead_id is not None
@@ -377,7 +377,7 @@ def test_ingest_quarantine_and_route():
 
     bad = dict(event)
     bad["relay_id"] = 43
-    bad["raw"] = {"campaign_id": "missing", "to_email": "bob@test.com"}
+    bad["payload"] = {"campaign_id": "missing", "to_email": "bob@test.com"}
     assert om.ingest_relay_event(bad, quiet=True) is None
     pending = om.list_quarantine()
     assert len(pending) >= 1
@@ -393,7 +393,7 @@ def test_replay_pending_quarantine_applies_prefix_rules():
         "lead": "prefix@test.com",
         "received_at": "2026-05-23T00:00:00Z",
         "relay_id": 301,
-        "raw": {"campaign_name": "leadgenph scholarship", "to_email": "prefix@test.com"},
+        "payload": {"campaign_name": "leadgenph scholarship", "to_email": "prefix@test.com"},
     }
     assert om.ingest_relay_event(event, quiet=True) is None
     pending_before = om.list_quarantine()
@@ -426,7 +426,7 @@ def test_replay_pending_quarantine_applies_contains_rules():
         "lead": "contains@test.com",
         "received_at": "2026-05-23T00:00:00Z",
         "relay_id": 303,
-        "raw": {"campaign_name": "Q2 Acme outbound", "to_email": "contains@test.com"},
+        "payload": {"campaign_name": "Q2 Acme outbound", "to_email": "contains@test.com"},
     }
     assert om.ingest_relay_event(event, quiet=True) is None
 
@@ -453,7 +453,7 @@ def test_replay_pending_quarantine_applies_unknown_name_mapping():
         "lead": "https://linkedin.com/in/unknown-campaign",
         "received_at": "2026-05-23T00:00:00Z",
         "relay_id": 302,
-        "raw": {},
+        "payload": {},
     }
     assert om.ingest_relay_event(event, quiet=True) is None
     om.add_campaign_map_cli("prosp", "acme_corp", campaign_name="unknown", match_strategy="name_exact")
@@ -562,22 +562,30 @@ def test_agent_sync_full_payload_roundtrip():
     replay_conn = om.get_conn()
     om.ingest_agent_entry({
         "platform": "agent",
-        "action": "lead_core_update",
         "entity_key": entity_key,
-        "client_id": "other-client",
-        "timestamp": "2026-05-27T12:00:00Z",
-        "payload": om.build_lead_core_sync_payload(replay_conn, DEFAULT_ORG_ID, lead_id),
+        "event_type": "lead_core_update",
+        "received_at": "2026-05-27T12:00:00Z",
+        "payload": {
+            "action": "lead_core_update",
+            "client_id": "other-client",
+            "timestamp": "2026-05-27T12:00:00Z",
+            "data": om.build_lead_core_sync_payload(replay_conn, DEFAULT_ORG_ID, lead_id),
+        },
     })
     replay_id = om.ingest_agent_entry({
         "platform": "agent",
-        "action": "lead_workspace_update",
         "entity_key": entity_key,
-        "client_id": "other-client",
-        "timestamp": "2026-05-27T12:00:00Z",
-        "workspace": "default",
-        "payload": om.build_lead_workspace_sync_payload(
-            replay_conn, DEFAULT_ORG_ID, lead_id, workspace_slug="default",
-        ),
+        "event_type": "lead_workspace_update",
+        "received_at": "2026-05-27T12:00:00Z",
+        "payload": {
+            "action": "lead_workspace_update",
+            "client_id": "other-client",
+            "workspace": "default",
+            "timestamp": "2026-05-27T12:00:00Z",
+            "data": om.build_lead_workspace_sync_payload(
+                replay_conn, DEFAULT_ORG_ID, lead_id, workspace_slug="default",
+            ),
+        },
     })
     replay_conn.close()
     assert replay_id is not None

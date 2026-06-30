@@ -7548,12 +7548,22 @@ def ingest_agent_entry(
 ) -> Optional[int]:
     """Replay an agent-originated mutation from another client during pull."""
     envelope_payload = event.get("payload") or {}
-    action = envelope_payload.get("action", "")
-    payload = envelope_payload.get("data") or {}
-    client_id = envelope_payload.get("client_id", "")
+    # Detect format: the new unified envelope format nests action/data in
+    # payload (post-Jun 30 relay-db.js). Old flat format has action/client_id
+    # at the event top level with enrichment data directly in event.payload.
+    if "action" in envelope_payload or "data" in envelope_payload:
+        action = envelope_payload.get("action", "")
+        payload = envelope_payload.get("data") or {}
+        client_id = envelope_payload.get("client_id", "")
+        workspace_slug = envelope_payload.get("workspace")
+        timestamp = envelope_payload.get("timestamp", "")
+    else:
+        action = event.get("action", "")
+        payload = envelope_payload
+        client_id = event.get("client_id", "")
+        workspace_slug = event.get("workspace")
+        timestamp = event.get("timestamp", "")
     entity_key = event.get("entity_key", "")
-    timestamp = envelope_payload.get("timestamp", "")
-    workspace_slug = envelope_payload.get("workspace")
 
     local_client_id = get_or_create_client_id()
     if client_id == local_client_id:

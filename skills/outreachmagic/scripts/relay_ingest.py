@@ -601,7 +601,8 @@ def ingest_relay_event(
             conn.close()
         return None
 
-    envelope_lead = event.get("entity_key") or ""
+    # Old-format webhook events use ``lead`` instead of ``entity_key``.
+    envelope_lead = event.get("entity_key") or event.get("lead") or ""
     envelope_event_type = (event.get("event_type") or "unknown").lower()
     platform = event.get("platform", "unknown")
     # Old-format webhook events store the body in ``raw``, not ``payload``.

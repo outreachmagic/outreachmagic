@@ -20,6 +20,9 @@ skills/outreachmagic/export/*.db
 *-email-results.json
 *-email-results.csv
 
+# Local / scratch files (temp scripts, data dumps, etc.)
+_local/
+
 # Cursor workspace skill symlink (points to skills/outreachmagic/)
 .cursor/skills/
 

@@ -58,7 +58,7 @@ git push origin main --tags
 Creating a tag matching `v*-*` (contains a hyphen) triggers CI as a **prerelease** — it creates a GitHub Release but won't appear as "latest." Testers install with:
 
 ```bash
-pipeline.py update --tag v1.2.0-rc.1
+pipeline.py update --tag v1.3.0-rc.1
 ```
 
 Fix bugs, bump to `rc.2`, repeat. When satisfied, create the stable release (no hyphen).

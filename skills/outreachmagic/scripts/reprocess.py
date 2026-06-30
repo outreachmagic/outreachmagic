@@ -11,17 +11,20 @@ Design:
 
     This module fetches raw payloads from the replay endpoints, re-runs the
     same extractor functions that normal ingest uses, and batch-UPDATEs the
-    local DB rows.  No INSERTs, no cursor changes.
+    local DB rows (metadata_json, subject, created_at, and bounce tables).
+    No INSERTs, no cursor changes.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +48,32 @@ except Exception:
 
 REPROCESS_PAGE_SIZE = 1000
 REPROCESS_HTTP_TIMEOUT = 120
+
+
+def _normalize_ts(ts: Optional[str]) -> Optional[str]:
+    """Normalize an ISO timestamp to UTC with timezone offset."""
+    if not ts:
+        return None
+    s = str(ts).strip()
+    if "T" in s:
+        if s.endswith("Z") or re.search(r"[+-]\d{2}:\d{2}$", s):
+            return s
+        return s + "+00:00"
+    return s
+
+
+def _reprocess_event_timestamp(event: dict) -> Optional[str]:
+    """Prefer original send timestamp (sent_on) over relay received time."""
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    for key in ("sent_on", "sent_at"):
+        val = payload.get(key)
+        if val:
+            return _normalize_ts(val)
+    for key in ("received_at", "created_at", "timestamp"):
+        val = event.get(key)
+        if val:
+            return _normalize_ts(val)
+    return None
 
 
 def _replay_http_get(url: str, agent_key: str, timeout: int = REPROCESS_HTTP_TIMEOUT) -> dict:
@@ -96,17 +125,22 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
 
     placeholders = ",".join("?" for _ in relay_ids)
     existing_rows = conn.execute(
-        f"SELECT relay_id, id, lead_id, metadata_json FROM events WHERE relay_id IN ({placeholders})",
+        f"SELECT relay_id, id, lead_id, metadata_json, created_at, subject FROM events WHERE relay_id IN ({placeholders})",
         relay_ids,
     ).fetchall()
     existing_map: dict[int, dict] = {}
     # Also track local event ID and lead ID for bounce table updates.
     event_id_map: dict[int, int] = {}
     lead_id_map: dict[int, int] = {}
+    # Track existing columns for comparison.
+    existing_created_at: dict[int, Optional[str]] = {}
+    existing_subject: dict[int, Optional[str]] = {}
     for row in existing_rows:
         rid = row[0]
         event_id_map[rid] = row[1]
         lead_id_map[rid] = row[2]
+        existing_created_at[rid] = row[4]
+        existing_subject[rid] = row[5]
         try:
             existing_map[rid] = json.loads(row[3]) if row[3] else {}
         except (json.JSONDecodeError, TypeError):
@@ -123,7 +157,7 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
         ).fetchall():
             lead_email_map[lr[0]] = lr[1] or ""
 
-    updates: list[tuple[str, int, str]] = []  # (new_json, relay_id, old_json_str)
+    col_updates: list[tuple[str, Optional[str], Optional[str], int]] = []  # (new_json, subject, created_at, relay_id)
     for evt in events:
         relay_id = evt.get("relay_id")
         if relay_id is None:
@@ -141,6 +175,9 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
         # Re-extract campaign context.
         campaign_ctx = extract_campaign_context(platform, event_fields, payload)
 
+        # Compute event_at from sent_on when available.
+        event_at = _reprocess_event_timestamp(evt)
+
         # Start from existing metadata, then overlay re-extracted fields.
         old_meta = existing_map.get(relay_id, {})
         new_meta = dict(old_meta)
@@ -152,11 +189,17 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
             new_meta["campaign_id"] = campaign_ctx.campaign_id
         if event_fields.get("subject"):
             new_meta["subject"] = event_fields["subject"]
+        if event_fields.get("sent_on"):
+            new_meta["sent_on"] = event_fields["sent_on"]
         body_text = event_fields.get("body")
         if body_text:
             new_meta["body"] = body_text
         if evt.get("sender"):
             new_meta["sender"] = evt["sender"]
+
+        # Determine re-extracted subject and timestamp for column updates.
+        re_subject = event_fields.get("subject") or existing_subject.get(relay_id)
+        re_created_at = event_at or existing_created_at.get(relay_id)
 
         # Determine if this is a bounce event using the full resolve pipeline
         # (matches how relay_ingest.py classifies events — catches all bounce
@@ -171,7 +214,7 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
                 new_meta.update(build_bounce_event_metadata(bounce_payload, envelope_event_type))
 
         if verbose:
-            for field in ("campaign", "bounce_type", "subject"):
+            for field in ("campaign", "bounce_type", "subject", "sent_on"):
                 old_val = old_meta.get(field)
                 new_val = new_meta.get(field)
                 if old_val != new_val:
@@ -183,8 +226,11 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
 
         old_json = json.dumps(old_meta, sort_keys=True, default=str)
         new_json = json.dumps(new_meta, sort_keys=True, default=str)
-        if old_json != new_json:
-            updates.append((new_json, relay_id, old_json))
+        meta_changed = old_json != new_json
+        subject_changed = re_subject != existing_subject.get(relay_id)
+        created_at_changed = re_created_at != existing_created_at.get(relay_id)
+        if meta_changed or subject_changed or created_at_changed:
+            col_updates.append((new_json, re_subject, re_created_at, relay_id))
 
         # Also record bounce classification in bounce-specific tables.
         if is_bounce and bounce_payload and bounce_payload.get("bounce_type"):
@@ -220,15 +266,15 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
                     workspace_id=None,  # workspace lookup requires pipeline module
                 )
 
-    if not updates:
+    if not col_updates:
         return 0
 
     conn.executemany(
-        "UPDATE events SET metadata_json = ? WHERE relay_id = ?",
-        [(uj, rid) for uj, rid, _ in updates],
+        "UPDATE events SET metadata_json = ?, subject = COALESCE(?, subject), created_at = COALESCE(?, created_at) WHERE relay_id = ?",
+        [(uj, subj, cat, rid) for uj, subj, cat, rid in col_updates],
     )
     conn.commit()
-    return len(updates)
+    return len(col_updates)
 
 
 def reprocess_events(

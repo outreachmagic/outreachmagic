@@ -5,7 +5,7 @@ description: >
   PlusVibe, EmailBison, Prosp, and Calendly into one local SQLite DB. Every
   send, reply, bounce, stage change, and booked call lands there. Your agent
   queries it directly. No CSV stitching, no API pagination, no merged Sheets.
-version: 1.2.0
+version: 1.3.0
 author: Outreach Magic
 license: MIT
 platforms: [macos, linux]
@@ -73,7 +73,7 @@ Config keys: `data_root` (share DB across agents), `api_base_url`, `dev_repo`.
 ## Platform install
 
 ```bash
-OM_VERSION=v1.2.0
+OM_VERSION=v1.3.0
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"

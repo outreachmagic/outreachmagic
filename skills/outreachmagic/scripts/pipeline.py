@@ -1848,6 +1848,8 @@ def ensure_company(
     hq_city: Optional[str] = None,
     hq_state: Optional[str] = None,
     hq_country: Optional[str] = None,
+    *,
+    authoritative: bool = False,
 ) -> Optional[int]:
     """Find or create company row; match business domain first, then exact name."""
     domain = (domain or "").strip().lower() or None
@@ -1861,7 +1863,8 @@ def ensure_company(
         if row:
             cid = row["id"]
             _update_company_fields(conn, cid, name, industry, headcount,
-                                   hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
+                                   hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
+                                   authoritative=authoritative)
             return cid
     if name:
         row = conn.execute(
@@ -1876,7 +1879,8 @@ def ensure_company(
                     (domain, cid),
                 )
             _update_company_fields(conn, cid, None, industry, headcount,
-                                   hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
+                                   hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
+                                   authoritative=authoritative)
             return cid
     display_name = name or (domain or "Unknown")
     cid = conn.execute(
@@ -1898,29 +1902,40 @@ def _update_company_fields(
     hq_city: Optional[str] = None,
     hq_state: Optional[str] = None,
     hq_country: Optional[str] = None,
+    *,
+    authoritative: bool = False,
 ):
     sets, params = [], []
     if name:
         sets.append("name = CASE WHEN trim(name) = '' THEN ? ELSE name END")
         params.append(name)
     if industry:
-        sets.append("industry = COALESCE(industry, ?)")
+        if authoritative:
+            sets.append("industry = ?")
+        else:
+            sets.append("industry = COALESCE(industry, ?)")
         params.append(industry)
     if headcount:
-        sets.append("headcount = COALESCE(headcount, ?)")
+        if authoritative:
+            sets.append("headcount = ?")
+        else:
+            sets.append("headcount = COALESCE(headcount, ?)")
         params.append(headcount)
         hc_num = parse_headcount_numeric(headcount)
         if hc_num is not None:
-            sets.append("headcount_numeric = COALESCE(headcount_numeric, ?)")
+            if authoritative:
+                sets.append("headcount_numeric = ?")
+            else:
+                sets.append("headcount_numeric = COALESCE(headcount_numeric, ?)")
             params.append(hc_num)
     if hq_city:
-        sets.append("hq_city = COALESCE(hq_city, ?)")
+        sets.append(f"hq_city = {'?' if authoritative else 'COALESCE(hq_city, ?)'}")
         params.append(hq_city)
     if hq_state:
-        sets.append("hq_state = COALESCE(hq_state, ?)")
+        sets.append(f"hq_state = {'?' if authoritative else 'COALESCE(hq_state, ?)'}")
         params.append(hq_state)
     if hq_country:
-        sets.append("hq_country = COALESCE(hq_country, ?)")
+        sets.append(f"hq_country = {'?' if authoritative else 'COALESCE(hq_country, ?)'}")
         params.append(hq_country)
     if sets:
         sets.append("updated_at = datetime('now')")
@@ -7402,10 +7417,11 @@ def agent_entry_dedupe_key(event: dict, local_client_id: Optional[str] = None) -
     """Dedupe key for agent pull entries (distinct from relay:{id} for snapshots)."""
     if event.get("platform") != "agent":
         return None
-    client_id = event.get("client_id", "")
+    payload = event.get("payload") or {}
+    client_id = payload.get("client_id", "")
     entity_key = event.get("entity_key", "")
-    action = event.get("action", "")
-    timestamp = event.get("timestamp", "")
+    action = payload.get("action", "")
+    timestamp = payload.get("timestamp", "")
     if not client_id or not action:
         return None
     local = local_client_id if local_client_id is not None else get_or_create_client_id()
@@ -7484,12 +7500,13 @@ def ingest_agent_entry(
     activity_refresh_pairs: Optional[set[tuple[int, str]]] = None,
 ) -> Optional[int]:
     """Replay an agent-originated mutation from another client during pull."""
-    action = event.get("action", "")
-    payload = event.get("payload", {})
-    client_id = event.get("client_id", "")
+    envelope_payload = event.get("payload") or {}
+    action = envelope_payload.get("action", "")
+    payload = envelope_payload.get("data") or {}
+    client_id = envelope_payload.get("client_id", "")
     entity_key = event.get("entity_key", "")
-    timestamp = event.get("timestamp", "")
-    workspace_slug = event.get("workspace")
+    timestamp = envelope_payload.get("timestamp", "")
+    workspace_slug = envelope_payload.get("workspace")
 
     local_client_id = get_or_create_client_id()
     if client_id == local_client_id:
@@ -7516,12 +7533,9 @@ def ingest_agent_entry(
         if action == "company_update":
             company_id = resolve_company_from_entity_key(conn, entity_key) if entity_key else None
             if company_id:
-                _apply_personalization_payload(
+                apply_agent_company_sync_payload(
                     company_id,
                     payload,
-                    table="company_personalization",
-                    id_col="company_id",
-                    entity_id=company_id,
                     conn=conn,
                 )
             if own_conn:
@@ -7769,7 +7783,7 @@ def _snapshot_pull_limit_for_kind(kind: str, base: int) -> int:
     return min(int(base), RELAY_PULL_SNAPSHOT_MAX)
 
 
-PULL_KINDS_ALL = frozenset({"events", "core", "workspace"})
+PULL_KINDS_ALL = frozenset({"events", "core", "workspace", "company"})
 
 
 def parse_pull_kinds(raw: Optional[str]) -> Optional[frozenset[str]]:
@@ -7874,7 +7888,7 @@ def print_relay_probe(report: dict) -> None:
         )
 
 
-_SNAPSHOT_KIND_STREAM = {"core": "Lead", "workspace": "Workspace"}
+_SNAPSHOT_KIND_STREAM = {"core": "Lead", "workspace": "Workspace", "company": "Company"}
 _RELAY_STREAM_EVENT = "Event"
 _ARROW_PULL = "↓"
 _ARROW_PUSH = "↑"
@@ -8413,7 +8427,7 @@ def _relay_pull_phases(full: bool, do_events: bool, kinds: frozenset) -> tuple[s
     Full rebuild pulls snapshots before events so agent event_log replay can attach
     to leads that only exist after lead_core / lead_workspace snapshots ingest.
     """
-    has_snapshots = bool(kinds & {"core", "workspace"})
+    has_snapshots = bool(kinds & {"company", "core", "workspace"})
     if full and do_events and has_snapshots:
         return ("snapshots", "events")
     phases: list[str] = []
@@ -8441,7 +8455,7 @@ def sync_from_relay_org(
     if skip_snapshots:
         kinds = frozenset(k for k in kinds if k == "events")
     do_events = "events" in kinds
-    do_snapshots = bool(kinds & {"core", "workspace"})
+    do_snapshots = bool(kinds & {"company", "core", "workspace"})
     needs_routing_sync = do_events or (full and do_snapshots)
     if not skip_routing_sync and needs_routing_sync:
         try:
@@ -8458,7 +8472,7 @@ def sync_from_relay_org(
     if not quiet:
         if do_events:
             print("Contacting relay to pull new events...", flush=True)
-        elif kinds & {"core", "workspace"}:
+        elif kinds & {"company", "core", "workspace"}:
             print(f"Contacting relay to pull snapshots ({', '.join(sorted(kinds))})...", flush=True)
 
     imported = skipped = 0
@@ -8474,7 +8488,7 @@ def sync_from_relay_org(
     initial_after_id = page_after_id
     snapshot_cursors = {
         kind: 0 if full else get_snapshot_cursor(kind)
-        for kind in ("core", "workspace")
+        for kind in ("core", "workspace", "company")
     }
     snapshot_cursors_start = dict(snapshot_cursors)
 
@@ -8652,7 +8666,7 @@ def sync_from_relay_org(
                         break
 
             elif _pull_phase == "snapshots":
-                for snap_kind in ("core", "workspace"):
+                for snap_kind in ("company", "core", "workspace"):
                     if snap_kind not in kinds:
                         continue
                     kind_pages = 0
@@ -10332,10 +10346,35 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
     return payload
 
 
-def apply_agent_company_sync_payload(company_id: int, payload: dict) -> None:
-    _apply_personalization_payload(
-        company_id, payload, table="company_personalization", id_col="company_id", entity_id=company_id,
+def apply_agent_company_sync_payload(company_id: int, payload: dict, *, conn=None) -> None:
+    own_conn = conn is None
+    conn = conn or get_conn()
+
+    # Write company data fields authoritatively from company snapshot
+    company_name = payload.get("name") or ""
+    company_domain = payload.get("domain") or ""
+    company_industry = payload.get("industry") or ""
+    company_headcount = payload.get("headcount") or ""
+
+    ensure_company(
+        conn,
+        name=company_name,
+        domain=company_domain,
+        industry=company_industry,
+        headcount=company_headcount,
+        authoritative=True,
     )
+
+    # Existing personalization logic
+    _apply_personalization_payload(
+        company_id, payload,
+        table="company_personalization", id_col="company_id", entity_id=company_id,
+        conn=conn,
+    )
+
+    if own_conn:
+        conn.commit()
+        conn.close()
 
 
 def _apply_personalization_payload(

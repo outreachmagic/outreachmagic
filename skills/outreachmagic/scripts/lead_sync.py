@@ -27,7 +27,7 @@ from workspace_routing import (
 )
 
 SYNC_PROFILE_FIELDS = (
-    "name", "company", "title", "industry", "headcount", "stage", "notes",
+    "name", "title", "stage", "notes",
     "location_city", "location_state", "location_country",
     "email_verification_status",
 )
@@ -143,11 +143,6 @@ def _assemble_lead_core_sync_payload(
     if "latest_lev_source" in row.keys() and row["latest_lev_source"]:
         payload["lev_source"] = row["latest_lev_source"]
         payload["latest_lev_source"] = row["latest_lev_source"]
-    if row["company_domain"]:
-        payload["company_domain"] = row["company_domain"]
-    for hq in ("hq_city", "hq_state", "hq_country"):
-        if row[hq]:
-            payload[hq] = row[hq]
     if external_id:
         payload["external_id"] = external_id
     if row["latest_source_detail"]:
@@ -667,9 +662,7 @@ def apply_agent_lead_core_payload(
     from bounces import verify_email
     from pipeline import (
         enrich_lead,
-        ensure_company,
         link_lead_company,
-        normalize_company_domain,
         _apply_personalization_payload,
     )
 
@@ -698,25 +691,7 @@ def apply_agent_lead_core_payload(
             loc_params,
         )
 
-    if payload.get("company_domain") or any(payload.get(k) for k in ("hq_city", "hq_state", "hq_country")):
-        domain = normalize_company_domain(payload.get("company_domain"))
-        ensure_company(
-            conn,
-            name=payload.get("company"),
-            domain=domain,
-            industry=payload.get("industry"),
-            headcount=payload.get("headcount"),
-            hq_city=payload.get("hq_city"),
-            hq_state=payload.get("hq_state"),
-            hq_country=payload.get("hq_country"),
-        )
-        link_lead_company(
-            conn, lead_id,
-            company=payload.get("company"),
-            email=payload.get("email"),
-            industry=payload.get("industry"),
-            headcount=payload.get("headcount"),
-        )
+    link_lead_company(conn, lead_id, email=payload.get("email"))
 
     identities: list[tuple[str, str]] = []
     if payload.get("external_id"):

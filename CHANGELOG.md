@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0] - 2026-06-30
+
+### Added
+
+- **Company snapshots.** Relay now produces authoritative company snapshots (`relay_company_snapshots`) alongside lead core/workspace snapshots. `pipeline.py pull` fetches company snapshots and updates the local companies table (industry, headcount, location) with authoritative values.
+- **Unified event envelope.** All relay events (webhook + agent push) now use a 5-field format: `platform`, `entity_key`, `event_type`, `received_at`, `payload`. The old `lead`/`raw`/`sender` top-level fields are replaced by `entity_key`/`payload`/`payload.sender`. Webhook events nest the entire original body under `payload`; agent events nest action + client + workspace + timestamp + data under `payload`.
+- **Company dedup in lead sync.** Lead core snapshots no longer carry company-level fields (`company_domain`, `industry`, `headcount`, `hq_*`). Company data lives only in `relay_company_snapshots`, synchronized by the authoritative company snapshot pipeline.
+- `mongodb_to_d1.py` migration script. One-time tool to import ~121K historical popcam events from MongoDB into D1 in the new 5-field envelope format, with dedup by message_id and fingerprint. Supports `--dry-run` and `--resume-from`.
+
+### Changed
+
+- `relay_ingest.py`: All raw/payload and lead/entity_key references updated for the new envelope. Dedup keys now read from `payload.message_id`, `payload.sent_email_id` instead of `raw.*`. Timestamp extraction checks `sent_on` in addition to existing keys.
+- `pipeline.py`: Company snapshot support added to all pull phases. `ensure_company()` gains `authoritative` mode that overwrites (instead of COALESCE) industry/headcount/location. Agent company-sync handler now uses `apply_agent_company_sync_payload` which updates company fields authoritatively.
+- `lead_sync.py`: Removed company fields from lead sync payload. `link_lead_company` simplified to just link by email.
+
 ## [1.2.0] - 2026-06-26
 
 ### Added

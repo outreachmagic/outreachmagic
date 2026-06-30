@@ -280,15 +280,15 @@ def relay_target_stage(
 def relay_dedupe_key(event: dict) -> str:
     if event.get("relay_id"):
         return f"relay:{event['relay_id']}"
-    raw = event.get("raw") or {}
-    if event.get("platform") in PLUSVIBE_PLATFORMS and raw.get("webhook_id"):
-        return f"pv:{raw['webhook_id']}"
-    if raw.get("sent_email_id"):
-        return f"sent:{raw['sent_email_id']}"
-    if raw.get("message_id"):
-        return f"msg:{raw['message_id']}"
+    payload = event.get("payload") or {}
+    if event.get("platform") in PLUSVIBE_PLATFORMS and payload.get("webhook_id"):
+        return f"pv:{payload['webhook_id']}"
+    if payload.get("sent_email_id"):
+        return f"sent:{payload['sent_email_id']}"
+    if payload.get("message_id"):
+        return f"msg:{payload['message_id']}"
     return (
-        f"fp:{event.get('platform')}|{event.get('lead')}|{event.get('event_type')}"
+        f"fp:{event.get('platform')}|{event.get('entity_key')}|{event.get('event_type')}"
         f"|{event.get('received_at')}"
     )
 
@@ -525,9 +525,9 @@ def _relay_event_timestamp(event: dict, normalize) -> Optional[str]:
         val = event.get(key)
         if val:
             return normalize(val)
-    raw = event.get("raw") if isinstance(event.get("raw"), dict) else {}
-    for key in ("timestamp", "created_at", "received_at", "event_time", "sent_at"):
-        val = raw.get(key)
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    for key in ("timestamp", "created_at", "received_at", "event_time", "sent_on", "sent_at"):
+        val = payload.get(key)
         if val:
             return normalize(val)
     return None
@@ -596,15 +596,15 @@ def ingest_relay_event(
             conn.close()
         return None
 
-    envelope_lead = event.get("lead") or ""
+    envelope_lead = event.get("entity_key") or ""
     envelope_event_type = (event.get("event_type") or "unknown").lower()
     platform = event.get("platform", "unknown")
-    sender_raw = event.get("sender", "")
+    payload = event.get("payload") or {}
+    sender_raw = payload.get("sender", "")
     sender_norm = om.normalize_event_sender(platform, sender_raw)
-    raw = event.get("raw") or {}
     received_at = _relay_event_timestamp(event, om.normalize_relay_timestamp) or ""
 
-    extracted = extract_relay_fields(platform, raw)
+    extracted = extract_relay_fields(platform, payload)
     lead_fields = extracted["lead"]
     event_fields = extracted["event"]
 
@@ -617,7 +617,7 @@ def ingest_relay_event(
         # Tag the deduced event fields so pipeline.py can still detect raw HTML
         event_fields["_body_was_html"] = True
     signals = extracted.get("signals") or {}
-    identity = extract_relay_identity(platform, raw, envelope_lead)
+    identity = extract_relay_identity(platform, payload, envelope_lead)
 
     email_hint = identity.get("email") or (
         envelope_lead if "@" in str(envelope_lead) else None
@@ -633,16 +633,16 @@ def ingest_relay_event(
 
     channel = CHANNEL_BY_PLATFORM.get(platform, "email")
 
-    campaign_ctx = extract_campaign_context(platform, event_fields, raw)
+    campaign_ctx = extract_campaign_context(platform, event_fields, payload)
     if (
         platform in PLUSVIBE_PLATFORMS
         and envelope_event_type == "all_positive_replies"
     ):
         dup_body = (
             event_fields.get("body")
-            or raw.get("text_body")
-            or raw.get("body")
-            or raw.get("last_lead_reply")
+            or payload.get("text_body")
+            or payload.get("body")
+            or payload.get("last_lead_reply")
             or ""
         )
         dup_campaign = event_fields.get("campaign") or campaign_ctx.campaign_name_raw or ""
@@ -724,7 +724,7 @@ def ingest_relay_event(
         conn=conn,
     )
     if upsert_result.get("status") == "error":
-        identities = om.collect_identities_from_event(identity, raw, platform)
+        identities = om.collect_identities_from_event(identity, payload, platform)
         if not identities:
             om.ensure_organization(conn)
             om.quarantine_event(
@@ -746,7 +746,7 @@ def ingest_relay_event(
     cfg = routing_config or om.get_org_routing_config(conn, DEFAULT_ORG_ID)
     if cfg.mode == om.WORKSPACE_ROUTING_SINGLE:
         om.ensure_default_org_workspace(conn)
-    identities = om.collect_identities_from_event(identity, raw, platform)
+    identities = om.collect_identities_from_event(identity, payload, platform)
     for itype, val in identities:
         try:
             om.upsert_identity_alias(conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform)
@@ -755,18 +755,18 @@ def ingest_relay_event(
                 conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform,
             )
 
-    resolved = resolve_event(platform, envelope_event_type, raw)
+    resolved = resolve_event(platform, envelope_event_type, payload)
     local_type = resolved.local_type
     direction = resolved.direction
 
     bounce_payload = None
     if local_type == "email_bounce":
-        bounce_payload = om._extract_bounce_payload(raw, platform)
+        bounce_payload = om._extract_bounce_payload(payload, platform)
 
     subject = event_fields.get("subject") or f"{platform}: {envelope_event_type}"
     body = event_fields.get("body") or ""
     if platform == "calendly":
-        body = build_calendly_meeting_note(raw, envelope_event_type)
+        body = build_calendly_meeting_note(payload, envelope_event_type)
     if local_type == "email_bounce" and bounce_payload and bounce_payload.get("bounce_message"):
         body = bounce_payload["bounce_message"]
     if body:
@@ -792,22 +792,22 @@ def ingest_relay_event(
     if event.get("relay_id"):
         metadata["relay_id"] = event["relay_id"]
 
-    reply_body = extract_reply_body(platform, local_type, raw, metadata, body_preview)
+    reply_body = extract_reply_body(platform, local_type, payload, metadata, body_preview)
     if reply_body and reply_body != body:
         metadata["body"] = reply_body
         body = reply_body
         body_preview = reply_body[:200]
 
     if platform in PLUSVIBE_PLATFORMS:
-        metadata.update(build_plusvibe_status_metadata(raw, signals, envelope_event_type))
+        metadata.update(build_plusvibe_status_metadata(payload, signals, envelope_event_type))
     if platform == "calendly":
         metadata.update(build_calendly_status_metadata(envelope_event_type))
     if local_type == "email_bounce" and bounce_payload:
         metadata.update(build_bounce_event_metadata(bounce_payload, envelope_event_type))
 
     if debug_sentiment and platform in PLUSVIBE_PLATFORMS:
-        raw_label = (raw.get("label") or "").strip().lower()
-        raw_sentiment = (raw.get("sentiment") or "").strip().lower()
+        raw_label_str = (payload.get("label") or "").strip().lower()
+        raw_sentiment_str = (payload.get("sentiment") or "").strip().lower()
         signal_label = (signals.get("label") or "").strip().lower()
         signal_sentiment = (signals.get("sentiment") or "").strip().lower()
         normalized_label = metadata.get("lead_status_raw", "")
@@ -816,7 +816,7 @@ def ingest_relay_event(
             print(
                 "[debug:sentiment] "
                 f"event_type={envelope_event_type} "
-                f"raw_label={raw_label or '-'} raw_sentiment={raw_sentiment or '-'} "
+                f"raw_label={raw_label_str or '-'} raw_sentiment={raw_sentiment_str or '-'} "
                 f"signal_label={signal_label or '-'} signal_sentiment={signal_sentiment or '-'} "
                 f"normalized_label={normalized_label or '-'} "
                 f"normalized_sentiment={normalized_sentiment or '-'}"
@@ -841,7 +841,7 @@ def ingest_relay_event(
 
     event_time = received_at or None
     target_stage = relay_target_stage(
-        platform, envelope_event_type, local_type, raw, metadata,
+        platform, envelope_event_type, local_type, payload, metadata,
         resolved_stage=resolved.target_stage,
     )
     if target_stage:
@@ -926,9 +926,9 @@ def ingest_relay_event(
             )
 
     if local_type == "email_bounce":
-        payload = bounce_payload or om._extract_bounce_payload(raw, platform)
-        bounce_type = payload["bounce_type"]
-        bounce_reason = payload["bounce_message"]
+        bounce_payload_obj = bounce_payload or om._extract_bounce_payload(payload, platform)
+        bounce_type = bounce_payload_obj["bounce_type"]
+        bounce_reason = bounce_payload_obj["bounce_message"]
         om._record_platform_bounce(
             conn, lead_id, email_hint, platform,
             bounce_type=bounce_type,
@@ -944,9 +944,9 @@ def ingest_relay_event(
             lead_id=lead_id,
             event_id=event_id,
             platform=platform,
-            sender_email=sender_norm or raw.get("sender_email") or "unknown",
+            sender_email=sender_norm or payload.get("sender_email") or "unknown",
             lead_email=email_hint or envelope_lead or "",
-            payload=payload,
+            payload=bounce_payload_obj,
             campaign_id=campaign_id,
             campaign_name=campaign_name,
             workspace_id=workspace_id,

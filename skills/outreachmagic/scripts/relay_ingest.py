@@ -33,6 +33,10 @@ from platform_registry import (
 # during a single session, so the multi-line message only appears once
 # per platform instead of once per event (previously ~900 KB of spam).
 _no_campaign_platforms_warned: set[str] = set()
+# Tracks which campaign labels have already printed the unmapped guidance
+# during a single session, so the multi-line message only appears once
+# per campaign instead of once per event.
+_unmapped_campaigns_reported: set[str] = set()
 from relay_extractors import (
     build_display_name,
     extract_relay_fields,
@@ -605,10 +609,7 @@ def ingest_relay_event(
     envelope_lead = event.get("entity_key") or event.get("lead") or ""
     envelope_event_type = (event.get("event_type") or "unknown").lower()
     platform = event.get("platform", "unknown")
-    # Old-format webhook events store the body in ``raw``, not ``payload``.
-    # Fall back so PlusVibe, Prosp, and Calendly extraction works correctly
-    # for campaign attribution, bounce classification, sender identity, etc.
-    payload = event.get("payload") or event.get("raw") or {}
+    payload = event.get("payload") or {}
     sender_raw = payload.get("sender", "") or event.get("sender", "")
     sender_norm = om.normalize_event_sender(platform, sender_raw)
     received_at = _relay_event_timestamp(event, om.normalize_relay_timestamp) or ""
@@ -673,6 +674,32 @@ def ingest_relay_event(
                 quiet=quiet,
             )
             return None
+    # PlusVibe events without campaign context are common — skip silently
+    # instead of flooding the quarantine queue.
+    if (
+        not force_workspace_id
+        and not campaign_ctx.campaign_id
+        and not campaign_ctx.campaign_name_raw
+        and platform in PLUSVIBE_PLATFORMS
+    ):
+        if not quiet:
+            print(
+                f"[relay] skipped {platform} event with no campaign "
+                f"(type={envelope_event_type})",
+                file=sys.stderr,
+            )
+        if defer_mark and pending_marks is not None:
+            pending_marks.append((dedupe_key, None))
+        elif pull_conn is not None:
+            pull_conn.execute(
+                "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
+                (dedupe_key, None),
+            )
+        else:
+            mark_relay_ingested(dedupe_key, None)
+        if own_conn:
+            conn.close()
+        return None
     if (
         not force_workspace_id
         and not campaign_ctx.campaign_id
@@ -717,7 +744,10 @@ def ingest_relay_event(
                 conn.commit()
                 conn.close()
             if not quiet:
-                print(om.format_unmapped_campaign_message(campaign_ctx), file=sys.stderr)
+                _unmapped_key = campaign_ctx.campaign_id or campaign_ctx.campaign_name_raw or str(campaign_ctx.source_platform)
+                if _unmapped_key not in _unmapped_campaigns_reported:
+                    _unmapped_campaigns_reported.add(_unmapped_key)
+                    print(om.format_unmapped_campaign_message(campaign_ctx), file=sys.stderr)
             return None
         workspace_id = routing.workspace_id
 

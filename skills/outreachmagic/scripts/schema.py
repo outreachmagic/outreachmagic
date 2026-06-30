@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS events (
     metadata_json   TEXT DEFAULT '{}',
     campaign_id     INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
     sender          TEXT,
+    relay_id        INTEGER,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

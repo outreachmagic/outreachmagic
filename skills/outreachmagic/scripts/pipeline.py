@@ -1505,6 +1505,15 @@ def migrate_db(conn=None):
     except sqlite3.OperationalError:
         pass
     try:
+        conn.execute("ALTER TABLE events ADD COLUMN relay_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_relay ON events(relay_id)")
+    conn.execute(
+        """UPDATE events SET relay_id = json_extract(metadata_json, '$.relay_id')
+           WHERE relay_id IS NULL AND json_extract(metadata_json, '$.relay_id') IS NOT NULL"""
+    )
+    try:
         conn.execute("ALTER TABLE workspace_leads ADD COLUMN latest_sender TEXT")
     except sqlite3.OperationalError:
         pass
@@ -4170,10 +4179,10 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
         conn.execute(
             """INSERT INTO events (
                    lead_id, event_type, direction, channel, subject, body_preview,
-                   metadata_json, campaign_id, sender, created_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   metadata_json, campaign_id, sender, relay_id, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (lead_id, event_type, direction, channel, subject, preview,
-             json.dumps(meta), campaign_id, sender, created),
+             json.dumps(meta), campaign_id, sender, meta.get("relay_id"), created),
         )
         conn.execute(
             """UPDATE leads SET updated_at = ?, last_contact_at = ?
@@ -4184,10 +4193,10 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
         conn.execute(
             """INSERT INTO events (
                    lead_id, event_type, direction, channel, subject, body_preview,
-                   metadata_json, campaign_id, sender
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   metadata_json, campaign_id, sender, relay_id
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (lead_id, event_type, direction, channel, subject, preview,
-             json.dumps(meta), campaign_id, sender),
+             json.dumps(meta), campaign_id, sender, meta.get("relay_id")),
         )
         conn.execute(
             "UPDATE leads SET updated_at = datetime('now'), last_contact_at = datetime('now') WHERE id = ?",
@@ -6806,6 +6815,34 @@ def skip_quarantine(queue_id: str) -> dict:
     conn.commit()
     conn.close()
     return {"status": "ok", "id": queue_id, "relay_id": relay_id}
+
+
+def cleanup_stale_quarantine_for_reprocessed(
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict:
+    """Mark pending quarantine rows as 'reprocessed' for events that now have a campaign.
+
+    Called after reprocess to clean up stale entries in unmapped_campaign_queue
+    whose corresponding events now have valid campaign mapping.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    updated = conn.execute(
+        """UPDATE unmapped_campaign_queue
+           SET status = 'skipped', resolved_at = datetime('now')
+           WHERE status = 'pending'
+             AND external_event_id IS NOT NULL
+             AND external_event_id != ''
+             AND CAST(external_event_id AS INTEGER) IN (
+                 SELECT relay_id FROM events
+                 WHERE relay_id IS NOT NULL AND campaign_id IS NOT NULL
+             )"""
+    ).rowcount
+    conn.commit()
+    if own_conn:
+        conn.close()
+    return {"status": "ok", "cleaned": updated}
 
 
 def skip_quarantine_bulk(
@@ -11604,6 +11641,26 @@ def main():
     q_replay.add_argument("--workspace")
     q_replay.add_argument("--limit", type=int, default=100)
 
+    reprocess_p = sub.add_parser("reprocess", help="Re-apply current extractors to ingested data")
+    reprocess_p.add_argument(
+        "--kind", nargs="*",
+        choices=("events", "core", "workspace", "company", "all"),
+        default=["events"],
+        help="Data kinds to reprocess (default: events; use 'all' for everything)",
+    )
+    reprocess_p.add_argument("--from", dest="from_id", type=int, default=None,
+                             help="Start relay/snapshot ID (default: 0)")
+    reprocess_p.add_argument("--to", dest="to_id", type=int, default=None,
+                             help="End relay/snapshot ID (default: cursor value for kind)")
+    reprocess_p.add_argument("--platform", default=None,
+                             help="Platform filter (single value, e.g. prosp)")
+    reprocess_p.add_argument("--dry-run", action="store_true",
+                             help="Print plan and affected row count, don't execute")
+    reprocess_p.add_argument("--verbose", action="store_true",
+                             help="Print per-row diff of changed fields")
+    reprocess_p.add_argument("--force", action="store_true",
+                             help="Skip confirmation prompt")
+
     pset = sub.add_parser("personalize-set", help="Write lead personalization (first_name, etc.)")
     pset.add_argument("--lead-id", type=int, help="Lead ID (single mode)")
     pset.add_argument("--field", help="Field name (single mode)")
@@ -12225,6 +12282,60 @@ def main():
                     "investigate relay max_id pagination."
                 )
             print("Ask Outreach Magic to show the pipeline.")
+        return
+
+    if args.command == "reprocess":
+        _warn_duplicate_installs()
+        agent_key = _require_agent_key()
+        kinds = args.kind if args.kind != ["all"] else ["events", "core", "workspace", "company"]
+
+        if not args.dry_run and not args.force:
+            print(
+                f"This will reprocess {len(kinds)} kind(s): {', '.join(kinds)}. "
+                "Existing metadata will be re-extracted and updated in place. "
+                "Continue? [Y/n] ",
+                end="",
+                flush=True,
+            )
+            answer = input().strip().lower()
+            if answer not in ("", "y", "yes"):
+                print("Aborted.")
+                sys.exit(0)
+
+        import reprocess
+
+        for kind in kinds:
+            if kind == "events":
+                result = reprocess.reprocess_events(
+                    agent_key,
+                    from_id=args.from_id or 0,
+                    to_id=args.to_id,
+                    platform=args.platform,
+                    dry_run=args.dry_run,
+                    verbose=args.verbose,
+                )
+            else:
+                print(
+                    f"[reprocess] {kind} snapshots not yet implemented",
+                    file=sys.stderr,
+                )
+                continue
+
+            print(
+                f"[reprocess] {kind}: "
+                f"{'[DRY RUN] ' if args.dry_run else ''}"
+                f"{result.get('updated', 0)} updated, "
+                f"{result.get('fetched', 0)} fetched, "
+                f"{result.get('pages', 0)} pages, "
+                f"{result.get('elapsed_s', 0)}s",
+                file=sys.stderr,
+            )
+
+        # Clean up quarantine rows for reprocessed events (only if not dry-run).
+        if not args.dry_run:
+            cleanup_stale_quarantine_for_reprocessed()
+            print("[reprocess] quarantine cleanup complete.", file=sys.stderr)
+
         return
 
     pull_before_commands = ("show", "lead-table", "stats", "campaigns", "summary")

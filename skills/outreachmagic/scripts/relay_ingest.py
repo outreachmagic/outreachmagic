@@ -618,6 +618,9 @@ def ingest_relay_event(
     lead_fields = extracted["lead"]
     event_fields = extracted["event"]
 
+    sent_on = event_fields.get("sent_on")
+    event_at = om.normalize_relay_timestamp(sent_on) if sent_on else received_at
+
     # Normalize HTML bodies to plain text at extraction time so all
     # downstream comparisons (dedup checks, DB storage) see clean text.
     body_raw = event_fields.get("body", "")
@@ -828,6 +831,10 @@ def ingest_relay_event(
         metadata["sender"] = sender_norm
     if event_fields.get("campaign"):
         metadata["campaign"] = event_fields["campaign"]
+    if event_fields.get("subject"):
+        metadata["subject"] = event_fields["subject"]
+    if event_fields.get("sent_on"):
+        metadata["sent_on"] = event_fields["sent_on"]
     if body:
         metadata["body"] = body
     if event.get("relay_id"):
@@ -873,14 +880,14 @@ def ingest_relay_event(
         body_preview=body_preview,
         metadata=metadata,
         campaign=campaign_name_for_event,
-        event_at=received_at or None,
+        event_at=event_at or None,
         sender=sender_norm,
         conn=conn,
         commit=False,
         refresh_activity=False,
     )
 
-    event_time = received_at or None
+    event_time = event_at or None
     target_stage = relay_target_stage(
         platform, envelope_event_type, local_type, payload, metadata,
         resolved_stage=resolved.target_stage,
@@ -931,7 +938,7 @@ def ingest_relay_event(
         lead_id,
         ws_lead_id,
         event_type=local_type,
-        event_at=received_at or datetime.now(timezone.utc).isoformat(),
+        event_at=event_at or datetime.now(timezone.utc).isoformat(),
         source_platform=platform,
         idempotency_key=ws_idempotency,
         payload=ws_payload,
@@ -955,13 +962,13 @@ def ingest_relay_event(
         )
 
     if sender_norm:
-        event_at_ts = received_at or datetime.now(timezone.utc).isoformat()
+        event_at_ts = event_at or datetime.now(timezone.utc).isoformat()
         om._update_lead_sender(conn, lead_id, workspace_id, sender_norm, platform, event_at_ts)
 
     if local_type in ("linkedin_connect", "linkedin_connection_accepted") and workspace_id:
         sender_li = sender_norm or om.normalize_linkedin(sender_raw)
         if sender_li:
-            event_at_ts = received_at or datetime.now(timezone.utc).isoformat()
+            event_at_ts = event_at or datetime.now(timezone.utc).isoformat()
             om.upsert_linkedin_status(
                 conn, workspace_id, lead_id, sender_li, local_type, event_at_ts
             )
@@ -974,7 +981,7 @@ def ingest_relay_event(
             conn, lead_id, email_hint, platform,
             bounce_type=bounce_type,
             bounce_reason=bounce_reason,
-            event_at=received_at,
+            event_at=event_at or received_at,
         )
         campaign_name = event_fields.get("campaign") or campaign_ctx.campaign_name_raw
         campaign_id = None
@@ -991,7 +998,7 @@ def ingest_relay_event(
             campaign_id=campaign_id,
             campaign_name=campaign_name,
             workspace_id=workspace_id,
-            event_at=received_at,
+            event_at=event_at or received_at,
             relay_id=str(event.get("relay_id") or "") or None,
         )
 

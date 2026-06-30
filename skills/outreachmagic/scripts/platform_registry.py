@@ -43,6 +43,7 @@ _PLUSVIBE_SPEC = {
         "campaign": ("campaign_name", "campaign"),
         "campaign_id": ("campaign_id", "data.campaign_id", "campaign.id"),
         "campaign_name": ("campaign_name", "campaign"),
+        "sent_on": ("sent_on",),
     },
     "signals": {
         "label": ("label",),
@@ -102,6 +103,7 @@ _DEFAULT_SPEC = {
         "campaign": ("campaign_name", "campaign"),
         "campaign_id": ("campaign_id", "data.campaign_id", "campaign.id", "data.campaign.id"),
         "campaign_name": ("campaign_name", "campaign", "data.campaign_name", "data.campaign.name"),
+        "sent_on": ("sent_on",),
     },
     "signals": {
         "label": ("label", "lead_status", "data.label"),

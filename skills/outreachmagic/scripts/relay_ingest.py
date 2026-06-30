@@ -252,16 +252,19 @@ def relay_target_stage(
     et = envelope_event_type.lower()
     label = (metadata.get("lead_status_raw") or raw.get("label") or "").lower()
     sentiment = (metadata.get("lead_status_sentiment") or "").lower()
+    is_auto = metadata.get("is_auto_reply") or is_auto_reply_label(label)
+    positive_labels = ("interested", "qc_interested", "meeting_booked", "meeting_completed", "qc_crm_only")
+    negative_labels = ("not_interested", "not interested", "wrong_person", "closed")
 
     if platform in PLUSVIBE_PLATFORMS:
         if local_type == "email_bounce" or et in PLUSVIBE_BOUNCE_EVENTS or sentiment == "invalid":
             return None
-        if metadata.get("is_auto_reply") or is_auto_reply_label(label):
+        if is_auto:
             return None
         if (
             et in PLUSVIBE_NEGATIVE_TERMINAL_EVENTS
             or "not_interested" in et
-            or label in ("not_interested", "not interested", "wrong_person", "closed")
+            or label in negative_labels
             or (sentiment == "negative" and label not in ("out_of_office", "automatic_reply"))
         ):
             return "not_interested"
@@ -269,19 +272,26 @@ def relay_target_stage(
             et in PLUSVIBE_INTERESTED_STAGE_EVENTS
             or local_type in ("meeting_booked", "meeting_completed", "lead_disposition")
             or "interested" in et
-            or label in ("interested", "qc_interested", "meeting_booked", "meeting_completed", "qc_crm_only")
+            or label in positive_labels
             or sentiment == "positive"
         ):
             return "interested"
         if local_type == "email_reply" or et in PLUSVIBE_REPLY_EVENTS:
-            # Don't downgrade from interested/replied → replied when this
-            # reply was already classified as interested by an earlier event.
-            if label in ("interested", "qc_interested") or sentiment == "positive":
+            if label in positive_labels or sentiment == "positive":
                 return "interested"
             return "replied"
         if local_type == "email_sent" or et in PLUSVIBE_SENT_EVENTS:
             return "contacted"
         return None
+
+    # Non-PlusVibe platforms: apply stage from signal fields when available
+    if label or sentiment:
+        if is_auto:
+            return None
+        if label in negative_labels or sentiment == "negative":
+            return "not_interested"
+        if label in positive_labels or sentiment == "positive":
+            return "interested"
 
     return None
 
@@ -843,6 +853,17 @@ def ingest_relay_event(
         metadata["body"] = reply_body
         body = reply_body
         body_preview = reply_body[:200]
+
+    # Store signal fields (label/sentiment/status) for all platforms.
+    # PlusVibe has its own handler below with additional PlusVibe-specific logic.
+    if signals.get("label") or signals.get("sentiment"):
+        if signals.get("label"):
+            metadata["lead_status_raw"] = signals["label"]
+            metadata["lead_status_display"] = normalize_lead_status_display(signals["label"])
+        if signals.get("sentiment"):
+            metadata["lead_status_sentiment"] = signals["sentiment"]
+        if signals.get("status"):
+            metadata["lead_status_platform_status"] = signals["status"]
 
     if platform in PLUSVIBE_PLATFORMS:
         metadata.update(build_plusvibe_status_metadata(payload, signals, envelope_event_type))

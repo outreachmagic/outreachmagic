@@ -128,6 +128,8 @@ def _assemble_lead_core_sync_payload(
         payload["email"] = row["email"]
     if row["linkedin_url"]:
         payload["linkedin"] = row["linkedin_url"]
+    if row.get("company_domain"):
+        payload["company_domain"] = row["company_domain"]
     for id_row in identity_rows:
         payload[id_row["identity_type"]] = id_row["identity_value_normalized"]
     if row["latest_sender"]:

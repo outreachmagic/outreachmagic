@@ -189,8 +189,6 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
             new_meta["campaign_id"] = campaign_ctx.campaign_id
         if event_fields.get("subject"):
             new_meta["subject"] = event_fields["subject"]
-        if event_fields.get("sent_on"):
-            new_meta["sent_on"] = event_fields["sent_on"]
         body_text = event_fields.get("body")
         if body_text:
             new_meta["body"] = body_text
@@ -214,7 +212,7 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
                 new_meta.update(build_bounce_event_metadata(bounce_payload, envelope_event_type))
 
         if verbose:
-            for field in ("campaign", "bounce_type", "subject", "sent_on"):
+            for field in ("campaign", "bounce_type", "subject"):
                 old_val = old_meta.get(field)
                 new_val = new_meta.get(field)
                 if old_val != new_val:

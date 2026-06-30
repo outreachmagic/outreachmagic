@@ -833,8 +833,6 @@ def ingest_relay_event(
         metadata["campaign"] = event_fields["campaign"]
     if event_fields.get("subject"):
         metadata["subject"] = event_fields["subject"]
-    if event_fields.get("sent_on"):
-        metadata["sent_on"] = event_fields["sent_on"]
     if body:
         metadata["body"] = body
     if event.get("relay_id"):

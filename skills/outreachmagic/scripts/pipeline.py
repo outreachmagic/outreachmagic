@@ -287,7 +287,7 @@ UPDATE_SCRIPT_FILES = tuple(
 )
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
 # Files at skill root (not in scripts/), handled separately by update_skill().
-ROOT_SKILL_FILES = frozenset({"README.md", "install.sh"})
+ROOT_SKILL_FILES = frozenset({"README.md", "install.sh", "SECURITY.md"})
 # Unified public release repo (skills/outreachmagic layout).
 SKILL_REPO_PATH = "skills/outreachmagic"
 GITHUB_REPO = "outreachmagic/outreachmagic"
@@ -578,11 +578,17 @@ def fetch_update_manifest(repo_base: str, skill_repo_path: Optional[str] = None)
 
 
 def update_download_names(manifest: Optional[dict] = None) -> list[str]:
-    """File names to install during update (scripts + VERSION; root files handled separately)."""
+    """File names to install during update (scripts + VERSION; root files handled separately).
+
+    Uses ``UPDATE_MANIFEST_FILES`` as a whitelist instead of filtering out known
+    root-level files. This is future-proof: any new root-level file (e.g.
+    ``references/*.md``, ``SECURITY.md``, ``LICENSE``) added to the manifest is
+    automatically excluded because it won't be in ``UPDATE_MANIFEST_FILES``.
+    """
     files = (manifest or {}).get("files") if isinstance(manifest, dict) else None
     if isinstance(files, dict) and files:
-        skip = ROOT_SKILL_FILES | {"SKILL.md"}
-        return sorted(name for name in files if name not in skip)
+        script_files = set(UPDATE_MANIFEST_FILES)
+        return sorted(name for name in files if name in script_files)
     return list(UPDATE_MANIFEST_FILES)
 
 

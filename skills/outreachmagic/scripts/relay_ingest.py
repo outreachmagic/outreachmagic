@@ -28,6 +28,11 @@ from platform_registry import (
     resolve_event,
     strip_html_reply,
 )
+
+# Tracks which platforms have already printed the no-campaign guidance
+# during a single session, so the multi-line message only appears once
+# per platform instead of once per event (previously ~900 KB of spam).
+_no_campaign_platforms_warned: set[str] = set()
 from relay_extractors import (
     build_display_name,
     extract_relay_fields,
@@ -599,8 +604,11 @@ def ingest_relay_event(
     envelope_lead = event.get("entity_key") or ""
     envelope_event_type = (event.get("event_type") or "unknown").lower()
     platform = event.get("platform", "unknown")
-    payload = event.get("payload") or {}
-    sender_raw = payload.get("sender", "")
+    # Old-format webhook events store the body in ``raw``, not ``payload``.
+    # Fall back so PlusVibe, Prosp, and Calendly extraction works correctly
+    # for campaign attribution, bounce classification, sender identity, etc.
+    payload = event.get("payload") or event.get("raw") or {}
+    sender_raw = payload.get("sender", "") or event.get("sender", "")
     sender_norm = om.normalize_event_sender(platform, sender_raw)
     received_at = _relay_event_timestamp(event, om.normalize_relay_timestamp) or ""
 
@@ -681,7 +689,9 @@ def ingest_relay_event(
             conn.commit()
             conn.close()
         if not quiet:
-            print(om.format_no_campaign_event_message(campaign_ctx), file=sys.stderr)
+            if campaign_ctx.source_platform not in _no_campaign_platforms_warned:
+                _no_campaign_platforms_warned.add(campaign_ctx.source_platform)
+                print(om.format_no_campaign_event_message(campaign_ctx), file=sys.stderr)
         return None
 
     workspace_id = force_workspace_id

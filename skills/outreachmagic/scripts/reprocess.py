@@ -153,6 +153,9 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
     # When reingest is True, all events from the replay are re-ingested
     # from scratch — existing rows are deleted first so ingest_relay_event
     # runs fresh (lead resolution, dedup, campaign linking, etc.).
+    # ingest_relay_event also writes metadata_json and bounce tables, so
+    # re-ingested events are skipped in the metadata overlay / bounce loop below.
+    reingested_rids: set[int] = set()
     if reingest:
         from relay_ingest import ingest_relay_event  # noqa: PLC0415
 
@@ -167,6 +170,7 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
             try:
                 ingested = ingest_relay_event(evt, quiet=True, pull_conn=conn)
                 if ingested is not None:
+                    reingested_rids.add(rid)
                     existing_map[rid] = {}
                     event_id_map[rid] = ingested
             except Exception as exc:
@@ -188,6 +192,9 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
     for evt in events:
         relay_id = evt.get("relay_id")
         if relay_id is None:
+            continue
+        # Re-ingested events already have fresh data from ingest_relay_event.
+        if relay_id in reingested_rids:
             continue
 
         platform = evt.get("platform", "unknown")

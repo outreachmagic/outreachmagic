@@ -44,6 +44,7 @@ _PLUSVIBE_SPEC = {
         "campaign_id": ("campaign_id", "data.campaign_id", "campaign.id"),
         "campaign_name": ("campaign_name", "campaign"),
         "sent_on": ("sent_on",),
+        "message_id": ("message_id",),
     },
     "signals": {
         "label": ("label",),

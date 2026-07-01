@@ -847,6 +847,8 @@ def ingest_relay_event(
         metadata["body"] = body
     if event.get("relay_id"):
         metadata["relay_id"] = event["relay_id"]
+    if event_fields.get("message_id"):
+        metadata["message_id"] = event_fields["message_id"]
 
     reply_body = extract_reply_body(platform, local_type, payload, metadata, body_preview)
     if reply_body and reply_body != body:

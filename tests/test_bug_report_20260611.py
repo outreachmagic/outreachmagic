@@ -64,7 +64,7 @@ def test_should_tag_provider_attempt_respects_attempted_flag():
     assert should_tag_provider_attempt({"provider": "trykitt", "status": "not_found", "attempted": True}) is True
 
 
-def test_lev_source_survives_sync_roundtrip():
+def test_email_verification_source_survives_sync_roundtrip():
     result = om.resolve_lead(
         email="lev@example.com",
         name="Lev Lead",
@@ -87,8 +87,8 @@ def test_lev_source_survives_sync_roundtrip():
     conn.commit()
     payload = build_lead_core_sync_payload(conn, DEFAULT_ORG_ID, lead_id)
     conn.close()
-    assert payload.get("lev_source") == "trykitt"
-    assert payload.get("latest_lev_source") == "trykitt"
+    assert payload.get("email_verification_source") == "trykitt"
+    assert payload.get("latest_email_verification_source") == "trykitt"
 
     # Simulate pull on another machine
     db_path = om.get_db_path()
@@ -108,11 +108,11 @@ def test_lev_source_survives_sync_roundtrip():
     conn.close()
     sources = {r["source"] for r in lev_rows}
     assert "agent_sync" not in sources
-    assert supplements[pulled["id"]]["lev_source"] == "trykitt"
-    assert supplements[pulled["id"]]["latest_lev_source"] == "trykitt"
+    assert supplements[pulled["id"]]["email_verification_source"] == "trykitt"
+    assert supplements[pulled["id"]]["latest_email_verification_source"] == "trykitt"
 
 
-def test_export_includes_original_and_latest_lev_source():
+def test_export_includes_original_and_latest_email_verification_source():
     ws = om.create_workspace("Lev Export", slug="lev-export")
     ws_id = f"ws_{ws['slug']}"
     conn = om.get_conn()
@@ -137,8 +137,8 @@ def test_export_includes_original_and_latest_lev_source():
     conn.commit()
 
     keys = plr.resolve_field_keys("full", sender_profiles=[])
-    assert "original_lev_source" in keys
-    assert "latest_lev_source" in keys
+    assert "original_email_verification_source" in keys
+    assert "latest_email_verification_source" in keys
 
     payload = plr.build_export_payload(
         conn,
@@ -151,6 +151,6 @@ def test_export_includes_original_and_latest_lev_source():
     conn.close()
     field_keys = [c["key"] for c in payload["columns"]]
     row = dict(zip(field_keys, payload["rows"][0]))
-    assert row.get("original_lev_source") == "trykitt"
-    assert row.get("latest_lev_source") == "millionverifier"
-    assert row.get("lev_source") == "millionverifier"
+    assert row.get("original_email_verification_source") == "trykitt"
+    assert row.get("latest_email_verification_source") == "millionverifier"
+    assert row.get("email_verification_source") == "millionverifier"

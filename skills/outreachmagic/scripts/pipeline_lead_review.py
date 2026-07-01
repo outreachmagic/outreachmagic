@@ -33,9 +33,9 @@ Dropdowns: Workspace Stage and Lead Sentiment use picklists when formatting fini
 When finished editing, ask Outreach Magic to sync this sheet."""
 
 FIELD_DISPLAY_NAMES: dict[str, str] = {
-    "lev_source": "Email Verification Source",
-    "latest_lev_source": "Latest Email Verification Source",
-    "original_lev_source": "Original Email Verification Source",
+    "email_verification_source": "Email Verification Source",
+    "latest_email_verification_source": "Latest Email Verification Source",
+    "original_email_verification_source": "Original Email Verification Source",
     "lev_verified_at": "Email Verification Verified At",
     "latest_source": "Latest Source",
     "latest_source_detail": "Latest Source Detail",
@@ -102,9 +102,9 @@ FIELD_DEFS: dict[str, dict[str, Any]] = {
     "lead_sentiment": {"type": "string", "editable": True, "scope": "workspace", "presets": ("standard", "full")},
     "contact_priority": {"type": "integer", "editable": True, "scope": "workspace", "presets": ("standard", "full")},
     "email_verification_status": {"type": "string", "editable": False, "presets": ("standard", "full")},
-    "lev_source": {"type": "string", "editable": False, "presets": ("full",)},
-    "latest_lev_source": {"type": "string", "editable": False, "presets": ("full",)},
-    "original_lev_source": {"type": "string", "editable": False, "presets": ("full",)},
+    "email_verification_source": {"type": "string", "editable": False, "presets": ("full",)},
+    "latest_email_verification_source": {"type": "string", "editable": False, "presets": ("full",)},
+    "original_email_verification_source": {"type": "string", "editable": False, "presets": ("full",)},
     "lev_verified_at": {"type": "timestamp", "editable": False, "presets": ("full",)},
     "original_source": {"type": "string", "editable": False, "presets": ("standard", "full")},
     "original_source_detail": {"type": "string", "editable": False, "presets": ("standard", "full")},
@@ -146,7 +146,7 @@ PRESET_KEYS: dict[str, list[str]] = {
         "linkedin_url", "location_city", "location_state", "location_country", "industry", "headcount",
         "workspace_stage", "lead_status", "lead_sentiment", "contact_priority",
         "personalized_first_name", "personalized_company_name",
-        "email_verification_status", "lev_source", "latest_lev_source", "original_lev_source", "lev_verified_at",
+        "email_verification_status", "email_verification_source", "latest_email_verification_source", "original_email_verification_source", "lev_verified_at",
         "original_source", "original_source_detail", "latest_source", "latest_source_detail",
         "created_at", "updated_at",
         "last_contacted_at", "email_sent_count", "linkedin_sent_count", "total_replies_count", "latest_sender",
@@ -561,9 +561,9 @@ def _load_lead_supplements(
             continue
         latest = rows[-1]
         original = rows[0]
-        out[lid]["lev_source"] = latest["source"] or ""
-        out[lid]["latest_lev_source"] = latest["source"] or ""
-        out[lid]["original_lev_source"] = original["source"] or ""
+        out[lid]["email_verification_source"] = latest["source"] or ""
+        out[lid]["latest_email_verification_source"] = latest["source"] or ""
+        out[lid]["original_email_verification_source"] = original["source"] or ""
         out[lid]["lev_verified_at"] = latest["verified_at"] or ""
 
     bounce_rows = conn.execute(
@@ -710,9 +710,9 @@ def build_lead_row(
         "original_source_detail": lead.get("original_source_detail") or "",
         "latest_source": lead.get("latest_source") or "",
         "latest_source_detail": lead.get("latest_source_detail") or "",
-        "lev_source": lead.get("lev_source") or lead.get("latest_lev_source") or "",
-        "latest_lev_source": lead.get("latest_lev_source") or lead.get("lev_source") or "",
-        "original_lev_source": lead.get("original_lev_source") or "",
+        "email_verification_source": lead.get("email_verification_source") or lead.get("latest_email_verification_source") or lead.get("lev_source") or lead.get("latest_lev_source") or "",
+        "latest_email_verification_source": lead.get("latest_email_verification_source") or lead.get("email_verification_source") or lead.get("latest_lev_source") or lead.get("lev_source") or "",
+        "original_email_verification_source": lead.get("original_email_verification_source") or lead.get("original_lev_source") or "",
         "lev_verified_at": lead.get("lev_verified_at") or "",
         "be_platform": lead.get("be_platform") or "",
         "be_bounce_message": lead.get("be_bounce_message") or "",

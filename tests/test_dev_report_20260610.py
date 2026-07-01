@@ -87,7 +87,7 @@ def test_full_export_columns_include_new_fields():
     conn.commit()
 
     keys = plr.resolve_field_keys("full", sender_profiles=[])
-    assert "lev_source" in keys
+    assert "email_verification_source" in keys
     assert "lev_verified_at" in keys
     assert "latest_source" in keys
     assert "be_platform" in keys
@@ -104,7 +104,7 @@ def test_full_export_columns_include_new_fields():
     field_keys = [c["key"] for c in payload["columns"]]
     row = dict(zip(field_keys, payload["rows"][0]))
     assert row.get("latest_source") == "csv_import"
-    assert row.get("lev_source") == "trykitt"
+    assert row.get("email_verification_source") == "trykitt"
     labels = [c["label"] for c in payload["columns"]]
     assert "✏️ Personalized First Name" in labels or any(
         "Personalized First Name" in label for label in labels

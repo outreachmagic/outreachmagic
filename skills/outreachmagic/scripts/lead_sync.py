@@ -140,11 +140,11 @@ def _assemble_lead_core_sync_payload(
         payload["email_verified_at"] = row["email_verified_at"]
     if "email_verification_status" in row.keys() and row["email_verification_status"]:
         payload["email_verification_status"] = row["email_verification_status"]
-    if "original_lev_source" in row.keys() and row["original_lev_source"]:
-        payload["original_lev_source"] = row["original_lev_source"]
-    if "latest_lev_source" in row.keys() and row["latest_lev_source"]:
-        payload["lev_source"] = row["latest_lev_source"]
-        payload["latest_lev_source"] = row["latest_lev_source"]
+    if "original_email_verification_source" in row.keys() and row["original_email_verification_source"]:
+        payload["original_email_verification_source"] = row["original_email_verification_source"]
+    if "latest_email_verification_source" in row.keys() and row["latest_email_verification_source"]:
+        payload["email_verification_source"] = row["latest_email_verification_source"]
+        payload["latest_email_verification_source"] = row["latest_email_verification_source"]
     if external_id:
         payload["external_id"] = external_id
     if row["latest_source_detail"]:
@@ -417,9 +417,9 @@ def build_lead_core_sync_payload(
     row_dict = dict(row)
     original_lev, latest_lev = _lev_sources_for_lead(conn, lead_id)
     if original_lev:
-        row_dict["original_lev_source"] = original_lev
+        row_dict["original_email_verification_source"] = original_lev
     if latest_lev:
-        row_dict["latest_lev_source"] = latest_lev
+        row_dict["latest_email_verification_source"] = latest_lev
     return _assemble_lead_core_sync_payload(
         row_dict,
         identity_rows=identity_rows,
@@ -725,7 +725,10 @@ def apply_agent_lead_core_payload(
         conn.close()
 
     lev_source = (
-        (payload.get("latest_lev_source") or payload.get("lev_source") or "").strip()
+        (payload.get("latest_email_verification_source")
+         or payload.get("latest_lev_source")
+         or payload.get("email_verification_source")
+         or payload.get("lev_source") or "").strip()
     )
     if payload.get("email_verification_status") and lev_source and not _is_weak_verification_source(lev_source):
         verify_email(

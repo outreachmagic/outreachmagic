@@ -183,7 +183,7 @@
       ]
     },
     {
-      "key": "latest_lev_source",
+      "key": "latest_email_verification_source",
       "type": "string",
       "editable": false,
       "in_presets": [
@@ -263,7 +263,7 @@
       "scope": "workspace"
     },
     {
-      "key": "lev_source",
+      "key": "email_verification_source",
       "type": "string",
       "editable": false,
       "in_presets": [
@@ -353,7 +353,7 @@
       "scope": "notes"
     },
     {
-      "key": "original_lev_source",
+      "key": "original_email_verification_source",
       "type": "string",
       "editable": false,
       "in_presets": [
@@ -503,9 +503,9 @@
       "personalized_first_name",
       "personalized_company_name",
       "email_verification_status",
-      "lev_source",
-      "latest_lev_source",
-      "original_lev_source",
+      "email_verification_source",
+      "latest_email_verification_source",
+      "original_email_verification_source",
       "lev_verified_at",
       "original_source",
       "original_source_detail",
@@ -549,9 +549,9 @@
     "invalid"
   ],
   "field_display_names": {
-    "lev_source": "Email Verification Source",
-    "latest_lev_source": "Latest Email Verification Source",
-    "original_lev_source": "Original Email Verification Source",
+    "email_verification_source": "Email Verification Source",
+    "latest_email_verification_source": "Latest Email Verification Source",
+    "original_email_verification_source": "Original Email Verification Source",
     "lev_verified_at": "Email Verification Verified At",
     "latest_source": "Latest Source",
     "latest_source_detail": "Latest Source Detail",

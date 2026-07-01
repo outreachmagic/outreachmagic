@@ -1266,7 +1266,7 @@ def migrate_db(conn=None):
             id TEXT PRIMARY KEY,
             org_id TEXT NOT NULL,
             source_platform TEXT NOT NULL,
-            campaign_id TEXT,
+            campaign_platform_id TEXT,
             campaign_name_normalized TEXT,
             workspace_id TEXT NOT NULL,
             match_strategy TEXT NOT NULL DEFAULT 'id_exact',
@@ -1280,7 +1280,7 @@ def migrate_db(conn=None):
             id TEXT PRIMARY KEY,
             org_id TEXT NOT NULL,
             source_platform TEXT NOT NULL,
-            campaign_id TEXT,
+            campaign_platform_id TEXT,
             campaign_name_raw TEXT,
             campaign_name_normalized TEXT,
             external_event_id TEXT,
@@ -5582,7 +5582,7 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
         "SELECT name, slug, cloud_synced FROM workspaces WHERE org_id = ?", (org_id,)
     ).fetchall()
     local_maps = conn.execute(
-        """SELECT m.id, m.source_platform, m.campaign_name_normalized, m.campaign_id,
+        """SELECT m.id, m.source_platform, m.campaign_name_normalized, m.campaign_platform_id,
                   m.match_strategy, m.cloud_synced, w.slug AS workspace_slug
            FROM campaign_workspace_map m
            JOIN workspaces w ON w.id = m.workspace_id
@@ -5611,7 +5611,7 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
         sig = routing_cloud.campaign_map_signature(
             source_platform=row["source_platform"],
             match_strategy=row["match_strategy"],
-            campaign_id=row["campaign_id"],
+            campaign_platform_id=row["campaign_platform_id"],
             campaign_name_normalized=row["campaign_name_normalized"],
             workspace_slug=row["workspace_slug"],
         )
@@ -5619,7 +5619,7 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
             continue
         pending_maps.append({
             "id": row["id"],
-            "label": row["campaign_name_normalized"] or row["campaign_id"] or "rule",
+            "label": row["campaign_name_normalized"] or row["campaign_platform_id"] or "rule",
             "match_strategy": row["match_strategy"],
         })
 
@@ -5888,7 +5888,7 @@ def sync_all(
     conn = get_conn()
     for rule in status.get("pending_rules") or []:
         row = conn.execute(
-            """SELECT source_platform, campaign_id, campaign_name_normalized, match_strategy, priority,
+            """SELECT source_platform, campaign_platform_id, campaign_name_normalized, match_strategy, priority,
                       w.slug AS workspace_slug
                FROM campaign_workspace_map m JOIN workspaces w ON w.id = m.workspace_id
                WHERE m.id = ?""",
@@ -5901,7 +5901,7 @@ def sync_all(
                 api_base, tok,
                 source_platform=row["source_platform"],
                 workspace_slug=row["workspace_slug"],
-                campaign_id=row["campaign_id"],
+                campaign_platform_id=row["campaign_platform_id"],
                 campaign_name=row["campaign_name_normalized"],
                 match_strategy=row["match_strategy"],
                 priority=row["priority"],
@@ -6587,19 +6587,19 @@ def add_campaign_map_cli(
     platform: str = "*",
     workspace_slug: str = "",
     *,
-    campaign_id: Optional[str] = None,
+    campaign_platform_id: Optional[str] = None,
     campaign_name: Optional[str] = None,
     match_strategy: Optional[str] = None,
     priority: int = 100,
 ) -> dict:
-    if not campaign_id and not campaign_name:
-        return {"status": "error", "error": "provide --campaign-id or --campaign-name"}
+    if not campaign_platform_id and not campaign_name:
+        return {"status": "error", "error": "provide --campaign-platform-id or --campaign-name"}
     conn_check = get_conn()
     config = get_org_routing_config(conn_check, DEFAULT_ORG_ID)
     conn_check.close()
     if config.mode == WORKSPACE_ROUTING_MULTI and workspace_slug == "default":
         return {"status": "error", "error": "Cannot route to the default workspace in multi-workspace mode."}
-    strategy = match_strategy or ("id_exact" if campaign_id else "name_exact")
+    strategy = match_strategy or ("id_exact" if campaign_platform_id else "name_exact")
     tok = get_agent_key()
     cloud_ok = routing_cloud.cloud_routing_enabled(load_config, tok)
     cloud_synced = False
@@ -6611,7 +6611,7 @@ def add_campaign_map_cli(
                 tok,
                 source_platform=platform,
                 workspace_slug=workspace_slug,
-                campaign_id=campaign_id,
+                campaign_platform_id=campaign_platform_id,
                 campaign_name=campaign_name,
                 match_strategy=strategy,
                 priority=priority,
@@ -6632,7 +6632,7 @@ def add_campaign_map_cli(
         DEFAULT_ORG_ID,
         source_platform=platform,
         workspace_id=ws["id"],
-        campaign_id=campaign_id,
+        campaign_platform_id=campaign_platform_id,
         campaign_name=campaign_name,
         match_strategy=strategy,
         priority=priority,
@@ -6655,7 +6655,7 @@ def list_quarantine(
     conn = get_conn()
     if status == "all":
         rows = conn.execute(
-            """SELECT id, source_platform, campaign_id, campaign_name_raw,
+            """SELECT id, source_platform, campaign_platform_id, campaign_name_raw,
                       campaign_name_normalized, external_event_id, reason, status,
                       assigned_workspace, received_at, resolved_at
                FROM unmapped_campaign_queue
@@ -6665,7 +6665,7 @@ def list_quarantine(
         ).fetchall()
     else:
         rows = conn.execute(
-            """SELECT id, source_platform, campaign_id, campaign_name_raw,
+            """SELECT id, source_platform, campaign_platform_id, campaign_name_raw,
                       campaign_name_normalized, external_event_id, reason, status,
                       assigned_workspace, received_at, resolved_at
                FROM unmapped_campaign_queue
@@ -6682,7 +6682,7 @@ def list_quarantine(
                 item["source_platform"],
                 {},
                 {
-                    "campaign_id": item.get("campaign_id"),
+                    "campaign_id": item.get("campaign_platform_id"),
                     "campaign_name": item.get("campaign_name_raw"),
                 },
             )
@@ -6703,8 +6703,8 @@ def get_quarantine_campaign_summary(
     rows = conn.execute(
         """SELECT
                source_platform,
-               COALESCE(NULLIF(campaign_name_raw, ''), NULLIF(campaign_id, ''), 'unknown') AS campaign,
-               campaign_id,
+               COALESCE(NULLIF(campaign_name_raw, ''), NULLIF(campaign_platform_id, ''), 'unknown') AS campaign,
+               campaign_platform_id,
                COUNT(*) AS event_count,
                MIN(received_at) AS oldest_received_at,
                MAX(received_at) AS newest_received_at,
@@ -6851,24 +6851,24 @@ def cleanup_stale_quarantine_for_reprocessed(
 
 def skip_quarantine_bulk(
     *,
-    campaign_id: Optional[str] = None,
+    campaign_platform_id: Optional[str] = None,
     platform: Optional[str] = None,
     reason: Optional[str] = None,
     all_pending: bool = False,
     org_id: str = DEFAULT_ORG_ID,
 ) -> dict:
-    """Skip multiple pending quarantine rows (by campaign, reason, or all pending)."""
-    if not all_pending and not campaign_id and not reason:
-        return {"status": "error", "error": "specify --campaign-id, --reason, or --all"}
+    """Skip multiple pending quarantine rows (by campaign platform id, reason, or all pending)."""
+    if not all_pending and not campaign_platform_id and not reason:
+        return {"status": "error", "error": "specify --campaign-platform-id, --reason, or --all"}
     conn = get_conn()
     sql = (
         "SELECT id, external_event_id FROM unmapped_campaign_queue "
         "WHERE org_id = ? AND status = 'pending'"
     )
     params: list = [org_id]
-    if campaign_id:
-        sql += " AND campaign_id = ?"
-        params.append(campaign_id)
+    if campaign_platform_id:
+        sql += " AND campaign_platform_id = ?"
+        params.append(campaign_platform_id)
     if reason:
         sql += " AND reason = ?"
         params.append(reason)
@@ -6898,8 +6898,8 @@ def skip_quarantine_bulk(
     conn.commit()
     conn.close()
     out: dict = {"status": "ok", "skipped": len(skipped_ids), "ids": skipped_ids}
-    if campaign_id:
-        out["campaign_id"] = campaign_id
+    if campaign_platform_id:
+        out["campaign_platform_id"] = campaign_platform_id
     if reason:
         out["reason"] = reason
     if platform:
@@ -7167,13 +7167,13 @@ def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int =
         else:
             conn = get_conn()
             campaign_name = item.get("campaign_name_raw") or item.get("campaign_name_normalized")
-            if not campaign_name and not item.get("campaign_id"):
+            if not campaign_name and not item.get("campaign_platform_id"):
                 campaign_name = "unknown"
             ctx = extract_campaign_context(
                 item["source_platform"],
                 {},
                 {
-                    "campaign_id": item.get("campaign_id"),
+                    "campaign_id": item.get("campaign_platform_id"),
                     "campaign_name": campaign_name,
                 },
             )
@@ -10479,13 +10479,13 @@ def cleanup_campaign_rules(dry_run: bool = False) -> dict:
     bad_rows = conn.execute("""
         SELECT id, workspace_id, source_platform, created_at
         FROM campaign_workspace_map
-        WHERE campaign_id IS NULL AND campaign_name_normalized IS NULL
+        WHERE campaign_platform_id IS NULL AND campaign_name_normalized IS NULL
     """).fetchall()
     count = len(bad_rows)
     if not dry_run and count > 0:
         conn.execute("""
             DELETE FROM campaign_workspace_map
-            WHERE campaign_id IS NULL AND campaign_name_normalized IS NULL
+            WHERE campaign_platform_id IS NULL AND campaign_name_normalized IS NULL
         """)
         conn.commit()
     conn.close()
@@ -11606,7 +11606,7 @@ def main():
     cmap_add = cmap_sub.add_parser("add", help="Add campaign map")
     cmap_add.add_argument("--platform", default="*")
     cmap_add.add_argument("--workspace", required=True, help="Workspace slug")
-    cmap_add.add_argument("--campaign-id")
+    cmap_add.add_argument("--campaign-platform-id", help="Platform campaign ID (e.g. Smartlead numeric ID, Prosp UUID)")
     cmap_add.add_argument("--campaign-name")
     cmap_add.add_argument(
         "--match-strategy",
@@ -11627,8 +11627,8 @@ def main():
     q_list.add_argument("--json", action="store_true", help="Output raw queue rows as JSON")
     q_skip = q_sub.add_parser("skip", help="Skip quarantined event(s) (syncs to relay on next sync)")
     q_skip.add_argument("--id", help="Single queue item id")
-    q_skip.add_argument("--campaign-id", help="Skip all pending rows for this campaign id")
-    q_skip.add_argument("--platform", help="With --campaign-id, filter by source platform")
+    q_skip.add_argument("--campaign-platform-id", help="Skip all pending rows for this campaign platform id")
+    q_skip.add_argument("--platform", help="With --campaign-platform-id, filter by source platform")
     q_skip.add_argument(
         "--all",
         action="store_true",
@@ -13456,7 +13456,7 @@ def main():
                 add_campaign_map_cli(
                     args.platform,
                     args.workspace,
-                    campaign_id=args.campaign_id,
+                    campaign_platform_id=args.campaign_platform_id,
                     campaign_name=args.campaign_name,
                     match_strategy=args.match_strategy,
                     priority=args.priority,
@@ -13477,10 +13477,10 @@ def main():
                     ),
                     indent=2,
                 ))
-            elif getattr(args, "campaign_id", None):
+            elif getattr(args, "campaign_platform_id", None):
                 print(json.dumps(
                     skip_quarantine_bulk(
-                        campaign_id=args.campaign_id,
+                        campaign_platform_id=args.campaign_platform_id,
                         platform=getattr(args, "platform", None),
                     ),
                     indent=2,
@@ -13488,7 +13488,7 @@ def main():
             elif getattr(args, "id", None):
                 print(json.dumps(skip_quarantine(args.id), indent=2))
             else:
-                print("Error: quarantine skip requires --id, --campaign-id, --reason, or --all")
+                print("Error: quarantine skip requires --id, --campaign-platform-id, --reason, or --all")
                 sys.exit(1)
         elif args.quarantine_cmd == "backfill-no-campaign":
             print(json.dumps(
@@ -13520,7 +13520,7 @@ def main():
                 else:
                     print(f"Pending quarantine ({len(rows)} row(s), showing up to 50):")
                     for row in rows:
-                        campaign = row.get("campaign_name_raw") or row.get("campaign_id") or "unknown"
+                        campaign = row.get("campaign_name_raw") or row.get("campaign_platform_id") or "unknown"
                         print(
                             f"  {row.get('id')}  {row.get('source_platform') or '-'}  {campaign}"
                         )

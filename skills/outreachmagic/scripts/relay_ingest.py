@@ -691,7 +691,7 @@ def ingest_relay_event(
     # instead of flooding the quarantine queue.
     if (
         not force_workspace_id
-        and not campaign_ctx.campaign_id
+        and not campaign_ctx.campaign_platform_id
         and not campaign_ctx.campaign_name_raw
         and platform in PLUSVIBE_PLATFORMS
     ):
@@ -715,7 +715,7 @@ def ingest_relay_event(
         return None
     if (
         not force_workspace_id
-        and not campaign_ctx.campaign_id
+        and not campaign_ctx.campaign_platform_id
         and not campaign_ctx.campaign_name_raw
     ):
         om.quarantine_event(
@@ -757,7 +757,7 @@ def ingest_relay_event(
                 conn.commit()
                 conn.close()
             if not quiet:
-                _unmapped_key = campaign_ctx.campaign_id or campaign_ctx.campaign_name_raw or str(campaign_ctx.source_platform)
+                _unmapped_key = campaign_ctx.campaign_platform_id or campaign_ctx.campaign_name_raw or str(campaign_ctx.source_platform)
                 if _unmapped_key not in _unmapped_campaigns_reported:
                     _unmapped_campaigns_reported.add(_unmapped_key)
                     print(om.format_unmapped_campaign_message(campaign_ctx), file=sys.stderr)
@@ -947,7 +947,7 @@ def ingest_relay_event(
         "body_preview": body_preview,
         "direction": direction,
         "channel": channel,
-        "campaign_id": campaign_ctx.campaign_id,
+        "campaign_platform_id": campaign_ctx.campaign_platform_id,
         "campaign_name": campaign_ctx.campaign_name_raw,
     }
     om.append_workspace_event(

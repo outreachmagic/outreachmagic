@@ -63,17 +63,17 @@ def campaign_map_signature(
     *,
     source_platform: str,
     match_strategy: str,
-    campaign_id: Optional[str],
+    campaign_platform_id: Optional[str],
     campaign_name_normalized: Optional[str],
     workspace_slug: str,
 ) -> tuple[str, str, Optional[str], Optional[str], str]:
     """Stable key for comparing local and cloud routing rules."""
     platform = (source_platform or "*").strip().lower()
     strategy = (match_strategy or "id_exact").strip().lower()
-    cid = (campaign_id or "").strip() or None
+    cpid = (campaign_platform_id or "").strip() or None
     cname = (campaign_name_normalized or "").strip().lower() or None
     slug = (workspace_slug or "").strip().lower()
-    return (platform, strategy, cid, cname, slug)
+    return (platform, strategy, cpid, cname, slug)
 
 
 def cloud_campaign_map_signatures(bundle: dict[str, Any]) -> set[tuple[str, str, Optional[str], Optional[str], str]]:
@@ -86,7 +86,7 @@ def cloud_campaign_map_signatures(bundle: dict[str, Any]) -> set[tuple[str, str,
             campaign_map_signature(
                 source_platform=item.get("sourcePlatform") or "*",
                 match_strategy=item.get("matchStrategy") or "id_exact",
-                campaign_id=item.get("campaignId"),
+                campaign_platform_id=item.get("campaignPlatformId"),
                 campaign_name_normalized=item.get("campaignNameNormalized"),
                 workspace_slug=slug,
             )
@@ -175,27 +175,27 @@ def apply_routing_bundle_to_sqlite(
 
     cloud_map_ids: list[str] = []
     for item in bundle.get("campaignMaps") or []:
-        if not item.get("campaignId") and not item.get("campaignNameNormalized"):
+        if not item.get("campaignPlatformId") and not item.get("campaignNameNormalized"):
             continue
         map_id = item["id"]
         cloud_map_ids.append(map_id)
         # Remove any existing row that would conflict on the partial unique index
-        # (same org/platform/campaign_id but different id)
-        if item.get("campaignId"):
+        # (same org/platform/campaign_platform_id but different id)
+        if item.get("campaignPlatformId"):
             conn.execute(
                 """DELETE FROM campaign_workspace_map
-                   WHERE org_id = ? AND source_platform = ? AND campaign_id = ?
+                   WHERE org_id = ? AND source_platform = ? AND campaign_platform_id = ?
                      AND id != ? AND is_active = 1""",
-                (org_id, item["sourcePlatform"], item["campaignId"], map_id),
+                (org_id, item["sourcePlatform"], item["campaignPlatformId"], map_id),
             )
         conn.execute(
             """INSERT INTO campaign_workspace_map (
-                   id, org_id, source_platform, campaign_id, campaign_name_normalized,
+                   id, org_id, source_platform, campaign_platform_id, campaign_name_normalized,
                    workspace_id, match_strategy, priority, is_active, cloud_synced, created_at, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), datetime('now'))
                ON CONFLICT(id) DO UPDATE SET
                  source_platform = excluded.source_platform,
-                 campaign_id = excluded.campaign_id,
+                 campaign_platform_id = excluded.campaign_platform_id,
                  campaign_name_normalized = excluded.campaign_name_normalized,
                  workspace_id = excluded.workspace_id,
                  match_strategy = excluded.match_strategy,
@@ -207,7 +207,7 @@ def apply_routing_bundle_to_sqlite(
                 map_id,
                 org_id,
                 item["sourcePlatform"],
-                item.get("campaignId"),
+                item.get("campaignPlatformId"),
                 item.get("campaignNameNormalized"),
                 item["workspaceId"],
                 item.get("matchStrategy") or "id_exact",
@@ -298,7 +298,7 @@ def push_campaign_map(
     *,
     source_platform: str,
     workspace_slug: str,
-    campaign_id: Optional[str] = None,
+    campaign_platform_id: Optional[str] = None,
     campaign_name: Optional[str] = None,
     match_strategy: Optional[str] = None,
     priority: int = 100,
@@ -308,8 +308,8 @@ def push_campaign_map(
         "workspaceSlug": workspace_slug,
         "priority": priority,
     }
-    if campaign_id:
-        body["campaignId"] = campaign_id
+    if campaign_platform_id:
+        body["campaignPlatformId"] = campaign_platform_id
     if campaign_name:
         body["campaignName"] = campaign_name
     if match_strategy:

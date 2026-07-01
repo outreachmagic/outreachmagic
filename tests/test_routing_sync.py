@@ -97,7 +97,7 @@ class RoutingSyncPendingTests(unittest.TestCase):
         sig = routing_cloud.campaign_map_signature(
             source_platform="*",
             match_strategy="rule_contains",
-            campaign_id=None,
+            campaign_platform_id=None,
             campaign_name_normalized="PopCam",
             workspace_slug="popcam",
         )

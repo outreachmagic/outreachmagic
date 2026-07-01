@@ -197,7 +197,7 @@ class IngestBounceIntegrationTests(unittest.TestCase):
         om.add_campaign_map_cli(
             "plusvibe",
             self.workspace_slug,
-            campaign_id="camp-1",
+            campaign_platform_id="camp-1",
             campaign_name="Bounce Campaign",
         )
 

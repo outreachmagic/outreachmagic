@@ -47,7 +47,7 @@ def test_workspace_list_json_flag_parsed():
   assert args.json is True
 
 
-def test_quarantine_skip_all_campaign_id_and_reason_parsed():
+def test_quarantine_skip_all_campaign_platform_id_and_reason_parsed():
     """Bulk quarantine skip flags: --all, --campaign-id, --reason."""
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -55,13 +55,13 @@ def test_quarantine_skip_all_campaign_id_and_reason_parsed():
     q_sub = q.add_subparsers(dest="quarantine_cmd")
     q_skip = q_sub.add_parser("skip")
     q_skip.add_argument("--id")
-    q_skip.add_argument("--campaign-id")
+    q_skip.add_argument("--campaign-platform-id")
     q_skip.add_argument("--reason")
     q_skip.add_argument("--all", action="store_true")
     args = parser.parse_args(["quarantine", "skip", "--all"])
     assert args.all is True
-    args = parser.parse_args(["quarantine", "skip", "--campaign-id", "abc123"])
-    assert args.campaign_id == "abc123"
+    args = parser.parse_args(["quarantine", "skip", "--campaign-platform-id", "abc123"])
+    assert args.campaign_platform_id == "abc123"
     args = parser.parse_args(["quarantine", "skip", "--reason", "no_campaign_id"])
     assert args.reason == "no_campaign_id"
 

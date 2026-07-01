@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS campaign_workspace_map (
     id                      TEXT PRIMARY KEY,
     org_id                  TEXT NOT NULL,
     source_platform         TEXT NOT NULL,
-    campaign_id             TEXT,
+    campaign_platform_id    TEXT,
     campaign_name_normalized  TEXT,
     workspace_id            TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     match_strategy          TEXT NOT NULL DEFAULT 'id_exact',
@@ -204,21 +204,21 @@ CREATE INDEX IF NOT EXISTS idx_campaign_map_lookup ON campaign_workspace_map(
     org_id, source_platform, is_active, priority
 );
 CREATE INDEX IF NOT EXISTS idx_campaign_map_id ON campaign_workspace_map(
-    org_id, source_platform, campaign_id
+    org_id, source_platform, campaign_platform_id
 );
 CREATE INDEX IF NOT EXISTS idx_campaign_map_name ON campaign_workspace_map(
     org_id, source_platform, campaign_name_normalized
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_map_id_active ON campaign_workspace_map(
-    org_id, source_platform, campaign_id
-) WHERE campaign_id IS NOT NULL AND is_active = 1;
+    org_id, source_platform, campaign_platform_id
+) WHERE campaign_platform_id IS NOT NULL AND is_active = 1;
 
 CREATE TABLE IF NOT EXISTS unmapped_campaign_queue (
     id                      TEXT PRIMARY KEY,
     org_id                  TEXT NOT NULL,
     source_platform         TEXT NOT NULL,
-    campaign_id             TEXT,
+    campaign_platform_id    TEXT,
     campaign_name_raw       TEXT,
     campaign_name_normalized TEXT,
     external_event_id       TEXT,
@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS unmapped_campaign_queue (
 
 CREATE INDEX IF NOT EXISTS idx_quarantine_status ON unmapped_campaign_queue(org_id, status, received_at);
 CREATE INDEX IF NOT EXISTS idx_quarantine_campaign ON unmapped_campaign_queue(
-    org_id, source_platform, campaign_id, status
+    org_id, source_platform, campaign_platform_id, status
 );
 
 CREATE TABLE IF NOT EXISTS lead_merge_jobs (

@@ -31,7 +31,7 @@ def metered_usage_label(plan: str = "") -> str:
 def no_campaign_event_message(*, platform: str = "relay") -> str:
     """Instructions when a webhook event has no campaign metadata."""
     return "\n".join([
-        f"A webhook event from {platform} has no campaign id or name, so it cannot be "
+        f"A webhook event from {platform} has no campaign platform id or name, so it cannot be "
         "attributed to a workspace.",
         "It was added to the quarantine skip list — no action needed unless you want to investigate.",
         "",
@@ -51,7 +51,7 @@ def unmapped_campaign_message(*, label: str, platform: str) -> str:
         "",
         "To fix this, ask Outreach Magic to:",
         "1. Create a workspace (if needed)",
-        f"2. Map this campaign to that workspace (campaign id or name: {label})",
+        f"2. Map this campaign to that workspace (campaign platform id or name: {label})",
         "3. Replay quarantined events, or skip junk items you do not need",
         f"4. {MSG_SYNC} so resolutions persist across machines",
     ])

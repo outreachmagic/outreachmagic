@@ -185,8 +185,8 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
 
         if event_fields.get("campaign"):
             new_meta["campaign"] = event_fields["campaign"]
-        if campaign_ctx.campaign_id:
-            new_meta["campaign_id"] = campaign_ctx.campaign_id
+        if campaign_ctx.campaign_platform_id:
+            new_meta["campaign_platform_id"] = campaign_ctx.campaign_platform_id
         if event_fields.get("subject"):
             new_meta["subject"] = event_fields["subject"]
         body_text = event_fields.get("body")
@@ -260,7 +260,6 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
                     sender_email=sender_email,
                     lead_email=lead_email,
                     payload=bounce_payload,
-                    campaign_id=campaign_ctx.campaign_id,
                     workspace_id=None,  # workspace lookup requires pipeline module
                 )
 

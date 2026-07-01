@@ -163,7 +163,7 @@ Unmapped webhook events land in `unmapped_campaign_queue`. Resolve locally, then
 ```bash
 pipeline.py quarantine list [--json] [--status all]
 pipeline.py quarantine skip --id QUEUE_ID
-pipeline.py quarantine skip --campaign-id CAMPAIGN_ID
+pipeline.py quarantine skip --campaign-platform-id CAMPAIGN_PLATFORM_ID
 pipeline.py quarantine assign --id QUEUE_ID --workspace WORKSPACE_SLUG
 pipeline.py quarantine replay
 pipeline.py sync

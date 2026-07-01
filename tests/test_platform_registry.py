@@ -361,7 +361,7 @@ class TestEmailBisonCampaignExtraction(unittest.TestCase):
         }
         event_fields = {}
         ctx = self.wr.extract_campaign_context("emailbison", event_fields, raw)
-        self.assertEqual(ctx.campaign_id, "49")
+        self.assertEqual(ctx.campaign_platform_id, "49")
         self.assertEqual(ctx.campaign_name_raw, "Votary - [Ai Copy] - Variant 3 -")
 
     def test_extract_campaign_context_without_data_nesting(self):
@@ -371,7 +371,7 @@ class TestEmailBisonCampaignExtraction(unittest.TestCase):
         }
         event_fields = {}
         ctx = self.wr.extract_campaign_context("emailbison", event_fields, raw)
-        self.assertEqual(ctx.campaign_id, "42")
+        self.assertEqual(ctx.campaign_platform_id, "42")
         self.assertEqual(ctx.campaign_name_raw, "Test Campaign")
 
 

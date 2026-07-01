@@ -2,7 +2,7 @@
 Org-wide leads + workspace-scoped status/events + campaign routing.
 
 Campaign routing priority:
-  campaign_id exact > campaign_name exact >
+  campaign_platform_id exact > campaign_name exact >
   rule_contains / rule_prefix / rule_regex > quarantine
 Rules with source_platform='*' match any incoming platform.
 
@@ -77,7 +77,7 @@ ENTITY_KEY_IDENTITY_TYPES = (
 @dataclass
 class CampaignContext:
     source_platform: str
-    campaign_id: Optional[str]
+    campaign_platform_id: Optional[str]
     campaign_name_raw: Optional[str]
     campaign_name_normalized: Optional[str]
 
@@ -121,21 +121,21 @@ def parse_calendly_event_type_id(value: Any) -> Optional[str]:
 
 def enrich_calendly_campaign_fields(
     raw: dict,
-    campaign_id: Optional[str],
+    campaign_platform_id: Optional[str],
     campaign_name: Optional[str],
 ) -> tuple[Optional[str], Optional[str]]:
     """Calendly: event type UUID + display name for workspace routing."""
     payload = raw.get("payload") or {}
     scheduled = payload.get("scheduled_event") or {}
-    if not campaign_id:
-        campaign_id = parse_calendly_event_type_id(scheduled.get("event_type"))
-        if not campaign_id:
-            campaign_id = parse_calendly_event_type_id(raw.get("campaign_id"))
+    if not campaign_platform_id:
+        campaign_platform_id = parse_calendly_event_type_id(scheduled.get("event_type"))
+        if not campaign_platform_id:
+            campaign_platform_id = parse_calendly_event_type_id(raw.get("campaign_id"))
     if not campaign_name:
         scheduled_name = str(scheduled.get("name") or "").strip()
         if scheduled_name:
             campaign_name = scheduled_name
-    return campaign_id, campaign_name
+    return campaign_platform_id, campaign_name
 
 
 def normalize_email(email: Optional[str]) -> Optional[str]:
@@ -597,16 +597,16 @@ def extract_campaign_context(
     """Parse campaign id/name from extractor output and raw payload."""
     raw = raw or {}
     campaign_field = (event_fields.get("campaign") or "").strip()
-    campaign_id = (event_fields.get("campaign_id") or "").strip() or None
+    campaign_platform_id = (event_fields.get("campaign_id") or "").strip() or None
     campaign_name = (event_fields.get("campaign_name") or "").strip() or None
 
-    if campaign_field and not campaign_id and not campaign_name:
+    if campaign_field and not campaign_platform_id and not campaign_name:
         if campaign_field.isdigit() or re.match(r"^[a-f0-9-]{8,}$", campaign_field, re.I):
-            campaign_id = campaign_field
+            campaign_platform_id = campaign_field
         else:
             campaign_name = campaign_field
 
-    if not campaign_id:
+    if not campaign_platform_id:
         for path in (
             "campaign_id",
             "data.campaign_id",
@@ -616,7 +616,7 @@ def extract_campaign_context(
         ):
             val = _get_path(raw, path) if "." in path else raw.get(path)
             if val is not None and str(val).strip():
-                campaign_id = str(val).strip()
+                campaign_platform_id = str(val).strip()
                 break
 
     if not campaign_name:
@@ -624,22 +624,22 @@ def extract_campaign_context(
             val = _get_path(raw, key) if "." in key else raw.get(key)
             if val is not None and str(val).strip():
                 text = str(val).strip()
-                if text != (campaign_id or ""):
+                if text != (campaign_platform_id or ""):
                     campaign_name = text
                     break
 
     if (platform or "").lower() == "calendly":
-        campaign_id, campaign_name = enrich_calendly_campaign_fields(
-            raw, campaign_id, campaign_name
+        campaign_platform_id, campaign_name = enrich_calendly_campaign_fields(
+            raw, campaign_platform_id, campaign_name
         )
-        if campaign_id:
-            parsed_id = parse_calendly_event_type_id(campaign_id)
+        if campaign_platform_id:
+            parsed_id = parse_calendly_event_type_id(campaign_platform_id)
             if parsed_id:
-                campaign_id = parsed_id
+                campaign_platform_id = parsed_id
 
     return CampaignContext(
         source_platform=platform,
-        campaign_id=campaign_id,
+        campaign_platform_id=campaign_platform_id,
         campaign_name_raw=campaign_name or campaign_field or None,
         campaign_name_normalized=normalize_campaign_name(campaign_name or campaign_field),
     )
@@ -710,8 +710,8 @@ def get_org_routing_config(conn: sqlite3.Connection, org_id: str) -> OrgRoutingC
 def campaign_display_label(ctx: CampaignContext) -> str:
     if ctx.campaign_name_raw:
         return ctx.campaign_name_raw
-    if ctx.campaign_id:
-        return ctx.campaign_id
+    if ctx.campaign_platform_id:
+        return ctx.campaign_platform_id
     return "unknown"
 
 
@@ -762,7 +762,7 @@ class CampaignRoutingCache:
             return cls(config=config, _id_exact=id_exact, _name_exact=name_exact, _rules=rules)
 
         rows = conn.execute(
-            """SELECT id, workspace_id, match_strategy, source_platform, campaign_id,
+            """SELECT id, workspace_id, match_strategy, source_platform, campaign_platform_id,
                       campaign_name_normalized, priority
                FROM campaign_workspace_map
                WHERE org_id = ? AND is_active = 1
@@ -777,8 +777,8 @@ class CampaignRoutingCache:
                 map_id=row["id"],
             )
             strat = row["match_strategy"]
-            if strat == "id_exact" and row["campaign_id"]:
-                key = (sp, str(row["campaign_id"]))
+            if strat == "id_exact" and row["campaign_platform_id"]:
+                key = (sp, str(row["campaign_platform_id"]))
                 if key not in id_exact:
                     id_exact[key] = result
             elif strat == "name_exact" and row["campaign_name_normalized"]:
@@ -802,9 +802,9 @@ class CampaignRoutingCache:
             )
         platform = ctx.source_platform
         platforms = (platform, "*")
-        if ctx.campaign_id:
+        if ctx.campaign_platform_id:
             for sp in platforms:
-                hit = self._id_exact.get((sp, ctx.campaign_id))
+                hit = self._id_exact.get((sp, ctx.campaign_platform_id))
                 if hit:
                     return hit
         if ctx.campaign_name_normalized:
@@ -837,13 +837,13 @@ def resolve_workspace(
     """ID-first campaign routing with name and rule fallbacks."""
     platform = ctx.source_platform
 
-    if ctx.campaign_id:
+    if ctx.campaign_platform_id:
         row = conn.execute(
             """SELECT id, workspace_id, match_strategy FROM campaign_workspace_map
                WHERE org_id = ? AND source_platform IN (?, '*') AND is_active = 1
-                 AND match_strategy = 'id_exact' AND campaign_id = ?
+                 AND match_strategy = 'id_exact' AND campaign_platform_id = ?
                ORDER BY priority ASC LIMIT 1""",
-            (org_id, platform, ctx.campaign_id),
+            (org_id, platform, ctx.campaign_platform_id),
         ).fetchone()
         if row:
             return RoutingResult(
@@ -955,7 +955,7 @@ def quarantine_event(
     qid = f"q_{datetime.now(timezone.utc).timestamp()}".replace(".", "")
     conn.execute(
         """INSERT INTO unmapped_campaign_queue (
-               id, org_id, source_platform, campaign_id, campaign_name_raw,
+               id, org_id, source_platform, campaign_platform_id, campaign_name_raw,
                campaign_name_normalized, external_event_id, reason, status,
                payload_json, received_at
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))""",
@@ -963,7 +963,7 @@ def quarantine_event(
             qid,
             org_id,
             ctx.source_platform,
-            ctx.campaign_id,
+            ctx.campaign_platform_id,
             ctx.campaign_name_raw,
             ctx.campaign_name_normalized,
             external_event_id,
@@ -1341,19 +1341,19 @@ def assign_campaign_map(
     *,
     source_platform: str = "*",
     workspace_id: str,
-    campaign_id: Optional[str] = None,
+    campaign_platform_id: Optional[str] = None,
     campaign_name: Optional[str] = None,
     match_strategy: str = "id_exact",
     priority: int = 100,
 ) -> str:
-    if not campaign_id and not campaign_name:
-        raise ValueError("At least one of campaign_id or campaign_name is required for a mapping rule")
-    key = campaign_id or normalize_campaign_name(campaign_name) or "rule"
+    if not campaign_platform_id and not campaign_name:
+        raise ValueError("At least one of campaign_platform_id or campaign_name is required for a mapping rule")
+    key = campaign_platform_id or normalize_campaign_name(campaign_name) or "rule"
     safe_key = re.sub(r"[^\w.-]+", "_", str(key))
     map_id = f"map_{source_platform}_{match_strategy}_{safe_key}"
     conn.execute(
         """INSERT OR REPLACE INTO campaign_workspace_map (
-               id, org_id, source_platform, campaign_id, campaign_name_normalized,
+               id, org_id, source_platform, campaign_platform_id, campaign_name_normalized,
                workspace_id, match_strategy, priority, is_active, created_at, updated_at
            ) VALUES (
                ?, ?, ?, ?, ?, ?, ?, ?, 1,
@@ -1365,7 +1365,7 @@ def assign_campaign_map(
             map_id,
             org_id,
             source_platform,
-            campaign_id,
+            campaign_platform_id,
             normalize_campaign_name(campaign_name),
             workspace_id,
             match_strategy,

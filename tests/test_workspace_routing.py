@@ -108,7 +108,7 @@ def test_campaign_routing():
         DEFAULT_ORG_ID,
         source_platform="heyreach",
         workspace_id=ws_id,
-        campaign_id="hr_99",
+        campaign_platform_id="hr_99",
         match_strategy="id_exact",
     )
     conn.commit()
@@ -142,7 +142,7 @@ def test_heyreach_campaign_extraction_from_raw_payload():
     assert event_fields.get("campaign_id") == "425166"
 
     ctx = extract_campaign_context("heyreach", event_fields, raw)
-    assert ctx.campaign_id == "425166"
+    assert ctx.campaign_platform_id == "425166"
     assert ctx.campaign_name_raw == "Malaysia - HC Decrease Signal"
     assert ctx.campaign_name_normalized == "malaysia - hc decrease signal"
 
@@ -166,7 +166,7 @@ def test_calendly_scheduled_event_fields_are_extracted():
     assert "9907c70d" in (event_fields.get("campaign_id") or "")
 
     ctx = extract_campaign_context("calendly", event_fields, raw)
-    assert ctx.campaign_id == "9907c70d-fd3d-4f8f-8613-d834ddf4dae4"
+    assert ctx.campaign_platform_id == "9907c70d-fd3d-4f8f-8613-d834ddf4dae4"
     assert ctx.campaign_name_raw == "Acme Corp Discovery Call"
     assert ctx.campaign_name_normalized == "acme corp discovery call"
 
@@ -183,7 +183,7 @@ def test_calendly_utm_does_not_change_routing_campaign():
         },
     }
     ctx = extract_campaign_context("calendly", {}, raw)
-    assert ctx.campaign_id == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    assert ctx.campaign_platform_id == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     assert ctx.campaign_name_raw == "Shared Demo"
     assert ctx.campaign_name_normalized == "shared demo"
 
@@ -238,7 +238,7 @@ def test_prosp_camelcase_campaign_fields_are_extracted():
     assert event_fields.get("campaign_name") == "acme_corp | nace"
 
     ctx = extract_campaign_context("prosp", event_fields, raw)
-    assert ctx.campaign_id == "43795293-6fcf-444b-b246-04671a947fcd"
+    assert ctx.campaign_platform_id == "43795293-6fcf-444b-b246-04671a947fcd"
     assert ctx.campaign_name_raw == "acme_corp | nace"
     assert ctx.campaign_name_normalized == "acme_corp | nace"
 
@@ -250,7 +250,7 @@ def test_single_mode_routes_all_to_default():
     cfg["workspace_routing_mode"] = WORKSPACE_ROUTING_SINGLE
     om.save_config(cfg)
     om.sync_workspace_routing_mode_from_config()
-    om.add_campaign_map_cli("smartlead", "default", campaign_id="c1", campaign_name="Alpha")
+    om.add_campaign_map_cli("smartlead", "default", campaign_platform_id="c1", campaign_name="Alpha")
     event = {
         "platform": "smartlead",
         "event_type": "email_sent",
@@ -283,7 +283,7 @@ def test_multi_mode_quarantines_unmapped():
     _reset_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
     om.create_workspace("Team Alpha", slug="alpha")
-    om.add_campaign_map_cli("smartlead", "alpha", campaign_id="c1", campaign_name="Alpha")
+    om.add_campaign_map_cli("smartlead", "alpha", campaign_platform_id="c1", campaign_name="Alpha")
     ctx = extract_campaign_context(
         "smartlead",
         {"campaign_id": "missing", "campaign_name": "Ghost Campaign"},
@@ -320,7 +320,7 @@ def test_multi_mode_resolves_mapped_campaign():
     _reset_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
     om.create_workspace("Team Alpha", slug="alpha")
-    om.add_campaign_map_cli("smartlead", "alpha", campaign_id="c1", campaign_name="Alpha")
+    om.add_campaign_map_cli("smartlead", "alpha", campaign_platform_id="c1", campaign_name="Alpha")
     conn = om.get_conn()
     ctx = extract_campaign_context(
         "smartlead",
@@ -359,7 +359,7 @@ def test_ingest_quarantine_and_route():
     _reset_db()
     om.set_workspace_routing(WORKSPACE_ROUTING_MULTI)
     om.create_workspace("Team Alpha", slug="alpha")
-    om.add_campaign_map_cli("smartlead", "alpha", campaign_id="c1", campaign_name="Alpha")
+    om.add_campaign_map_cli("smartlead", "alpha", campaign_platform_id="c1", campaign_name="Alpha")
     event = {
         "platform": "smartlead",
         "event_type": "email_sent",

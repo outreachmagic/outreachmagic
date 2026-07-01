@@ -544,7 +544,7 @@ def _relay_event_timestamp(event: dict, normalize) -> Optional[str]:
         val = event.get(key)
         if val:
             return normalize(val)
-    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    payload = event.get("payload") or {}
     for key in ("timestamp", "created_at", "received_at", "event_time", "sent_on", "sent_at"):
         val = payload.get(key)
         if val:

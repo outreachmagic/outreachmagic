@@ -64,7 +64,7 @@ def _normalize_ts(ts: Optional[str]) -> Optional[str]:
 
 def _reprocess_event_timestamp(event: dict) -> Optional[str]:
     """Prefer original send timestamp (sent_on) over relay received time."""
-    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    payload = event.get("payload") or {}
     for key in ("sent_on", "sent_at"):
         val = payload.get(key)
         if val:
@@ -189,6 +189,8 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
             new_meta["campaign_platform_id"] = campaign_ctx.campaign_platform_id
         if event_fields.get("subject"):
             new_meta["subject"] = event_fields["subject"]
+        if event_fields.get("message_id"):
+            new_meta["message_id"] = event_fields["message_id"]
         body_text = event_fields.get("body")
         if body_text:
             new_meta["body"] = body_text

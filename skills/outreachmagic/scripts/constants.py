@@ -28,8 +28,8 @@ USAGE_WARNING_PERCENT = 80
 USAGE_CRITICAL_PERCENT = 95
 
 PIPELINE_STAGES = [
-    "prospecting", "contacted", "replied", "interested", "scheduled",
-    "won", "not_interested", "lost",
+    "prospecting", "contacted", "replied", "interested",
+    "scheduled", "won", "not_interested", "lost",
 ]
 
 STAGE_EMOJI = {

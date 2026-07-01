@@ -95,6 +95,8 @@ def _fetch_replay_page(
     after_id: int,
     to_id: Optional[int],
     platform: Optional[str],
+    *,
+    with_total: bool = False,
 ) -> dict:
     """Fetch one page of replay data from the relay."""
     if kind == "events":
@@ -103,6 +105,8 @@ def _fetch_replay_page(
             path += f"&max_id={to_id}"
         if platform:
             path += f"&platform={urllib.parse.quote(platform)}"
+        if with_total:
+            path += "&total=1"
         path += f"&limit={REPROCESS_PAGE_SIZE}"
     else:
         path = f"/api/v1/replay/snapshots?after_id={after_id}&kind={kind}"
@@ -112,7 +116,8 @@ def _fetch_replay_page(
     return _replay_http_get(f"{RELAY_URL}{path}", agent_key)
 
 
-def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, verbose: bool, reingest: bool = False) -> int:
+def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, verbose: bool, reingest: bool = False,
+                            _error_counter: list[int] | None = None) -> int:
     """Re-extract and batch-UPDATE events from one replay response page.
 
     Preserves any existing metadata_json fields that extractors don't touch.
@@ -120,6 +125,9 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
     When reingest=True, re-ingests all events from scratch (deletes existing
     local rows first, then re-runs full ingest) so metadata is refreshed from the
     latest D1 state.
+
+    If _error_counter (a single-element list) is passed, errors during re-ingest
+    are incremented into it for progress reporting by the caller.
     """
     # Collect all relay_ids in this batch to load existing metadata in one query.
     relay_ids = [evt.get("relay_id") for evt in events if evt.get("relay_id") is not None]
@@ -156,46 +164,78 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
     # ingest_relay_event also writes metadata_json and bounce tables, so
     # re-ingested events are skipped in the metadata overlay / bounce loop below.
     reingested_rids: set[int] = set()
+    # Track events whose existing row was deleted but re-ingest failed,
+    # so the overlay loop below skips them (no row to UPDATE).
+    failed_deleted_rids: set[int] = set()
     if reingest:
-        from relay_ingest import ingest_relay_event  # noqa: PLC0415
+        from relay_ingest import (
+            ingest_relay_event,  # noqa: PLC0415
+            mark_relay_ingested_many,
+        )
 
+        # Phase 1: Delete all existing rows & dedup entries for the batch.
+        # Do ALL deletes first then commit, so relay_already_ingested() (which
+        # opens its own connection) sees clean state.
         for evt in events:
             rid = evt.get("relay_id")
             if rid is None:
                 continue
-            # Delete existing row so we get a clean re-ingest.
             existing_id = event_id_map.get(rid)
+            dedupe_key = f"relay:{rid}"
+            ws_key = f"ws:{dedupe_key}"
             if existing_id is not None:
-                # Clear any bounce_events FK references to this event ID so
-                # the DELETE doesn't trigger FK violations.
                 conn.execute(
                     "UPDATE bounce_events SET first_event_id = NULL, latest_event_id = NULL "
                     "WHERE first_event_id = ? OR latest_event_id = ?",
                     (existing_id, existing_id),
                 )
-                # Clear relay_ingested dedup entry so re-ingest isn't skipped
-                # as a duplicate (ingest_relay_event checks relay_already_ingested).
+                conn.execute("DELETE FROM relay_ingested WHERE dedupe_key = ?", (dedupe_key,))
                 conn.execute(
-                    "DELETE FROM relay_ingested WHERE dedupe_key = ?",
-                    (f"relay:{rid}",),
+                    "DELETE FROM workspace_lead_events WHERE org_id = ? AND idempotency_key = ?",
+                    (DEFAULT_ORG_ID, ws_key),
                 )
                 conn.execute("DELETE FROM events WHERE id = ?", (existing_id,))
             else:
-                # Event not in local DB — clear dedup entry anyway in case a
-                # prior --reingest deleted it but left the dedup marker.
+                conn.execute("DELETE FROM relay_ingested WHERE dedupe_key = ?", (dedupe_key,))
                 conn.execute(
-                    "DELETE FROM relay_ingested WHERE dedupe_key = ?",
-                    (f"relay:{rid}",),
+                    "DELETE FROM workspace_lead_events WHERE org_id = ? AND idempotency_key = ?",
+                    (DEFAULT_ORG_ID, ws_key),
                 )
+        conn.commit()
+
+        # Phase 2: Re-ingest from scratch.  Use defer_mark so
+        # mark_relay_ingested (which opens its own connection) doesn't block
+        # on our main connection's pending transaction.
+        pending_marks: list[tuple[str, int | None]] = []
+        for evt in events:
+            rid = evt.get("relay_id")
+            if rid is None:
+                continue
             try:
-                ingested = ingest_relay_event(evt, quiet=True, pull_conn=conn)
+                ingested = ingest_relay_event(
+                    evt, quiet=True, pull_conn=conn,
+                    defer_mark=True, pending_marks=pending_marks,
+                )
                 if ingested is not None:
                     reingested_rids.add(rid)
                     existing_map[rid] = {}
                     event_id_map[rid] = ingested
+                elif event_id_map.get(rid) is not None:
+                    # Event existed, was deleted in Phase 1, but re-ingest
+                    # returned None (e.g. quarantined).  Mark as failed so
+                    # the overlay loop skips the stale relay_id.
+                    failed_deleted_rids.add(rid)
             except Exception as exc:
-                if not verbose:
-                    print(f"  [reprocess] ingest failed relay_id={rid}: {exc}", file=sys.stderr)
+                print(f"  [reprocess] ingest failed relay_id={rid}: {exc}", file=sys.stderr)
+                if _error_counter is not None:
+                    _error_counter[0] += 1
+                if event_id_map.get(rid) is not None:
+                    failed_deleted_rids.add(rid)
+
+        # Write pending dedup marks on our shared connection so no second
+        # connection tries to grab the write lock.
+        if pending_marks:
+            mark_relay_ingested_many(pending_marks, conn=conn, commit=False)
 
     # Pre-fetch lead emails for bounce re-classification.
     lead_ids = list(set(lead_id_map.values()))
@@ -214,7 +254,7 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
         if relay_id is None:
             continue
         # Re-ingested events already have fresh data from ingest_relay_event.
-        if relay_id in reingested_rids:
+        if relay_id in reingested_rids or relay_id in failed_deleted_rids:
             continue
 
         platform = evt.get("platform", "unknown")
@@ -326,15 +366,16 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
                             file=sys.stderr,
                         )
 
-    if not col_updates:
+    if not col_updates and not reingested_rids:
         return 0
 
-    conn.executemany(
-        "UPDATE events SET metadata_json = ?, subject = COALESCE(?, subject), created_at = COALESCE(?, created_at) WHERE relay_id = ?",
-        [(uj, subj, cat, rid) for uj, subj, cat, rid in col_updates],
-    )
+    if col_updates:
+        conn.executemany(
+            "UPDATE events SET metadata_json = ?, subject = COALESCE(?, subject), created_at = COALESCE(?, created_at) WHERE relay_id = ?",
+            [(uj, subj, cat, rid) for uj, subj, cat, rid in col_updates],
+        )
     conn.commit()
-    return len(col_updates)
+    return max(len(col_updates), len(reingested_rids))
 
 
 def reprocess_events(
@@ -360,24 +401,69 @@ def reprocess_events(
 
     total_updated = 0
     total_fetched = 0
+    error_count = 0
     after_id = from_id
     pages = 0
+    total_count: Optional[int] = None
+    estimated_pages: Optional[int] = None
     started = time.monotonic()
+    last_print = time.monotonic()
 
     try:
         while True:
-            result = _fetch_replay_page(agent_key, "events", after_id, to_id, platform)
+            # First page gets total_count; subsequent pages skip it.
+            first_page = pages == 0
+            result = _fetch_replay_page(agent_key, "events", after_id, to_id, platform, with_total=first_page)
             events = result.get("events") or []
             if not events:
                 break
             total_fetched += len(events)
 
+            # Capture total_count from first response.
+            if first_page:
+                total_count = result.get("total_count")
+                if total_count:
+                    estimated_pages = max(1, (total_count + REPROCESS_PAGE_SIZE - 1) // REPROCESS_PAGE_SIZE)
+
             if not dry_run:
-                updated = _reprocess_events_batch(conn, events, verbose=verbose, reingest=reingest)
+                error_counter = [0]
+                updated = _reprocess_events_batch(
+                    conn, events, verbose=verbose, reingest=reingest,
+                    _error_counter=error_counter,
+                )
                 total_updated += updated
+                error_count += error_counter[0]
 
             after_id = result.get("next_after_id", after_id)
             pages += 1
+
+            now = time.monotonic()
+            if now - last_print >= 10 or not result.get("has_more"):
+                elapsed = now - started
+                rate = total_fetched / elapsed if elapsed > 0 else 0
+                page_info = f"page {pages}"
+                if estimated_pages:
+                    page_info += f"/{estimated_pages}"
+                total_info = str(total_fetched)
+                if total_count:
+                    total_info += f"/{total_count}"
+                eta = ""
+                if rate > 0 and total_count and total_fetched < total_count:
+                    remaining = total_count - total_fetched
+                    eta_sec = int(remaining / rate)
+                    if eta_sec >= 60:
+                        eta = f" · ~{eta_sec // 60}m{eta_sec % 60:02d}s remaining"
+                    else:
+                        eta = f" · ~{eta_sec}s remaining"
+                error_info = ""
+                if error_count:
+                    error_info = f", {error_count} errors"
+                print(
+                    f"  ⏳ {page_info} · {total_info} events · "
+                    f"{elapsed:.0f}s ({rate:.0f} ev/s){eta}{error_info}",
+                    file=sys.stderr,
+                )
+                last_print = now
 
             if not result.get("has_more"):
                 break
@@ -391,7 +477,9 @@ def reprocess_events(
         "pages": pages,
         "fetched": total_fetched,
         "updated": total_updated,
+        "errors": error_count,
         "dry_run": dry_run,
         "elapsed_s": round(elapsed, 1),
         "rate": round(total_fetched / elapsed, 0) if elapsed > 0 else 0,
+        "total_count": total_count,
     }

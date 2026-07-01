@@ -12388,13 +12388,67 @@ def main():
                 )
                 continue
 
+            # ── Summary card ────────────────────────────────────────────────
+            fetched = result.get("fetched", 0)
+            updated = result.get("updated", 0)
+            pages = result.get("pages", 0)
+            elapsed = result.get("elapsed_s", 0)
+            rate = result.get("rate", 0)
+            errors = result.get("errors", 0)
+            total_count = result.get("total_count")
+            kind_label = kind.upper()
+
+            elapsed_fmt = f"{int(elapsed // 60)}m {int(elapsed % 60):02d}s" if elapsed >= 60 else f"{elapsed:.0f}s"
+            dry_tag = " [DRY RUN]" if args.dry_run else ""
+            check = "✅" if errors == 0 else "⚠️"
+            count_line = f"   Events:     {fetched} fetched"
+            if total_count:
+                count_line += f" / {total_count} total"
+            count_line += f" · {updated} updated"
+
             print(
-                f"[reprocess] {kind}: "
-                f"{'[DRY RUN] ' if args.dry_run else ''}"
-                f"{result.get('updated', 0)} updated, "
-                f"{result.get('fetched', 0)} fetched, "
-                f"{result.get('pages', 0)} pages, "
-                f"{result.get('elapsed_s', 0)}s",
+                file=sys.stderr,
+            )
+            print(
+                f"  ────────────────────────────────────────{dry_tag}",
+                file=sys.stderr,
+            )
+            print(
+                f"  {check} {kind_label} reprocess complete",
+                file=sys.stderr,
+            )
+            print(
+                f"   Platform:   {args.platform or 'all'}",
+                file=sys.stderr,
+            )
+            print(
+                count_line,
+                file=sys.stderr,
+            )
+            print(
+                f"   Pages:      {pages}",
+                file=sys.stderr,
+            )
+            print(
+                f"   Duration:   {elapsed_fmt}",
+                file=sys.stderr,
+            )
+            print(
+                f"   Rate:       {int(rate)} ev/s",
+                file=sys.stderr,
+            )
+            if errors:
+                print(
+                    f"   Errors:     {errors} ⚠️",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"   Errors:     0",
+                    file=sys.stderr,
+                )
+            print(
+                f"  ────────────────────────────────────────",
                 file=sys.stderr,
             )
 

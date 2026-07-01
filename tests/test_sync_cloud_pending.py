@@ -33,12 +33,24 @@ class TimestampSyncTests(unittest.TestCase):
     def test_set_and_get_last_sync_roundtrip(self):
         ts = "2026-06-27T12:00:00Z"
         om.set_last_sync(ts)
-        self.assertEqual(om.get_last_sync(), ts)
+        # set_last_sync normalizes to SQLite-compatible format
+        self.assertEqual(om.get_last_sync(), "2026-06-27 12:00:00")
 
     def test_set_last_sync_overwrites_previous(self):
         om.set_last_sync("2026-06-01T00:00:00Z")
         om.set_last_sync("2026-06-27T00:00:00Z")
-        self.assertEqual(om.get_last_sync(), "2026-06-27T00:00:00Z")
+        # set_last_sync normalizes to SQLite-compatible format
+        self.assertEqual(om.get_last_sync(), "2026-06-27 00:00:00")
+
+    def test_get_last_sync_normalizes_old_iso_format(self):
+        """Legacy configs may have ISO-format last_sync. get_last_sync normalizes."""
+        with mock.patch.object(om, 'load_config', return_value={"last_sync": "2026-06-27T12:00:00.500000+00:00"}):
+            self.assertEqual(om.get_last_sync(), "2026-06-27 12:00:00")
+
+    def test_get_last_sync_passes_through_sqlite_format(self):
+        """If config already has SQLite-compatible format, pass through unchanged."""
+        with mock.patch.object(om, 'load_config', return_value={"last_sync": "2026-06-27 12:00:00"}):
+            self.assertEqual(om.get_last_sync(), "2026-06-27 12:00:00")
 
     def test_lead_with_updated_at_after_last_sync_is_pending(self):
         om.set_last_sync("2026-06-01T00:00:00Z")
@@ -115,7 +127,7 @@ class TimestampSyncTests(unittest.TestCase):
         om.set_last_sync("2026-06-27T12:00:00Z")
         new_ts = om.get_last_sync()
         self.assertNotEqual(new_ts, initial_ts)
-        self.assertEqual(new_ts, "2026-06-27T12:00:00Z")
+        self.assertEqual(new_ts, "2026-06-27 12:00:00")
 
     def test_resolve_lead_relay_sync_marks_updated_at(self):
         """verify that resolve_lead still works correctly (cloud_pending column removed)."""

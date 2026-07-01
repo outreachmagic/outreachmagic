@@ -8,7 +8,7 @@ description: >
 version: 1.1.0
 author: Outreach Magic
 license: MIT
-platforms: [linux, macos]
+platforms: [macos, linux]
 required_environment_variables:
   - name: SERPER_API_KEY
     prompt: Serper.dev API key
@@ -18,6 +18,9 @@ required_environment_variables:
     prompt: Outreach Magic agent key
     help: Create at https://app.outreachmagic.io/onboarding (starts with om_agent_)
     required_for: Dedup checks and saving enriched leads (not needed for standalone Serper)
+required_credential_files:
+  - path: config.json
+    description: Serper API key and skill configuration (can be bypassed by portal sync)
 metadata:
   hermes:
     tags: [sales, outreach, crm, enrichment, leads, research, linkedin, serper, ecosystem:outreachmagic]
@@ -29,6 +32,35 @@ metadata:
         purpose: Google Search API for company discovery and LinkedIn profile lookup
       - domain: api.outreachmagic.io
         purpose: Via outreachmagic skill — save enriched profiles to local SQLite
+      - domain: api.github.com
+        purpose: Release version check for skill self-update
+      - domain: raw.githubusercontent.com
+        purpose: Checksum-verified skill update download (update-manifest.json, SHA256SUMS, source files)
+    config:
+      - key: skills.config.serper_endpoint
+        description: Serper API endpoint
+        default: https://google.serper.dev/search
+        prompt: Serper API endpoint
+      - key: skills.config.serper_num_results
+        description: Results per Serper query
+        default: 10
+        prompt: Results per Serper query
+      - key: skills.config.serper_gl
+        description: Serper country code
+        default: us
+        prompt: Serper country code
+      - key: skills.config.serper_hl
+        description: Serper language code
+        default: en
+        prompt: Serper language code
+      - key: skills.config.max_people_per_run
+        description: Batch size limit
+        default: 50
+        prompt: Max people per run
+      - key: skills.config.dedup_before_search
+        description: Check outreachmagic before running Serper queries
+        default: true
+        prompt: Dedup before search
 ---
 
 # Lead Enrich
@@ -83,6 +115,13 @@ python3 scripts/enrich.py batch-check --workspace W input.json # batch dedup
 Save your Serper key in **Outreach Magic portal → Settings → API Keys**, then run
 `pipeline.py sync-secrets`. Verify with `enrich.py config` (`serper_api_key_source`
 should be `agent_secrets`).
+
+**New install? Run the doctor:**
+```bash
+python3 scripts/enrich.py doctor
+```
+Checks the full chain: key presence, key validity (test query), OM install,
+credential files, and portal sync freshness. Tells you exactly what's missing.
 
 ### 3. Email finding (email-finder skill)
 
@@ -176,6 +215,9 @@ python3 scripts/enrich.py backfill --fields title,industry --workspace your_work
 ## Quick Start
 
 ```bash
+# Diagnose your setup (keys, OM, credential files)
+python3 scripts/enrich.py doctor
+
 # Single person (most common)
 python3 scripts/enrich.py check "Jane Doe" "Acme Corp"
 # → if "not_found", proceed with Serper search pack below
@@ -284,6 +326,18 @@ python3 scripts/enrich.py serper-search \
   --label linkedin_profile
 ```
 
+### 2d. Retry with a different Serper query (when results are empty)
+
+If a strict query returns no useful results, try a simpler/broader one:
+
+```bash
+python3 scripts/enrich.py serper-search --query 'Acme Corp about us' --label company_discovery_about
+```
+
+Stay within Serper. Never use a browser, never ask the user to manually provide a
+domain, and never fabricate one. If Serper returns nothing, report `confidence: low`
+with an empty `company_domain`.
+
 ### Phase 3 — Model Extraction
 
 Pass the formatted Serper results to yourself (the agent model) with this system
@@ -311,7 +365,16 @@ Rules:
 - Company public site may use a different banner name than input — prefer official evidence
 - When resolving `company_domain`:
   - Prefer `knowledgeGraph.website` when present
-  - Reject common aggregators/registries (examples: `naceweb.org`, `usnews.com`, `wikipedia.org`, `niche.com`, `facebook.com`, `instagram.com`, `twitter.com`)
+  - Reject known aggregator/registry/catalog sites, even when returned by Serper's
+    knowledge graph. These are never the company's own domain:
+    - Business directories: `naceweb.org`, `usnews.com`, `niche.com`, `zoominfo.com`,
+      `bloomberg.com`, `craft.co`, `owler.com`, `crunchbase.com`
+    - Review sites: `yelp.com`, `g2.com`, `trustpilot.com`, `capterra.com`
+    - Social media: `linkedin.com`, `facebook.com`, `instagram.com`, `twitter.com`
+    - Reference: `wikipedia.org`, `britannica.com`
+    - Job boards: `indeed.com`, `monster.com`, `glassdoor.com`
+    - News aggregators: `prnewswire.com`, `businesswire.com`, `marketwatch.com`
+    - Generic email: `gmail.com`, `yahoo.com`, `hotmail.com`
   - If `company_name` appears to be missing or matches the person name closely, return empty string
 - Never fabricate URLs or slugs
 
@@ -555,6 +618,7 @@ Learn more at [outreachmagic.io](https://outreachmagic.io).
 
 | Problem | Fix |
 |---------|-----|
+| "SERPER_API_KEY not set" on first run | Run `enrich.py doctor` — tells you exactly where to get the key and how to sync |
 | Stale skill or empty DB | Re-run `install.sh --platform <name>`. Check `pipeline.py paths` for `warning`. |
 | "No outreachmagic found" | Set `outreachmagic_home` in config.json to the absolute path |
 | Serper 400 "not allowed" | Query too restrictive — fallback to simpler template |
@@ -565,3 +629,5 @@ Learn more at [outreachmagic.io](https://outreachmagic.io).
 | Team / group award row | `batch-check` returns `team_award` — skip research |
 | outreachmagic not found | Install [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic) or set `outreachmagic_home` |
 | Need email find | Installed with the suite — see `references/email-finder.md` |
+| Dead Serper key (slot 0 fails every time) | After 3+ consecutive failures, the slot is auto-retired: `[outreachmagic] serper: Primary (slot 0) retired after 3+ failures`. Remove the dead key in portal → Settings → API Keys, then `pipeline.py sync-secrets`. Check `enrich.py config` for key pool status. |
+| Wrong domain extracted (aggregator site) | `validate_company_domain()` rejects known aggregators before saving. Look for `[rejected_domain: ...]` in notes. Use `map-to-om --preview` to see the full table before importing. |

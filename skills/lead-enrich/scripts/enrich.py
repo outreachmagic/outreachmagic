@@ -17,6 +17,8 @@ Usage:
     enrich.py serper-search --query "..."     # Run one Serper search (stdlib)
     enrich.py serper-format results.json      # Format Serper results for model
     enrich.py map-to-om research.json         # Map to outreachmagic import format
+    enrich.py map-to-om --preview research.json  # Preview enrichment table before saving
+    enrich.py doctor                          # Diagnose setup: keys, OM, credential files
     enrich.py update --check                  # Check latest lead-enrich release
     enrich.py update                          # Install latest lead-enrich release
     enrich.py update --tag v1.1.5             # Install a specific release tag
@@ -32,6 +34,7 @@ import re
 import subprocess
 import sys
 import hashlib
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -237,6 +240,80 @@ def find_outreachmagic(config: dict[str, Any]) -> Optional[Path]:
 
 get_pipeline_path = cc.get_pipeline_path
 _outreachmagic_agent_key_status = cc.outreachmagic_agent_key_status
+
+
+# ── Domain validation ─────────────────────────────────────────────────────────
+# Known aggregator / catalog / registry domains that Serper's knowledge graph
+# sometimes returns instead of the real company website.  These are never valid
+# as a company domain for a specific organization.
+_AGGREGATOR_DOMAINS: frozenset[str] = frozenset({
+    # Business directories & registries
+    "naceweb.org", "usnews.com", "niche.com", "zoominfo.com",
+    "bloomberg.com", "reuters.com", "finance.yahoo.com",
+    "craft.co", "owler.com", "cbinsights.com", "crunchbase.com",
+    "linkedin.com", "facebook.com", "instagram.com", "twitter.com",
+    "x.com", "glassdoor.com", "indeed.com", "greatplacetowork.com",
+    "bizjournals.com", "inc.com", "forbes.com",
+    # Wikipedia & reference
+    "wikipedia.org", "britannica.com", "wikidata.org",
+    # Government registries
+    "sec.gov", "businesssearch.sos.ca.gov", "ecorp.sos.ga.gov",
+    "sos.state.*.us", "bbb.org",
+    # Review sites
+    "yelp.com", "g2.com", "trustpilot.com", "capterra.com",
+    "g2crowd.com", "getapp.com",
+    # Job boards (not company sites)
+    "indeed.com", "monster.com", "ziprecruiter.com",
+    "linkedin.com/jobs", "glassdoor.com/jobs",
+    # News / press release aggregators
+    "prnewswire.com", "businesswire.com", "globenewswire.com",
+    "marketwatch.com", "benzinga.com",
+    # Catch-all: social media / video
+    "youtube.com", "tiktok.com", "pinterest.com",
+    "medium.com", "substack.com",
+})
+
+
+def validate_company_domain(domain: str, company_name: str) -> tuple[str, str]:
+    """Check a candidate domain against known aggregators and common pitfalls.
+
+    Returns (cleaned_domain, warning) where cleaned_domain is empty string
+    when the domain should be rejected, and warning explains why.
+    """
+    d = (domain or "").strip().lower()
+    if not d:
+        return ("", "")
+
+    # Remove www. prefix
+    if d.startswith("www."):
+        d = d[4:]
+
+    # Direct aggregator match
+    if d in _AGGREGATOR_DOMAINS:
+        return ("", f"Rejected aggregator domain: {d} (not the company's own site)")
+
+    # Wildcard aggregator match (e.g. sos.state.*.us)
+    for bad in _AGGREGATOR_DOMAINS:
+        if "*" in bad:
+            pattern = "^" + re.escape(bad).replace(r"\*", ".+") + "$"
+            if re.match(pattern, d):
+                return ("", f"Rejected aggregator domain: {d} (matches {bad})")
+
+    # Check if the company name looks like a person name (no domain expected)
+    if company_name and len(company_name.split()) <= 2:
+        # Very short company names can still have domains. Only flag if domain
+        # is obviously generic (e.g. gmail.com, yahoo.com)
+        pass
+
+    # Generic email domains — never valid as company domain
+    generic_domains = frozenset({
+        "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
+        "aol.com", "icloud.com", "protonmail.com", "mail.com",
+    })
+    if d in generic_domains:
+        return ("", f"Rejected generic email domain: {d}")
+
+    return (d, "")
 
 
 # ── Company matching (dedup) ─────────────────────────────────────────────────
@@ -988,6 +1065,20 @@ def map_to_outreachmagic(
     domain = (enrichment.get("company_domain") or "").strip()
     if not domain:
         domain = _professional_domain_from_email(person.get("email"))
+    # Validate domain — reject aggregators and generic domains before saving
+    if domain:
+        validated, warning = validate_company_domain(domain, person.get("company_name", ""))
+        if not validated and warning:
+            # Domain was rejected — try email-derived domain as fallback
+            notes_parts.append(f"[rejected_domain: {domain} — {warning}]")
+            email_domain = _professional_domain_from_email(person.get("email"))
+            if email_domain:
+                email_validated, _ = validate_company_domain(email_domain, person.get("company_name", ""))
+                domain = email_validated
+            else:
+                domain = ""
+        else:
+            domain = validated
     website = enrichment.get("company_website", "")
     confidence = enrichment.get("confidence", "")
     note = enrichment.get("note", "")
@@ -1036,6 +1127,7 @@ def map_to_outreachmagic(
 
     return {
         "profile": profile,
+        "confidence": confidence,
         "can_import_via_import_profiles": can_import,
         "linkedin": linkedin,
         "workspace": workspace,
@@ -1181,6 +1273,230 @@ def cmd_config() -> None:
     cfg["_outreachmagic_agent_key_source"] = key_source
 
     print(json.dumps(cfg, indent=2))
+
+
+def _key_fingerprint(key: str) -> str:
+    """Masked key for display."""
+    k = (key or "").strip()
+    if len(k) <= 8:
+        return "···"
+    return f"{k[:6]}…{k[-4:]}"
+
+
+def cmd_doctor() -> None:
+    """Diagnose setup: keys, OM, credential files, portal sync status."""
+    ensure_hermes_env_loaded()
+    cfg = load_config()
+    om_dir = find_outreachmagic(cfg)
+    issues: list[str] = []
+    checks: list[dict[str, Any]] = []
+
+    # 1. SERPER_API_KEY presence
+    serper_env = os.environ.get("SERPER_API_KEY", "").strip()
+    serper_cfg = (cfg.get("serper_api_key") or "").strip()
+    if serper_env:
+        source = cc.companion_api_key_source("SERPER_API_KEY", skill_dir=_find_skill_dir())
+        checks.append({
+            "check": "SERPER_API_KEY",
+            "status": "ok",
+            "value": _key_fingerprint(serper_env),
+            "source": source or "unknown",
+        })
+    elif serper_cfg:
+        checks.append({
+            "check": "SERPER_API_KEY",
+            "status": "warn",
+            "value": _key_fingerprint(serper_cfg),
+            "source": "config.json (not via portal sync)",
+            "detail": "Key in config.json but not agent_secrets.env. Portal sync recommended.",
+        })
+        issues.append("SERPER_API_KEY in config.json, not portal-synced agent_secrets.env")
+    else:
+        checks.append({
+            "check": "SERPER_API_KEY",
+            "status": "fail",
+            "value": "not set",
+            "source": "",
+            "detail": "Add at https://app.outreachmagic.io → Settings → API Keys, then run pipeline.py sync-secrets",
+        })
+        issues.append("SERPER_API_KEY is not set")
+
+    # 2. Backup keys
+    for slot in (1, 2, 3):
+        bk = os.environ.get(f"SERPER_API_KEY__{slot}", "").strip()
+        if bk:
+            bk_source = cc.companion_api_key_source(
+                f"SERPER_API_KEY__{slot}", skill_dir=_find_skill_dir()
+            )
+            checks.append({
+                "check": f"SERPER_API_KEY__{slot}",
+                "status": "ok",
+                "value": _key_fingerprint(bk),
+                "source": bk_source or "unknown",
+            })
+
+    # 3. Key test — only if we have a key
+    serper_key = serper_env or serper_cfg
+    if serper_key:
+        try:
+            test_result = _serper_search_with_key(serper_key, "test", cfg)
+            if test_result.get("organic") is not None or test_result.get("knowledgeGraph"):
+                checks.append({
+                    "check": "serper_key_test",
+                    "status": "ok",
+                    "value": "key valid (test query succeeded)",
+                })
+            else:
+                checks.append({
+                    "check": "serper_key_test",
+                    "status": "warn",
+                    "value": "key responded but no organic results",
+                    "detail": "Key valid but returned empty results. May have search quota issues.",
+                })
+        except ValueError as exc:
+            checks.append({
+                "check": "serper_key_test",
+                "status": "fail",
+                "value": str(exc)[:200],
+                "detail": "Test query failed. Key may be expired, revoked, or out of credits.",
+            })
+            issues.append(f"SERPER_API_KEY test failed: {exc}")
+
+    # 4. Outreach Magic presence
+    if om_dir:
+        pipeline = cc.get_pipeline_path(om_dir)
+        checks.append({
+            "check": "outreachmagic",
+            "status": "ok",
+            "value": str(om_dir),
+            "detail": f"pipeline.py: {pipeline.exists()}",
+        })
+        key_set, key_source = cc.outreachmagic_agent_key_status(om_dir)
+        if key_set:
+            checks.append({
+                "check": "outreachmagic_agent_key",
+                "status": "ok",
+                "value": key_source,
+            })
+        else:
+            checks.append({
+                "check": "outreachmagic_agent_key",
+                "status": "warn",
+                "value": "not set",
+                "detail": (
+                    "Set via pipeline.py login or add to outreachmagic_config.json. "
+                    "Required for dedup + save."
+                ),
+            })
+            issues.append("OUTREACHMAGIC_AGENT_KEY not set")
+        secrets_path = om_dir / "config" / "agent_secrets.env"
+        if secrets_path.is_file():
+            age_days = (time.time() - secrets_path.stat().st_mtime) / 86400
+            if age_days > 7:
+                checks.append({
+                    "check": "agent_secrets.env",
+                    "status": "warn",
+                    "value": f"{age_days:.0f} days old",
+                    "detail": "Older than 7 days. Run pipeline.py sync-secrets to refresh.",
+                })
+                issues.append("agent_secrets.env is stale (>7 days)")
+            else:
+                checks.append({
+                    "check": "agent_secrets.env",
+                    "status": "ok",
+                    "value": f"{age_days:.0f} days old",
+                })
+        else:
+            checks.append({
+                "check": "agent_secrets.env",
+                "status": "warn",
+                "value": "not found",
+                "detail": "Run pipeline.py sync-secrets to pull portal API keys.",
+            })
+            if serper_env and not serper_cfg:
+                issues.append("agent_secrets.env missing — keys from other sources may not persist")
+    else:
+        checks.append({
+            "check": "outreachmagic",
+            "status": "warn",
+            "value": "not installed",
+            "detail": (
+                "Without OM: no dedup before Serper (credits wasted on re-research), "
+                "results not saved to local DB."
+            ),
+        })
+        issues.append("outreachmagic not installed")
+
+    # 5. Credential files
+    skill_dir = _find_skill_dir()
+    expected_files = [
+        ("config.json", skill_dir / "config.json"),
+        ("companion_common.py", skill_dir / "scripts" / "companion_common.py"),
+        ("enrich.py", skill_dir / "scripts" / "enrich.py"),
+    ]
+    for label, path in expected_files:
+        if path.is_file():
+            checks.append({
+                "check": f"file:{label}",
+                "status": "ok",
+                "value": str(path),
+            })
+        else:
+            checks.append({
+                "check": f"file:{label}",
+                "status": "fail",
+                "value": "missing",
+                "detail": f"Expected at {path}",
+            })
+            issues.append(f"Missing file: {path}")
+
+    # 6. Batch-lead-lookup test (if OM installed)
+    if om_dir:
+        try:
+            test_lookup = cc.run_batch_lead_lookup(
+                om_dir, [{"name": "__doctor_test__"}],
+                skill_dir=_find_skill_dir(),
+            )
+            status = "ok" if test_lookup.get("status") == "ok" else "warn"
+            checks.append({
+                "check": "batch_lead_lookup",
+                "status": status,
+                "value": str(test_lookup.get("results", [])[:1]),
+            })
+        except RuntimeError as exc:
+            checks.append({
+                "check": "batch_lead_lookup",
+                "status": "fail",
+                "value": str(exc)[:200],
+            })
+
+    # 7. API key pool report
+    try:
+        akp, _, _ = cc.require_api_key_pool()
+        pool_keys = akp("SERPER_API_KEY")
+        checks.append({
+            "check": "serper_pool_size",
+            "status": "ok" if pool_keys else "warn",
+            "value": f"{len(pool_keys)} key(s)" if pool_keys else "0 keys",
+        })
+    except Exception as exc:
+        checks.append({
+            "check": "serper_pool_size",
+            "status": "warn",
+            "value": str(exc)[:200],
+        })
+
+    result: dict[str, Any] = {
+        "status": "issues_found" if issues else "ok",
+        "issues": issues,
+        "issue_count": len(issues),
+        "checks": checks,
+    }
+    print(json.dumps(result, indent=2))
+    if issues:
+        print("\nRecommendations:", file=sys.stderr)
+        for issue in issues:
+            print(f"  \u2022 {issue}", file=sys.stderr)
 
 
 def cmd_check(
@@ -1440,7 +1756,30 @@ def cmd_serper_format(input_file: str) -> None:
     print(formatted)
 
 
-def cmd_map_to_om(input_file: str, workspace: str = "") -> None:
+def _format_preview_table(results: list[dict[str, Any]]) -> str:
+    """Format a human-readable preview table of enrichment results."""
+    lines: list[str] = []
+    lines.append("Preview — Enrichment Results")
+    lines.append(f"{'Name':30s} {'Company':25s} {'Domain':25s} {'LinkedIn?':10s} {'Confidence':12s}")
+    lines.append("-" * 102)
+    for r in results:
+        profile = r.get("profile", {})
+        p = r.get("_person", {})
+        name = (profile.get("name") or p.get("full_name", ""))[:29]
+        company = (profile.get("company") or p.get("company_name", ""))[:24]
+        domain = (profile.get("company_domain", "") or "")[:24]
+        linkedin = "yes" if profile.get("linkedin") else "no"
+        linkedin_display = "yes" if linkedin == "yes" else "no"
+        conf = str(r.get("confidence") or "")[:11]
+        lines.append(f"{name:30s} {company:25s} {domain:25s} {linkedin_display:10s} {conf:12s}")
+    lines.append("-" * 102)
+    can_import = sum(1 for r in results if r.get("can_import_via_import_profiles"))
+    lines.append(f"Total: {len(results)} | Can import: {can_import} | "
+                 f"No identity: {len(results) - can_import}")
+    return "\n".join(lines)
+
+
+def cmd_map_to_om(input_file: str, workspace: str = "", *, preview: bool = False) -> None:
     """Map research output to outreachmagic import format."""
     data = json.loads(Path(input_file).read_text())
 
@@ -1457,6 +1796,9 @@ def cmd_map_to_om(input_file: str, workspace: str = "") -> None:
         mapped["_person"] = person
         results.append(mapped)
 
+    if preview:
+        print(_format_preview_table(results))
+        return
     print(json.dumps(results, indent=2))
 
 
@@ -1572,6 +1914,8 @@ def main() -> None:
 
     if cmd == "config":
         cmd_config()
+    elif cmd == "doctor":
+        cmd_doctor()
     elif cmd == "check":
         if len(argv) < 3:
             print("Usage: enrich.py check [--workspace W] [--force] [--skip-tagged] 'Name' 'Company'")
@@ -1693,9 +2037,20 @@ def main() -> None:
         cmd_serper_format(argv[1])
     elif cmd == "map-to-om":
         if len(argv) < 2:
-            print("Usage: enrich.py map-to-om [--workspace W] research_output.json")
+            print("Usage: enrich.py map-to-om [--workspace W] [--preview] research_output.json")
             sys.exit(1)
-        cmd_map_to_om(argv[1], workspace)
+        mo_preview = False
+        mo_input = ""
+        mo_args = list(argv)
+        for i in range(1, len(mo_args)):
+            if mo_args[i] == "--preview":
+                mo_preview = True
+            elif not mo_args[i].startswith("--"):
+                mo_input = mo_args[i]
+        if not mo_input:
+            print("error: input file required")
+            sys.exit(1)
+        cmd_map_to_om(mo_input, workspace, preview=mo_preview)
     elif cmd == "update":
         check_only = False
         explicit_tag = ""

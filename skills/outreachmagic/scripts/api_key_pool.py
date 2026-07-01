@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import urllib.error
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -28,6 +29,61 @@ API_KEY_PROVIDERS: tuple[dict[str, str], ...] = (
 )
 
 _STATUS_FILENAME = "api_key_status.json"
+
+# ── Session-level dead slot tracking ──────────────────────────────────────────
+# After CONSECUTIVE_FAILURES_LIMIT consecutive failures on a slot within one
+# Python process lifetime, the slot is "retired" and skipped for the rest of the
+# session.  This prevents the primary key from being retried (and failing) on
+# every single call when it is known to be dead.
+CONSECUTIVE_FAILURES_LIMIT = 3
+
+_session_failures: dict[tuple[str, int], int] = defaultdict(int)
+"""{(provider, slot): consecutive_failure_count}"""
+
+_session_retired: set[tuple[str, int]] = set()
+"""{(provider, slot)} — slots permanently skipped for this session."""
+
+
+def _record_failure(provider: str, slot: int) -> None:
+    key = (provider, slot)
+    _session_failures[key] += 1
+    if _session_failures[key] >= CONSECUTIVE_FAILURES_LIMIT:
+        _session_retired.add(key)
+        _session_failures.pop(key, None)
+
+
+def _record_success(provider: str, slot: int) -> None:
+    """Reset failure count on success (a working slot stays working)."""
+    _session_failures.pop((provider, slot), None)
+
+
+def _slot_is_retired(provider: str, slot: int) -> bool:
+    return (provider, slot) in _session_retired
+
+
+def _retired_slots_for_provider(provider: str) -> list[int]:
+    return sorted(s for p, s in _session_retired if p == provider)
+
+
+def session_retired_slots_report(provider: str) -> str:
+    """Human-readable summary of retired slots for this provider."""
+    retired = _retired_slots_for_provider(provider)
+    if not retired:
+        return ""
+    lines: list[str] = []
+    for slot in retired:
+        label = "Primary" if slot == 0 else f"Backup #{slot}"
+        lines.append(
+            f"[outreachmagic] {provider}: {label} (slot {slot}) retired for this session "
+            f"after {CONSECUTIVE_FAILURES_LIMIT}+ consecutive failures."
+        )
+    return "\n".join(lines)
+
+
+def clear_session_state() -> None:
+    """Reset session-level failure tracking (e.g. after a fresh sync-secrets)."""
+    _session_failures.clear()
+    _session_retired.clear()
 
 
 def api_key_pool(env_key: str) -> list[str]:
@@ -126,24 +182,50 @@ def call_with_key_pool(
     *,
     provider: str,
 ) -> T:
-    """Call fn(api_key) trying each slot until success or pool exhausted."""
+    """Call fn(api_key) trying each slot until success or pool exhausted.
+
+    Session dead-slot tracking: after ``CONSECUTIVE_FAILURES_LIMIT`` consecutive
+    failures, a slot is "retired" for the rest of the process lifetime.  Retired
+    slots are skipped without attempting the call.
+    """
     pool = api_key_pool(env_key)
     if not pool:
         raise ValueError(f"{env_key} not set")
     last_err: BaseException | None = None
     for slot, key in enumerate(pool):
+        if _slot_is_retired(provider, slot):
+            continue
         try:
             result = fn(key)
             record_key_usage(provider=provider, slot=slot, success=True)
+            _record_success(provider, slot)
             return result
         except urllib.error.HTTPError as exc:
             record_key_usage(provider=provider, slot=slot, success=False, error=f"HTTP {exc.code}")
+            _record_failure(provider, slot)
+            if _slot_is_retired(provider, slot):
+                label = "Primary" if slot == 0 else f"Backup #{slot}"
+                print(
+                    f"[outreachmagic] {provider}: {label} (slot {slot}) retired "
+                    f"after {CONSECUTIVE_FAILURES_LIMIT}+ failures. Skipping for rest of session.",
+                    file=sys.stderr,
+                    flush=True,
+                )
             if not is_failover_http_status(exc.code):
                 raise
             log_failover(provider=provider, env_key=env_key, slot=slot, code=exc.code)
             last_err = exc
         except ValueError as exc:
             record_key_usage(provider=provider, slot=slot, success=False, error=str(exc))
+            _record_failure(provider, slot)
+            if _slot_is_retired(provider, slot):
+                label = "Primary" if slot == 0 else f"Backup #{slot}"
+                print(
+                    f"[outreachmagic] {provider}: {label} (slot {slot}) retired "
+                    f"after {CONSECUTIVE_FAILURES_LIMIT}+ failures. Skipping for rest of session.",
+                    file=sys.stderr,
+                    flush=True,
+                )
             if not value_error_is_failover(exc):
                 raise
             log_failover(provider=provider, env_key=env_key, slot=slot, code="http")
@@ -178,21 +260,37 @@ def call_with_key_pool_results(
     *,
     provider: str,
 ) -> dict:
-    """Like call_with_key_pool for functions returning result dicts."""
+    """Like call_with_key_pool for functions returning result dicts.
+
+    Session dead-slot tracking: after ``CONSECUTIVE_FAILURES_LIMIT`` consecutive
+    failures, a slot is retired for the rest of the process lifetime.
+    """
     pool = api_key_pool(env_key)
     if not pool:
         return {"status": "no_key", "error": f"{env_key} not set", "provider": provider}
     last: dict = {"status": "error", "error": "no result", "provider": provider}
     for slot, key in enumerate(pool):
+        if _slot_is_retired(provider, slot):
+            continue
         result = fn(key)
         if result_should_failover(result, provider=provider):
             error = str(result.get("error") or result.get("status") or "failover")
             record_key_usage(provider=provider, slot=slot, success=False, error=error)
+            _record_failure(provider, slot)
+            if _slot_is_retired(provider, slot):
+                label = "Primary" if slot == 0 else f"Backup #{slot}"
+                print(
+                    f"[outreachmagic] {provider}: {label} (slot {slot}) retired "
+                    f"after {CONSECUTIVE_FAILURES_LIMIT}+ failures. Skipping for rest of session.",
+                    file=sys.stderr,
+                    flush=True,
+                )
             code = result.get("http_status") or result.get("status")
             log_failover(provider=provider, env_key=env_key, slot=slot, code=code)
             last = result
             continue
         record_key_usage(provider=provider, slot=slot, success=True)
+        _record_success(provider, slot)
         return result
     return last
 

@@ -11941,6 +11941,7 @@ def main():
                         file=sys.stderr,
                     )
         init_db()
+        set_last_sync(datetime.now(timezone.utc).isoformat())
         from_tag = getattr(args, "from_tag", None)
         if from_tag:
             record_install_source(from_tag)

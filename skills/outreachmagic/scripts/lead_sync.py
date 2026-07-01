@@ -833,6 +833,16 @@ def apply_agent_lead_workspace_payload(
                     entry.get("sync_hash"),
                 ),
             )
+        # Bump workspace_leads.updated_at so the restored mapping triggers
+        # a snapshot push on next sync (belt-and-suspenders with DB trigger).
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = datetime('now') WHERE workspace_id = ? AND lead_id = ?",
+            (workspace_id, lead_id),
+        )
+        conn.execute(
+            "UPDATE leads SET updated_at = datetime('now') WHERE id = ?",
+            (lead_id,),
+        )
     if own_conn:
         conn.commit()
         conn.close()
@@ -886,24 +896,3 @@ def inspect_sync_lead(
         "full_sync_payload_keys": sorted(payload.keys()),
     }
 
-
-def build_crm_entity_map_payloads(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Build relay payloads for crm_entity_map rows.
-
-    Returns all rows, each with a ``kind`` field
-    set to ``"crm_entity_map"``. The caller filters by last_sync timestamp.
-    """
-    rows = conn.execute(
-        """SELECT workspace_id, lead_id, platform,
-                  crm_contact_id, crm_deal_id, crm_company_id,
-                  crm_owner_id, last_synced_at, last_event_id_synced,
-                  last_sync_status, sync_error, sync_hash,
-                  created_at, updated_at
-           FROM crm_entity_map"""
-    ).fetchall()
-    payloads = []
-    for row in rows:
-        d = dict(row)
-        d["kind"] = "crm_entity_map"
-        payloads.append(d)
-    return payloads

@@ -2443,14 +2443,34 @@ def test_phase_4_entity_map_two_leads_same_email():
 
 
 def test_phase_4_entity_map_relay_round_trip():
-    """Entity map row is included in build_crm_entity_map_payloads based on updated_at."""
-    from lead_sync import build_crm_entity_map_payloads
-
+    """INSERT into crm_entity_map bumps workspace_leads.updated_at via trigger."""
     om.init_db()
     conn = get_conn()
     try:
+        # Verify the triggers were created during init_db
+        triggers = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_crm_entity_map_%'"
+        ).fetchall()
+        trigger_names = {r["name"] for r in triggers}
+        assert "trg_crm_entity_map_bump_workspace_leads_insert" in trigger_names
+        assert "trg_crm_entity_map_bump_workspace_leads_update" in trigger_names
+        assert "trg_crm_entity_map_bump_leads_insert" in trigger_names
+        assert "trg_crm_entity_map_bump_leads_update" in trigger_names
+
         _setup_phase_4_data(conn)
-        # Insert entity map row with recent updated_at
+
+        # Set known stale timestamps so the trigger bump is detectable
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = '2020-01-01 00:00:00' WHERE workspace_id = ? AND lead_id = ?",
+            (WS1_ID, 1),
+        )
+        conn.execute(
+            "UPDATE leads SET updated_at = '2020-01-01 00:00:00' WHERE id = ?",
+            (1,),
+        )
+        conn.commit()
+
+        # Insert entity map row — triggers should bump timestamps forward
         conn.execute(
             """INSERT INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
@@ -2460,14 +2480,32 @@ def test_phase_4_entity_map_relay_round_trip():
         )
         conn.commit()
 
-        payloads = build_crm_entity_map_payloads(conn)
-        assert len(payloads) >= 1
-        found = [p for p in payloads if p["lead_id"] == 1 and p["platform"] == "ghl"]
-        assert len(found) == 1
-        assert found[0]["workspace_id"] == WS1_ID
-        assert found[0]["crm_contact_id"] == "contact-1"
-        assert found[0]["crm_deal_id"] == "deal-1"
-        assert found[0]["kind"] == "crm_entity_map"
+        ws_lead_after = conn.execute(
+            "SELECT updated_at FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
+            (WS1_ID, 1),
+        ).fetchone()["updated_at"]
+        lead_after = conn.execute(
+            "SELECT updated_at FROM leads WHERE id = ?",
+            (1,),
+        ).fetchone()["updated_at"]
+
+        assert ws_lead_after > "2020-01-01", (
+            f"Expected workspace_leads.updated_at to be bumped from 2020: got {ws_lead_after}"
+        )
+        assert lead_after > "2020-01-01", (
+            f"Expected leads.updated_at to be bumped from 2020: got {lead_after}"
+        )
+
+        # Also verify the row was written correctly
+        row = conn.execute(
+            """SELECT workspace_id, lead_id, platform, crm_contact_id, crm_deal_id
+               FROM crm_entity_map
+               WHERE workspace_id = ? AND lead_id = ? AND platform = ?""",
+            (WS1_ID, 1, "ghl"),
+        ).fetchone()
+        assert row is not None
+        assert row["crm_contact_id"] == "contact-1"
+        assert row["crm_deal_id"] == "deal-1"
     finally:
         conn.close()
 
@@ -3267,14 +3305,15 @@ def test_company_id_in_entity_map():
 
 
 def test_company_id_in_relay_payload():
-    """build_crm_entity_map_payloads includes crm_company_id."""
+    """UPDATE on crm_entity_map bumps workspace_leads.updated_at via trigger."""
     conn = get_conn()
     try:
         om.init_db()
         _setup_company_test_data(conn)
 
+        # First insert a row so we can UPDATE it
         conn.execute(
-            """INSERT OR REPLACE INTO crm_entity_map
+            """INSERT INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
                 crm_company_id, last_synced_at, last_sync_status, sync_hash)
                VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?)""",
@@ -3283,13 +3322,52 @@ def test_company_id_in_relay_payload():
         )
         conn.commit()
 
-        from lead_sync import build_crm_entity_map_payloads
-        payloads = build_crm_entity_map_payloads(conn)
-        assert len(payloads) >= 1
-        p = payloads[0]
-        assert p["crm_company_id"] == "company-hs-1234"
-        assert "kind" in p
-        assert p["kind"] == "crm_entity_map"
+        # Set known stale timestamps so the trigger bump is detectable
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = '2020-01-01 00:00:00' WHERE workspace_id = ? AND lead_id = ?",
+            ("ws-co-sync", 9001),
+        )
+        conn.execute(
+            "UPDATE leads SET updated_at = '2020-01-01 00:00:00' WHERE id = ?",
+            (9001,),
+        )
+        conn.commit()
+
+        # UPDATE the entity map — trigger should bump timestamps forward
+        conn.execute(
+            """UPDATE crm_entity_map
+               SET crm_company_id = ?, sync_hash = ?, updated_at = datetime('now')
+               WHERE workspace_id = ? AND lead_id = ? AND platform = ?""",
+            ("company-hs-updated", "newhash", "ws-co-sync", 9001, "ghl"),
+        )
+        conn.commit()
+
+        ws_lead_after = conn.execute(
+            "SELECT updated_at FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
+            ("ws-co-sync", 9001),
+        ).fetchone()["updated_at"]
+        lead_after = conn.execute(
+            "SELECT updated_at FROM leads WHERE id = ?",
+            (9001,),
+        ).fetchone()["updated_at"]
+
+        assert ws_lead_after > "2020-01-01", (
+            f"Expected workspace_leads.updated_at to be bumped from 2020 on UPDATE: got {ws_lead_after}"
+        )
+        assert lead_after > "2020-01-01", (
+            f"Expected leads.updated_at to be bumped from 2020 on UPDATE: got {lead_after}"
+        )
+
+        # Also verify the row data is correct
+        row = conn.execute(
+            """SELECT crm_company_id, crm_contact_id
+               FROM crm_entity_map
+               WHERE workspace_id = ? AND lead_id = ? AND platform = ?""",
+            ("ws-co-sync", 9001, "ghl"),
+        ).fetchone()
+        assert row is not None
+        assert row["crm_company_id"] == "company-hs-updated"
+        assert row["crm_contact_id"] == "contact-1"
     finally:
         conn.close()
 

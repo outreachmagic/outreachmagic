@@ -36,6 +36,9 @@ def _parse_last_pull_iso(last_pull: Optional[str]) -> Optional[datetime]:
     raw = str(last_pull).strip()
     if not raw:
         return None
+    # Normalize SQLite space-separator format (datetime('now')) to ISO format
+    # so fromisoformat() can parse it on all Python 3.10+ versions.
+    raw = raw.replace(" ", "T")
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     try:

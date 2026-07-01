@@ -1038,23 +1038,37 @@ def pull_if_stale_skip_result(if_stale: Optional[str], *, force: bool = False) -
 
 def set_last_pull(ts: str):
     cfg = load_config()
+    # Normalize to SQLite-compatible format for string comparison in WHERE clauses
+    if ts and "T" in ts:
+        ts = ts.replace("T", " ").split(".")[0].split("+")[0].split("Z")[0]
     cfg["last_pull"] = ts
     save_config(cfg)
 
 def get_last_sync() -> Optional[str]:
-    """Timestamp of last successful sync or full pull (ISO 8601).
+    """Timestamp of last successful sync or full pull.
 
-    Returns ``last_sync`` from config. Falls back to ``last_pull`` so that
-    a first-time sync after a fresh pull doesn't push every row in the DB.
-    Returns ``None`` only when neither timestamp exists (empty DB — pushing
-    everything is the correct default).
+    Returns ``last_sync`` from config in SQLite-compatible format
+    (``YYYY-MM-DD HH:MM:SS``) so that ``WHERE updated_at > ?``
+    comparisons work with ``datetime('now')`` timestamps in the DB.
+    Falls back to ``last_pull`` so that a first-time sync after a
+    fresh pull doesn't push every row in the DB.
+    Returns ``None`` only when neither timestamp exists (empty DB —
+    pushing everything is the correct default).
     """
     cfg = load_config()
-    return cfg.get("last_sync") or cfg.get("last_pull")
+    raw = cfg.get("last_sync") or cfg.get("last_pull")
+    if raw:
+        # Normalize Python ISO format (with T separator, subseconds, timezone)
+        # to SQLite-compatible format (space separator, second precision).
+        raw = raw.replace("T", " ").split(".")[0].split("+")[0].split("Z")[0]
+    return raw
 
 def set_last_sync(ts: str):
     """Set the sync anchor to ts (typically now()). Called after successful sync push or full pull."""
     cfg = load_config()
+    # Normalize to SQLite-compatible format for string comparison in WHERE clauses
+    if ts and "T" in ts:
+        ts = ts.replace("T", " ").split(".")[0].split("+")[0].split("Z")[0]
     cfg["last_sync"] = ts
     save_config(cfg)
 
@@ -1578,6 +1592,41 @@ def migrate_db(conn=None):
             FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
             FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
         );
+
+        -- Triggers: bump workspace_leads.updated_at when crm_entity_map changes
+        -- so timestamp-based relay sync re-pushes the snapshot with CRM mapping.
+        CREATE TRIGGER IF NOT EXISTS trg_crm_entity_map_bump_workspace_leads_insert
+        AFTER INSERT ON crm_entity_map
+        BEGIN
+            UPDATE workspace_leads
+            SET updated_at = datetime('now')
+            WHERE lead_id = NEW.lead_id AND workspace_id = NEW.workspace_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_crm_entity_map_bump_workspace_leads_update
+        AFTER UPDATE ON crm_entity_map
+        BEGIN
+            UPDATE workspace_leads
+            SET updated_at = datetime('now')
+            WHERE lead_id = NEW.lead_id AND workspace_id = NEW.workspace_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_crm_entity_map_bump_leads_insert
+        AFTER INSERT ON crm_entity_map
+        BEGIN
+            UPDATE leads
+            SET updated_at = datetime('now')
+            WHERE id = NEW.lead_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_crm_entity_map_bump_leads_update
+        AFTER UPDATE ON crm_entity_map
+        BEGIN
+            UPDATE leads
+            SET updated_at = datetime('now')
+            WHERE id = NEW.lead_id;
+        END;
+
         CREATE TABLE IF NOT EXISTS crm_sync_log (
             id                   INTEGER PRIMARY KEY AUTOINCREMENT,
             workspace_id         TEXT NOT NULL,

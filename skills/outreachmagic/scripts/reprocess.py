@@ -112,11 +112,14 @@ def _fetch_replay_page(
     return _replay_http_get(f"{RELAY_URL}{path}", agent_key)
 
 
-def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, verbose: bool) -> int:
+def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, verbose: bool, reingest: bool = False) -> int:
     """Re-extract and batch-UPDATE events from one replay response page.
 
     Preserves any existing metadata_json fields that extractors don't touch.
     Also re-classifies bounce events and updates bounce-specific tables.
+    When reingest=True, re-ingests all events from scratch (deletes existing
+    local rows first, then re-runs full ingest) so metadata is refreshed from the
+    latest D1 state.
     """
     # Collect all relay_ids in this batch to load existing metadata in one query.
     relay_ids = [evt.get("relay_id") for evt in events if evt.get("relay_id") is not None]
@@ -145,6 +148,30 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
             existing_map[rid] = json.loads(row[3]) if row[3] else {}
         except (json.JSONDecodeError, TypeError):
             existing_map[rid] = {}
+
+    # Ingest (or re-ingest) events into the local database.
+    # When reingest is True, all events from the replay are re-ingested
+    # from scratch — existing rows are deleted first so ingest_relay_event
+    # runs fresh (lead resolution, dedup, campaign linking, etc.).
+    if reingest:
+        from relay_ingest import ingest_relay_event  # noqa: PLC0415
+
+        for evt in events:
+            rid = evt.get("relay_id")
+            if rid is None:
+                continue
+            # Delete existing row so we get a clean re-ingest.
+            existing_id = event_id_map.get(rid)
+            if existing_id is not None:
+                conn.execute("DELETE FROM events WHERE id = ?", (existing_id,))
+            try:
+                ingested = ingest_relay_event(evt, quiet=True, pull_conn=conn)
+                if ingested is not None:
+                    existing_map[rid] = {}
+                    event_id_map[rid] = ingested
+            except Exception as exc:
+                if not verbose:
+                    print(f"  [reprocess] ingest failed relay_id={rid}: {exc}", file=sys.stderr)
 
     # Pre-fetch lead emails for bounce re-classification.
     lead_ids = list(set(lead_id_map.values()))
@@ -284,9 +311,15 @@ def reprocess_events(
     platform: Optional[str] = None,
     dry_run: bool = False,
     verbose: bool = False,
+    reingest: bool = False,
     conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
-    """Re-extract all events in an ID range and UPDATE metadata_json in place."""
+    """Re-extract all events in an ID range and UPDATE metadata_json in place.
+
+    When reingest=True, re-ingests all events from scratch (deletes existing
+    local rows first, then re-runs full ingest pipeline) so metadata is refreshed
+    from the latest D1 state.
+    """
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
@@ -306,7 +339,7 @@ def reprocess_events(
             total_fetched += len(events)
 
             if not dry_run:
-                updated = _reprocess_events_batch(conn, events, verbose=verbose)
+                updated = _reprocess_events_batch(conn, events, verbose=verbose, reingest=reingest)
                 total_updated += updated
 
             after_id = result.get("next_after_id", after_id)

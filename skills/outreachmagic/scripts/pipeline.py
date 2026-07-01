@@ -11723,6 +11723,8 @@ def main():
                              help="Print per-row diff of changed fields")
     reprocess_p.add_argument("--force", action="store_true",
                              help="Skip confirmation prompt")
+    reprocess_p.add_argument("--reingest", action="store_true",
+                             help="Delete and re-ingest events from relay replay (refreshes all data in ID range)")
 
     pset = sub.add_parser("personalize-set", help="Write lead personalization (first_name, etc.)")
     pset.add_argument("--lead-id", type=int, help="Lead ID (single mode)")
@@ -12377,6 +12379,7 @@ def main():
                     platform=args.platform,
                     dry_run=args.dry_run,
                     verbose=args.verbose,
+                    reingest=args.reingest,
                 )
             else:
                 print(

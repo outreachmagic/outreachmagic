@@ -37,7 +37,7 @@ def _fresh_db():
     conn = om.get_conn()
     conn.execute(
         """INSERT INTO campaign_workspace_map
-           (id, org_id, source_platform, campaign_id, campaign_name_normalized, workspace_id)
+           (id, org_id, source_platform, campaign_platform_id, campaign_name_normalized, workspace_id)
            VALUES ('map1', ?, 'plusvibe', 'camp-1', 'test campaign', ?)""",
         (om.DEFAULT_ORG_ID, f"ws_{ws['slug']}"),
     )

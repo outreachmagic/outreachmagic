@@ -166,7 +166,27 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
             # Delete existing row so we get a clean re-ingest.
             existing_id = event_id_map.get(rid)
             if existing_id is not None:
+                # Clear any bounce_events FK references to this event ID so
+                # the DELETE doesn't trigger FK violations.
+                conn.execute(
+                    "UPDATE bounce_events SET first_event_id = NULL, latest_event_id = NULL "
+                    "WHERE first_event_id = ? OR latest_event_id = ?",
+                    (existing_id, existing_id),
+                )
+                # Clear relay_ingested dedup entry so re-ingest isn't skipped
+                # as a duplicate (ingest_relay_event checks relay_already_ingested).
+                conn.execute(
+                    "DELETE FROM relay_ingested WHERE dedupe_key = ?",
+                    (f"relay:{rid}",),
+                )
                 conn.execute("DELETE FROM events WHERE id = ?", (existing_id,))
+            else:
+                # Event not in local DB — clear dedup entry anyway in case a
+                # prior --reingest deleted it but left the dedup marker.
+                conn.execute(
+                    "DELETE FROM relay_ingested WHERE dedupe_key = ?",
+                    (f"relay:{rid}",),
+                )
             try:
                 ingested = ingest_relay_event(evt, quiet=True, pull_conn=conn)
                 if ingested is not None:
@@ -267,6 +287,8 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
             col_updates.append((new_json, re_subject, re_created_at, relay_id))
 
         # Also record bounce classification in bounce-specific tables.
+        # Non-critical — catch FK violations that can arise when re-ingested
+        # events share a bounce_events row with non-re-ingested events.
         if is_bounce and bounce_payload and bounce_payload.get("bounce_type"):
             local_event_id = event_id_map.get(relay_id)
             lead_id = lead_id_map.get(relay_id)
@@ -277,27 +299,32 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
                 campaign_name = event_fields.get("campaign") or campaign_ctx.campaign_name_raw
                 bounce_campaign_id = None
                 if campaign_name and str(campaign_name).strip():
-                    # ensure_campaign lives in pipeline module;
-                    # for simplicity, use campaign_id if resolved.
                     pass
-                record_platform_bounce(
-                    conn,
-                    lead_id,
-                    lead_email,
-                    platform,
-                    bounce_type=bounce_payload["bounce_type"],
-                    bounce_reason=bounce_payload.get("bounce_message", ""),
-                )
-                record_bounce_event(
-                    conn,
-                    lead_id=lead_id,
-                    event_id=local_event_id,
-                    platform=platform,
-                    sender_email=sender_email,
-                    lead_email=lead_email,
-                    payload=bounce_payload,
-                    workspace_id=None,  # workspace lookup requires pipeline module
-                )
+                try:
+                    record_platform_bounce(
+                        conn,
+                        lead_id,
+                        lead_email,
+                        platform,
+                        bounce_type=bounce_payload["bounce_type"],
+                        bounce_reason=bounce_payload.get("bounce_message", ""),
+                    )
+                    record_bounce_event(
+                        conn,
+                        lead_id=lead_id,
+                        event_id=local_event_id,
+                        platform=platform,
+                        sender_email=sender_email,
+                        lead_email=lead_email,
+                        payload=bounce_payload,
+                        workspace_id=None,
+                    )
+                except sqlite3.IntegrityError:
+                    if verbose:
+                        print(
+                            f"  [reprocess] bounce FK error for relay_id={relay_id}: skipping",
+                            file=sys.stderr,
+                        )
 
     if not col_updates:
         return 0

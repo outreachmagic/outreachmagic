@@ -19,50 +19,51 @@ The problem: every Friday you export CSVs from Smartlead, Instantly, and HeyReac
 Outreach Magic fixes that. Every sequencer sends webhooks to api.outreachmagic.io. Those events sync to your agent's local database. Every reply, bounce, click, booking, and stage change lands there. Your agent queries it directly. No CSV stitching, no blind spots and it syncs prefectly across multiple agents so nothing gets lost.
 
 ```
-
-                                  outreachmagic.io relay
-                                  _____________________
-Smartlead ______________________|
-Instantly _____________________||
-HeyReach  ____________________|||
-PlusVibe  ___________________||||
-EmailBison _________________|||||
-Prosp     _________________||||||
-Calendly  _________________vvvvvv
-                    +----------------------+
-                    |  api.outreachmagic.io |--- local SQLite database
-                    |  webhook sync + pull  |    (replies, bounces, bookings...)
-                    +----------------------+          |
-                                                      |
-                +-------------------------------------+
-                v                                     v
-     +------------------------+        +--------------------------+
-     |    PERSON RESEARCH     |        |  EMAIL FIND and VERIFY   |
-     |                        |        |                          |
-     |  enrich.py check       |        |  email_finder.py         |
-     |  "Jane Doe" "Acme"     |        |  find --name --domain     |
-     |        |               |        |        |                 |
-     |        v               |        |        v                 |
-     |  Serper.dev            |        |  waterfall.py            |
-     |  (Google search)       |        |  trykitt --- hit?        |
-     |        |               |        |     | miss               |
-     |        v               |        |     v                   |
-     |  agent extracts        |        |  Icypeas --- hit?        |
-     |  LinkedIn, domain      |        |     | miss               |
-     |        |               |        |     v                   |
-     |        v               |        |  not found               |
-     |  --- saved to DB       |        |                          |
-     |  (if OM connected)     |        |  Optional extras:        |
-     |  --- stdout            |        |  MillionVerifier         |
-     |  (standalone)          |        |    (instant check)       |
-     +------------------------+        |  Scrubby                 |
-                                       |    (deep verify 72h)     |
-                                       |                          |
-                                       |  --- saved to DB         |
-                                       |  (if OM connected)       |
-                                       |  --- stdout              |
-                                       |  (standalone)            |
-                                       +--------------------------+
+                         outreachmagic.io relay
+                         _____________________
+Smartlead _______________|
+Instantly ______________||
+HeyReach  _____________|||
+PlusVibe  ____________||||
+EmailBison __________|||||
+Prosp     __________||||||
+MasterInbox _______|||||||
+Calendly  ________vvvvvvvv
+                ┌──────────────────────────────────────┐
+                │        api.outreachmagic.io          │
+                │    cloud persistence · multi sync    │◄──────┐
+                └─────────────┬────────────────────────┘       │
+                              │  ▲                             │
+                     events   │  │  backup / restore           │
+                              │  │                             │
+                              ▼  │                             │
+                ┌──────────────────────────────────────┐       │
+                │      Local SQLite database           │───────┘
+                │  pipeline · research · emails ·      │
+                │  verification · CRM                  │
+                └────────────┬─────────────────────────┘
+                             │
+    ┌────────────────────────┼────────────────────────┐
+    │                        │                        │
+    ▼                        ▼                        ▼
+┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
+│   PIPELINE SYNC    │ │  PERSON RESEARCH   │ │ EMAIL FIND & VER   │
+│                    │ │                    │ │                    │
+│ "show me my        │ │ "research Jane     │ │ "find Bill at      │
+│  pipeline"         │ │  Doe, Acme Corp"   │ │  acme.com"         │
+│                    │ │                    │ │                    │
+│ replies, bounces,  │ │ Serper search      │ │ trykitt ── hit?    │
+│ bookings, copy     │ │  → extract         │ │   │ miss           │
+│ per campaign,      │ │    LinkedIn        │ │   ▼                │
+│ all queryable      │ │    company domain  │ │ Icypeas ── hit?    │
+│                    │ │    job title       │ │   │ miss           │
+│ 8 sequencers       │ │  → saved to DB     │ │   ▼                │
+│ CRM: GHL, HubSpot  │ │  → returned        │ │ not found          │
+│                    │ │                    │ │                    │
+│                    │ │ standalone: stdout │ │ Verify: MV,        │
+│                    │ │ without OM account │ │ Scrubby (deep)     │
+│                    │ │                    │ │ saved to DB        │
+└────────────────────┘ └────────────────────┘ └────────────────────┘
 ```
 
 All three capabilities are included in a single install. Add API keys per the table below and your agent can research leads and run the email waterfall; results save to the same local database.

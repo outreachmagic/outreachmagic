@@ -12,7 +12,55 @@ This repo is the single source for everything: pipeline sync, email waterfall fi
 
 The problem: every Friday you export CSVs from Smartlead, Instantly, and HeyReach, then merge them in Sheets. Your agent wrote great emails but has no idea who replied. You're stitching spreadsheets just to answer "did we get any replies this week?"
 
-Outreach Magic fixes that. Every sequencer sends webhooks to api.outreachmagic.io. Those events sync to your agent's local database. Every reply, bounce, booking, and stage change lands there. Your agent queries it directly. No CSV stitching, no blind spots, and it syncs across multiple agents so nothing gets lost.
+Outreach Magic fixes that. Every sequencer sends webhooks to api.outreachmagic.io. Those events sync to your agent's local database, and your enrichment results, email finds, and pipeline state are backed up to the cloud in return. Every reply, bounce, booking, and stage change lands there. Your agent queries it directly. No CSV stitching, no blind spots, and it syncs across multiple agents so nothing gets lost.
+
+```
+                         outreachmagic.io relay
+                         _____________________
+Smartlead _______________|
+Instantly ______________||
+HeyReach  _____________|||
+PlusVibe  ____________||||
+EmailBison __________|||||
+Prosp     __________||||||
+MasterInbox _______|||||||
+Calendly  ________vvvvvvvv
+                ┌──────────────────────────────────────┐
+                │        api.outreachmagic.io          │
+                │    cloud persistence · multi sync    │◄──────┐
+                └─────────────┬────────────────────────┘       │
+                              │  ▲                             │
+                     events   │  │  backup / restore           │
+                              │  │                             │
+                              ▼  │                             │
+                ┌──────────────────────────────────────┐       │
+                │      Local SQLite database           │───────┘
+                │  pipeline · research · emails ·      │
+                │  verification · CRM                  │
+                └────────────┬─────────────────────────┘
+                             │
+    ┌────────────────────────┼────────────────────────┐
+    │                        │                        │
+    ▼                        ▼                        ▼
+┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
+│   PIPELINE SYNC    │ │  PERSON RESEARCH   │ │ EMAIL FIND & VER   │
+│                    │ │                    │ │                    │
+│ "show me my        │ │ "research Jane     │ │ "find Bill at      │
+│  pipeline"         │ │  Doe, Acme Corp"   │ │  acme.com"         │
+│                    │ │                    │ │                    │
+│ replies, bounces,  │ │ Serper search      │ │ trykitt ── hit?    │
+│ bookings, copy     │ │  → extract         │ │   │ miss           │
+│ per campaign,      │ │    LinkedIn        │ │   ▼                │
+│ all queryable      │ │    company domain  │ │ Icypeas ── hit?    │
+│                    │ │    job title       │ │   │ miss           │
+│ 8 sequencers       │ │  → saved to DB     │ │   ▼                │
+│ CRM: GHL, HubSpot  │ │  → returned        │ │ not found          │
+│                    │ │                    │ │                    │
+│                    │ │ standalone: stdout │ │ Verify: MV,        │
+│                    │ │ without OM account │ │ Scrubby (deep)     │
+│                    │ │                    │ │ saved to DB        │
+└────────────────────┘ └────────────────────┘ └────────────────────┘
+```
 
 ## What's included
 
@@ -70,8 +118,6 @@ scripts/                        # Dev scripts — tests, manifests, release chec
 tests/                          # pytest suite
 docs/                           # Dev docs — releasing, skill suite
 ```
-
-The former `skills/email-finder/` and `skills/lead-enrich/` companion skills have been merged into `skills/outreachmagic/scripts/`. The companion repos ([lead-enrich](https://github.com/outreachmagic/lead-enrich), [email-finder](https://github.com/outreachmagic/email-finder)) are archived.
 
 ## CRM Sync
 

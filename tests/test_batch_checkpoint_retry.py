@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EF_SCRIPTS = ROOT / "skills" / "email-finder" / "scripts"
+EF_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 sys.path.insert(0, str(EF_SCRIPTS))
 
 from batch_runner import (  # noqa: E402

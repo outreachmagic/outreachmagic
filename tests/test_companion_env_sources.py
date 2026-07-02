@@ -8,12 +8,12 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LE_SCRIPTS = ROOT / "skills" / "lead-enrich" / "scripts"
+LE_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 OM_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 sys.path.insert(0, str(LE_SCRIPTS))
 sys.path.insert(0, str(OM_SCRIPTS))
 
-import companion_common as cc  # noqa: E402
+import shared as cc  # noqa: E402
 
 _PORTAL_ENV_KEYS = (
     "SERPER_API_KEY",

@@ -23,57 +23,6 @@
         "references/command-reference.md"
       ],
       "install_required": []
-    },
-    "email-finder": {
-      "path": "skills/email-finder",
-      "layout": "companion",
-      "public_repo": "outreachmagic/email-finder",
-      "release_tag_prefix": "email-finder-v",
-      "install_default_tag": "v1.1.0",
-      "version": {
-        "source": "skill_md"
-      },
-      "extra_files": [
-        "SKILL.md",
-        "README.md",
-        "SECURITY.md",
-        "config.example.json",
-        "default.env",
-        ".gitignore",
-        "references/email-finding-research.md"
-      ],
-      "install_required": [
-        "scripts/email_finder.py",
-        "scripts/health.py",
-        "scripts/companion_common.py",
-        "scripts/providers.py",
-        "scripts/batch_runner.py"
-      ]
-    },
-    "lead-enrich": {
-      "path": "skills/lead-enrich",
-      "layout": "companion",
-      "public_repo": "outreachmagic/lead-enrich",
-      "release_tag_prefix": "lead-enrich-v",
-      "install_default_tag": "v1.2.0",
-      "version": {
-        "source": "skill_md"
-      },
-      "script_exclude": [],
-      "extra_files": [
-        "SKILL.md",
-        "README.md",
-        "SECURITY.md",
-        "config.example.json",
-        "default.env",
-        ".gitignore",
-        "references/email-finder.md"
-      ],
-      "install_required": [
-        "scripts/enrich.py",
-        "scripts/companion_common.py",
-        "references/email-finder.md"
-      ]
     }
   }
 }

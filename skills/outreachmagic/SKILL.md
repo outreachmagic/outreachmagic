@@ -1,10 +1,9 @@
 ---
 name: outreachmagic
 description: >
-  Your agent goes blind after send. Sync Smartlead, Instantly, HeyReach,
-  PlusVibe, EmailBison, Prosp, and Calendly into one local SQLite DB. Every
-  send, reply, bounce, stage change, and booked call lands there. Your agent
-  queries it directly. No CSV stitching, no API pagination, no merged Sheets.
+  Your agent goes blind after send. Sync sequencer webhooks, research leads
+  via Serper, and find/verify emails — all in one local SQLite DB your agent
+  queries directly.
 version: 1.3.0
 author: Outreach Magic
 license: MIT
@@ -17,25 +16,59 @@ required_environment_variables:
       Required for all cloud operations (login, pull, sync, connect-platform).
       Starts with om_agent_
     required_for: Authentication with Outreach Magic portal and relay
+  - name: SERPER_API_KEY
+    prompt: Serper.dev API key
+    help: Get a key at https://serper.dev
+    required_for: Person research via enrich.py (optional)
+  - name: TRYKITT_API_KEY
+    prompt: trykitt.ai API key
+    help: Get a free key at https://trykitt.ai
+    required_for: Email finding via trykitt (optional)
+  - name: ICYPEAS_API_KEY
+    prompt: Icypeas API key
+    help: Get your key at https://app.icypeas.com
+    required_for: Email finding fallback via Icypeas (optional)
+  - name: MILLIONVERIFIER_API_KEY
+    prompt: MillionVerifier API key
+    help: https://app.millionverifier.com
+    required_for: Email verification (optional)
+  - name: SCRUBBY_API_KEY
+    prompt: Scrubby API key
+    help: https://api.scrubby.io
+    required_for: Deep email verification (optional)
 required_credential_files:
   - path: skills/outreachmagic/config/outreachmagic_config.json
     description: Outreach Magic agent key and config (created by pipeline.py init / login)
   - path: skills/outreachmagic/config/agent_secrets.env
-    description: Portal-synced API keys for email-finder, lead-enrich, and CRM providers (created by pipeline.py sync-secrets)
+    description: Portal-synced API keys for CRM providers and email finding/research (created by pipeline.py sync-secrets)
 metadata:
   cursor:
-    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm, cold-email, tracking, calendly, ecosystem:outreachmagic]
-    related_skills: [lead-enrich, email-finder]
+    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks,
+           smartlead, instantly, sqlite, gtm, cold-email, tracking, calendly,
+           serper, enrichment, trykitt, icypeas, email-verification,
+           ecosystem:outreachmagic]
     external_domains:
       - domain: api.outreachmagic.io
         purpose: Relay webhooks and authenticated event pull (payloads imported to local SQLite)
       - domain: app.outreachmagic.io
         purpose: Portal API for tokens, billing, and workspace routing config sync
+      - domain: google.serper.dev
+        purpose: Serper search API for person research
+      - domain: api.trykitt.ai
+        purpose: Email find via trykitt
+      - domain: app.icypeas.com
+        purpose: Email find via Icypeas
+      - domain: api.millionverifier.com
+        purpose: Email verification (optional)
+      - domain: api.scrubby.io
+        purpose: Deep email verification (optional)
   hermes:
-    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks, smartlead, instantly, sqlite, gtm, cold-email, tracking, calendly, ecosystem:outreachmagic]
+    tags: [sales, outreach, crm, pipeline, leads, email, linkedin, webhooks,
+           smartlead, instantly, sqlite, gtm, cold-email, tracking, calendly,
+           serper, enrichment, trykitt, icypeas, email-verification,
+           ecosystem:outreachmagic]
     category: productivity
     homepage: https://outreachmagic.io
-    related_skills: [lead-enrich, email-finder]
     config:
       - key: skills.config.data_root
         description: >-
@@ -55,11 +88,21 @@ metadata:
         purpose: Relay webhooks and authenticated event pull (payloads imported to local SQLite)
       - domain: app.outreachmagic.io
         purpose: Portal API for tokens, billing, and workspace routing config sync
+      - domain: google.serper.dev
+        purpose: Serper search API for person research
+      - domain: api.trykitt.ai
+        purpose: Email find via trykitt
+      - domain: app.icypeas.com
+        purpose: Email find via Icypeas
+      - domain: api.millionverifier.com
+        purpose: Email verification (optional)
+      - domain: api.scrubby.io
+        purpose: Deep email verification (optional)
 ---
 
 # Outreach Magic
 
-Sync Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, and Calendly into one local SQLite DB. **Pair with:** [lead-enrich](https://github.com/outreachmagic/lead-enrich) for person research and [email-finder](https://github.com/outreachmagic/email-finder) for waterfall email enrichment.
+Sync Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, and Calendly into one local SQLite DB. Research leads via Serper, find and verify emails via trykitt/Icypeas/MillionVerifier/Scrubby — all from one skill, one install, one SKILL.md.
 
 ## CLI convention
 
@@ -109,11 +152,17 @@ Setup portal: https://app.outreachmagic.io/onboarding. Account errors (`account_
 
 | User says | You do |
 |-----------|--------|
-| "Show my pipeline" | `pull` → `show` |
-| "Import my Sales Nav / Vayne CSV" | `import-profiles --file … --workspace W --dry-run` first, then import |
-| "Find emails for these leads" | `email-finder-candidates` → `batch-find --workspace W --yes` |
-| "Export to Google Sheets" | `whoami --json` → `share_email`, then `sheets export --workspace W --share-email …` |
-| "Connect Smartlead / Instantly" | `connections create --platform …` and share webhook URL |
+| "Show my pipeline" | `pull` to `show` |
+| "Sync my sequencers" | `pull --full` to report new records |
+| "Import my Sales Nav CSV" | `import-profiles --file ... --workspace W --dry-run` first |
+| "Research Jane Doe at Acme Corp" | `enrich.py check "Jane Doe" "Acme Corp"` → if `not_found`, run Serper search pack |
+| "Research my CSV of leads" | `enrich.py batch-check --workspace W file.csv` → then Serper for unmatched |
+| "Find email for Bill at stripe.com" | `email_finder.py find --name "Bill" --domain stripe.com` or with `--save` |
+| "Find emails for my CSV" | `email_finder.py batch-find --dry-run` → `--yes` |
+| "Verify these emails" | `email_finder.py verify-bulk --yes` |
+| "Deep verify catch-all emails" | `email_finder.py verify-with-scrubby --workspace W --dry-run` → `--yes` |
+| "Export to Google Sheets" | `whoami --json` → `share_email`, then `sheets export ...` |
+| "Connect Smartlead / Instantly" | `connections create --platform ...` and share webhook URL |
 
 `whoami --json` returns account email, org, and plan. `init` creates the local DB. Sync dashboard API keys: `pipeline.py sync-secrets`.
 

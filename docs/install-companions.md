@@ -1,8 +1,7 @@
-# Install companion skills (all platforms)
+# Install (all platforms)
 
-Canonical install from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic).
+Install from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic).
 
-One `install.sh` installs **outreachmagic**, **lead-enrich**, and **email-finder** together.
 See [AGENTS-INSTALL.md](../AGENTS-INSTALL.md) for the full agent guide.
 
 ## Install

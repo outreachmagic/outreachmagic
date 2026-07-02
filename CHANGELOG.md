@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.4.0] — Skill consolidation (lead-enrich + email-finder merged into outreachmagic)
+
+### Added
+
+- **Consolidated skill.** `lead-enrich` and `email-finder` are now merged directly into `outreachmagic`. One install, one SKILL.md, one update path. Agent discovers all capabilities — pipeline sync, person research, email finding, and email verification — from a single skill.
+- **Provider split.** `providers.py` split into `waterfall.py` (orchestration + registry), `trykitt.py` (trykitt API client), and `icypeas.py` (Icypeas API client). New providers register in `_PROVIDER_REGISTRY` — no if/elif chain.
+
+### Changed
+
+- **`enrich.py`** and **`email_finder.py`** moved from companion directories into `skills/outreachmagic/scripts/`. All imports updated to use consolidated `shared.py`.
+- **`shared.py`** replaces the old `companion_common.py` (canonical copy from email-finder with Scrubby functions).
+- **SKILL.md** — consolidated frontmatter includes all API keys (`SERPER_API_KEY`, `TRYKITT_API_KEY`, `ICYPEAS_API_KEY`, `MILLIONVERIFIER_API_KEY`, `SCRUBBY_API_KEY`), all `external_domains`, and a combined "Common workflows" table covering all capabilities.
+- **README.md** — capability table, combined ASCII diagram, and single keys table replace companion cross-references.
+- **`skill-suite.json`** — removed `email-finder` and `lead-enrich` entries. Only `outreachmagic` remains.
+- **CI/CD** — deleted `publish-email-finder.yml` and `publish-lead-enrich.yml`. Simplified `skill-scan.yml`.
+- **`install.sh`** — removed companion repo cloning, CLI args, and install functions. Fresh install copies all 14 `.py` files from `skills/outreachmagic/scripts/`.
+- **`update-manifest.json`** — regenerated to include all 14 `.py` files (auto-discovers via `generate_skill_manifest.py`).
+
+### Removed
+
+- `skills/lead-enrich/` — entire directory
+- `skills/email-finder/` — entire directory
+- `.github/workflows/publish-email-finder.yml`
+- `.github/workflows/publish-lead-enrich.yml`
+- `scripts/sync-companion-common.sh`
+- `scripts/validate-companion-manifests.py`
+- `platforms/common/install-companions.sh`
+- `tests/test_companion_common_sync.py`
+
+### Deprecation
+
+- Existing standalone installs of `lead-enrich` and `email-finder` will stop receiving updates. Users should install `outreachmagic/outreachmagic` via `npx skills add outreachmagic/outreachmagic`, then remove the old companion skills. Final companion releases include deprecation notices.
+
 ## [1.3.0] - 2026-06-30
 
 ### Added

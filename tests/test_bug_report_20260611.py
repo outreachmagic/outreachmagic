@@ -11,7 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
-EF_SCRIPTS = ROOT / "skills" / "email-finder" / "scripts"
+EF_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(EF_SCRIPTS))
 

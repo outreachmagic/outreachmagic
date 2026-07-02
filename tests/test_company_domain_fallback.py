@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
-LE_SCRIPTS = ROOT / "skills" / "lead-enrich" / "scripts"
+LE_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 if str(LE_SCRIPTS) not in sys.path:

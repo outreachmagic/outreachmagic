@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for skills/email-finder/scripts/email_finder.py"""
+"""Tests for skills/outreachmagic/scripts/email_finder.py"""
 
 import importlib.util
 import json
@@ -10,19 +10,21 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-EMAIL_SCRIPTS = ROOT / "skills" / "email-finder" / "scripts"
-sys.path.insert(0, str(EMAIL_SCRIPTS))
+OM_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
+sys.path.insert(0, str(OM_SCRIPTS))
 
-EMAIL_PY = EMAIL_SCRIPTS / "email_finder.py"
+EMAIL_PY = OM_SCRIPTS / "email_finder.py"
 spec = importlib.util.spec_from_file_location("email_finder_script", EMAIL_PY)
 lemail = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(lemail)
 
 import normalize as norm  # noqa: E402
-import providers as prov  # noqa: E402
+import waterfall as prov  # noqa: E402
+import trykitt  # noqa: E402
+import icypeas  # noqa: E402
 
-from providers import provider_note_text  # noqa: E402
+from waterfall import provider_note_text  # noqa: E402
 
 
 class TestValidityNotes(unittest.TestCase):
@@ -126,7 +128,7 @@ class TestTrykittFind(unittest.TestCase):
             mock_resp.__enter__ = lambda s: mock_resp
             mock_resp.__exit__ = MagicMock(return_value=False)
             mock_urlopen.return_value = mock_resp
-            result = prov.trykitt_find(
+            result = trykitt.trykitt_find(
                 cfg, full_name="Jane Doe", domain="acme.com", linkedin="janedoe"
             )
         self.assertEqual(result["status"], "found")
@@ -140,7 +142,7 @@ class TestTrykittFind(unittest.TestCase):
             ):
                 cfg = lemail.load_config()
                 cfg.pop("trykitt_api_key", None)
-                result = prov.trykitt_find(cfg, full_name="Jane", domain="acme.com")
+                result = trykitt.trykitt_find(cfg, full_name="Jane", domain="acme.com")
                 self.assertEqual(result["status"], "no_key")
 
 
@@ -152,14 +154,14 @@ class TestIcypeasFind(unittest.TestCase):
     def test_no_key_in_config_still_works(self):
         lemail.cc._AGENT_ENV_LOADED = False
         cfg = lemail.load_config()
-        with patch.object(prov, "icypeas_poll_result", return_value={"status": "not_found"}) as mock_poll:
+        with patch.object(icypeas, "icypeas_poll_result", return_value={"status": "not_found"}) as mock_poll:
             with patch("urllib.request.urlopen") as mock_urlopen:
                 mock_resp = MagicMock()
                 mock_resp.read.return_value = json.dumps({"item": {"_id": "abc123"}}).encode()
                 mock_resp.__enter__ = lambda s: mock_resp
                 mock_resp.__exit__ = MagicMock(return_value=False)
                 mock_urlopen.return_value = mock_resp
-                result = prov.icypeas_find(cfg, full_name="Jane Doe", domain="acme.com")
+                result = icypeas.icypeas_find(cfg, full_name="Jane Doe", domain="acme.com")
         self.assertEqual(result["status"], "not_found")
         mock_poll.assert_called_once()
 
@@ -186,7 +188,7 @@ class TestIcypeasFind(unittest.TestCase):
             second.__enter__ = lambda s: second
             second.__exit__ = MagicMock(return_value=False)
             mock_urlopen.side_effect = [first, second]
-            result = prov.icypeas_poll_result(cfg, "abc123", domain="acme.com", full_name="Jane Doe")
+            result = icypeas.icypeas_poll_result(cfg, "abc123", domain="acme.com", full_name="Jane Doe")
         self.assertEqual(result["status"], "found")
         self.assertEqual(result["email"], "jane@acme.com")
 
@@ -250,8 +252,8 @@ class TestIncrementalWriterResume(unittest.TestCase):
 
 
 class TestCreditsExhaustedStatus(unittest.TestCase):
-    @patch.object(prov, "icypeas_find")
-    @patch.object(prov, "trykitt_find")
+    @patch.object(icypeas, "icypeas_find")
+    @patch.object(trykitt, "trykitt_find")
     def test_all_providers_credit_errors(self, mock_trykitt, mock_icypeas):
         cfg = {"trykitt_enabled": True, "icypeas_enabled": True}
         mock_trykitt.side_effect = prov.CreditsExhaustedError("trykitt out of credits")
@@ -261,8 +263,8 @@ class TestCreditsExhaustedStatus(unittest.TestCase):
 
 
 class TestFallbackOrder(unittest.TestCase):
-    @patch.object(prov, "icypeas_find")
-    @patch.object(prov, "trykitt_find")
+    @patch.object(icypeas, "icypeas_find")
+    @patch.object(trykitt, "trykitt_find")
     def test_trykitt_first_then_icypeas(self, mock_trykitt, mock_icypeas):
         cfg = {"trykitt_enabled": True, "icypeas_enabled": True}
         mock_trykitt.return_value = {"status": "not_found", "provider": "trykitt"}
@@ -272,8 +274,8 @@ class TestFallbackOrder(unittest.TestCase):
         mock_trykitt.assert_called_once()
         mock_icypeas.assert_called_once()
 
-    @patch.object(prov, "icypeas_find")
-    @patch.object(prov, "trykitt_find")
+    @patch.object(icypeas, "icypeas_find")
+    @patch.object(trykitt, "trykitt_find")
     def test_credit_exhaustion_falls_through(self, mock_trykitt, mock_icypeas):
         cfg = {"trykitt_enabled": True, "icypeas_enabled": True}
         mock_trykitt.side_effect = prov.CreditsExhaustedError("trykitt out of credits")
@@ -286,8 +288,8 @@ class TestFallbackOrder(unittest.TestCase):
         self.assertEqual(result["provider"], "icypeas")
         mock_icypeas.assert_called_once()
 
-    @patch.object(prov, "icypeas_find")
-    @patch.object(prov, "trykitt_find")
+    @patch.object(icypeas, "icypeas_find")
+    @patch.object(trykitt, "trykitt_find")
     def test_single_provider_flag(self, mock_trykitt, mock_icypeas):
         cfg = {"trykitt_enabled": True, "icypeas_enabled": True}
         mock_trykitt.return_value = {"status": "found", "email": "j@acme.com", "provider": "trykitt"}

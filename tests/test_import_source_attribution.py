@@ -14,8 +14,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
-EMAIL_SCRIPTS = ROOT / "skills" / "email-finder" / "scripts"
-LE_SCRIPTS = ROOT / "skills" / "lead-enrich" / "scripts"
+EMAIL_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
+LE_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 
 
 def _load_module(name: str, path: Path):
@@ -31,7 +31,7 @@ if str(SCRIPTS) not in sys.path:
 if str(EMAIL_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(EMAIL_SCRIPTS))
 om = _load_module("om_pipeline", SCRIPTS / "pipeline.py")
-ef_cc = _load_module("ef_companion_common", EMAIL_SCRIPTS / "companion_common.py")
+ef_cc = _load_module("ef_companion_common", EMAIL_SCRIPTS / "shared.py")
 from batch_runner import build_import_profile  # noqa: E402
 
 
@@ -201,7 +201,7 @@ class TestEmailFinderSource(unittest.TestCase):
 
 class TestLeadEnrichSource(unittest.TestCase):
     def test_lead_enrich_companion_passes_source(self):
-        le_cc = _load_module("le_companion_common_test", LE_SCRIPTS / "companion_common.py")
+        le_cc = _load_module("le_companion_common_test", LE_SCRIPTS / "shared.py")
         with patch.object(le_cc, "_run_subprocess_json") as mock_run, patch.object(
             le_cc, "_append_json_or_file",
         ) as mock_append:

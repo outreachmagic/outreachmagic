@@ -71,7 +71,7 @@ def record_api_calls(stats: dict[str, Any], result: dict[str, Any]) -> None:
 
 
 def record_verify_status(stats: dict[str, Any], validity: str, provider: str) -> None:
-    from providers import validity_to_verify_status
+    from waterfall import validity_to_verify_status
 
     _init_stats(stats)
     v = stats["verify"]
@@ -319,9 +319,9 @@ def _waterfall_lines(wf: dict[str, Any]) -> list[str]:
 
 
 def print_om_setup_box(file=sys.stderr) -> None:
-    """Re-exported from companion_common for backward compat."""
+    """Re-exported from shared for backward compat."""
     # Imported here to avoid circular dependency at module level.
-    import companion_common as _cc  # fmt: skip
+    import shared as _cc  # fmt: skip
     _cc.print_om_setup_box(file=file)
 
 

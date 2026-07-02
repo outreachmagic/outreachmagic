@@ -5,12 +5,8 @@ Skills live in `~/.hermes/skills/<name>/` — Hermes's built-in skills directory
 ```
 ~/.hermes/
 ├── skills/
-│   ├── lead-enrich/          ← real files (install & update here)
-│   ├── email-finder/         ← real files
 │   └── outreachmagic/        ← real files, DB, config
 └── profiles/<name>/skills/
-    ├── email-finder   → ../../../skills/email-finder
-    ├── lead-enrich    → ../../../skills/lead-enrich
     └── outreachmagic  → ../../../skills/outreachmagic
 ```
 
@@ -43,8 +39,6 @@ Or manually:
 
 ```bash
 mkdir -p ~/.hermes/profiles/<name>/skills
-ln -sf ../../../skills/lead-enrich ~/.hermes/profiles/<name>/skills/lead-enrich
-ln -sf ../../../skills/email-finder ~/.hermes/profiles/<name>/skills/email-finder
 ln -sf ../../../skills/outreachmagic ~/.hermes/profiles/<name>/skills/outreachmagic
 ```
 

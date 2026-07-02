@@ -1,4 +1,4 @@
-"""Shared helpers for outreachmagic companion skills (lead-enrich, email-finder)."""
+"""Shared helpers for outreachmagic skill — pipeline sync, lead research, email finding/verification."""
 
 from __future__ import annotations
 

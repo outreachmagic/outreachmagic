@@ -12,7 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "skills" / "outreachmagic" / "scripts" / "pipeline.py"
 DETECT = ROOT / "skills" / "outreachmagic" / "scripts" / "detect_platform.py"
-EF_SCRIPTS = ROOT / "skills" / "email-finder" / "scripts"
+EF_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 VERSION_FILE = ROOT / "skills" / "outreachmagic" / "scripts" / "VERSION"
 
 

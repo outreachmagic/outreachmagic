@@ -12,8 +12,6 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALL = ROOT / "install.sh"
 VERSION_FILE = ROOT / "skills" / "outreachmagic" / "scripts" / "VERSION"
 SYNC_SCRIPT = ROOT / "scripts" / "sync_install_docs.py"
-EF_SKILL = ROOT / "skills" / "email-finder" / "SKILL.md"
-
 
 def _read_tag() -> str:
     ver = VERSION_FILE.read_text(encoding="utf-8").strip()
@@ -96,12 +94,6 @@ def test_no_broken_sha256_doc_patterns():
     )
     assert "om_install.sh" not in (ROOT / "AGENTS-INSTALL.md").read_text(encoding="utf-8")
     assert f"OM_VERSION={tag}" in (ROOT / "AGENTS-INSTALL.md").read_text(encoding="utf-8")
-
-
-def test_email_finder_skill_uses_skills_placeholder_not_hermes_path():
-    text = EF_SKILL.read_text(encoding="utf-8")
-    assert "<SKILLS>/outreachmagic/scripts/pipeline.py" in text
-    assert "~/.hermes/skills/outreachmagic/scripts/pipeline.py" not in text
 
 
 def test_agents_install_documents_install_dir_flow():

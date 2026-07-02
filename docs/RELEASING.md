@@ -2,13 +2,11 @@
 
 ## Architecture
 
-This is the public monorepo. CI publishes companion skills to their own repos on tag:
+This is the public monorepo. CI publishes the outreachmagic skill to `outreachmagic/outreachmagic` on tag:
 
 | Skill | Public repo | Tag prefix |
 |-------|-------------|------------|
-| outreachmagic (main) | `outreachmagic/outreachmagic` | `v` |
-| email-finder (companion) | `outreachmagic/email-finder` | `email-finder-v` |
-| lead-enrich (companion) | `outreachmagic/lead-enrich` | `lead-enrich-v` |
+| outreachmagic | `outreachmagic/outreachmagic` | `v` |
 
 `main` is always the latest committed code. Tags create permanent GitHub Releases — users get the latest tagged release by default.
 
@@ -65,7 +63,7 @@ Fix bugs, bump to `rc.2`, repeat. When satisfied, create the stable release (no 
 
 ---
 
-## Release process (main skill)
+## Release process
 
 ### Prerequisites
 
@@ -108,43 +106,6 @@ pipeline.py update --check
 
 ---
 
-## Companion skills (email-finder, lead-enrich)
-
-Companion skills are published to their own repos (`outreachmagic/email-finder`, `outreachmagic/lead-enrich`). The same tag-as-release pattern applies.
-
-### Update companion_common.py before tagging
-
-Companion skills share `scripts/companion_common.py`. Canonical file lives in `skills/email-finder/scripts/`. After editing it:
-
-```bash
-bash scripts/sync-companion-common.sh
-python3 scripts/generate_skill_manifest.py --all
-```
-
-### Tagging a companion
-
-```bash
-bash scripts/sync-companion-common.sh
-python3 scripts/generate_skill_manifest.py --all
-make release-check
-git add -A
-git commit -m "email-finder: validate CC number digits"
-git tag email-finder-v1.0.1
-git push origin main --tags
-```
-
-This triggers `.github/workflows/publish-email-finder.yml` (test → publish to `outreachmagic/email-finder` → create release).
-
-For lead-enrich, same pattern with `lead-enrich-v*`.
-
-> Companion tags only deploy the companion skill. The main skill (outreachmagic) deploys independently via its own `v*` tags.
-
-### Companion testing
-
-Same patterns as the main skill. For a local copy set `dev_repo` in the companion's config. Companion skills don't have `--channel main` — use `--tag` with an RC tag for beta testing.
-
----
-
 ## What CI does
 
 | Trigger | Action |
@@ -152,8 +113,6 @@ Same patterns as the main skill. For a local copy set `dev_repo` in the companio
 | Push to `main` | Tests run. Manual release via tag. |
 | Tag `v*` | Creates GitHub Release on `outreachmagic/outreachmagic` |
 | Tag `v*-*` (prerelease) | Same as above, marked as prerelease (not `latest`) |
-| Tag `email-finder-v*` | Tests + publishes to `outreachmagic/email-finder` + creates release |
-| Tag `lead-enrich-v*` | Tests + publishes to `outreachmagic/lead-enrich` + creates release |
 
 ---
 
@@ -161,7 +120,6 @@ Same patterns as the main skill. For a local copy set `dev_repo` in the companio
 
 - **Stable**: `v1.0.0`, `v1.1.0`, `v1.1.1` — patch for hotfixes, minor for features, major for breaking changes.
 - **Release candidate**: `v1.1.0-rc.1`, `v1.1.0-rc.2` — prerelease tags for testing before the stable release.
-- **Companion skills** follow the same pattern with their prefix: `email-finder-v1.0.1`, `lead-enrich-v1.1.0-rc.1`.
 
 ---
 

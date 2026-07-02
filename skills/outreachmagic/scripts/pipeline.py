@@ -3207,6 +3207,10 @@ def _tags_from_import_row(raw: dict, extra: dict[str, str]) -> list[str]:
 
 
 def _validity_to_verify_status(validity: str, *, provider: str) -> str:
+    # NOTE: This function mirrors waterfall.validity_to_verify_status() from the
+    # consolidated email-finder provider layer. It exists here because pipeline.py
+    # processes batch results independently of the email-finder CLI. If the
+    # verification logic in waterfall.py changes, keep this in sync.
     v = (validity or "").strip().lower()
     prov = (provider or "").strip().lower()
     if prov == "icypeas":
@@ -3265,7 +3269,14 @@ def apply_email_find_results(
     source: Optional[str] = None,
     source_detail: Optional[str] = None,
 ) -> dict:
-    """Fast batch save when every row has a known lead id (email-finder batch tail)."""
+    """Fast batch save when every row has a known lead id (email-finder batch tail).
+    
+    NOTE: This function processes the output shape produced by
+    email_finder.py / waterfall.run_find_with_fallback(). The expected fields
+    (email, validity, validSMTP, jobId, provider, credits_used, etc.) are defined
+    in the provider modules (trykitt.py, icypeas.py, waterfall.py). If those
+    output shapes change, update this function accordingly.
+    """
     default_source = source if source is not None else "email_finder"
     summary: dict = {
         "processed": 0,
@@ -10922,7 +10933,7 @@ def main():
 
     aef_p = sub.add_parser(
         "apply-email-find-results",
-        help="Fast batch save when every row has lead id (email-finder companion)",
+        help="Fast batch save when every row has lead id (email-finder)",
     )
     aef_p.add_argument("--file", help="Path to .json file")
     aef_p.add_argument("--json", dest="json_data", help='JSON array string, or "-" for stdin')

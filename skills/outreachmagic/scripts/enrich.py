@@ -40,7 +40,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
-import companion_common as cc
+import shared as cc
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1431,7 +1431,7 @@ def cmd_doctor() -> None:
     skill_dir = _find_skill_dir()
     expected_files = [
         ("config.json", skill_dir / "config.json"),
-        ("companion_common.py", skill_dir / "scripts" / "companion_common.py"),
+        ("shared.py", skill_dir / "scripts" / "shared.py"),
         ("enrich.py", skill_dir / "scripts" / "enrich.py"),
     ]
     for label, path in expected_files:

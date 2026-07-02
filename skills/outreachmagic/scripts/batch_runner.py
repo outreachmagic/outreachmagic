@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-import companion_common as cc
+import shared as cc
 from health import (
     count_usable_find_providers,
     format_health_lines,
@@ -31,7 +31,7 @@ from progress import (
     record_api_calls,
     record_verify_status,
 )
-from providers import (
+from waterfall import (
     CreditsExhaustedError,
     provider_note_text,
     provider_request_delay_seconds,

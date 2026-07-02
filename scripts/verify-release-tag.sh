@@ -16,14 +16,8 @@ PY="${PYTHON:-python3}"
 
 "$PY" "$ROOT/scripts/generate_skill_manifest.py" --all
 git diff --exit-code \
-  "$ROOT/skills/outreachmagic/update-manifest.json" \
-  "$ROOT/skills/email-finder/update-manifest.json" \
-  "$ROOT/skills/lead-enrich/update-manifest.json"
-"$PY" "$ROOT/scripts/validate-companion-manifests.py"
-
-bash "$ROOT/scripts/sync-companion-common.sh" --check
+  "$ROOT/skills/outreachmagic/update-manifest.json"
 
 "$PY" "$ROOT/tests/test_pipeline_import_smoke.py"
-"$PY" "$ROOT/tests/test_companion_common_sync.py"
 
 echo "Release tag ${TAG} matches VERSION ${FILE_VERSION} and manifest is current."

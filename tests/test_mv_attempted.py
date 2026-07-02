@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-EMAIL_SCRIPTS = ROOT / "skills" / "email-finder" / "scripts"
+EMAIL_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 OM_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 sys.path.insert(0, str(OM_SCRIPTS))
 

@@ -34,12 +34,6 @@ jobs:
       - name: Run test suite
         run: bash scripts/run-tests.sh
 
-      - name: Run lead-enrich tests
-        run: python3 tests/test_lead_enrich.py
-
-      - name: Run email-finder tests
-        run: python3 tests/test_email_finder.py
-
   manifest:
     name: Update manifest
     runs-on: ubuntu-latest
@@ -52,9 +46,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Verify companion_common sync
-        run: bash scripts/sync-companion-common.sh --check
-
       - name: Verify skill manifests and install contract
         run: |
           python3 -c "
@@ -65,10 +56,7 @@ jobs:
           "
           python3 scripts/generate_skill_manifest.py --all
           git diff --exit-code \
-            skills/outreachmagic/update-manifest.json \
-            skills/lead-enrich/update-manifest.json \
-            skills/email-finder/update-manifest.json
-          python3 scripts/validate-companion-manifests.py
+            skills/outreachmagic/update-manifest.json
 
   skill-scan:
     name: SkillScan

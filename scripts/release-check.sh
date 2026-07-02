@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-tag gate: manifests, validators, companion sync, pytest.
+# Pre-tag gate: manifests, validators, pytest.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,15 +10,7 @@ ${PYTHON:-python3} scripts/generate_skill_manifest.py --all
 
 echo "== Verify manifests committed =="
 git diff --exit-code \
-  skills/outreachmagic/update-manifest.json \
-  skills/email-finder/update-manifest.json \
-  skills/lead-enrich/update-manifest.json
-
-echo "== Companion common sync =="
-bash scripts/sync-companion-common.sh --check
-
-echo "== Manifest validators =="
-${PYTHON:-python3} scripts/validate-companion-manifests.py
+  skills/outreachmagic/update-manifest.json
 
 echo "== Sentiment integrity =="
 for f in skills/outreachmagic/scripts/campaign_stats.py skills/outreachmagic/scripts/pipeline_lead_review.py skills/outreachmagic/scripts/pipeline.py; do

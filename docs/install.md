@@ -5,7 +5,7 @@
 
 Portal: [app.outreachmagic.io/onboarding](https://app.outreachmagic.io/onboarding)
 
-All platforms install the **full skill suite** (outreachmagic + lead-enrich + email-finder)
+All platforms install the **outreachmagic skill** (pipeline sync, lead research, and email find/verify)
 from [outreachmagic/outreachmagic](https://github.com/outreachmagic/outreachmagic).
 
 ## Secure install (all platforms)

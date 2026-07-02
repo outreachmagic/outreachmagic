@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for skills/lead-enrich/scripts/enrich.py"""
+"""Tests for skills/outreachmagic/scripts/enrich.py"""
 
 import json
 import os
@@ -12,10 +12,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "skills" / "lead-enrich" / "scripts"))
+sys.path.insert(0, str(ROOT / "skills" / "outreachmagic" / "scripts"))
 
 import enrich  # noqa: E402
-import companion_common as cc  # noqa: E402
+import shared as cc  # noqa: E402
 
 
 def _clear_key_pool_session():

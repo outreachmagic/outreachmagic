@@ -38,7 +38,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
-import companion_common as cc
+import shared as cc
 from batch_runner import (
     BatchOptions,
     build_import_profile,
@@ -52,13 +52,12 @@ from credits import mv_credit_summary, verify_credits_used
 from millionverifier import MillionVerifierProvider, mv_to_om_status
 from scrubby import ScrubbyProvider, scrubby_deep_to_om_status
 from progress import print_mv_summary, print_om_setup_box, print_verify_bulk_plan
-from providers import (
-    icypeas_find,
-    icypeas_poll_result,
+from trykitt import trykitt_find
+from icypeas import icypeas_find, icypeas_poll_result
+from waterfall import (
     provider_note_text,
     resolve_provider_names,
     run_find_with_fallback,
-    trykitt_find,
     validity_to_verify_status,
 )
 

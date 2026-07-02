@@ -32,9 +32,9 @@ Where to look when you're fixing something:
 | Pipeline CLI, sync, stats | `skills/outreachmagic/scripts/pipeline.py` |
 | Email verification, bounce handling | `skills/outreachmagic/scripts/bounces.py` |
 | Lead sync back to CRMs | `skills/outreachmagic/scripts/lead_sync.py` |
-| Email waterfall finder | `skills/email-finder/scripts/email_finder.py` |
-| Lead enrichment via Serper | `skills/lead-enrich/scripts/enrich.py` |
-| Shared companion code | `skills/email-finder/scripts/companion_common.py` |
+| Email waterfall finder | `skills/outreachmagic/scripts/email_finder.py` |
+| Lead enrichment via Serper | `skills/outreachmagic/scripts/enrich.py` |
+| Shared utilities | `skills/outreachmagic/scripts/shared.py` |
 | Install script | `install.sh` |
 | CI workflows | `.github/workflows/` |
 
@@ -42,7 +42,7 @@ Where to look when you're fixing something:
 
 1. One logical change per PR. Don't bundle a bug fix with a refactor.
 2. Run `make release-check` before pushing. This regenerates manifests and runs the full gate.
-3. If your change touches companion code, run `bash scripts/sync-companion-common.sh --check` to make sure the shared module is in sync.
+3. Run `make release-check` to verify manifests, tests, and doc sync.
 4. Write commit messages that explain why, not what. The diff shows what changed.
 5. Tests pass, SkillScan passes, manifest check passes.
 
@@ -53,14 +53,9 @@ Where to look when you're fixing something:
 - **Markdown:** Prettier. Sentence-per-line in docs when it improves diffs.
 - **No secrets:** Must-load from environment variables or the portal. Never hardcoded.
 
-## Companion skills
+## Single consolidated skill
 
-Email finder and lead enrich share code in `companion_common.py`. The companion repos (`outreachmagic/email-finder`, `outreachmagic/lead-enrich`) are read-only mirrors published by CI. If you change companion code:
-
-1. Edit the source file in this repo
-2. Run `bash scripts/sync-companion-common.sh`
-3. Run `python3 scripts/generate_skill_manifest.py --all`
-4. The CI publishes to the mirrors on tag
+Outreach Magic is now a single consolidated skill (pipeline sync + person research + email find/verify). All scripts live under `skills/outreachmagic/scripts/`. The old `email-finder` and `lead-enrich` companions have been merged here.
 
 ## Release process
 

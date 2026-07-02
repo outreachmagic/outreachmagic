@@ -1,6 +1,6 @@
-# Agent install guide — Outreach Magic skill suite
+# Agent install guide — Outreach Magic
 
-Agent-readable install guide for **outreachmagic**, **lead-enrich**, and **email-finder**.
+Agent-readable install guide for **outreachmagic** (pipeline sync, lead research, and email find/verify).
 Human setup portal: https://app.outreachmagic.io/onboarding
 
 ## Ask the user first
@@ -27,7 +27,7 @@ Before executing any install command:
 2. Ask for **explicit confirmation**. Do not run `install.sh` without user approval of the full command string.
 3. Prefer **download → inspect → run** (below), not piping a remote script directly into `bash`.
 
-The installer always installs the **full suite** (outreachmagic + lead-enrich + email-finder).
+The installer always installs the **full outreachmagic skill** (pipeline sync + research + email find/verify).
 
 After download (Step 1 below), preview without writing:
 
@@ -94,7 +94,7 @@ python3 <SKILLS>/outreachmagic/scripts/detect_platform.py
 # → {"platform": "cursor", "skills_dir": "~/.cursor/skills"}
 ```
 
-The installer clones all three skills, initializes SQLite at
+The installer clones the skill and initializes SQLite at
 `<SKILLS>/outreachmagic/databases/outreachmagic.db`, and on Hermes symlinks skills into
 each profile under `~/.hermes/profiles/`.
 
@@ -131,7 +131,7 @@ Never paste secrets into chat.
 Once signed in at https://app.outreachmagic.io, open **Settings** to:
 
 - Connect sequencer tools (Smartlead, Instantly, Heyreach, PlusVibe, EmailBison, Prosp, MasterInbox, Calendly)
-- Enable email-finder providers (TryKitt, Icypeas) and set API keys
+- Enable email finding providers (TryKitt, Icypeas) and set API keys
 - Enable lead research (Serper) and set your API key
 - Optionally add MillionVerifier or Scrubby for email verification
 
@@ -142,7 +142,7 @@ Verify keys:
 
 ```bash
 python3 <SKILLS>/outreachmagic/scripts/pipeline.py sync-secrets --check
-python3 <SKILLS>/email-finder/scripts/email_finder.py config
+python3 <SKILLS>/outreachmagic/scripts/email_finder.py config
 # *_api_key_source should be "agent_secrets"
 ```
 

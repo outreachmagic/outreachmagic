@@ -21,9 +21,9 @@
 |-----|---------|
 | [RELEASING.md](./RELEASING.md) | Version bump, tag, CI, public repo publish |
 | [install.md](./install.md) | End-user install one-liners |
-| [install-companions.md](./install-companions.md) | Full suite install (all platforms) |
+| [install-companions.md](./install-companions.md) | Install guide (all platforms) |
 | [hermes-skills-layout.md](./hermes-skills-layout.md) | Hermes symlinks and profile layout |
-| [skill-suite.md](./skill-suite.md) | Three-skill funnel and freemium rules |
+| [skill-suite.md](./skill-suite.md) | Skill architecture and capability overview |
 | [relay-sync-progress.md](./relay-sync-progress.md) | **Pull/sync log format** — ↓↑ arrows, Event/Lead/Workspace/Company, `pN/M` lines, `batch_sync.log` |
 
 ## Archive

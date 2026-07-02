@@ -12,10 +12,10 @@ Set these in each public repo's Settings → Description and Topics.
 prospecting outreachmagic sales-automation outbound ai-agents cursor go-to-market claude-code-skills cold-email lead-generation sales agent-skills gtm claude-code hermes-agent
 ```
 
-## outreachmagic/lead-enrich
+## outreachmagic/lead-enrich (archived)
 
 **Description:**
-> Research your leads. Find LinkedIn URLs, job titles, and company domains through Serper.dev. Pairs with Outreach Magic for credit-saving dedup.
+> ⚠️ ARCHIVED — Merged into outreachmagic/outreachmagic. Research your leads. Find LinkedIn URLs, job titles, and company domains through Serper.dev. Pairs with Outreach Magic for credit-saving dedup.
 
 **Topics:**
 ```
@@ -32,10 +32,10 @@ prospecting outreachmagic sales-automation outbound ai-agents cursor go-to-marke
 outreachmagic brand logos assets
 ```
 
-## outreachmagic/email-finder
+## outreachmagic/email-finder (archived)
 
 **Description:**
-> Waterfall email enrichment through trykitt and Icypeas. Find work emails for your leads. Works standalone or with Outreach Magic for dedup and persistent storage.
+> ⚠️ ARCHIVED — Merged into outreachmagic/outreachmagic. Waterfall email enrichment through trykitt and Icypeas. Find work emails for your leads. Works standalone or with Outreach Magic for dedup and persistent storage.
 
 **Topics:**
 ```

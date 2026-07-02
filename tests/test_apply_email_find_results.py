@@ -12,7 +12,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
-EMAIL_SCRIPTS = ROOT / "skills" / "email-finder" / "scripts"
+EMAIL_SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -21,7 +21,7 @@ if str(EMAIL_SCRIPTS) not in sys.path:
 
 import pipeline as om  # noqa: E402
 
-import companion_common as ef_cc  # noqa: E402
+import shared as ef_cc  # noqa: E402
 
 
 def _reset_db():

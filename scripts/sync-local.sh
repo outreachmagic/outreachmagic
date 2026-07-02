@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dev sync: copy monorepo skills into ~/.hermes/skills/ (Hermes canonical path).
+# Dev sync: copy monorepo skill into ~/.hermes/skills/ (Hermes canonical path).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,11 +36,6 @@ sync_skill() {
 
 echo "Outreach Magic — dev sync to $HERMES_HOME/skills/"
 sync_skill outreachmagic
-for companion in lead-enrich email-finder; do
-  if [[ -d "$ROOT/skills/$companion" ]]; then
-    sync_skill "$companion"
-  fi
-done
 
 python3 "$OM_DIR/scripts/pipeline.py" init
 

@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# Install Outreach Magic skill suite (outreachmagic + lead-enrich + email-finder).
+# Install Outreach Magic skill (consolidated: pipeline sync + person research + email find/verify).
 set -euo pipefail
 
 OM_REPO="https://github.com/outreachmagic/outreachmagic.git"
-LE_REPO="https://github.com/outreachmagic/lead-enrich.git"
-EF_REPO="https://github.com/outreachmagic/email-finder.git"
 
 PLATFORM=""
 ALL_PROFILES=0
@@ -14,8 +12,6 @@ DRY_RUN=0
 YES=0
 UNINSTALL=0
 OM_TAG=""
-LE_TAG=""
-EF_TAG=""
 PROFILES=()
 
 # Detect a suitable Python (3.10+) by checking known paths
@@ -73,7 +69,7 @@ _bootstrap_repo_tag_from_args() {
   for arg in "$@"; do
     case "$arg" in
       --local)
-        echo "error: --local requires a full repo checkout (platforms/common/install-companions.sh missing)" >&2
+        echo "error: --local requires a full repo checkout" >&2
         return 2
         ;;
     esac
@@ -97,7 +93,7 @@ _bootstrap_repo_tag_from_args() {
 _bootstrap_install_if_needed() {
   local root=""
   root="$(_install_root 2>/dev/null || true)"
-  if [[ -n "$root" && -f "$root/platforms/common/install-companions.sh" ]]; then
+  if [[ -n "$root" ]]; then
     _here="$root"
     return 0
   fi
@@ -115,36 +111,17 @@ _bootstrap_install_if_needed() {
   else
     git -c advice.detachedHead=false clone --depth 1 --progress "$OM_REPO" "$tmp"
   fi
-  if [[ ! -f "$tmp/platforms/common/install-companions.sh" ]]; then
-    echo "error: cloned repo missing platforms/common/install-companions.sh" >&2
-    rm -rf "$tmp"
-    exit 1
-  fi
   exec bash "$tmp/install.sh" "$@"
 }
 
 _here=""
 _bootstrap_install_if_needed "$@"
 
-# When bootstrapped from main (no --tag), use the cloned checkout directly
-# instead of re-cloning from a potentially-stale release tag. This ensures
-# the installed scripts match the running installer, and avoids cascading
-# the outreachmagic release tag to companion repos that use different tags.
-if [[ $LOCAL -eq 0 && -z "$OM_TAG" ]]; then
-  if [[ -n "$_here" && -f "$_here/platforms/common/install-companions.sh" ]]; then
-    LOCAL=1
-    _log_step "Using bootstrap clone directly (no --tag specified)"
-  fi
-fi
-
-# shellcheck source=platforms/common/install-companions.sh
-source "$_here/platforms/common/install-companions.sh"
-
 usage() {
   cat <<'EOF'
 Usage: install.sh --platform <hermes|cursor|claude> [options]
 
-Installs outreachmagic, lead-enrich, and email-finder from github.com/outreachmagic/outreachmagic.
+Installs outreachmagic from github.com/outreachmagic/outreachmagic.
 Hermes: real files under ~/.hermes/skills/; profiles get symlinks only.
 
 Options:
@@ -154,11 +131,9 @@ Options:
   --all-profiles           Hermes only: symlink all existing profiles (default when profiles/ exists)
   --profile NAME           Hermes only: symlink one profile (repeatable)
   --tag TAG                outreachmagic release tag (e.g. v1.3.0)
-  --lead-enrich-tag TAG    lead-enrich release tag (default from skill-suite.json)
-  --email-finder-tag TAG   email-finder release tag (default from skill-suite.json)
   --dry-run                Print planned actions without writing
   --yes                    Skip interactive prompts (non-interactive init)
-  --uninstall              Remove installed skills for this platform
+  --uninstall              Remove installed skill for this platform
   -h, --help               Show this help
 EOF
 }
@@ -171,14 +146,12 @@ while [[ $# -gt 0 ]]; do
     --no-profiles) NO_PROFILES=1; shift ;;
     --profile) PROFILES+=("$2"); shift 2 ;;
     --tag) OM_TAG="$2"; shift 2 ;;
-    --lead-enrich-tag) LE_TAG="$2"; shift 2 ;;
-    --email-finder-tag) EF_TAG="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes) YES=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    --with-lead-enrich|--with-email-finder|--migrate|--migrate-hermes-profiles)
-      echo "warning: $1 is no longer required (full suite always installs)" >&2
+    --with-lead-enrich|--with-email-finder|--lead-enrich-tag|--email-finder-tag|--migrate|--migrate-hermes-profiles)
+      echo "warning: $1 is no longer supported (consolidated skill includes all capabilities)" >&2
       shift
       ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -191,42 +164,10 @@ if [[ -z "$PLATFORM" ]]; then
   exit 1
 fi
 
-_resolve_companion_tag() {
-  local skill="$1"
-  local tag=""
-  tag="$(_read_suite_install_tag "$skill" 2>/dev/null || true)"
-  if [[ -z "$tag" && -n "${_here:-}" && -f "$_here/skill-suite.json" ]]; then
-    tag="$(python3 -c "
-import json, sys
-skill, path = sys.argv[1], sys.argv[2]
-print(json.load(open(path, encoding='utf-8'))['skills'][skill]['install_default_tag'])
-" "$skill" "$_here/skill-suite.json" 2>/dev/null || true)"
-  fi
-  if [[ -z "$tag" ]]; then
-    echo "error: install tag for $skill not found (skill-suite.json install_default_tag)" >&2
-    return 1
-  fi
-  printf '%s' "$tag"
-}
-
-LE_EXPLICIT=0
-EF_EXPLICIT=0
-[[ -n "$LE_TAG" ]] && LE_EXPLICIT=1
-[[ -n "$EF_TAG" ]] && EF_EXPLICIT=1
-
-LE_TAG="${LE_TAG:-$(_resolve_companion_tag lead-enrich)}"
-EF_TAG="${EF_TAG:-$(_resolve_companion_tag email-finder)}"
-
 if [[ -z "$OM_TAG" && $UNINSTALL -eq 0 ]]; then
   if [[ -f "$_here/skills/outreachmagic/scripts/VERSION" ]]; then
     OM_TAG="v$(tr -d '[:space:]' < "$_here/skills/outreachmagic/scripts/VERSION")"
   fi
-fi
-
-# Cascade parent --tag to companions when not explicitly overridden
-if [[ -n "$OM_TAG" ]]; then
-  [[ $LE_EXPLICIT -eq 0 ]] && LE_TAG="$OM_TAG"
-  [[ $EF_EXPLICIT -eq 0 ]] && EF_TAG="$OM_TAG"
 fi
 
 case "$PLATFORM" in
@@ -283,36 +224,27 @@ copy_skill_tree() {
 _plan_uninstall() {
   echo "[dry-run] Would remove:"
   echo "  $SKILLS_DIR/outreachmagic"
-  echo "  $SKILLS_DIR/lead-enrich"
-  echo "  $SKILLS_DIR/email-finder"
   if [[ "$PLATFORM" == "hermes" && ${#PROFILES[@]} -gt 0 ]]; then
-    local profile skill
+    local profile
     for profile in "${PROFILES[@]}"; do
-      for skill in outreachmagic lead-enrich email-finder; do
-        echo "  $HERMES_HOME/profiles/$profile/skills/$skill (symlink)"
-      done
+      echo "  $HERMES_HOME/profiles/$profile/skills/outreachmagic (symlink)"
     done
   fi
 }
 
 _do_uninstall() {
-  local skill
-  for skill in outreachmagic lead-enrich email-finder; do
-    if [[ -d "$SKILLS_DIR/$skill" ]]; then
-      _log_step "Removing $SKILLS_DIR/$skill"
-      rm -rf "$SKILLS_DIR/$skill"
-    fi
-  done
+  if [[ -d "$SKILLS_DIR/outreachmagic" ]]; then
+    _log_step "Removing $SKILLS_DIR/outreachmagic"
+    rm -rf "$SKILLS_DIR/outreachmagic"
+  fi
   if [[ "$PLATFORM" == "hermes" ]]; then
     local profile
     for profile in "$HERMES_HOME/profiles"/*/; do
       [[ -d "$profile" ]] || continue
-      for skill in outreachmagic lead-enrich email-finder; do
-        local link="${profile}skills/$skill"
-        if [[ -L "$link" ]]; then
-          rm -f "$link"
-        fi
-      done
+      local link="${profile}skills/outreachmagic"
+      if [[ -L "$link" ]]; then
+        rm -f "$link"
+      fi
     done
   fi
   echo "✓ Uninstall complete for platform: $PLATFORM"
@@ -475,11 +407,7 @@ if [[ $DRY_RUN -eq 1 ]]; then
   echo "Platform:     $PLATFORM"
   echo "Skills dir:   $SKILLS_DIR"
   echo "outreachmagic tag: ${OM_TAG:-main}"
-  echo "lead-enrich tag:   ${LE_TAG:-main}"
-  echo "email-finder tag:  ${EF_TAG:-main}"
   install_outreachmagic
-  _log_step "[dry-run] Would install lead-enrich to $SKILLS_DIR/lead-enrich"
-  _log_step "[dry-run] Would install email-finder to $SKILLS_DIR/email-finder"
   if [[ "$PLATFORM" == "hermes" && ${#PROFILES[@]} -gt 0 ]]; then
     _log_step "[dry-run] Would link profiles: ${PROFILES[*]}"
   fi
@@ -488,21 +416,15 @@ if [[ $DRY_RUN -eq 1 ]]; then
 fi
 
 install_outreachmagic
-install_lead_enrich
-install_email_finder
 
 if [[ "$PLATFORM" == "hermes" ]] && [[ ${#PROFILES[@]} -gt 0 ]]; then
   echo "→ Profile symlinks"
   link_profiles outreachmagic "${PROFILES[@]}"
-  link_profiles lead-enrich "${PROFILES[@]}"
-  link_profiles email-finder "${PROFILES[@]}"
 fi
 
 echo ""
 echo "✓ Installation complete. Login step is ready — ask your agent to connect."
 echo "  outreachmagic: $SKILLS_DIR/outreachmagic"
-echo "  lead-enrich:   $SKILLS_DIR/lead-enrich"
-echo "  email-finder:  $SKILLS_DIR/email-finder"
 echo "  Paths:   python3 $SKILLS_DIR/outreachmagic/scripts/pipeline.py paths"
 if [[ "$PLATFORM" == "hermes" ]] && [[ ${#PROFILES[@]} -eq 0 ]]; then
   echo ""

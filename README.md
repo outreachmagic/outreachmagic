@@ -6,7 +6,7 @@ Your agent goes blind after send. Sync Smartlead, Instantly, HeyReach, PlusVibe,
 
 Every other GTM skill tells your agent what to write. This one tells your agent what's happening.
 
-This repo is the source for everything: the pipeline skill, the email waterfall finder, the lead enrichment tool, the install script, CI, tests, and docs. If you just want to install and use the skills, head to [outreachmagic.io](https://outreachmagic.io). If you want to contribute or understand how it works, you're in the right place.
+This repo is the single source for everything: pipeline sync, email waterfall finding, lead enrichment, the install script, CI, tests, and docs. If you just want to install and use the skill, head to [outreachmagic.io](https://outreachmagic.io). If you want to contribute or understand how it works, you're in the right place.
 
 ## How it fits
 
@@ -14,99 +14,28 @@ The problem: every Friday you export CSVs from Smartlead, Instantly, and HeyReac
 
 Outreach Magic fixes that. Every sequencer sends webhooks to api.outreachmagic.io. Those events sync to your agent's local database. Every reply, bounce, booking, and stage change lands there. Your agent queries it directly. No CSV stitching, no blind spots, and it syncs across multiple agents so nothing gets lost.
 
-```
-                         ┌──────────────────────────────────────────┐
-     Smartlead ─────────►│        Platform webhook events           │
-     Instantly ─────────►│        sync across all agents            │
-     HeyReach  ─────────►│        so nothing gets lost              │
-     PlusVibe  ─────────►│        api.outreachmagic.io              │
-     EmailBison ────────►│                                          │
-     Prosp     ─────────►│                                          │
-     Calendly  ─────────►│                                          │
-                         └──────────────────┬───────────────────────┘
-                                            │  ▲
-                                            ▼  │
-                         ┌──────────────────────────────────────────┐
-                         │  Your agent's local SQLite database      │
-                         │  Cursor · Claude Code · Hermes Agent     │
-                         └──────────────────┬───────────────────────┘
-                                            |  ▲
-                                            |  │
-           ┌────────────────────────────────┼──|───────────────────────────────────┐
-           ▼                                ▼  |                                   ▼
-    ┌──────────────┐         ┌──────────────────────────────────┐        ┌────────────────────┐
-    │  "show me    │         │  "find job title, linkedin +     │        │  "analyse my most  │
-    │  the best    │         │  email for Bill Smith at         │        │  recent bounces    │
-    │  performing  │         │  Acme Corp"                      │        │  for deliverability│
-    │  copy"       │         │                                  │        │  + export Sheets"  │
-    └──────────────┘         └──────────────────────────────────┘        └────────────────────┘
-```
+## What's included
+
+| Capability | What it does | Keys |
+|------------|-------------|------|
+| **Pipeline sync** | Sync Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, and Calendly into one local SQLite DB | OM account |
+| **Person research** | Find LinkedIn, job title, company domain by name + company via Serper | Serper key |
+| **Email finding and verification** | Waterfall find (trykitt → Icypeas). Verify via MillionVerifier. Deep verify catch-all/unknown via Scrubby. | trykitt, Icypeas, MV, Scrubby |
 
 ## Quick start
-
-Once it's installed, try prompts like these:
-
-```
-use outreach magic skill suite to show me the best performing copy
-```
-
-```
-use outreach magic skill suite to find job title, linkedin + email for Bill Smith at Acme Corp
-```
-
-```
-use outreach magic skill suite to analyse my most recent bounces for deliverability insights
-```
-
-```
-use outreach magic skill suite to do a detailed campaign stats export to Google Sheets
-```
-
-Not sure what it can do? Ask your agent:
-
-```
-tell me everything the outreach magic skill suite can do in natural language with example prompts
-```
-
-## Install
-
-**Using npx:**
 
 ```bash
 npx skills add outreachmagic/outreachmagic
 ```
 
-**Using an agent prompt:**
+Or follow the agent install guide: [AGENTS-INSTALL.md](AGENTS-INSTALL.md).
 
-```
-Fetch this file and follow its instructions to install the Outreach Magic skill suite on this machine:
+Try prompts like:
 
-https://raw.githubusercontent.com/outreachmagic/outreachmagic/main/AGENTS-INSTALL.md
-```
-
-## What you need
-
-| Key | For | Required? |
-|-----|-----|-----------|
-| OM account | Portal access, billing, webhook URLs | Yes |
-| Sequencer webhooks | Smartlead, Instantly, HeyReach, etc. | At least one |
-| Companion API keys | Lead enrichment (Serper) and email waterfall finder (trykitt, Icypeas, MillionVerifier, Scrubby) | When you use those features |
-
-Set keys in your agent's environment config or in the portal. They sync through automatically.
-
-## Repo layout
-
-```
-skills/outreachmagic/          # Main skill — pipeline.py, SQLite DB, sync, stats, CRM drivers
-skills/email-finder/           # Email waterfall companion — trykitt, Icypeas, Scrubby
-skills/lead-enrich/            # Lead research companion — Serper.dev
-install.sh                     # Cross-platform installer (Hermes, Cursor, Claude Code)
-platforms/                     # Platform overlays and install wrappers
-brand/                         # Logo SVGs (published to outreachmagic/brand)
-scripts/                       # Dev scripts — tests, manifests, sync, release check
-tests/                         # pytest suite
-docs/                          # Dev docs — releasing, skill suite
-```
+- *"Show me my pipeline"*
+- *"Find the email for Bill Smith at acme.com"*
+- *"Research Jane Doe at Acme Corp"*
+- *"Verify these emails: bill@acme.com, jane@xyz.io"*
 
 ## Quick start for contributors
 
@@ -121,7 +50,6 @@ Run the tests:
 
 ```bash
 bash scripts/run-tests.sh
-bash scripts/skill-scan.sh    # or: hermes skills publish --dry-run
 ```
 
 Build the manifests:
@@ -131,16 +59,19 @@ make manifests
 make release-check
 ```
 
-## Companion skills
+## Repo layout
 
-Two standalone skills ship from this repo. They work on their own with just API keys. Pair them with Outreach Magic for dedup and persistent storage.
+```
+skills/outreachmagic/scripts/   # All 48+ scripts — pipeline, enrich, email_finder, etc.
+install.sh                      # Cross-platform installer (Hermes, Cursor, Claude Code)
+platforms/                      # Platform overlays and install wrappers
+brand/                          # Logo SVGs (published to outreachmagic/brand)
+scripts/                        # Dev scripts — tests, manifests, release check
+tests/                          # pytest suite
+docs/                           # Dev docs — releasing, skill suite
+```
 
-| Skill | What it does | Repo |
-|-------|-------------|------|
-| Email finder | Waterfall find + verify work emails through trykitt, Icypeas, MillionVerifier, and Scrubby | [outreachmagic/email-finder](https://github.com/outreachmagic/email-finder) |
-| Lead enrich | Research people by name and company through Serper.dev | [outreachmagic/lead-enrich](https://github.com/outreachmagic/lead-enrich) |
-
-The companion repos are read-only mirrors published by CI. Development happens here.
+The former `skills/email-finder/` and `skills/lead-enrich/` companion skills have been merged into `skills/outreachmagic/scripts/`. The companion repos ([lead-enrich](https://github.com/outreachmagic/lead-enrich), [email-finder](https://github.com/outreachmagic/email-finder)) are archived.
 
 ## CRM Sync
 
@@ -156,8 +87,6 @@ PRs are welcome. One logical change per PR. Run the tests before you push.
 
 | Repo | What |
 |------|------|
-| [outreachmagic/email-finder](https://github.com/outreachmagic/email-finder) | Companion mirror |
-| [outreachmagic/lead-enrich](https://github.com/outreachmagic/lead-enrich) | Companion mirror |
 | [outreachmagic/brand](https://github.com/outreachmagic/brand) | Logo assets |
 
 Marketing site: [outreachmagic.io](https://outreachmagic.io). Portal: [app.outreachmagic.io](https://app.outreachmagic.io).

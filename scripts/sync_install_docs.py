@@ -16,7 +16,7 @@ SYNC_FILES = [
     ROOT / "AGENTS-INSTALL.md",
     ROOT / "SECURITY.md",
     ROOT / "docs" / "install.md",
-    ROOT / "docs" / "install-companions.md",
+    # install-companions.md removed in v1.0.0 (consolidated single skill)
     ROOT / "docs" / "hermes-skills-layout.md",
     ROOT / "docs" / "RELEASING.md",
     ROOT / "platforms" / "hermes" / "README.md",

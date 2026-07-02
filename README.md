@@ -113,7 +113,7 @@ make release-check
 skills/outreachmagic/scripts/   # All 48+ scripts — pipeline, enrich, email_finder, etc.
 install.sh                      # Cross-platform installer (Hermes, Cursor, Claude Code)
 platforms/                      # Platform overlays and install wrappers
-brand/                          # Logo SVGs (published to outreachmagic/brand)
+brand/                          # Logo SVGs
 scripts/                        # Dev scripts — tests, manifests, release check
 tests/                          # pytest suite
 docs/                           # Dev docs — releasing, skill suite
@@ -130,10 +130,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow. Start with an issu
 PRs are welcome. One logical change per PR. Run the tests before you push.
 
 ## Related repos
-
-| Repo | What |
-|------|------|
-| [outreachmagic/brand](https://github.com/outreachmagic/brand) | Logo assets |
 
 Marketing site: [outreachmagic.io](https://outreachmagic.io). Portal: [app.outreachmagic.io](https://app.outreachmagic.io).
 

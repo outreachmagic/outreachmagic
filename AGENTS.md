@@ -63,11 +63,11 @@ git push origin main --tags
 
 ## Brand assets
 
-Logos live in `brand/` and publish to [outreachmagic/brand](https://github.com/outreachmagic/brand) via `publish-brand.yml` on merge to `main`.
+Logos live in `brand/` and are served via `raw.githubusercontent.com/outreachmagic/outreachmagic/main/brand/`.
 
 ## Public vs private
 
-This repo is public. All source code is visible. Secrets live in environment variables and `skills/outreachmagic/config/` (gitignored). Brand assets publish to `outreachmagic/brand`. Org profile publishes to `outreachmagic/.github`.
+This repo is public. All source code is visible. Secrets live in environment variables and `skills/outreachmagic/config/` (gitignored). Org profile publishes to `outreachmagic/.github`.
 
 ## Tests before tag
 

@@ -29,7 +29,7 @@
       "layout": "companion",
       "public_repo": "outreachmagic/email-finder",
       "release_tag_prefix": "email-finder-v",
-      "install_default_tag": "v1.0.0",
+      "install_default_tag": "v1.1.0",
       "version": {
         "source": "skill_md"
       },
@@ -55,7 +55,7 @@
       "layout": "companion",
       "public_repo": "outreachmagic/lead-enrich",
       "release_tag_prefix": "lead-enrich-v",
-      "install_default_tag": "v1.0.0",
+      "install_default_tag": "v1.2.0",
       "version": {
         "source": "skill_md"
       },

@@ -2,7 +2,7 @@
 
 Your pipeline, in your agent's hands. Sync Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, and Calendly into a local SQLite database your Hermes agent can query directly. Every reply, click, bounce, and booking lands on your machine — no CSV exports, no merged sheets, no API round trips.
 
-Installs **outreachmagic**, **lead-enrich**, and **email-finder** from the unified repo. Skills live in `~/.hermes/skills/`; Hermes profiles get symlinks only.
+Installs **outreachmagic** — the unified skill with pipeline sync, person research, and email finding/verification. Skills live in `~/.hermes/skills/`; Hermes profiles get symlinks only.
 
 ## Install
 
@@ -33,8 +33,6 @@ python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py stats
 
 ```bash
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py update
-python3 ~/.hermes/skills/lead-enrich/scripts/enrich.py update
-python3 ~/.hermes/skills/email-finder/scripts/email_finder.py update
 ```
 
 ## Verify

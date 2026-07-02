@@ -2,7 +2,7 @@
 
 Your pipeline, in your agent's hands. Sync Smartlead, Instantly, HeyReach, PlusVibe, EmailBison, Prosp, MasterInbox, and Calendly into a local SQLite database your Claude Code agent can query directly. Every reply, click, bounce, and booking lands on your machine — no CSV exports, no merged sheets, no API round trips.
 
-Installs **outreachmagic**, **lead-enrich**, and **email-finder** from the unified repo.
+Installs **outreachmagic** — the unified skill with pipeline sync, person research, and email finding/verification.
 
 ## Install
 
@@ -26,8 +26,6 @@ Full agent guide: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachm
 
 ```bash
 python3 ~/.claude/skills/outreachmagic/scripts/pipeline.py update
-python3 ~/.claude/skills/lead-enrich/scripts/enrich.py update
-python3 ~/.claude/skills/email-finder/scripts/email_finder.py update
 ```
 
 Sign up at [outreachmagic.io](https://outreachmagic.io) · Billing at [app.outreachmagic.io](https://app.outreachmagic.io/settings/billing) to see plans and limits.

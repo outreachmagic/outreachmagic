@@ -1,9 +1,8 @@
-# Email finding moved to email-finder
+# Email finding
 
-Phase 5 (trykitt + waterfall) lives in the **email-finder** skill:
+Email finding and verification are part of the consolidated outreachmagic skill:
 
-- Install: see [install-companions.md](https://github.com/outreachmagic/outreachmagic/blob/main/docs/install-companions.md)
-- Docs: `~/.hermes/skills/email-finder/references/email-finding-research.md`
-- CLI: `python3 ~/.hermes/skills/email-finder/scripts/email_finder.py find --save ...`
-
-lead-enrich v2+ is Serper + LinkedIn + domain only.
+- CLI: `python3 scripts/email_finder.py find --name --domain ...`
+- Waterfall orchestration: `python3 scripts/waterfall.py`
+- Verification: `python3 scripts/verify.py`
+- Documentation: see [email-finding-research.md](email-finding-research.md)

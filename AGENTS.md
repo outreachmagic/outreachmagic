@@ -7,8 +7,6 @@ Read this first when changing skills, install, or release.
 | Skill | CLI | Config |
 |-------|-----|--------|
 | outreachmagic | `skills/outreachmagic/scripts/pipeline.py` | `skill-suite.json` |
-| email-finder | `skills/email-finder/scripts/email_finder.py` | same |
-| lead-enrich | `skills/lead-enrich/scripts/enrich.py` | same |
 
 **Single source of truth:** [`skill-suite.json`](skill-suite.json) — install pins, manifest file lists, public repos.
 
@@ -45,8 +43,6 @@ git tag vX.Y.Z
 git push origin main --tags
 ```
 
-Companion tags: `email-finder-v*` / `lead-enrich-v*` (see `skill-suite.json` → `release_tag_prefix`).
-
 ## Testing before tagging
 
 - **`dev_repo` config** — point `outreachmagic_config.json` at a local clone. `pipeline.py update` copies from disk.
@@ -71,7 +67,7 @@ Logos live in `brand/` and publish to [outreachmagic/brand](https://github.com/o
 
 ## Public vs private
 
-This repo is public. All source code is visible. Secrets live in environment variables and `skills/outreachmagic/config/` (gitignored). Companion publish workflows push to `outreachmagic/email-finder` and `outreachmagic/lead-enrich` (read-only mirrors with redirect banners). Brand assets publish to `outreachmagic/brand`. Org profile publishes to `outreachmagic/.github`.
+This repo is public. All source code is visible. Secrets live in environment variables and `skills/outreachmagic/config/` (gitignored). Brand assets publish to `outreachmagic/brand`. Org profile publishes to `outreachmagic/.github`.
 
 ## Tests before tag
 

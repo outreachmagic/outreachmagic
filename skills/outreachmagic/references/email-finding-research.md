@@ -107,10 +107,10 @@ python3 scripts/email_finder.py batch-find --workspace your_workspace --yes \
 python3 scripts/email_finder.py import-to-om --file outreachmagic/exports/emails.csv --workspace your_workspace
 ```
 
-**Single lead** — email-finder CLI (tags + notes on `--save`):
+**Single lead** — CLI (tags + notes on `--save`):
 
 ```bash
-python3 ~/.hermes/skills/email-finder/scripts/email_finder.py find \
+python3 scripts/email_finder.py find \
   --name "Jane Doe" --domain acme.com \
   --linkedin "https://linkedin.com/in/janedoe" --save --workspace your_workspace
 ```

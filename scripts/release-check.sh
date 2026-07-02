@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 echo "== Regenerate manifests from skill-suite.json =="
-python3 scripts/generate_skill_manifest.py --all
+${PYTHON:-python3} scripts/generate_skill_manifest.py --all
 
 echo "== Verify manifests committed =="
 git diff --exit-code \
@@ -18,7 +18,7 @@ echo "== Companion common sync =="
 bash scripts/sync-companion-common.sh --check
 
 echo "== Manifest validators =="
-python3 scripts/validate-companion-manifests.py
+${PYTHON:-python3} scripts/validate-companion-manifests.py
 
 echo "== Sentiment integrity =="
 for f in skills/outreachmagic/scripts/campaign_stats.py skills/outreachmagic/scripts/pipeline_lead_review.py skills/outreachmagic/scripts/pipeline.py; do
@@ -39,6 +39,6 @@ if rg -n '~/.hermes/\.env' AGENTS-INSTALL.md docs/AGENT-INTENTS.md skills/*/SECU
 fi
 
 echo "== Install doc sync and pattern validation =="
-python3 scripts/sync_install_docs.py --check
+${PYTHON:-python3} scripts/sync_install_docs.py --check
 
 echo "release-check: PASS"

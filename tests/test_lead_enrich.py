@@ -18,6 +18,18 @@ import enrich  # noqa: E402
 import companion_common as cc  # noqa: E402
 
 
+def _clear_key_pool_session():
+    """Reset api_key_pool session tracking to avoid cross-test pollution."""
+    api_key_pool_path = ROOT / "skills" / "outreachmagic" / "scripts"
+    if str(api_key_pool_path) not in sys.path:
+        sys.path.insert(0, str(api_key_pool_path))
+    try:
+        from api_key_pool import clear_session_state as _clear
+        _clear()
+    except ImportError:
+        pass
+
+
 class TestCompanyMatch(unittest.TestCase):
     def test_exact(self):
         self.assertTrue(enrich.companies_match("Acme Corp", "Acme Corp"))
@@ -339,8 +351,12 @@ class TestHermesEnv(unittest.TestCase):
         }
         for k in self._saved:
             del os.environ[k]
+        # Prevent _load_synced_agent_secrets from polluting env with real keys
+        self._load_patcher = patch.object(cc, "_load_synced_agent_secrets")
+        self._mock_load = self._load_patcher.start()
 
     def tearDown(self):
+        self._load_patcher.stop()
         cc._AGENT_ENV_LOADED = False
         for k in ("SERPER_API_KEY", "OUTREACHMAGIC_AGENT_KEY", "HERMES_HOME"):
             os.environ.pop(k, None)
@@ -510,8 +526,14 @@ class TestBuildSerperQueries(unittest.TestCase):
 class TestSerperSearchPool(unittest.TestCase):
     def setUp(self):
         self._saved = dict(os.environ)
+        # Prevent _load_synced_agent_secrets from polluting env with real keys
+        self._load_patcher = patch.object(cc, "_load_synced_agent_secrets")
+        self._mock_load = self._load_patcher.start()
+        # Reset API key pool session state (cross-test pollution from failover tracking)
+        _clear_key_pool_session()
 
     def tearDown(self):
+        self._load_patcher.stop()
         os.environ.clear()
         os.environ.update(self._saved)
 

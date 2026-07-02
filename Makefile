@@ -1,7 +1,10 @@
+PYTHON ?= python3
+export PYTHON
+
 .PHONY: manifests release-check test setup-hooks
 
 manifests:
-	python3 scripts/generate_skill_manifest.py --all
+	$(PYTHON) scripts/generate_skill_manifest.py --all
 
 release-check: manifests
 	bash scripts/release-check.sh

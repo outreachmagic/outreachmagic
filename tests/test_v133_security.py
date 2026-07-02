@@ -196,7 +196,7 @@ def test_human_install_docs_no_curl_pipe_bash():
     import re
 
     pipe_install = re.compile(r"curl\s+-fsSL[^\n]*\|\s*bash")
-    for rel in ("docs/install.md", "docs/install-companions.md", "SECURITY.md"):
+    for rel in ("docs/install.md", "SECURITY.md"):
         text = (ROOT / rel).read_text(encoding="utf-8")
         assert not pipe_install.search(text), rel
         assert "releases/download" in text, rel

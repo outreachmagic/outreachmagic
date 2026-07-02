@@ -121,7 +121,7 @@ docs/                           # Dev docs — releasing, skill suite
 
 ## CRM Sync
 
-Push contacts, deals, and event history to GoHighLevel and HubSpot from your pipeline. Salesforce planned. See [crm-sync/README.md](crm-sync/README.md).
+Push contacts, deals, and event history to GoHighLevel and HubSpot from your pipeline. Salesforce planned. Run `pipeline.py --help` and see the CRM driver scripts in `skills/outreachmagic/scripts/crm/`.
 
 ## Contributing
 

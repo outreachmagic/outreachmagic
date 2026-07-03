@@ -49,8 +49,9 @@ def test_normalize_vayne_row():
     assert row["location_state"] == "California"
     assert row["location_country"] == "United States"
     assert row["hq_city"] == "Los Angeles"
-    assert row["mailmerge_first_name"] == "Lucia"
-    assert row["mailmerge_company_name"] == "Riot Games"
+    # personalization fields are only set when explicitly present in the CSV
+    assert "personalized_first_name" not in row
+    assert "personalized_company_name" not in row
     assert row["external_id"] == "sales_navigator:urn:li:member:22728810"
 
 

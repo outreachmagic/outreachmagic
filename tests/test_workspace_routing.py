@@ -541,7 +541,7 @@ def test_agent_sync_full_payload_roundtrip():
         "unified_lead_id": "sync-42",
         "list_source": "test",
         "tags": "vip; nace",
-        "mailmerge_first_name": "Sync",
+        "personalized_first_name": "Sync",
         "lead_status": "warm",
         "location_city": "Austin",
     }

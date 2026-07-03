@@ -24,8 +24,8 @@ Detailed procedures moved from SKILL.md for progressive disclosure. Load this fi
 |--------|--------|
 | `company_domain` | Stored in `companies` table, normalized (strips protocol/www/path) |
 | `hq_city` / `hq_state` / `hq_country` | Company HQ location on `companies` table |
-| `mailmerge_first_name` | Auto-populated as `first_name` in personalization table |
-| `mailmerge_company_name` | Auto-populated as `company_name` in personalization table |
+| `personalized_first_name` | Stored as `first_name` in personalization table |
+| `personalized_company_name` | Stored as `company_name` in personalization table |
 | `external_id` | CRM/list ID in `lead_identities` |
 | `unified_lead_id`, `source_id` | Aliases → same as `external_id` |
 | `lead_status` | Set on workspace_leads (requires `--workspace`) |
@@ -78,7 +78,7 @@ pipeline.py company-personalize-set --domain acme.com --field company_name --val
 pipeline.py personalize-get --lead-id 5 --json
 ```
 
-Import: `mailmerge_first_name` → lead; `mailmerge_company_name`, `mailmerge_company_*` → company. Sync pushes separately; merge is local.
+Import: columns prefixed with `personalized_` (e.g. `personalized_first_name`) are stored as personalization fields. `personalized_company_name` / `personalized_company_*` → company; everything else → lead. Sync pushes separately; merge is local.
 
 ## Email verification tracking
 

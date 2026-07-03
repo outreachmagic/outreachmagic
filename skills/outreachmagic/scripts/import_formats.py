@@ -36,7 +36,7 @@ OM_MAPPED_FIELDS = frozenset({
     "email", "linkedin", "name", "title", "company", "industry", "headcount",
     "location_city", "location_state", "location_country",
     "company_domain", "hq_city", "hq_state", "hq_country",
-    "external_id", "mailmerge_first_name", "mailmerge_company_name", "notes",
+    "external_id", "personalized_first_name", "personalized_company_name", "notes",
     "first_name", "last_name",
 })
 
@@ -158,11 +158,7 @@ def normalize_import_row(raw: dict[str, Any], *, import_format: Optional[str] = 
     last = str(row.pop("last_name", None) or nk_map.get("last name") or "").strip()
     if not row.get("name") and first:
         row["name"] = f"{first} {last}".strip() if last else first
-    if first and not row.get("mailmerge_first_name"):
-        row["mailmerge_first_name"] = first
     company = str(row.get("company") or nk_map.get("company") or "").strip()
-    if company and not row.get("mailmerge_company_name"):
-        row["mailmerge_company_name"] = company
 
     if notes_parts:
         existing = str(row.get("notes") or "").strip()
@@ -196,7 +192,7 @@ def normalize_import_row(raw: dict[str, Any], *, import_format: Optional[str] = 
         row["linkedin"] = best_li
 
     for rk, rv in raw.items():
-        if not rk or not str(rk).startswith("mailmerge_") or rv is None or not str(rv).strip():
+        if not rk or not str(rk).startswith("personalized_") or rv is None or not str(rv).strip():
             continue
         row.setdefault(str(rk), rv)
 

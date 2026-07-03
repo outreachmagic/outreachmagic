@@ -3062,7 +3062,7 @@ def upsert_lead_profile(
 
 
 IMPORT_EXTRA_FIELDS = (
-    "company_domain", "mailmerge_first_name", "mailmerge_company_name",
+    "company_domain", "personalized_first_name", "personalized_company_name",
     "is_connected_linkedin", "is_linkedin_request_pending",
     "lead_status", "lead_sentiment", "import_name", "list_source",
     "tags", "contact_order",
@@ -3133,7 +3133,7 @@ def _extract_extra_import_fields(raw: dict) -> dict[str, str]:
             if text:
                 out[key] = text
     for key, val in raw.items():
-        if not key.startswith("mailmerge_"):
+        if not key.startswith("personalized_"):
             continue
         text = str(val).strip() if val is not None else ""
         if text:
@@ -3570,8 +3570,8 @@ def import_profiles(
     personalize_columns_detected: list[str] = []
     if rows:
         for key in sorted(rows[0].keys()):
-            if key.startswith("mailmerge_") and str(rows[0].get(key) or "").strip():
-                field = key[len("mailmerge_"):]
+            if key.startswith("personalized_") and str(rows[0].get(key) or "").strip():
+                field = key[len("personalized_"):]
                 personalize_columns_detected.append(f"{key} -> {field}")
     if personalize_columns_detected and dry_run:
         summary["personalization_detected"] = personalize_columns_detected
@@ -3665,8 +3665,8 @@ def import_profiles(
                 continue
             
             field = None
-            if key.startswith("mailmerge_"):
-                field = key[len("mailmerge_"):]
+            if key.startswith("personalized_"):
+                field = key[len("personalized_"):]
             elif key not in RESERVED_IMPORT_FIELDS:
                 field = key
             

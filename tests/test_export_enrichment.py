@@ -106,14 +106,14 @@ class ExportEnrichmentTests(unittest.TestCase):
         self.assertEqual(lead["latest_sender"], "linkedin.com/in/sender-one")
         self.assertEqual(lead["latest_sender_platform"], "prosp")
 
-    def test_mailmerge_import_and_enrich(self):
+    def test_personalized_import_and_enrich(self):
         rows = [{
             "email": "import@test.com",
             "name": "Import Test",
             "company": "ImpCo Inc",
-            "mailmerge_first_name": "Imp",
-            "mailmerge_company_name": "ImpCo",
-            "mailmerge_custom_line": "Hello",
+            "personalized_first_name": "Imp",
+            "personalized_company_name": "ImpCo",
+            "personalized_custom_line": "Hello",
         }]
         summary = om.import_profiles(rows)
         self.assertEqual(summary["personalized"], 1)
@@ -138,7 +138,7 @@ class ExportEnrichmentTests(unittest.TestCase):
 
     def test_export_csv_personalized_columns(self):
         om.create_workspace("Export WS", slug="exportws")
-        rows = [{"email": "exp@test.com", "name": "Exp", "mailmerge_first_name": "Exp"}]
+        rows = [{"email": "exp@test.com", "name": "Exp", "personalized_first_name": "Exp"}]
         om.import_profiles(rows, workspace="exportws")
         result = om.export_leads(workspace="exportws", fmt="csv", limit=100)
         self.assertEqual(result["count"], 1)

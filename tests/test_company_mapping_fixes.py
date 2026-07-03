@@ -59,12 +59,12 @@ def test_deadlock_import_with_company_name():
         ).lastrowid
         conn.commit()
 
-        # Build rows for import-profiles: lead_id hint + mailmerge_company_name
+        # Build rows for import-profiles: lead_id hint + personalized_company_name
         rows = [
             {
                 "lead_id": str(lid),
                 "company_name": "Acme Corp",
-                "mailmerge_company_name": "Acme Corp Personalized",
+                "personalized_company_name": "Acme Corp Personalized",
                 "email": "test@example.com",
             }
         ]
@@ -192,7 +192,7 @@ def test_company_id_change():
                 "name": "Jane Smith",
                 "email": "jane@example.org",
                 "company_name": "Example Org",
-                "mailmerge_company_name": "Example Org Custom",
+                "personalized_company_name": "Example Org Custom",
             }
         ]
 

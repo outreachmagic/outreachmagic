@@ -1,0 +1,483 @@
+#!/usr/bin/env python3
+"""Mail-merge personalization for leads and companies."""
+
+import hashlib
+import sqlite3
+from datetime import datetime, timezone
+from typing import Optional
+
+from constants import SHARED_EMAIL_DOMAINS
+from db_conn import get_conn
+from pipeline_utils import normalize_company_domain
+
+_LEAD_SOURCE_FIELDS = {"first_name": "name"}
+_COMPANY_SOURCE_FIELDS = {"company_name": "name"}
+
+
+def is_company_personalization_field(field_name: str) -> bool:
+    return field_name == "company_name" or field_name.startswith("company_")
+
+
+def resolve_company_id(
+    conn: sqlite3.Connection,
+    *,
+    company_id: Optional[int] = None,
+    domain: Optional[str] = None,
+    name: Optional[str] = None,
+) -> Optional[int]:
+    from pipeline import ensure_company
+
+    if company_id:
+        row = conn.execute("SELECT id FROM companies WHERE id = ?", (company_id,)).fetchone()
+        return company_id if row else None
+    dom = normalize_company_domain(domain)
+    if dom and dom not in SHARED_EMAIL_DOMAINS:
+        row = conn.execute("SELECT id FROM companies WHERE domain = ?", (dom,)).fetchone()
+        if row:
+            return row["id"]
+        return ensure_company(conn, domain=dom)
+    if name and str(name).strip():
+        return ensure_company(conn, name=str(name).strip())
+    return None
+
+
+def company_entity_key(conn: sqlite3.Connection, company_id: int) -> Optional[str]:
+    row = conn.execute("SELECT name, domain FROM companies WHERE id = ?", (company_id,)).fetchone()
+    if not row:
+        return None
+    dom = (row["domain"] or "").strip().lower()
+    if dom and dom not in SHARED_EMAIL_DOMAINS:
+        return f"company:domain:{dom}"
+    nm = (row["name"] or "").strip().lower()
+    return f"company:name:{nm}" if nm else None
+
+
+def resolve_company_from_entity_key(conn: sqlite3.Connection, entity_key: str) -> Optional[int]:
+    from pipeline import ensure_company
+
+    if not entity_key.startswith("company:"):
+        return None
+    parts = entity_key.split(":", 2)
+    if len(parts) != 3:
+        return None
+    kind, val = parts[1], parts[2]
+    if kind == "domain":
+        row = conn.execute("SELECT id FROM companies WHERE domain = ?", (val,)).fetchone()
+        return row["id"] if row else ensure_company(conn, domain=val)
+    if kind == "name":
+        return ensure_company(conn, name=val)
+    return None
+
+
+def _lead_source_hash(lead_id: int, field_name: str) -> Optional[str]:
+    col = _LEAD_SOURCE_FIELDS.get(field_name)
+    if not col:
+        return None
+    conn = get_conn()
+    row = conn.execute(f"SELECT {col} FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    conn.close()
+    if not row or not row[col]:
+        return None
+    return hashlib.md5(str(row[col]).encode()).hexdigest()[:8]
+
+
+def _company_source_hash(company_id: int, field_name: str) -> Optional[str]:
+    col = _COMPANY_SOURCE_FIELDS.get(field_name)
+    if not col:
+        return None
+    conn = get_conn()
+    row = conn.execute(f"SELECT {col} FROM companies WHERE id = ?", (company_id,)).fetchone()
+    conn.close()
+    if not row or not row[col]:
+        return None
+    return hashlib.md5(str(row[col]).encode()).hexdigest()[:8]
+
+
+def _lead_personalization_dict(conn: sqlite3.Connection, lead_id: int) -> dict:
+    rows = conn.execute(
+        "SELECT field_name, field_value, field_date, processed_at FROM lead_personalization WHERE lead_id = ?",
+        (lead_id,),
+    ).fetchall()
+    return {r["field_name"]: dict(r) for r in rows}
+
+
+def _company_personalization_dict(conn: sqlite3.Connection, company_id: int) -> dict:
+    rows = conn.execute(
+        "SELECT field_name, field_value, field_date, processed_at FROM company_personalization WHERE company_id = ?",
+        (company_id,),
+    ).fetchall()
+    return {r["field_name"]: dict(r) for r in rows}
+
+
+def resolve_personalization(lead_id: int) -> dict:
+    """Merged mail-merge values (company fields, then lead overrides)."""
+    conn = get_conn()
+    row = conn.execute("SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    merged: dict = {}
+    if row and row["company_id"]:
+        for fname, rec in _company_personalization_dict(conn, row["company_id"]).items():
+            merged[fname] = rec["field_value"]
+            if rec.get("field_date"):
+                merged[f"{fname}_date"] = rec["field_date"]
+    for fname, rec in _lead_personalization_dict(conn, lead_id).items():
+        merged[fname] = rec["field_value"]
+        if rec.get("field_date"):
+            merged[f"{fname}_date"] = rec["field_date"]
+        elif f"{fname}_date" in merged:
+            del merged[f"{fname}_date"]
+    conn.close()
+    return merged
+
+
+def _personalization_sync_payload(rows: dict) -> tuple[dict, dict, Optional[str]]:
+    values = {k: v["field_value"] for k, v in rows.items()}
+    dates = {k: v["field_date"] for k, v in rows.items() if v.get("field_date")}
+    at = max((v["processed_at"] for v in rows.values()), default=None)
+    return values, dates, at
+
+
+def personalize_set(
+    lead_id: int,
+    field_name: str,
+    field_value: str,
+    *,
+    field_date: Optional[str] = None,
+) -> dict:
+    if is_company_personalization_field(field_name):
+        return {"status": "error", "error": f"{field_name} is company-scoped — use company-personalize-set"}
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO lead_personalization (lead_id, field_name, field_value, field_date, source_hash)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (lead_id, field_name) DO UPDATE SET
+            field_value = excluded.field_value,
+            field_date = excluded.field_date,
+            source_hash = excluded.source_hash,
+            processed_at = datetime('now')
+    """, (lead_id, field_name, field_value, field_date, _lead_source_hash(lead_id, field_name)))
+    # Bump updated_at so timestamp-based relay sync re-pushes the snapshot
+    # with updated personalization data.
+    conn.execute("UPDATE leads SET updated_at = datetime('now') WHERE id = ?", (lead_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "lead_id": lead_id, "field": field_name}
+
+
+def personalize_set_batch(items: list[dict]) -> dict:
+    written = 0
+    err_list = []
+    for item in items:
+        lid = item.get("lead_id")
+        fname = item.get("field")
+        fval = item.get("value")
+        if not lid or not fname or fval is None:
+            err_list.append({"item": item, "error": "missing lead_id, field, or value"})
+            continue
+        if is_company_personalization_field(fname):
+            err_list.append({"item": item, "error": f"{fname} is company-scoped"})
+            continue
+        personalize_set(lid, fname, str(fval), field_date=item.get("date"))
+        written += 1
+    return {"status": "ok", "written": written, "errors": err_list}
+
+
+def company_personalize_set(
+    field_name: str,
+    field_value: str,
+    *,
+    company_id: Optional[int] = None,
+    domain: Optional[str] = None,
+    name: Optional[str] = None,
+    field_date: Optional[str] = None,
+) -> dict:
+    if not is_company_personalization_field(field_name):
+        return {"status": "error", "error": f"{field_name} is not a company personalization field"}
+    conn = get_conn()
+    cid = resolve_company_id(conn, company_id=company_id, domain=domain, name=name)
+    if not cid:
+        conn.close()
+        return {"status": "error", "error": "company not found"}
+    conn.execute("""
+        INSERT INTO company_personalization (company_id, field_name, field_value, field_date, source_hash)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (company_id, field_name) DO UPDATE SET
+            field_value = excluded.field_value,
+            field_date = excluded.field_date,
+            source_hash = excluded.source_hash,
+            processed_at = datetime('now')
+    """, (cid, field_name, field_value, field_date, _company_source_hash(cid, field_name)))
+    # Bump updated_at so timestamp-based relay sync re-pushes the company snapshot.
+    conn.execute("UPDATE companies SET updated_at = datetime('now') WHERE id = ?", (cid,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "company_id": cid, "field": field_name}
+
+
+def company_personalize_set_batch(items: list[dict]) -> dict:
+    written = 0
+    errors = []
+    for item in items:
+        fname = item.get("field")
+        fval = item.get("value")
+        if not fname or fval is None:
+            errors.append({"item": item, "error": "missing field or value"})
+            continue
+        result = company_personalize_set(
+            fname, str(fval),
+            company_id=item.get("company_id"),
+            domain=item.get("domain"),
+            name=item.get("name") or item.get("company"),
+            field_date=item.get("date"),
+        )
+        if result.get("status") == "ok":
+            written += 1
+        else:
+            errors.append({"item": item, "error": result.get("error")})
+    return {"status": "ok", "written": written, "errors": errors}
+
+
+def personalize_get(lead_id: int, *, layer: str = "merged") -> dict:
+    conn = get_conn()
+    if layer == "lead":
+        rows = _lead_personalization_dict(conn, lead_id)
+    elif layer == "company":
+        row = conn.execute("SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        rows = _company_personalization_dict(conn, row["company_id"]) if row and row["company_id"] else {}
+    else:
+        conn.close()
+        return resolve_personalization(lead_id)
+    conn.close()
+    out: dict = {}
+    for fname, rec in rows.items():
+        out[fname] = rec["field_value"]
+        if rec.get("field_date"):
+            out[f"{fname}_date"] = rec["field_date"]
+    return out
+
+
+def company_personalize_get(
+    *,
+    company_id: Optional[int] = None,
+    domain: Optional[str] = None,
+    name: Optional[str] = None,
+) -> dict:
+    conn = get_conn()
+    cid = resolve_company_id(conn, company_id=company_id, domain=domain, name=name)
+    if not cid:
+        conn.close()
+        return {}
+    rows = _company_personalization_dict(conn, cid)
+    conn.close()
+    out: dict = {}
+    for fname, rec in rows.items():
+        out[fname] = rec["field_value"]
+        if rec.get("field_date"):
+            out[f"{fname}_date"] = rec["field_date"]
+    return out
+
+
+def personalize_pending(fields: list[str], limit: int = 50) -> list[dict]:
+    lead_fields = [f for f in fields if not is_company_personalization_field(f)]
+    if not lead_fields:
+        return []
+    conn = get_conn()
+    conditions = " OR ".join(
+        "l.id NOT IN (SELECT lead_id FROM lead_personalization WHERE field_name = ?)"
+        for _ in lead_fields
+    )
+    rows = conn.execute(
+        f"SELECT l.id, l.name, l.email, l.company FROM leads l WHERE {conditions} LIMIT ?",
+        (*lead_fields, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def company_personalize_pending(fields: list[str], limit: int = 50) -> list[dict]:
+    company_fields = [f for f in fields if is_company_personalization_field(f)]
+    if not company_fields:
+        return []
+    conn = get_conn()
+    conditions = " OR ".join(
+        """c.id NOT IN (SELECT company_id FROM company_personalization WHERE field_name = ?)"""
+        for _ in company_fields
+    )
+    rows = conn.execute(
+        f"""SELECT c.id AS company_id, c.name, c.domain,
+                   (SELECT COUNT(*) FROM leads l WHERE l.company_id = c.id) AS lead_count
+            FROM companies c
+            WHERE ({conditions})
+            ORDER BY lead_count DESC
+            LIMIT ?""",
+        (*company_fields, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def personalize_status() -> dict:
+    conn = get_conn()
+    total = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+    with_lead = conn.execute("SELECT COUNT(DISTINCT lead_id) FROM lead_personalization").fetchone()[0]
+    stale = 0
+    for row in conn.execute(
+        "SELECT lead_id, field_name, source_hash FROM lead_personalization WHERE source_hash IS NOT NULL"
+    ).fetchall():
+        if _lead_source_hash(row["lead_id"], row["field_name"]) != row["source_hash"]:
+            stale += 1
+    conn.close()
+    return {"total_leads": total, "personalized": with_lead, "pending": total - with_lead, "stale": stale}
+
+
+def company_personalize_status() -> dict:
+    conn = get_conn()
+    total = conn.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
+    with_co = conn.execute("SELECT COUNT(DISTINCT company_id) FROM company_personalization").fetchone()[0]
+    stale = 0
+    for row in conn.execute(
+        "SELECT company_id, field_name, source_hash FROM company_personalization WHERE source_hash IS NOT NULL"
+    ).fetchall():
+        if _company_source_hash(row["company_id"], row["field_name"]) != row["source_hash"]:
+            stale += 1
+    conn.close()
+    return {"total_companies": total, "personalized": with_co, "pending": total - with_co, "stale": stale}
+
+
+def personalize_clear(lead_id: Optional[int] = None, field: Optional[str] = None, clear_all: bool = False) -> dict:
+    conn = get_conn()
+    count = 0
+    if clear_all:
+        count += conn.execute("DELETE FROM lead_personalization").rowcount
+        count += conn.execute("DELETE FROM company_personalization").rowcount
+    elif lead_id and field:
+        count = conn.execute(
+            "DELETE FROM lead_personalization WHERE lead_id = ? AND field_name = ?", (lead_id, field),
+        ).rowcount
+    elif lead_id:
+        count = conn.execute("DELETE FROM lead_personalization WHERE lead_id = ?", (lead_id,)).rowcount
+    elif field:
+        if is_company_personalization_field(field):
+            count = conn.execute("DELETE FROM company_personalization WHERE field_name = ?", (field,)).rowcount
+        else:
+            count = conn.execute("DELETE FROM lead_personalization WHERE field_name = ?", (field,)).rowcount
+    else:
+        conn.close()
+        return {"status": "error", "error": "Specify --lead-id, --field, or --all"}
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "deleted": count}
+
+
+def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dict:
+    row = conn.execute(
+        "SELECT name, domain, industry, headcount FROM companies WHERE id = ?", (company_id,),
+    ).fetchone()
+    if not row:
+        return {}
+    payload: dict = {"name": row["name"]}
+    if row["domain"]:
+        payload["domain"] = row["domain"]
+    if row["industry"]:
+        payload["industry"] = row["industry"]
+    if row["headcount"]:
+        payload["headcount"] = row["headcount"]
+    pers = _company_personalization_dict(conn, company_id)
+    if pers:
+        values, dates, at = _personalization_sync_payload(pers)
+        payload["personalization"] = values
+        if dates:
+            payload["personalization_dates"] = dates
+        if at:
+            payload["personalization_at"] = at
+    return payload
+
+
+def apply_agent_company_sync_payload(company_id: int, payload: dict, *, conn=None) -> None:
+    from pipeline import ensure_company
+
+    own_conn = conn is None
+    conn = conn or get_conn()
+
+    # Write company data fields authoritatively from company snapshot
+    company_name = payload.get("name") or ""
+    company_domain = payload.get("domain") or ""
+    company_industry = payload.get("industry") or ""
+    company_headcount = payload.get("headcount") or ""
+
+    ensure_company(
+        conn,
+        name=company_name,
+        domain=company_domain,
+        industry=company_industry,
+        headcount=company_headcount,
+        authoritative=True,
+    )
+
+    # Existing personalization logic
+    _apply_personalization_payload(
+        company_id, payload,
+        table="company_personalization", id_col="company_id", entity_id=company_id,
+        conn=conn,
+    )
+
+    if own_conn:
+        conn.commit()
+        conn.close()
+
+
+def _apply_personalization_payload(
+    _entity_id_unused: int,
+    payload: dict,
+    *,
+    table: str,
+    id_col: str,
+    entity_id: int,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    pers = payload.get("personalization") or {}
+    if not pers:
+        return
+    dates = payload.get("personalization_dates") or {}
+    p_at = payload.get("personalization_at", datetime.now(timezone.utc).isoformat())
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        for fname, fval in pers.items():
+            conn.execute(f"""
+                INSERT INTO {table} ({id_col}, field_name, field_value, field_date, processed_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT ({id_col}, field_name) DO UPDATE SET
+                    field_value = excluded.field_value,
+                    field_date = excluded.field_date,
+                    processed_at = excluded.processed_at
+                WHERE excluded.processed_at > {table}.processed_at
+            """, (entity_id, fname, fval, dates.get(fname), p_at))
+        # Bump the parent record's updated_at so timestamp-based relay sync
+        # knows personalization changed and re-pushes the snapshot.
+        parent_table = "companies" if table == "company_personalization" else "leads"
+        parent_id_col = "id"
+        conn.execute(f"UPDATE {parent_table} SET updated_at = datetime('now') WHERE {parent_id_col} = ?", (entity_id,))
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def cleanup_campaign_rules(dry_run: bool = False) -> dict:
+    conn = get_conn()
+    bad_rows = conn.execute("""
+        SELECT id, workspace_id, source_platform, created_at
+        FROM campaign_workspace_map
+        WHERE campaign_platform_id IS NULL AND campaign_name_normalized IS NULL
+    """).fetchall()
+    count = len(bad_rows)
+    if not dry_run and count > 0:
+        conn.execute("""
+            DELETE FROM campaign_workspace_map
+            WHERE campaign_platform_id IS NULL AND campaign_name_normalized IS NULL
+        """)
+        conn.commit()
+    conn.close()
+    return {"status": "ok", "removed": count if not dry_run else 0, "found": count, "dry_run": dry_run}

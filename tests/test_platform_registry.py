@@ -271,6 +271,7 @@ class TestLogEventHtmlBody(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tmpdir = tempfile.mkdtemp()
+        cls._orig_pipeline_module = sys.modules.get("pipeline")
         from om_paths import set_data_root_override  # noqa: E402
 
         set_data_root_override(Path(cls._tmpdir))
@@ -279,6 +280,17 @@ class TestLogEventHtmlBody(unittest.TestCase):
         sys.modules["pipeline"] = cls.om
         assert om_spec.loader is not None
         om_spec.loader.exec_module(cls.om)
+
+    @classmethod
+    def tearDownClass(cls):
+        # Restore the shared "pipeline" module other test files' `om` references
+        # still point to — otherwise lazy `from pipeline import X` lookups
+        # elsewhere pick up this throwaway module instance for the rest of
+        # the test session.
+        if cls._orig_pipeline_module is not None:
+            sys.modules["pipeline"] = cls._orig_pipeline_module
+        else:
+            sys.modules.pop("pipeline", None)
 
     def setUp(self):
         self.om.init_db()
@@ -320,17 +332,28 @@ class TestLogEventHtmlBody(unittest.TestCase):
 
 class TestPlatformMapCli(unittest.TestCase):
     def test_cmd_platform_map(self):
+        orig_pipeline_module = sys.modules.get("pipeline")
         om_spec = importlib.util.spec_from_file_location("pipeline", SCRIPTS / "pipeline.py")
         om = importlib.util.module_from_spec(om_spec)
         sys.modules["pipeline"] = om
-        assert om_spec.loader is not None
-        om_spec.loader.exec_module(om)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            om.cmd_platform_map("prosp")
-        data = json.loads(buf.getvalue())
-        self.assertEqual(len(data["platforms"]), 1)
-        self.assertEqual(data["platforms"][0]["id"], "prosp")
+        try:
+            assert om_spec.loader is not None
+            om_spec.loader.exec_module(om)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                om.cmd_platform_map("prosp")
+            data = json.loads(buf.getvalue())
+            self.assertEqual(len(data["platforms"]), 1)
+            self.assertEqual(data["platforms"][0]["id"], "prosp")
+        finally:
+            # Restore the shared "pipeline" module — otherwise lazy
+            # `from pipeline import X` lookups elsewhere in the process
+            # pick up this throwaway module instance for the rest of the
+            # test session.
+            if orig_pipeline_module is not None:
+                sys.modules["pipeline"] = orig_pipeline_module
+            else:
+                sys.modules.pop("pipeline", None)
 
 
 class TestEmailBisonCampaignExtraction(unittest.TestCase):

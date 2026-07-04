@@ -1,4 +1,4 @@
-"""Input normalization and validation for email-finder."""
+"""Input normalization and validation for outreachmagic email-finding."""
 
 from __future__ import annotations
 

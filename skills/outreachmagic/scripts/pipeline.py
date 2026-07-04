@@ -2215,7 +2215,7 @@ def batch_lead_lookup(
     *,
     workspace: Optional[str] = None,
 ) -> dict:
-    """Lookup many leads in one DB connection (email-finder / companion dedup)."""
+    """Lookup many leads in one DB connection (outreachmagic email-finding / dedup)."""
     conn = get_conn()
     try:
         ws_row = resolve_workspace_identity(conn, workspace)
@@ -3269,7 +3269,7 @@ def apply_email_find_results(
     source: Optional[str] = None,
     source_detail: Optional[str] = None,
 ) -> dict:
-    """Fast batch save when every row has a known lead id (email-finder batch tail).
+    """Fast batch save when every row has a known lead id (outreachmagic email-finding batch tail).
     
     NOTE: This function processes the output shape produced by
     email_finder.py / waterfall.run_find_with_fallback(). The expected fields
@@ -10933,7 +10933,7 @@ def main():
 
     aef_p = sub.add_parser(
         "apply-email-find-results",
-        help="Fast batch save when every row has lead id (email-finder)",
+        help="Fast batch save when every row has lead id (outreachmagic email-finding)",
     )
     aef_p.add_argument("--file", help="Path to .json file")
     aef_p.add_argument("--json", dest="json_data", help='JSON array string, or "-" for stdin')
@@ -11050,8 +11050,8 @@ def main():
     )
 
     efc_p = sub.add_parser(
-        "email-finder-candidates",
-        help="List workspace leads shaped for email-finder batch-find (real domains only)",
+        "email-finding-candidates",
+        help="List workspace leads shaped for email-finding (real domains only)",
     )
     efc_p.add_argument("--workspace", required=True)
     efc_p.add_argument("--tag")
@@ -12511,7 +12511,7 @@ def main():
         query_cli.cmd_query(args)
     elif args.command == "sheets" and getattr(args, "sheets_command", None) == "campaign-stats":
         _cmd_sheets_campaign_stats(args)
-    elif args.command == "email-finder-candidates":
+    elif args.command == "email-finding-candidates":
         conn = get_conn()
         try:
             lead_ids = None

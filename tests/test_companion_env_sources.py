@@ -77,8 +77,8 @@ def test_icypeas_not_loaded_from_hermes_when_missing_from_agent_secrets():
         os.environ.pop("ICYPEAS_API_KEY", None)
         os.environ.pop("TRYKITT_API_KEY", None)
         cc._AGENT_ENV_LOADED = False
-        skill_dir = home / "skills" / "email-finder"
-        skill_dir.mkdir(parents=True)
+        skill_dir = home / "skills" / "outreachmagic"
+        skill_dir.mkdir(parents=True, exist_ok=True)
         cc.ensure_agent_env_loaded(skill_dir, reload=True)
 
         assert os.environ.get("TRYKITT_API_KEY") == "from-dashboard"
@@ -100,8 +100,8 @@ def test_serper_not_loaded_from_hermes_in_strict_mode():
             os.environ.pop("OM_ALLOW_LOCAL_API_KEYS", None)
             os.environ["HERMES_HOME"] = str(home)
             cc._AGENT_ENV_LOADED = False
-            skill_dir = home / "skills" / "email-finder"
-            skill_dir.mkdir(parents=True)
+            skill_dir = home / "skills" / "outreachmagic"
+            skill_dir.mkdir(parents=True, exist_ok=True)
             cc.ensure_agent_env_loaded(skill_dir, reload=True)
             assert not os.environ.get("SERPER_API_KEY")
     finally:
@@ -123,8 +123,8 @@ def test_serper_loads_from_hermes_when_local_keys_allowed():
             os.environ["OM_ALLOW_LOCAL_API_KEYS"] = "1"
             os.environ["HERMES_HOME"] = str(home)
             cc._AGENT_ENV_LOADED = False
-            skill_dir = home / "skills" / "lead-enrich"
-            skill_dir.mkdir(parents=True)
+            skill_dir = home / "skills" / "outreachmagic"
+            skill_dir.mkdir(parents=True, exist_ok=True)
             cc.ensure_agent_env_loaded(skill_dir, reload=True)
             assert os.environ.get("SERPER_API_KEY") == "from-hermes"
     finally:
@@ -146,8 +146,8 @@ def test_stale_shell_key_cleared_when_not_in_agent_secrets():
         os.environ["HERMES_HOME"] = str(home)
         os.environ["TRYKITT_API_KEY"] = "stale-shell-key"
         cc._AGENT_ENV_LOADED = False
-        skill_dir = home / "skills" / "email-finder"
-        skill_dir.mkdir(parents=True)
+        skill_dir = home / "skills" / "outreachmagic"
+        skill_dir.mkdir(parents=True, exist_ok=True)
         cc.ensure_agent_env_loaded(skill_dir, reload=True)
         assert not os.environ.get("TRYKITT_API_KEY")
 
@@ -164,6 +164,6 @@ def test_companion_api_key_source_reports_agent_secrets():
         os.environ.pop("OM_ALLOW_LOCAL_API_KEYS", None)
         os.environ["HERMES_HOME"] = str(home)
         os.environ["ICYPEAS_API_KEY"] = "portal-key"
-        skill_dir = home / "skills" / "email-finder"
-        skill_dir.mkdir(parents=True)
+        skill_dir = home / "skills" / "outreachmagic"
+        skill_dir.mkdir(parents=True, exist_ok=True)
         assert cc.companion_api_key_source("ICYPEAS_API_KEY", skill_dir) == "agent_secrets"

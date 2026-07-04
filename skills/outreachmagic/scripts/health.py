@@ -1,4 +1,4 @@
-"""Pre-flight health checks for email-finder batch runs."""
+"""Pre-flight health checks for outreachmagic email-finding batch runs."""
 
 from __future__ import annotations
 

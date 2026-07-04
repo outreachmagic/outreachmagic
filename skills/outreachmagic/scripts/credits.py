@@ -1,4 +1,4 @@
-"""Credit accounting for email-finder (1 credit per email found or verified)."""
+"""Credit accounting for outreachmagic email-finding (1 credit per email found or verified)."""
 
 from __future__ import annotations
 

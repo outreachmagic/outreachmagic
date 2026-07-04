@@ -152,8 +152,8 @@ pipeline.py review sync --template lead-review --workspace popcam --sheet-id SHE
 ## Email-finder candidates
 
 ```bash
-pipeline.py email-finder-candidates --workspace popcam --tag nace --no-email --require-domain --never-contacted
-pipeline.py email-finder-candidates --workspace popcam --file outreachmagic/batches/find-batch.json
+pipeline.py email-finding-candidates --workspace popcam --tag nace --no-email --require-domain --never-contacted
+pipeline.py email-finding-candidates --workspace popcam --file outreachmagic/batches/find-batch.json
 ```
 
 ## Quarantine (multi-workspace)

@@ -16,7 +16,7 @@ Read this first when changing skills, install, or release.
 2. Run: `python3 scripts/generate_skill_manifest.py <skill>` or `make manifests`
 3. Run: `make release-check`
 
-Do **not** edit `UPDATE_FILES` or hand-maintained manifest tuples — companions read `update-manifest.json` keys at update time.
+Do **not** edit `UPDATE_FILES` or hand-maintained manifest tuples — tools read `update-manifest.json` keys at update time.
 
 ## Public README (outreachmagic skill)
 

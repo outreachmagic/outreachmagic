@@ -105,7 +105,7 @@ bash "${INSTALL_DIR}/install.sh" --platform hermes --tag "${OM_VERSION}"
 python3 ~/.hermes/skills/outreachmagic/scripts/pipeline.py login
 ```
 
-API keys for companion skills are managed in the Outreach Magic portal and synced via `pipeline.py sync-secrets` — do not store keys in shell config or local `.env` files.
+API keys are managed in the Outreach Magic portal and synced via `pipeline.py sync-secrets` — do not store keys in shell config or local `.env` files.
 
 ## Reporting a vulnerability
 

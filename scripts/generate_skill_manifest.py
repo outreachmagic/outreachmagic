@@ -59,7 +59,7 @@ def write_manifest(skill_name: str, *, quiet: bool = False) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate skill update-manifest.json from skill-suite.json")
-    parser.add_argument("skill", nargs="?", help="Skill name (e.g. outreachmagic, email-finder)")
+    parser.add_argument("skill", nargs="?", help="Skill name (e.g. outreachmagic)")
     parser.add_argument("--all", action="store_true", help="Regenerate manifests for every skill in skill-suite.json")
     parser.add_argument("--list-paths", action="store_true", help="Print manifest paths for a skill (debug)")
     args = parser.parse_args()

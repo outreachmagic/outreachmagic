@@ -1,4 +1,4 @@
-"""Terminal progress and summary output for email-finder batch runs."""
+"""Terminal progress and summary output for outreachmagic email-finding batch runs."""
 
 from __future__ import annotations
 

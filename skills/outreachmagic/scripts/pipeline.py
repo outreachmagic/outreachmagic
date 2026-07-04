@@ -11289,6 +11289,7 @@ def main():
     db_health_p.add_argument("--json", action="store_true", help="Print JSON")
     db_health_p.add_argument("--full", action="store_true", help="Run full integrity_check (slower on large DBs)")
     db_health_p.add_argument("--push", action="store_true", help="POST health to portal (debug)")
+    db_health_p.add_argument("--verbose", action="store_true", help="Include internal diagnostics (page counts, table breakdown)")
     archive_p = sub.add_parser("archive", help="Export workspace data to a separate SQLite file")
     archive_p.add_argument("--workspace", required=True, help="Workspace slug")
     archive_p.add_argument("--output", help="Output .db path (required unless --dry-run)")
@@ -12138,6 +12139,7 @@ def main():
                 conn,
                 org_id=DEFAULT_ORG_ID,
                 fast=not getattr(args, "full", False),
+                verbose=getattr(args, "verbose", False),
                 pipeline_version=__version__,
             )
         finally:

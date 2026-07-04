@@ -34,7 +34,7 @@ RULE_HINTS: dict[str, str] = {
     "db_size_critical": "Local database is very large. Archive old workspaces and consider VACUUM after export.",
     "relay_bloat": "Many relay dedupe keys per lead (normal at scale). Archive inactive workspaces if disk is a concern.",
     "pending_sync": "Leads pending cloud sync. Ask Outreach Magic to sync.",
-    "quarantine_backlog": "Unmapped campaigns in queue. Ask Outreach Magic to list quarantine items.",
+    "quarantine_backlog": "Unmapped campaign events pending routing. Run `pipeline.py query --sql \"SELECT * FROM unmapped_campaign_queue WHERE status = 'pending'\"` to review.",
     "low_activity_bulk": "Many leads with few events (typical after CSV import). Informational only.",
     "verification_gap": "Leads with email outnumber email verification records. If verification was previously run, the structured rows may not have synced to the relay before a fresh pull. Run `sync` before any future DB rebuild, then re-run verification.",
     "verification_status_incomplete": "Email verification rows exist but the consolidated `email_verification_status` is not populated on most leads. Run `sync` to push verification data to the relay, then `refresh --yes` to rebuild and re-import from the cloud with preserved timestamps.",
@@ -146,13 +146,13 @@ def evaluate_health_rules(
     if file_bytes >= DB_SIZE_CRITICAL_BYTES:
         add("db_size_critical", "critical")
     elif file_bytes >= DB_SIZE_WARN_BYTES:
-        add("db_size_warn", "warn")
+        add("db_size_warn", "info")
 
     leads = row_counts.get("leads") or 0
     relay = row_counts.get("relay_ingested") or 0
     events = row_counts.get("events") or 0
     if leads > 0 and relay / leads > RELAY_BLOAT_RATIO:
-        add("relay_bloat", "warn")
+        add("relay_bloat", "info")
 
     pending = row_counts.get("pending_sync") or 0
     if pending > PENDING_SYNC_LEADS:
@@ -173,7 +173,7 @@ def evaluate_health_rules(
     elif leads_with_email >= 10 and verification_rows < leads_with_email * 0.3:
         add("verification_gap", "info")
     if verification_rows > 0 and status_populated < verification_rows * 0.5:
-        add("verification_status_incomplete", "warn")
+        add("verification_status_incomplete", "info")
 
     return status, triggered
 
@@ -183,6 +183,7 @@ def collect_db_health(
     *,
     org_id: str,
     fast: bool = False,
+    verbose: bool = False,
     pipeline_version: str = "",
 ) -> dict[str, Any]:
     """Aggregate local DB health (read-only). fast=True skips expensive checks (sync path)."""
@@ -201,7 +202,7 @@ def collect_db_health(
         "lead_identities": conn.execute("SELECT COUNT(*) FROM lead_identities").fetchone()[0],
         "workspace_lead_events": conn.execute("SELECT COUNT(*) FROM workspace_lead_events").fetchone()[0],
         "unmapped_campaign_queue": conn.execute(
-            "SELECT COUNT(*) FROM unmapped_campaign_queue"
+            "SELECT COUNT(*) FROM unmapped_campaign_queue WHERE status = 'pending'"
         ).fetchone()[0],
         "pending_sync": conn.execute(
             "SELECT COUNT(*) FROM leads WHERE updated_at > ?",
@@ -228,7 +229,7 @@ def collect_db_health(
             integrity_ok = False
 
     table_breakdown: list[dict[str, Any]] = []
-    if file_bytes <= TABLE_BREAKDOWN_SKIP_BYTES or not fast:
+    if verbose and (file_bytes <= TABLE_BREAKDOWN_SKIP_BYTES or not fast):
         try:
             table_breakdown = _table_breakdown(conn, limit=5)
         except sqlite3.Error:
@@ -242,20 +243,22 @@ def collect_db_health(
         row_counts=row_counts,
     )
 
-    return {
+    result: dict[str, Any] = {
         "fileBytes": file_bytes,
-        "pageCount": int(page_count),
-        "pageSize": int(page_size),
-        "freelistBytes": freelist_bytes,
         "integrityOk": integrity_ok,
         "healthStatus": health_status,
         "rulesTriggered": rules_triggered,
         "rowCounts": row_counts,
-        "tableBreakdown": table_breakdown,
         "workspaceBreakdown": workspace_breakdown,
         "pipelineVersion": pipeline_version,
         "collectedAt": datetime.now(timezone.utc).isoformat(),
     }
+    if verbose:
+        result["pageCount"] = int(page_count)
+        result["pageSize"] = int(page_size)
+        result["freelistBytes"] = freelist_bytes
+        result["tableBreakdown"] = table_breakdown
+    return result
 
 
 def health_to_cloud_payload(health: dict[str, Any], client_id: str) -> dict[str, Any]:

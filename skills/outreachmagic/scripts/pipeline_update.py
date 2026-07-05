@@ -758,6 +758,8 @@ def save_config(cfg: dict):
 
 
 def _warn_duplicate_installs() -> None:
+    if load_config().get("suppress_duplicate_warning"):
+        return
     duplicates = check_duplicate_installs()
     if not duplicates:
         return

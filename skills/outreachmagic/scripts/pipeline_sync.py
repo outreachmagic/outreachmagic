@@ -74,6 +74,8 @@ from relay_ingest import (
     prefetch_ws_idempotency_keys,
     relay_already_ingested,
     relay_dedupe_key,
+    unsynced_event_clause,
+    unsynced_lead_clause,
 )
 from workspace_routing import (
     CampaignRoutingCache,
@@ -102,7 +104,7 @@ from lead_sync import (
     resolve_lead_from_agent_sync,
 )
 from normalize import normalize_linkedin
-from platform_registry import platform_map_json
+from platform_registry import platform_map_json, PLATFORM_LABELS, PLATFORM_SETUP_HINTS
 import connections_cloud
 import quarantine_resolutions as qres
 import routing_cloud
@@ -324,18 +326,11 @@ def export_local_changes(
     _relay_log("export: querying unpushed timeline events from SQLite ...")
     t_export = time.monotonic()
     event_rows = conn.execute(
-        """SELECT e.*, l.email, l.linkedin_url, c.name AS campaign_name
+        f"""SELECT e.*, l.email, l.linkedin_url, c.name AS campaign_name
            FROM events e
            JOIN leads l ON e.lead_id = l.id
            LEFT JOIN campaigns c ON c.id = e.campaign_id
-           WHERE 'event:' || CAST(e.id AS TEXT) NOT IN (
-                 SELECT dedupe_key FROM relay_ingested
-                 WHERE dedupe_key LIKE 'event:%'
-             )
-             AND e.metadata_json NOT LIKE '%"source": "relay"%'
-             AND e.metadata_json NOT LIKE '%"source":"relay"%'
-             AND e.metadata_json NOT LIKE '%"source": "agent_sync"%'
-             AND e.metadata_json NOT LIKE '%"source":"agent_sync"%'
+           WHERE {unsynced_event_clause("e")}
            ORDER BY e.created_at ASC""",
     ).fetchall()
     _relay_log(
@@ -412,10 +407,7 @@ def _export_local_lead_entries(
             f"""SELECT l.*, COALESCE(co.name, l.company) AS company_display
                 FROM leads l
                 LEFT JOIN companies co ON l.company_id = co.id
-                WHERE l.id NOT IN (
-                    SELECT DISTINCT lead_id FROM relay_ingested
-                    WHERE lead_id IS NOT NULL
-                ) {workspace_filter}
+                WHERE {unsynced_lead_clause("l")} {workspace_filter}
                 ORDER BY l.created_at ASC""",
             workspace_params,
         ).fetchall()

@@ -418,6 +418,32 @@ def relay_already_ingested(dedupe_key: str) -> bool:
     return row is not None
 
 
+def unsynced_event_clause(event_alias: str = "e") -> str:
+    """SQL fragment: true when an events row hasn't been pushed to (or pulled from) relay yet.
+
+    Excludes events whose dedupe key is already in relay_ingested, and events
+    sourced from relay/agent_sync in the first place (those are never "local-only").
+    Uses NOT EXISTS against relay_ingested.dedupe_key (its PK), so it's index-backed.
+    """
+    return f"""NOT EXISTS (
+        SELECT 1 FROM relay_ingested r WHERE r.dedupe_key = 'event:' || {event_alias}.id
+    )
+    AND {event_alias}.metadata_json NOT LIKE '%"source": "relay"%'
+    AND {event_alias}.metadata_json NOT LIKE '%"source":"relay"%'
+    AND {event_alias}.metadata_json NOT LIKE '%"source": "agent_sync"%'
+    AND {event_alias}.metadata_json NOT LIKE '%"source":"agent_sync"%'"""
+
+
+def unsynced_lead_clause(lead_alias: str = "l") -> str:
+    """SQL fragment: true when a leads row has no relay_ingested entry (never synced).
+
+    Uses NOT EXISTS against relay_ingested.lead_id (indexed via idx_relay_ingested_lead_id).
+    """
+    return f"""NOT EXISTS (
+        SELECT 1 FROM relay_ingested r WHERE r.lead_id = {lead_alias}.id
+    )"""
+
+
 def prefetch_relay_ingested(
     dedupe_keys: list[str],
     conn: Optional[sqlite3.Connection] = None,

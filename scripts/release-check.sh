@@ -12,6 +12,19 @@ echo "== Verify manifests committed =="
 git diff --exit-code \
   skills/outreachmagic/update-manifest.json
 
+echo "== Lint: undefined names (missing imports) =="
+if command -v ruff >/dev/null 2>&1; then
+  ruff check --select F821 skills/outreachmagic/scripts/
+elif ${PYTHON:-python3} -m ruff --version >/dev/null 2>&1; then
+  ${PYTHON:-python3} -m ruff check --select F821 skills/outreachmagic/scripts/
+else
+  ${PYTHON:-python3} -m pip install -q ruff 2>/dev/null && ${PYTHON:-python3} -m ruff check --select F821 skills/outreachmagic/scripts/ || {
+    echo "  ruff not found and could not be pip-installed (externally-managed Python?)." >&2
+    echo "  Install it with: brew install ruff   OR   pipx install ruff   OR   pip install --break-system-packages ruff" >&2
+    exit 1
+  }
+fi
+
 echo "== Sentiment integrity =="
 for f in skills/outreachmagic/scripts/campaign_stats.py skills/outreachmagic/scripts/pipeline_lead_review.py skills/outreachmagic/scripts/pipeline.py; do
     if grep -q "'neutral'" "$f"; then

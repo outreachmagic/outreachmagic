@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS relay_ingested (
     lead_id         INTEGER REFERENCES leads(id) ON DELETE SET NULL,
     ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_relay_ingested_lead_id ON relay_ingested(lead_id);
 
 -- Org + workspace routing (org-wide lead, workspace-scoped status/events)
 CREATE TABLE IF NOT EXISTS organizations (

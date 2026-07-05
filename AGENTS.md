@@ -31,7 +31,8 @@ After README edits: `make manifests` then commit (manifest hash for `README.md` 
 ## Release (outreachmagic)
 
 1. Add section to `CHANGELOG.md` for the new version (use human-readable, user-facing language).
-2. Bump version and run gate:
+2. Update the `AGENTS-INSTALL.md` link in `skills/outreachmagic/SKILL.md` to point at the new version tag (`.../blob/vX.Y.Z/AGENTS-INSTALL.md`), so agents installed from a non-`main` tag see the matching doc version.
+3. Bump version and run gate:
 
 ```bash
 echo X.Y.Z > skills/outreachmagic/scripts/VERSION

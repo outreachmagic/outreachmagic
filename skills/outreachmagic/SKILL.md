@@ -124,7 +124,7 @@ grep ' install.sh$' "${INSTALL_DIR}/SHA256SUMS" | (cd "${INSTALL_DIR}" && shasum
 bash "${INSTALL_DIR}/install.sh" --platform hermes --tag "${OM_VERSION}"
 ```
 
-Agent-readable install guide: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/main/AGENTS-INSTALL.md). Use `--platform cursor` / `--platform claude` for other agents.
+Agent-readable install guide: [AGENTS-INSTALL.md](https://github.com/outreachmagic/outreachmagic/blob/v1.3.0/AGENTS-INSTALL.md). Use `--platform cursor` / `--platform claude` for other agents.
 
 Hermes profiles: real files in `~/.hermes/skills/`; profiles symlink. Re-run install for new profiles: `bash install.sh --platform hermes --profile <name>`.
 
@@ -258,6 +258,8 @@ pipeline.py connections                           # webhook URLs + event counts
 pipeline.py connect-platform --platform smartlead # generate webhook URL
 pipeline.py db-health                             # local DB diagnostics
 pipeline.py platform-map --json                   # vendor event type map
+pipeline.py campaign-map list                     # show routing rules
+pipeline.py campaign-map add --platform P --workspace W  # add routing rule
 pipeline.py agent-changes                         # cross-platform sync (JSON)
 pipeline.py sync                                  # push to relay
 pipeline.py refresh --yes                         # backup + rebuild DB

@@ -380,6 +380,7 @@ def migrate_db(conn=None):
     except sqlite3.OperationalError:
         pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_relay ON events(relay_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_relay_ingested_lead_id ON relay_ingested(lead_id)")
     conn.execute(
         """UPDATE events SET relay_id = json_extract(metadata_json, '$.relay_id')
            WHERE relay_id IS NULL AND json_extract(metadata_json, '$.relay_id') IS NOT NULL"""

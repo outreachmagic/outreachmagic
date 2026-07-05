@@ -12,6 +12,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
 
+from om_paths import default_working_root
+
 # Avoid OS ARG_MAX when passing large JSON to pipeline.py subprocesses.
 JSON_ARG_THRESHOLD = 100_000
 PIPELINE_CHUNK_SIZE = 200
@@ -544,8 +546,8 @@ def _append_json_or_file(
 
 
 def get_working_export_dir(om_dir: Optional[Path] = None) -> Path:
-    """Resolve outreachmagic/exports under project_root or cwd."""
-    root = Path.cwd()
+    """Resolve outreachmagic/exports under project_root or the user's home directory."""
+    root = default_working_root()
     if om_dir:
         cfg_path = Path(om_dir) / "config" / "outreachmagic_config.json"
         if cfg_path.exists():

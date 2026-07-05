@@ -56,6 +56,7 @@ from pipeline_update import (
     save_config,
     set_last_sync,
 )
+from relay_ingest import unsynced_event_clause, unsynced_lead_clause
 from workspace_routing import (
     DEFAULT_ORG_ID,
     MULTI_WORKSPACE_HOLD_MESSAGE,
@@ -512,22 +513,10 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
 
     conn2 = get_conn()
     local_lead_count = conn2.execute(
-        """SELECT COUNT(*) AS n FROM leads
-           WHERE id NOT IN (
-               SELECT DISTINCT lead_id FROM relay_ingested WHERE lead_id IS NOT NULL
-           )"""
+        f"SELECT COUNT(*) AS n FROM leads l WHERE {unsynced_lead_clause('l')}"
     ).fetchone()["n"]
     local_event_count = conn2.execute(
-        """SELECT COUNT(*) AS n FROM events
-           WHERE id NOT IN (
-               SELECT CAST(SUBSTR(dedupe_key, 7) AS INTEGER)
-               FROM relay_ingested
-               WHERE dedupe_key LIKE 'event:%'
-           )
-             AND metadata_json NOT LIKE '%"source": "relay"%'
-             AND metadata_json NOT LIKE '%"source":"relay"%'
-             AND metadata_json NOT LIKE '%"source": "agent_sync"%'
-             AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
+        f"SELECT COUNT(*) AS n FROM events e WHERE {unsynced_event_clause('e')}"
     ).fetchone()["n"]
     last_sync = get_last_sync()
     if last_sync:
@@ -642,16 +631,7 @@ def get_local_pending_counts(org_id: str = DEFAULT_ORG_ID) -> dict:
         (org_id,),
     ).fetchone()["n"]
     local_events = conn.execute(
-        """SELECT COUNT(*) AS n FROM events
-           WHERE id NOT IN (
-               SELECT CAST(SUBSTR(dedupe_key, 7) AS INTEGER)
-               FROM relay_ingested
-               WHERE dedupe_key LIKE 'event:%'
-           )
-             AND metadata_json NOT LIKE '%"source": "relay"%'
-             AND metadata_json NOT LIKE '%"source":"relay"%'
-             AND metadata_json NOT LIKE '%"source": "agent_sync"%'
-             AND metadata_json NOT LIKE '%"source":"agent_sync"%'"""
+        f"SELECT COUNT(*) AS n FROM events e WHERE {unsynced_event_clause('e')}"
     ).fetchone()["n"]
     last_sync = get_last_sync()
     if last_sync:

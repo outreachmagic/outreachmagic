@@ -22,6 +22,7 @@ from health import (
     run_health_check,
 )
 from normalize import lead_resume_key, load_people_json, row_fields, sanitize_input_path, validate_domain
+from om_paths import default_working_root
 from progress import (
     print_dry_run_box,
     print_final_summary,
@@ -526,7 +527,7 @@ def _resolve_output_base(path: str, input_path: str, *, om_dir: Optional[Path] =
             return str(p.with_suffix(""))
         return str(p)
     stem = Path(input_path).expanduser().stem
-    export_dir = cc.get_working_export_dir(om_dir) if om_dir else Path.cwd() / "outreachmagic" / "exports"
+    export_dir = cc.get_working_export_dir(om_dir) if om_dir else default_working_root() / "outreachmagic" / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
     return str(export_dir / f"{stem}-email-results")
 

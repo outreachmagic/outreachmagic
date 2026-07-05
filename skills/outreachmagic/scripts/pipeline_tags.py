@@ -1263,7 +1263,7 @@ def query_leads_for_export(
         query += " AND (l.created_at >= ? OR l.updated_at >= ?)"
         params.extend([since_date, since_date])
     if never_contacted:
-        query += f" AND {pipeline_lead_review._never_contacted_sql('wl')}"
+        query += f" AND {_never_contacted_sql('wl')}"
     if no_email:
         query += " AND (l.email IS NULL OR TRIM(l.email) = '')"
     if require_domain:

@@ -196,12 +196,22 @@ def _config_working_root() -> Optional[Path]:
     return None
 
 
+def default_working_root() -> Path:
+    """Fallback root for outreachmagic/ working files when no project_root is configured.
+
+    Single source of truth for this default — also used by shared.py and
+    batch_runner.py, which resolve project_root from a different (possibly
+    cross-install) config file and can't just call get_working_root() directly.
+    """
+    return Path.home()
+
+
 def get_working_root() -> Path:
-    """Root for outreachmagic/ working tree: config project_root or process cwd."""
+    """Root for outreachmagic/ working tree: config project_root or the user's home directory."""
     configured = _config_working_root()
     if configured:
         return configured.resolve()
-    return Path.cwd()
+    return default_working_root()
 
 
 def get_om_data_dir() -> Path:

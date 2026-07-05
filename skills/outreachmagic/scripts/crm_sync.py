@@ -18,7 +18,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 try:
     from crm_drivers.ghl import AuthError as GhlAuthError, GhlError, NetworkError as GhlNetworkError, RateLimitError as GhlRateLimitError
@@ -29,6 +29,8 @@ except ImportError:
 
 # sqlite3 is imported by the caller's context; we use conn passed to us.
 # We import it at module level for type hints only.
+if TYPE_CHECKING:
+    import sqlite3
 
 # ---------------------------------------------------------------------------
 # Constants

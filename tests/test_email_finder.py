@@ -906,5 +906,56 @@ class TestCreditAccounting(unittest.TestCase):
                 self.assertEqual(payload["credits_per_email"], 1)
 
 
+class TestFindSaveByDefault(unittest.TestCase):
+    def test_parse_find_args_saves_by_default(self):
+        name, domain, linkedin, workspace, company, save, dry_run, remaining = lemail._parse_find_args(
+            ["--name", "Jane", "--domain", "acme.com"]
+        )
+        self.assertTrue(save)
+        self.assertFalse(dry_run)
+
+    def test_parse_find_args_no_save_opts_out(self):
+        *_, save, dry_run, _ = lemail._parse_find_args(["--no-save"])
+        self.assertFalse(save)
+        self.assertFalse(dry_run)
+
+    def test_parse_find_args_dry_run(self):
+        *_, save, dry_run, _ = lemail._parse_find_args(["--dry-run"])
+        self.assertTrue(save)
+        self.assertTrue(dry_run)
+
+    def test_parse_find_args_save_flag_is_noop(self):
+        *_, save, dry_run, _ = lemail._parse_find_args(["--save"])
+        self.assertTrue(save)
+        self.assertFalse(dry_run)
+
+    @patch.object(lemail, "save_find_result")
+    @patch.object(lemail, "run_find_with_fallback")
+    @patch.object(lemail, "check_existing_email")
+    @patch.object(lemail, "find_outreachmagic")
+    def test_cmd_find_saves_by_default(self, mock_om, mock_existing, mock_run, mock_save):
+        mock_om.return_value = Path("/tmp/om")
+        mock_existing.return_value = {}
+        mock_run.return_value = {"email": "jane@acme.com"}
+        mock_save.return_value = {"status": "saved"}
+        with patch.object(lemail, "load_config", return_value={}):
+            with patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()):
+                lemail.cmd_find("Jane", "acme.com")
+        mock_save.assert_called_once()
+
+    @patch.object(lemail, "save_find_result")
+    @patch.object(lemail, "run_find_with_fallback")
+    @patch.object(lemail, "check_existing_email")
+    @patch.object(lemail, "find_outreachmagic")
+    def test_cmd_find_dry_run_does_not_save(self, mock_om, mock_existing, mock_run, mock_save):
+        mock_om.return_value = Path("/tmp/om")
+        mock_existing.return_value = {}
+        mock_run.return_value = {"email": "jane@acme.com"}
+        with patch.object(lemail, "load_config", return_value={}):
+            with patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()):
+                lemail.cmd_find("Jane", "acme.com", dry_run=True)
+        mock_save.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

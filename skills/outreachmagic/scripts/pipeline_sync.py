@@ -302,8 +302,9 @@ def export_local_changes(
     """Export locally-created leads and events as a JSON structure
     suitable for pushing to the relay or importing on another machine.
 
-    sample_limit caps how many event rows are fetched/built (used by
-    preview_sync for a fast --dry-run spot check instead of a full export).
+    sample_limit caps how many lead and event rows are fetched/built (used by
+    preview_sync for a fast --dry-run spot check, and by `agent-changes --limit`
+    for a quick spot check on large accounts instead of a full export).
     """
     client_id = get_or_create_client_id()
     conn = get_conn()
@@ -326,6 +327,7 @@ def export_local_changes(
             all_leads=all_leads,
             workspace_filter=workspace_filter,
             workspace_params=workspace_params,
+            sample_limit=sample_limit,
         )
 
     _relay_log("export: querying unpushed timeline events from SQLite ...")
@@ -399,17 +401,20 @@ def _export_local_lead_entries(
     all_leads: bool,
     workspace_filter: str,
     workspace_params: list,
+    sample_limit: Optional[int] = None,
 ) -> list[dict]:
     """Lead snapshot entries for export_local_changes (skipped when events_only)."""
     t_export = time.monotonic()
+    limit_clause = " LIMIT ?" if sample_limit else ""
+    limit_param = [sample_limit] if sample_limit else []
     if all_leads:
         lead_rows = conn.execute(
             f"""SELECT l.*, COALESCE(co.name, l.company) AS company_display
                 FROM leads l
                 LEFT JOIN companies co ON l.company_id = co.id
                 WHERE 1=1 {workspace_filter}
-                ORDER BY l.created_at ASC""",
-            workspace_params,
+                ORDER BY l.created_at ASC{limit_clause}""",
+            workspace_params + limit_param,
         ).fetchall()
     else:
         lead_rows = conn.execute(
@@ -417,8 +422,8 @@ def _export_local_lead_entries(
                 FROM leads l
                 LEFT JOIN companies co ON l.company_id = co.id
                 WHERE {unsynced_lead_clause("l")} {workspace_filter}
-                ORDER BY l.created_at ASC""",
-            workspace_params,
+                ORDER BY l.created_at ASC{limit_clause}""",
+            workspace_params + limit_param,
         ).fetchall()
     _relay_log(f"export: {len(lead_rows):,} lead rows — building payloads ...")
 

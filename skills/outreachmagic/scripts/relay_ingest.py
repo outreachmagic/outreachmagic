@@ -444,6 +444,17 @@ def unsynced_lead_clause(lead_alias: str = "l") -> str:
     )"""
 
 
+def unsynced_workspace_lead_clause(ws_lead_alias: str = "wl") -> str:
+    """SQL fragment: true when a workspace_leads row's lead has no relay_ingested entry.
+
+    Same relay_ingested.lead_id marker as unsynced_lead_clause, referenced via
+    the workspace_leads row's lead_id column rather than leads.id.
+    """
+    return f"""NOT EXISTS (
+        SELECT 1 FROM relay_ingested r WHERE r.lead_id = {ws_lead_alias}.lead_id
+    )"""
+
+
 def prefetch_relay_ingested(
     dedupe_keys: list[str],
     conn: Optional[sqlite3.Connection] = None,

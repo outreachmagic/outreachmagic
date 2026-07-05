@@ -228,7 +228,7 @@ def preprocess_import_rows(
         nk = normalize_header_key(key)
         if nk in SALES_NAV_SIGNATURE_HEADERS or nk in HEADER_ALIASES:
             mapped.add(nk)
-        elif nk in {"company", "email", "linkedin url"}:
+        elif nk in {"company", "email", "linkedin url"} or nk.replace(" ", "_") in OM_MAPPED_FIELDS:
             mapped.add(nk)
         else:
             dropped.add(nk)

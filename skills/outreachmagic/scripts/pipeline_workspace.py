@@ -56,7 +56,7 @@ from pipeline_update import (
     save_config,
     set_last_sync,
 )
-from relay_ingest import unsynced_event_clause, unsynced_lead_clause
+from relay_ingest import unsynced_event_clause, unsynced_lead_clause, unsynced_workspace_lead_clause
 from workspace_routing import (
     DEFAULT_ORG_ID,
     MULTI_WORKSPACE_HOLD_MESSAGE,
@@ -521,10 +521,13 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
     last_sync = get_last_sync()
     if last_sync:
         pending_lead_core_count = conn2.execute(
-            "SELECT COUNT(*) AS n FROM leads WHERE updated_at > ?", (last_sync,)
+            f"SELECT COUNT(*) AS n FROM leads l WHERE l.updated_at > ? OR {unsynced_lead_clause('l')}",
+            (last_sync,),
         ).fetchone()["n"]
         pending_workspace_count = conn2.execute(
-            "SELECT COUNT(*) AS n FROM workspace_leads WHERE updated_at > ?", (last_sync,)
+            f"""SELECT COUNT(*) AS n FROM workspace_leads wl
+                WHERE wl.updated_at > ? OR {unsynced_workspace_lead_clause('wl')}""",
+            (last_sync,),
         ).fetchone()["n"]
         pending_quarantine_count = conn2.execute(
             """SELECT COUNT(*) AS n FROM unmapped_campaign_queue
@@ -1338,14 +1341,16 @@ def _push_pending_lead_snapshots(
                 f"""SELECT DISTINCT l.id, l.updated_at
                    FROM leads l
                    JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?
-                   WHERE l.updated_at > ?{limit_clause}""",
+                   WHERE (l.updated_at > ? OR {unsynced_lead_clause('l')})
+                   ORDER BY l.updated_at ASC{limit_clause}""",
                 (ws_id, last_sync) + limit_param,
             ).fetchall()
             ws_rows = conn.execute(
                 f"""SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
                    FROM workspace_leads wl
                    JOIN workspaces w ON w.id = wl.workspace_id
-                   WHERE wl.updated_at > ? AND wl.workspace_id = ?{limit_clause}""",
+                   WHERE (wl.updated_at > ? OR {unsynced_workspace_lead_clause('wl')}) AND wl.workspace_id = ?
+                   ORDER BY wl.updated_at ASC{limit_clause}""",
                 (last_sync, ws_id) + limit_param,
             ).fetchall()
         else:
@@ -1365,14 +1370,17 @@ def _push_pending_lead_snapshots(
     else:
         if last_sync:
             core_rows = conn.execute(
-                f"SELECT id, updated_at FROM leads WHERE updated_at > ?{limit_clause}",
+                f"""SELECT id, updated_at FROM leads
+                   WHERE updated_at > ? OR {unsynced_lead_clause('leads')}
+                   ORDER BY updated_at ASC{limit_clause}""",
                 (last_sync,) + limit_param,
             ).fetchall()
             ws_rows = conn.execute(
                 f"""SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
                    FROM workspace_leads wl
                    JOIN workspaces w ON w.id = wl.workspace_id
-                   WHERE wl.updated_at > ?{limit_clause}""",
+                   WHERE wl.updated_at > ? OR {unsynced_workspace_lead_clause('wl')}
+                   ORDER BY wl.updated_at ASC{limit_clause}""",
                 (last_sync,) + limit_param,
             ).fetchall()
         else:

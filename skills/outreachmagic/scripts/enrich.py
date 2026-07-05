@@ -1682,8 +1682,15 @@ def _format_preview_table(results: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def cmd_map_to_om(input_file: str, workspace: str = "", *, preview: bool = False) -> None:
-    """Map research output to outreachmagic import format."""
+def cmd_map_to_om(
+    input_file: str,
+    workspace: str = "",
+    *,
+    preview: bool = False,
+    dry_run: bool = False,
+    overwrite: bool = False,
+) -> None:
+    """Map research output to outreachmagic import format, saving by default (like backfill)."""
     data = json.loads(Path(input_file).read_text())
 
     # Support single or batch
@@ -1699,10 +1706,30 @@ def cmd_map_to_om(input_file: str, workspace: str = "", *, preview: bool = False
         mapped["_person"] = person
         results.append(mapped)
 
+    cfg = load_config()
+    om_dir = find_outreachmagic(cfg)
+
+    if dry_run or not om_dir:
+        if not om_dir and not dry_run:
+            cc.print_om_setup_box()
+            print(
+                "⚠️  Outreach Magic is not connected. Results will NOT be saved.\n"
+                "   Install from: https://github.com/outreachmagic/outreachmagic\n",
+                file=sys.stderr,
+            )
+        if preview:
+            print(_format_preview_table(results))
+        else:
+            print(json.dumps(results, indent=2))
+        return
+
+    profiles = [r["profile"] for r in results if r.get("can_import_via_import_profiles")]
+    import_summary: dict[str, Any] = {"processed": 0}
+    if profiles:
+        import_summary = run_import_profiles(om_dir, profiles, workspace=workspace, overwrite=overwrite)
     if preview:
         print(_format_preview_table(results))
-        return
-    print(json.dumps(results, indent=2))
+    print(json.dumps({"results": results, "import": import_summary}, indent=2))
 
 
 def cmd_update(check_only: bool = False, explicit_tag: str = "") -> None:
@@ -1898,7 +1925,10 @@ def main() -> None:
         cmd_serper_format(argv[1])
     elif cmd == "map-to-om":
         if len(argv) < 2:
-            print("Usage: enrich.py map-to-om [--workspace W] [--preview] research_output.json")
+            print(
+                "Usage: enrich.py map-to-om [--workspace W] [--preview] [--dry-run] "
+                "[--overwrite] research_output.json"
+            )
             sys.exit(1)
         mo_preview = False
         mo_input = ""
@@ -1911,7 +1941,7 @@ def main() -> None:
         if not mo_input:
             print("error: input file required")
             sys.exit(1)
-        cmd_map_to_om(mo_input, workspace, preview=mo_preview)
+        cmd_map_to_om(mo_input, workspace, preview=mo_preview, dry_run=dry_run, overwrite=overwrite)
     elif cmd == "update":
         check_only = False
         explicit_tag = ""

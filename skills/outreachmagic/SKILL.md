@@ -111,6 +111,10 @@ python3 scripts/pipeline.py <command>          # run from skill root
 python3 scripts/pipeline.py paths              # resolve install paths anytime
 ```
 
+Requires Python 3.10+. Stock macOS ships `python3` at 3.9 — if commands fail with a
+version error, use the Homebrew interpreter directly (e.g. `python3.12 scripts/pipeline.py ...`).
+`install.sh`'s `_find_python()` already detects and uses the right interpreter automatically.
+
 Config keys: `data_root` (share DB across agents), `api_base_url`, `dev_repo`.
 
 ## Platform install

@@ -447,6 +447,49 @@ class TestTeamAndBackfill(unittest.TestCase):
             Path(path).unlink()
 
 
+class TestMapToOmSaveByDefault(unittest.TestCase):
+    def _research_file(self) -> str:
+        payload = [{
+            "person": {"full_name": "Jane Doe", "company_name": "Acme"},
+            "enrichment": {"linkedin_url": "https://linkedin.com/in/janedoe", "company_domain": "acme.com"},
+        }]
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        json.dump(payload, f)
+        f.close()
+        return f.name
+
+    @patch.object(enrich, "load_config")
+    @patch.object(enrich, "find_outreachmagic")
+    @patch.object(enrich, "run_import_profiles")
+    def test_map_to_om_saves_by_default(self, mock_import, mock_find, _mock_cfg):
+        mock_find.return_value = Path("/tmp/om-test")
+        mock_import.return_value = {"processed": 1}
+        path = self._research_file()
+        try:
+            buf = StringIO()
+            with redirect_stdout(buf):
+                enrich.cmd_map_to_om(path, "ws1")
+            mock_import.assert_called_once()
+            payload = json.loads(buf.getvalue())
+            self.assertEqual(payload["import"]["processed"], 1)
+        finally:
+            Path(path).unlink()
+
+    @patch.object(enrich, "load_config")
+    @patch.object(enrich, "find_outreachmagic")
+    @patch.object(enrich, "run_import_profiles")
+    def test_map_to_om_dry_run_does_not_save(self, mock_import, mock_find, _mock_cfg):
+        mock_find.return_value = Path("/tmp/om-test")
+        path = self._research_file()
+        try:
+            buf = StringIO()
+            with redirect_stdout(buf):
+                enrich.cmd_map_to_om(path, "ws1", dry_run=True)
+            mock_import.assert_not_called()
+        finally:
+            Path(path).unlink()
+
+
 class TestFormatReport(unittest.TestCase):
     def test_skipped_serper_attempted_in_report(self):
         report = enrich.format_report([

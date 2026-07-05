@@ -309,6 +309,61 @@ class TimestampSyncTests(unittest.TestCase):
         self.assertGreaterEqual(result["totals"]["leads_core_pending"], 5)
         self.assertLessEqual(len(result["samples"]["lead_core_update"]), 2)
 
+    def test_never_synced_lead_is_pending_even_when_older_than_last_sync(self):
+        """A lead that predates last_sync but was never actually pushed (no relay_ingested
+        row) must still show up as pending — the updated_at > last_sync check alone would
+        silently drop it forever once last_sync advances past its old updated_at."""
+        result = om.resolve_lead(
+            email="stale-never-synced@example.com", name="Stale Lead", company="Acme",
+            source="csv", source_platform="csv",
+        )
+        lead_id = result["id"]
+        conn = om.get_conn()
+        ws_row = om.resolve_workspace_identity(conn, "default")
+        om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_row["id"], lead_id)
+        conn.execute(
+            "UPDATE leads SET updated_at = '2020-01-01T00:00:00' WHERE id = ?", (lead_id,),
+        )
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = '2020-01-01T00:00:00' WHERE lead_id = ?",
+            (lead_id,),
+        )
+        conn.commit()
+        conn.close()
+        # last_sync is well after this lead's (backdated) updated_at, but the lead was
+        # never actually pushed (no relay_ingested row references it).
+        om.set_last_sync("2026-01-01T00:00:00Z")
+
+        with mock.patch.object(om, "get_agent_key", return_value="om_agent_test"):
+            with mock.patch.object(om.routing_cloud, "cloud_routing_enabled", return_value=True):
+                with mock.patch.object(
+                    om.routing_cloud, "fetch_routing_bundle",
+                    return_value={"workspaces": [], "campaignMaps": []},
+                ):
+                    status = om.get_sync_status()
+                    lead_push = om._push_pending_lead_snapshots(
+                        "om_agent_test", dry_run=True, sample_limit=50,
+                    )
+
+        self.assertGreaterEqual(status["leads_pending"], 1)
+        self.assertGreaterEqual(status["workspace_leads_pending"], 1)
+        core_keys = {e["entity_key"] for e in lead_push["sample_core_entries"]}
+        ws_keys = {e["entity_key"] for e in lead_push["sample_ws_entries"]}
+        self.assertIn("stale-never-synced@example.com", core_keys)
+        self.assertIn("stale-never-synced@example.com", ws_keys)
+
+    def test_export_local_changes_sample_limit_caps_lead_entries(self):
+        """agent-changes --limit threads through to _export_local_lead_entries."""
+        for i in range(6):
+            om.resolve_lead(
+                email=f"exportlimit{i}@example.com", name=f"Export Limit {i}", company="Acme",
+                source="csv", source_platform="csv",
+            )
+
+        result = om.export_local_changes(all_leads=True, sample_limit=3)
+        lead_entries = [e for e in result["entries"] if e["action"] == "lead_core_update"]
+        self.assertEqual(len(lead_entries), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

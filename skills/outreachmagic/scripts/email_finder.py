@@ -8,7 +8,7 @@ CSV/JSON saves, bulk dedup (pipeline batch-lead-lookup), and bulk verify-email.
 Usage:
     email_finder.py config
     email_finder.py check [--workspace W] "Name" "Company"
-    email_finder.py find --name X --domain Y [--linkedin URL] [--save] [--workspace W]
+    email_finder.py find --name X --domain Y [--linkedin URL] [--dry-run] [--no-save] [--workspace W]
     email_finder.py batch-find [options] input.json
     email_finder.py import-to-om --file PATH --workspace W [--source trykitt|icypeas]
     email_finder.py update                    # Deprecated — use `pipeline.py update` instead
@@ -318,8 +318,9 @@ def cmd_find(
     domain: str,
     linkedin: str = "",
     workspace: str = "",
-    save: bool = False,
+    save: bool = True,
     company: str = "",
+    dry_run: bool = False,
 ) -> None:
     cfg = load_config()
     om_dir = find_outreachmagic(cfg)
@@ -333,7 +334,7 @@ def cmd_find(
                 "existing": existing,
             }, indent=2))
             return
-    if not om_dir and save:
+    if not om_dir and save and not dry_run:
         cc.print_om_setup_box()
         print(
             "⚠️  Outreach Magic is not connected.\n"
@@ -344,7 +345,7 @@ def cmd_find(
             "   Or run: pipeline.py update (if already installed)\n",
             file=sys.stderr,
         )
-    elif not om_dir:
+    elif not om_dir and not dry_run:
         print(
             "⚠️  Outreach Magic is not connected. Results will NOT be saved.\n"
             "   Install from: https://github.com/outreachmagic/outreachmagic\n",
@@ -354,7 +355,7 @@ def cmd_find(
     existing_lead_id = None
     if om_dir and existing.get("lead_id"):
         existing_lead_id = int(existing["lead_id"])
-    if om_dir and save:
+    if om_dir and save and not dry_run:
         if result.get("email"):
             result["save"] = save_find_result(
                 om_dir,
@@ -1155,9 +1156,10 @@ def cmd_update(*, check_only: bool = False, explicit_tag: str = "") -> None:
     }, indent=2))
 
 
-def _parse_find_args(argv: list[str]) -> tuple[str, str, str, str, str, bool, list[str]]:
+def _parse_find_args(argv: list[str]) -> tuple[str, str, str, str, str, bool, bool, list[str]]:
     name = domain = linkedin = workspace = company = ""
-    save = False
+    save = True
+    dry_run = False
     remaining: list[str] = []
     skip = False
     for i, arg in enumerate(argv):
@@ -1165,7 +1167,13 @@ def _parse_find_args(argv: list[str]) -> tuple[str, str, str, str, str, bool, li
             skip = False
             continue
         if arg == "--save":
-            save = True
+            # Save is the default now; kept as a no-op for backward compatibility.
+            continue
+        if arg == "--no-save":
+            save = False
+            continue
+        if arg == "--dry-run":
+            dry_run = True
             continue
         if arg == "--name" and i + 1 < len(argv):
             name = argv[i + 1]
@@ -1203,7 +1211,7 @@ def _parse_find_args(argv: list[str]) -> tuple[str, str, str, str, str, bool, li
             workspace = arg.split("=", 1)[1]
             continue
         remaining.append(arg)
-    return name, domain, linkedin, workspace, company, save, remaining
+    return name, domain, linkedin, workspace, company, save, dry_run, remaining
 
 
 def main() -> None:
@@ -1225,11 +1233,14 @@ def main() -> None:
                 args = args[2:]
             cmd_check(args[0], args[1] if len(args) > 1 else "", ws)
         elif cmd == "find":
-            name, domain, linkedin, workspace, company, save, _ = _parse_find_args(sys.argv[2:])
+            name, domain, linkedin, workspace, company, save, dry_run, _ = _parse_find_args(sys.argv[2:])
             if not name or not domain:
-                print("Usage: email_finder.py find --name X --domain Y [--linkedin URL] [--save] [--workspace W]")
+                print(
+                    "Usage: email_finder.py find --name X --domain Y [--linkedin URL] "
+                    "[--dry-run] [--no-save] [--workspace W]"
+                )
                 sys.exit(1)
-            cmd_find(name, domain, linkedin, workspace, save, company)
+            cmd_find(name, domain, linkedin, workspace, save, company, dry_run=dry_run)
         elif cmd == "batch-find":
             opts, path = _parse_batch_args(sys.argv[2:])
             if not path:

@@ -545,6 +545,7 @@ def main():
     agent_export_p.add_argument("--file", help="Write CSV to file (import-profiles compatible)")
     agent_export_p.add_argument("--all", action="store_true", help="Include all leads, not just locally-created")
     agent_export_p.add_argument("--workspace", help="Filter export to a specific workspace")
+    agent_export_p.add_argument("--limit", type=int, help="Cap lead rows fetched/built (quick spot check on large accounts)")
 
     up_p = sub.add_parser("update-stage", help="Update lead stage")
     up_p.add_argument("--id", type=int, required=True); up_p.add_argument("--stage", required=True)
@@ -2403,6 +2404,7 @@ def main():
         result = _pipeline.export_local_changes(
             all_leads=getattr(args, "all", False),
             workspace=getattr(args, "workspace", None),
+            sample_limit=getattr(args, "limit", None),
         )
         if getattr(args, "file", None):
             _pipeline.write_export_csv(result, args.file)

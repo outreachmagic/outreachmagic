@@ -93,6 +93,17 @@ def test_import_dry_run_preview_fields():
     assert summary.get("sample_preview", {}).get("name") == "Lucia Stanković"
 
 
+def test_plain_canonical_headers_not_reported_dropped():
+    """name/title pass straight through normalize_import_row unchanged, but used to be
+    misreported as fields_dropped since OM_MAPPED_FIELDS wasn't consulted."""
+    rows = [{"name": "Jane Doe", "title": "VP Sales", "company": "Acme", "email": "jane@acme.com"}]
+    _, meta = impfmt.preprocess_import_rows(rows)
+    assert "name" not in meta["fields_dropped"]
+    assert "title" not in meta["fields_dropped"]
+    assert meta["sample_preview"]["name"] == "Jane Doe"
+    assert meta["sample_preview"]["title"] == "VP Sales"
+
+
 def test_csv_roundtrip_headers():
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=list(VAYNE_ROW.keys()))

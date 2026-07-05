@@ -297,9 +297,14 @@ def export_local_changes(
     all_leads: bool = False,
     workspace: Optional[str] = None,
     events_only: bool = False,
+    sample_limit: Optional[int] = None,
 ) -> dict:
     """Export locally-created leads and events as a JSON structure
-    suitable for pushing to the relay or importing on another machine."""
+    suitable for pushing to the relay or importing on another machine.
+
+    sample_limit caps how many event rows are fetched/built (used by
+    preview_sync for a fast --dry-run spot check instead of a full export).
+    """
     client_id = get_or_create_client_id()
     conn = get_conn()
 
@@ -325,13 +330,16 @@ def export_local_changes(
 
     _relay_log("export: querying unpushed timeline events from SQLite ...")
     t_export = time.monotonic()
+    limit_clause = " LIMIT ?" if sample_limit else ""
+    event_params: list = [sample_limit] if sample_limit else []
     event_rows = conn.execute(
         f"""SELECT e.*, l.email, l.linkedin_url, c.name AS campaign_name
            FROM events e
            JOIN leads l ON e.lead_id = l.id
            LEFT JOIN campaigns c ON c.id = e.campaign_id
            WHERE {unsynced_event_clause("e")}
-           ORDER BY e.created_at ASC""",
+           ORDER BY e.created_at ASC{limit_clause}""",
+        event_params,
     ).fetchall()
     _relay_log(
         f"export: loaded {len(event_rows):,} event rows in {time.monotonic() - t_export:.1f}s — building payloads ..."
@@ -393,6 +401,7 @@ def _export_local_lead_entries(
     workspace_params: list,
 ) -> list[dict]:
     """Lead snapshot entries for export_local_changes (skipped when events_only)."""
+    t_export = time.monotonic()
     if all_leads:
         lead_rows = conn.execute(
             f"""SELECT l.*, COALESCE(co.name, l.company) AS company_display
@@ -411,10 +420,11 @@ def _export_local_lead_entries(
                 ORDER BY l.created_at ASC""",
             workspace_params,
         ).fetchall()
+    _relay_log(f"export: {len(lead_rows):,} lead rows — building payloads ...")
 
     entries = []
     lead_ids = set()
-    for row in lead_rows:
+    for n, row in enumerate(lead_rows, start=1):
         lead_id = row["id"]
         lead_ids.add(lead_id)
         entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, lead_id)
@@ -466,6 +476,13 @@ def _export_local_lead_entries(
                 stage_entry["payload"]["next_action"] = row["next_action"]
             entries.append(stage_entry)
 
+        if n % 500 == 0:
+            _relay_log(f"export: built {n:,}/{len(lead_rows):,} lead entries ...")
+
+    if lead_rows:
+        _relay_log(
+            f"export: done — {len(entries):,} lead entries in {time.monotonic() - t_export:.1f}s"
+        )
     return entries
 
 

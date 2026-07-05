@@ -224,6 +224,91 @@ class TimestampSyncTests(unittest.TestCase):
         self.assertIsNotNone(row["updated_at"])
         self.assertNotEqual(row["updated_at"], "2020-01-01T00:00:00")
 
+    def test_mark_all_lead_snapshots_pending_scopes_to_workspace(self):
+        """workspace_id scopes marking to only that workspace's leads."""
+        in_ws = om.resolve_lead(
+            email="inws@example.com", name="In WS", company="Acme",
+            source="csv", source_platform="csv",
+        )
+        out_ws = om.resolve_lead(
+            email="outws@example.com", name="Out WS", company="Acme",
+            source="csv", source_platform="csv",
+        )
+        conn = om.get_conn()
+        ws_row = om.resolve_workspace_identity(conn, "default")
+        om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_row["id"], in_ws["id"])
+        conn.execute(
+            "UPDATE leads SET updated_at = '2020-01-01T00:00:00' WHERE id IN (?, ?)",
+            (in_ws["id"], out_ws["id"]),
+        )
+        conn.commit()
+        conn.close()
+
+        om.mark_all_lead_snapshots_pending(workspace_id=ws_row["id"])
+
+        conn = om.get_conn()
+        rows = {
+            r["id"]: r["updated_at"]
+            for r in conn.execute(
+                "SELECT id, updated_at FROM leads WHERE id IN (?, ?)",
+                (in_ws["id"], out_ws["id"]),
+            ).fetchall()
+        }
+        conn.close()
+        self.assertNotEqual(rows[in_ws["id"]], "2020-01-01T00:00:00")
+        self.assertEqual(rows[out_ws["id"]], "2020-01-01T00:00:00")
+
+    def test_push_agent_events_to_relay_is_events_only(self):
+        """_push_agent_events_to_relay no longer bundles lead_core_update/lead_workspace_update
+        entries — those are covered by _push_pending_lead_snapshots. A lead that's never
+        touched relay (satisfies the old unsynced_lead_clause) must not leak lead entries here."""
+        result = om.resolve_lead(
+            email="neverrelay@example.com", name="Never Relay", company="Acme",
+            source="csv", source_platform="csv",
+        )
+        conn = om.get_conn()
+        conn.execute(
+            """INSERT INTO events (lead_id, event_type, direction, channel, created_at, metadata_json)
+               VALUES (?, 'email_sent', 'outbound', 'email', datetime('now'), '{}')""",
+            (result["id"],),
+        )
+        conn.commit()
+        conn.close()
+
+        captured: list = []
+
+        def fake_batches(agent_key, entries, client_id, **kwargs):
+            captured.extend(entries)
+            return {"pushed": 0, "error": None, "throttled": False}
+
+        with mock.patch.object(om, "_relay_push_batches", side_effect=fake_batches):
+            om._push_agent_events_to_relay("om_agent_test")
+
+        actions = {e.get("action") for e in captured}
+        self.assertNotIn("lead_core_update", actions)
+        self.assertNotIn("lead_workspace_update", actions)
+        self.assertIn("event_log", actions)
+
+    def test_preview_sync_samples_without_full_count(self):
+        """preview_sync caps entries per stream at sample_size while totals stay accurate."""
+        for i in range(5):
+            om.resolve_lead(
+                email=f"preview{i}@example.com", name=f"Preview {i}", company="Acme",
+                source="csv", source_platform="csv",
+            )
+
+        with mock.patch.object(om, "get_agent_key", return_value="om_agent_test"):
+            with mock.patch.object(om.routing_cloud, "cloud_routing_enabled", return_value=True):
+                with mock.patch.object(
+                    om.routing_cloud, "fetch_routing_bundle",
+                    return_value={"workspaces": [], "campaignMaps": []},
+                ):
+                    result = om.preview_sync(sample_size=2)
+
+        self.assertEqual(result["status"], "dry_run")
+        self.assertGreaterEqual(result["totals"]["leads_core_pending"], 5)
+        self.assertLessEqual(len(result["samples"]["lead_core_update"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

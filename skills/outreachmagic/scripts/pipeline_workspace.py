@@ -910,6 +910,54 @@ def sync_all(
     return results
 
 
+def preview_sync(
+    org_id: str = DEFAULT_ORG_ID,
+    *,
+    workspace: Optional[str] = None,
+    sample_size: int = 3,
+) -> dict:
+    """Preview what `sync` would push, without waiting for a full build or sending anything.
+
+    Reuses get_sync_status()'s cheap COUNT-based totals, and caps every
+    underlying query at `sample_size` rows so this returns fast even when
+    tens of thousands of rows are pending — it never builds the full export
+    and then slices it.
+    """
+    tok = get_agent_key()
+    if not routing_cloud.cloud_routing_enabled(load_config, tok):
+        return {"status": "error", "error": "No cloud token configured."}
+
+    status = get_sync_status(org_id)
+    if not status.get("can_sync"):
+        return {"status": "error", "error": status.get("reason", "Cannot sync.")}
+
+    events_export = export_local_changes(events_only=True, sample_limit=sample_size)
+    lead_preview = _push_pending_lead_snapshots(
+        tok, workspace=workspace, sample_limit=sample_size, dry_run=True,
+    )
+    merge_preview = _push_pending_merge_deletes(tok, sample_limit=sample_size, dry_run=True)
+    company_preview = _push_pending_company_updates(tok, sample_limit=sample_size, dry_run=True)
+
+    return {
+        "status": "dry_run",
+        "sample_size": sample_size,
+        "totals": {
+            "events_pending": status.get("local_agent_events", 0),
+            "leads_core_pending": status.get("leads_pending", 0),
+            "leads_workspace_pending": status.get("workspace_leads_pending", 0),
+            "merge_deletes_pending": merge_preview.get("total_pending", 0),
+            "company_updates_pending": company_preview.get("total_pending", 0),
+        },
+        "samples": {
+            "event_log": events_export.get("entries", []),
+            "lead_core_update": lead_preview.get("sample_core_entries", []),
+            "lead_workspace_update": lead_preview.get("sample_ws_entries", []),
+            "lead_core_delete": merge_preview.get("sample_entries", []),
+            "company_update": company_preview.get("sample_entries", []),
+        },
+    }
+
+
 _SYNC_LOG_FILE: Optional[Path] = None
 
 
@@ -1114,17 +1162,24 @@ def _relay_push_batches(
 
 
 def _push_agent_events_to_relay(agent_key: str) -> dict:
-    """Push locally-created events to the Cloudflare relay /push endpoint."""
+    """Push locally-created events to the cloud relay's /push endpoint.
+
+    Lead core/workspace snapshots are always pushed separately by
+    _push_pending_lead_snapshots (last_sync-cursor based, covers both the
+    first full sync and incremental ones). Building them here too was
+    redundant work — and for locally-created leads it never converged
+    because unsynced_lead_clause only clears once a lead has come in FROM
+    relay, so this path re-exported the same never-relay-seen leads on
+    every single sync. This path stays events-only.
+    """
     from pipeline import _relay_push_batches
 
-    events_only = _sync_events_only()
-    if events_only:
-        _relay_log(
-            f"{_ARROW_PUSH} {_stream_pad(_RELAY_STREAM_EVENT)}: "
-            "building export (events only, skipping Lead/Workspace) ..."
-        )
+    _relay_log(
+        f"{_ARROW_PUSH} {_stream_pad(_RELAY_STREAM_EVENT)}: "
+        "building export (events only) ..."
+    )
     t0 = time.monotonic()
-    export = export_local_changes(events_only=events_only)
+    export = export_local_changes(events_only=True)
     entries = export.get("entries") or []
     _relay_log(
         f"{_ARROW_PUSH} {_stream_pad(_RELAY_STREAM_EVENT)}: "
@@ -1173,21 +1228,32 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
     return result
 
 
-def _push_pending_merge_deletes(agent_key: str, *, bulk: bool = False) -> dict:
+def _push_pending_merge_deletes(
+    agent_key: str,
+    *,
+    bulk: bool = False,
+    sample_limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
     """Push tombstones for merged leads so relay drops stale entity keys."""
     from pipeline import _relay_push_batches
 
     conn = get_conn()
-    rows = conn.execute(
-        """SELECT id, merge_entity_key FROM lead_merges
-           WHERE merge_entity_key IS NOT NULL AND TRIM(merge_entity_key) != ''
+    where_clause = """WHERE merge_entity_key IS NOT NULL AND TRIM(merge_entity_key) != ''
              AND COALESCE(relay_delete_pushed, 0) = 0"""
+    total_pending = conn.execute(
+        f"SELECT COUNT(*) AS n FROM lead_merges {where_clause}"
+    ).fetchone()["n"]
+    limit_clause = " LIMIT ?" if sample_limit else ""
+    query_params = [sample_limit] if sample_limit else []
+    rows = conn.execute(
+        f"SELECT id, merge_entity_key FROM lead_merges {where_clause}{limit_clause}",
+        query_params,
     ).fetchall()
     if not rows:
         conn.close()
-        return {"pushed": 0, "error": None}
+        return {"pushed": 0, "error": None, "total_pending": total_pending, "sample_entries": []}
 
-    client_id = get_or_create_client_id()
     now_ts = datetime.now(timezone.utc).isoformat()
     entries = [
         {
@@ -1201,6 +1267,16 @@ def _push_pending_merge_deletes(agent_key: str, *, bulk: bool = False) -> dict:
     mark_ids = [row["id"] for row in rows]
     conn.close()
 
+    if dry_run:
+        return {
+            "pushed": 0,
+            "error": None,
+            "total_pending": total_pending,
+            "sample_entries": entries,
+        }
+
+    client_id = get_or_create_client_id()
+
     def clear_merge_ids(ids: list) -> None:
         if not ids:
             return
@@ -1213,7 +1289,7 @@ def _push_pending_merge_deletes(agent_key: str, *, bulk: bool = False) -> dict:
         mark_conn.commit()
         mark_conn.close()
 
-    return _relay_push_batches(
+    result = _relay_push_batches(
         agent_key,
         entries,
         client_id,
@@ -1223,19 +1299,33 @@ def _push_pending_merge_deletes(agent_key: str, *, bulk: bool = False) -> dict:
         mark_ids=mark_ids,
         on_mark_cleared=clear_merge_ids,
     )
+    result["total_pending"] = total_pending
+    return result
 
 
-def _push_pending_lead_snapshots(agent_key: str, *, bulk: Optional[bool] = None,
-                                 workspace: Optional[str] = None) -> dict:
+def _push_pending_lead_snapshots(
+    agent_key: str,
+    *,
+    bulk: Optional[bool] = None,
+    workspace: Optional[str] = None,
+    sample_limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
     """Push pending lead core + workspace snapshots to relay /push.
 
     When ``workspace`` is provided, only snapshots scoped to that workspace
     are pushed. Pass ``None`` to push everything (default).
+
+    sample_limit caps how many core/workspace rows are fetched/built (used
+    by preview_sync for a fast --dry-run spot check). dry_run builds the
+    (capped) entries but skips the actual relay push.
     """
     from pipeline import _relay_push_batches
 
     conn = get_conn()
     last_sync = get_last_sync()
+    limit_clause = " LIMIT ?" if sample_limit else ""
+    limit_param = (sample_limit,) if sample_limit else ()
 
     if workspace:
         ws_row = resolve_workspace_identity(conn, workspace)
@@ -1245,53 +1335,55 @@ def _push_pending_lead_snapshots(agent_key: str, *, bulk: Optional[bool] = None,
             return {"pushed": 0, "error": f"workspace not found: {workspace}", "throttled": False}
         if last_sync:
             core_rows = conn.execute(
-                """SELECT DISTINCT l.id, l.updated_at
+                f"""SELECT DISTINCT l.id, l.updated_at
                    FROM leads l
                    JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?
-                   WHERE l.updated_at > ?""",
-                (ws_id, last_sync),
+                   WHERE l.updated_at > ?{limit_clause}""",
+                (ws_id, last_sync) + limit_param,
             ).fetchall()
             ws_rows = conn.execute(
-                """SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
+                f"""SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
                    FROM workspace_leads wl
                    JOIN workspaces w ON w.id = wl.workspace_id
-                   WHERE wl.updated_at > ? AND wl.workspace_id = ?""",
-                (last_sync, ws_id),
+                   WHERE wl.updated_at > ? AND wl.workspace_id = ?{limit_clause}""",
+                (last_sync, ws_id) + limit_param,
             ).fetchall()
         else:
             core_rows = conn.execute(
-                """SELECT DISTINCT l.id, l.updated_at
+                f"""SELECT DISTINCT l.id, l.updated_at
                    FROM leads l
-                   JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?""",
-                (ws_id,),
+                   JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?{limit_clause}""",
+                (ws_id,) + limit_param,
             ).fetchall()
             ws_rows = conn.execute(
-                """SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
+                f"""SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
                    FROM workspace_leads wl
                    JOIN workspaces w ON w.id = wl.workspace_id
-                   WHERE wl.workspace_id = ?""",
-                (ws_id,),
+                   WHERE wl.workspace_id = ?{limit_clause}""",
+                (ws_id,) + limit_param,
             ).fetchall()
     else:
         if last_sync:
             core_rows = conn.execute(
-                "SELECT id, updated_at FROM leads WHERE updated_at > ?", (last_sync,)
+                f"SELECT id, updated_at FROM leads WHERE updated_at > ?{limit_clause}",
+                (last_sync,) + limit_param,
             ).fetchall()
             ws_rows = conn.execute(
-                """SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
+                f"""SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
                    FROM workspace_leads wl
                    JOIN workspaces w ON w.id = wl.workspace_id
-                   WHERE wl.updated_at > ?""",
-                (last_sync,),
+                   WHERE wl.updated_at > ?{limit_clause}""",
+                (last_sync,) + limit_param,
             ).fetchall()
         else:
             core_rows = conn.execute(
-                "SELECT id, updated_at FROM leads"
+                f"SELECT id, updated_at FROM leads{limit_clause}", limit_param,
             ).fetchall()
             ws_rows = conn.execute(
-                """SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
+                f"""SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
                    FROM workspace_leads wl
-                   JOIN workspaces w ON w.id = wl.workspace_id"""
+                   JOIN workspaces w ON w.id = wl.workspace_id{limit_clause}""",
+                limit_param,
             ).fetchall()
     if not core_rows and not ws_rows:
         conn.close()
@@ -1362,6 +1454,14 @@ def _push_pending_lead_snapshots(agent_key: str, *, bulk: Optional[bool] = None,
 
     conn.close()
 
+    if dry_run:
+        return {
+            "pushed": 0,
+            "error": None,
+            "sample_core_entries": core_entries,
+            "sample_ws_entries": ws_entries,
+        }
+
     pending_total = len(core_entries) + len(ws_entries)
     if bulk is None:
         bulk = pending_total >= RELAY_BULK_THRESHOLD
@@ -1406,20 +1506,37 @@ def _push_pending_lead_snapshots(agent_key: str, *, bulk: Optional[bool] = None,
     return last_result
 
 
-def _push_pending_company_updates(agent_key: str) -> dict:
+def _push_pending_company_updates(
+    agent_key: str,
+    *,
+    sample_limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
     from pipeline import _relay_push_batches
 
     conn = get_conn()
     last_sync = get_last_sync()
     if last_sync:
-        rows = conn.execute("SELECT id, updated_at FROM companies WHERE updated_at > ?", (last_sync,)).fetchall()
+        total_pending = conn.execute(
+            "SELECT COUNT(*) AS n FROM companies WHERE updated_at > ?", (last_sync,)
+        ).fetchone()["n"]
     else:
-        rows = conn.execute("SELECT id, updated_at FROM companies").fetchall()
+        total_pending = conn.execute("SELECT COUNT(*) AS n FROM companies").fetchone()["n"]
+    limit_clause = " LIMIT ?" if sample_limit else ""
+    limit_param = (sample_limit,) if sample_limit else ()
+    if last_sync:
+        rows = conn.execute(
+            f"SELECT id, updated_at FROM companies WHERE updated_at > ?{limit_clause}",
+            (last_sync,) + limit_param,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT id, updated_at FROM companies{limit_clause}", limit_param,
+        ).fetchall()
     if not rows:
         conn.close()
-        return {"pushed": 0, "error": None, "throttled": False}
+        return {"pushed": 0, "error": None, "throttled": False, "total_pending": total_pending, "sample_entries": []}
 
-    client_id = get_or_create_client_id()
     entries = []
     for row in rows:
         entity_key = company_entity_key(conn, row["id"])
@@ -1434,8 +1551,18 @@ def _push_pending_company_updates(agent_key: str) -> dict:
         })
     conn.close()
     if not entries:
-        return {"pushed": 0, "error": None, "throttled": False}
+        return {"pushed": 0, "error": None, "throttled": False, "total_pending": total_pending, "sample_entries": []}
 
+    if dry_run:
+        return {
+            "pushed": 0,
+            "error": None,
+            "throttled": False,
+            "total_pending": total_pending,
+            "sample_entries": entries,
+        }
+
+    client_id = get_or_create_client_id()
     bulk = len(entries) >= RELAY_BULK_THRESHOLD
 
     push_result = _relay_push_batches(

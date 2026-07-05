@@ -508,13 +508,32 @@ def migrate_db(conn=None):
         conn.close()
 
 
-def mark_all_lead_snapshots_pending(conn: Optional[sqlite3.Connection] = None) -> None:
-    """Queue full snapshot v2 backfill (core + every workspace membership)."""
+def mark_all_lead_snapshots_pending(
+    conn: Optional[sqlite3.Connection] = None,
+    *,
+    workspace_id: Optional[str] = None,
+) -> None:
+    """Queue full snapshot backfill (core + workspace membership).
+
+    Scoped to one workspace's leads when workspace_id is given; otherwise
+    every lead and membership in the account is marked pending.
+    """
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
-    conn.execute("UPDATE leads SET updated_at = datetime('now')")
-    conn.execute("UPDATE workspace_leads SET updated_at = datetime('now')")
+    if workspace_id:
+        conn.execute(
+            """UPDATE leads SET updated_at = datetime('now')
+               WHERE id IN (SELECT lead_id FROM workspace_leads WHERE workspace_id = ?)""",
+            (workspace_id,),
+        )
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = datetime('now') WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+    else:
+        conn.execute("UPDATE leads SET updated_at = datetime('now')")
+        conn.execute("UPDATE workspace_leads SET updated_at = datetime('now')")
     if own_conn:
         conn.commit()
         conn.close()

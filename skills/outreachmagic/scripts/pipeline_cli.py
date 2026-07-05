@@ -727,9 +727,14 @@ def main():
         help="Skip aggregate local DB health POST to portal (lead sync still runs)",
     )
     sync_p.add_argument(
-        "--full-snapshot-v2",
+        "--full-snapshot",
         action="store_true",
-        help="Mark all leads and workspace memberships pending, then push snapshot v2 to relay",
+        help="Push all leads and workspace memberships to relay for full backup",
+    )
+    sync_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm --full-snapshot across all workspaces (required unless --workspace is set)",
     )
     sync_p.add_argument(
         "--bulk",
@@ -740,6 +745,21 @@ def main():
         "--no-bulk",
         action="store_true",
         help="Force routine (smaller) snapshot batch sizes",
+    )
+    sync_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview what sync would push without sending anything (sampled per stream)",
+    )
+    sync_p.add_argument(
+        "--sample-size",
+        type=int,
+        default=3,
+        help="Entries to preview per stream with --dry-run (default: 3)",
+    )
+    sync_p.add_argument(
+        "--file",
+        help="With --dry-run, write the preview JSON to a file instead of stdout",
     )
 
     activity_p = sub.add_parser("activity", help="Lead activity summary (last contacted, counts)")
@@ -1524,12 +1544,41 @@ def main():
                 print(json.dumps(status, indent=2))
         else:
             sync_ws = getattr(args, "workspace", None)
-            if getattr(args, "full_snapshot_v2", False):
-                _pipeline.mark_all_lead_snapshots_pending()
-                if sync_ws:
-                    print(f"Marked all leads pending (--workspace {sync_ws} scopes the push).", flush=True)
+            if getattr(args, "dry_run", False):
+                result = _pipeline.preview_sync(
+                    workspace=sync_ws,
+                    sample_size=getattr(args, "sample_size", 3),
+                )
+                if getattr(args, "file", None):
+                    Path(args.file).write_text(json.dumps(result, indent=2))
+                    print(json.dumps({"status": "written", "file": args.file}))
                 else:
-                    print("Marked all leads and workspace memberships for snapshot v2 push.", flush=True)
+                    print(json.dumps(result, indent=2))
+                return
+            if getattr(args, "full_snapshot", False):
+                ws_id = None
+                if sync_ws:
+                    conn = _pipeline.get_conn()
+                    ws_row = _pipeline.resolve_workspace_identity(conn, sync_ws)
+                    conn.close()
+                    if not ws_row:
+                        print(json.dumps({"error": f"workspace not found: {sync_ws}"}))
+                        sys.exit(1)
+                    ws_id = ws_row["id"]
+                elif not getattr(args, "yes", False):
+                    print(json.dumps({
+                        "error": (
+                            "--full-snapshot without --workspace marks ALL leads pending for a "
+                            "full resync. Re-run with --workspace SLUG to scope it, or add --yes "
+                            "to confirm a full-account resync."
+                        ),
+                    }))
+                    sys.exit(1)
+                _pipeline.mark_all_lead_snapshots_pending(workspace_id=ws_id)
+                if sync_ws:
+                    print(f"Marked leads in workspace {sync_ws} pending for full snapshot push.", flush=True)
+                else:
+                    print("Marked all leads and workspace memberships pending for full snapshot push.", flush=True)
             force_bulk = None
             if getattr(args, "bulk", False) and getattr(args, "no_bulk", False):
                 print(json.dumps({"error": "Use --bulk or --no-bulk, not both"}))

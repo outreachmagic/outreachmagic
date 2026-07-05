@@ -6,7 +6,7 @@ One SQLite file. No MongoDB. No BigQuery. Just your leads, visible.
 
 Architecture:
   ~/.hermes/skills/outreachmagic/databases/outreachmagic.db  — Local SQLite database
-  api.outreachmagic.io           — Cloudflare Worker relay (optional)
+  api.outreachmagic.io           — cloud relay server (optional)
   pipeline.py                    — CLI: show, pull, connect, log-event...
 
 Usage:
@@ -2266,6 +2266,7 @@ from pipeline_workspace import (
     maybe_backfill_null_campaign_quarantine,
     maybe_sync_agent_secrets_from_cloud,
     maybe_sync_routing_from_cloud,
+    preview_sync,
     print_quarantine_guidance,
     set_workspace_routing,
     skip_quarantine,

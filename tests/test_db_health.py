@@ -31,12 +31,13 @@ def test_evaluate_rules_ok():
 
 
 def test_evaluate_rules_size_warn():
-    status, _ = db_health.evaluate_health_rules(
+    status, rules = db_health.evaluate_health_rules(
         file_bytes=600 * 1024 * 1024,
         integrity_ok=True,
         row_counts={"leads": 100, "events": 50, "relay_ingested": 100},
     )
-    assert status == "warn"
+    assert status == "ok"
+    assert any(r["id"] == "db_size_warn" and r["status"] == "info" for r in rules)
 
 
 def test_evaluate_rules_relay_bloat():
@@ -45,8 +46,8 @@ def test_evaluate_rules_relay_bloat():
         integrity_ok=True,
         row_counts={"leads": 10, "events": 5, "relay_ingested": 60},
     )
-    assert status == "warn"
-    assert any(r["id"] == "relay_bloat" for r in rules)
+    assert status == "ok"
+    assert any(r["id"] == "relay_bloat" and r["status"] == "info" for r in rules)
 
 
 def test_should_report_force():

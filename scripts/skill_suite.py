@@ -57,13 +57,14 @@ def manifest_relative_paths(name: str, suite: dict[str, Any] | None = None) -> t
     layout = cfg.get("layout", "companion")
 
     script_paths: list[str] = []
-    for py in sorted(scripts_dir.glob("*.py")):
-        if py.name in exclude:
+    for py in sorted(scripts_dir.glob("**/*.py")):
+        rel_path = py.relative_to(scripts_dir).as_posix()
+        if py.name in exclude or rel_path in exclude:
             continue
         if layout == "flat_scripts":
-            script_paths.append(py.name)
+            script_paths.append(rel_path)
         else:
-            script_paths.append(f"scripts/{py.name}")
+            script_paths.append(f"scripts/{rel_path}")
 
     extra = list(cfg.get("extra_files") or [])
     if layout == "flat_scripts":

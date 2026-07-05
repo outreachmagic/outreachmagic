@@ -19,9 +19,7 @@ Usage:
     enrich.py map-to-om research.json         # Map to outreachmagic import format
     enrich.py map-to-om --preview research.json  # Preview enrichment table before saving
     enrich.py doctor                          # Diagnose setup: keys, OM, credential files
-    enrich.py update --check                  # Check latest lead-enrich release
-    enrich.py update                          # Install latest lead-enrich release
-    enrich.py update --tag v1.1.5             # Install a specific release tag
+    enrich.py update                          # Deprecated — use `pipeline.py update` instead
 """
 
 from __future__ import annotations
@@ -33,12 +31,16 @@ import os
 import re
 import subprocess
 import sys
-import hashlib
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
+
+# Prefer this skill's scripts/ over Hermes /opt/hermes (may contain other shared.py).
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
 
 import shared as cc
 
@@ -54,9 +56,6 @@ BACKFILL_FIELDS = frozenset({
     "company",
     "name",
 })
-GITHUB_REPO = "outreachmagic/lead-enrich"
-GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-RAW_BASE = "https://raw.githubusercontent.com"
 _parse_dotenv_line = cc.parse_dotenv_line
 _TEAM_RE = re.compile(r"\bteam\b|center team|group award", re.I)
 
@@ -82,107 +81,11 @@ def _subprocess_env() -> dict[str, str]:
     return cc.subprocess_env(_find_skill_dir())
 
 
-def _fetch_url(url: str) -> bytes:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "lead-enrich-updater",
-            "Accept": "application/vnd.github+json",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read()
-
-
-def _normalize_tag(tag: str) -> str:
-    t = (tag or "").strip()
-    if not t:
-        raise ValueError("release tag cannot be empty")
-    return t if t.startswith("v") else f"v{t}"
-
-
-def _sha256_hex(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _current_skill_version() -> str:
-    skill_md = _find_skill_dir() / "SKILL.md"
-    if not skill_md.exists():
-        return "unknown"
-    text = skill_md.read_text(encoding="utf-8")
-    m = re.search(r"^version:\s*([^\s]+)\s*$", text, flags=re.M)
-    return m.group(1).strip() if m else "unknown"
-
-
-def _parse_version_tuple(version: str) -> Optional[tuple[int, ...]]:
-    raw = (version or "").strip()
-    if raw.startswith("v"):
-        raw = raw[1:]
-    if not re.fullmatch(r"\d+(\.\d+)*", raw):
-        return None
-    return tuple(int(part) for part in raw.split("."))
-
-
-def _repo_base_for_tag(tag: str) -> str:
-    return f"{RAW_BASE}/{GITHUB_REPO}/{_normalize_tag(tag)}"
-
-
-def _fetch_latest_tag() -> str:
-    payload = json.loads(_fetch_url(GITHUB_RELEASES_LATEST).decode("utf-8"))
-    tag = str(payload.get("tag_name", "")).strip()
-    if not tag:
-        raise RuntimeError("Latest release did not include tag_name.")
-    return _normalize_tag(tag)
-
-
-def _sha256_hex(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _fetch_manifest(tag: str) -> dict[str, Any]:
-    repo_base = _repo_base_for_tag(tag)
-    url = f"{repo_base}/update-manifest.json"
-    try:
-        manifest_raw = _fetch_url(url)
-        payload = json.loads(manifest_raw.decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise RuntimeError(
-            f"Failed to fetch update-manifest.json for {tag}. Refusing insecure update."
-        ) from e
-    if not isinstance(payload, dict) or not isinstance(payload.get("files"), dict):
-        raise RuntimeError("Invalid update-manifest.json format.")
-
-    # Defense-in-depth: verify manifest hash against SHA256SUMS
-    try:
-        sums_url = f"{repo_base}/SHA256SUMS"
-        sums_raw = _fetch_url(sums_url).decode("utf-8")
-        manifest_hash = _sha256_hex(manifest_raw)
-        found = False
-        for line in sums_raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(None, 1)
-            if len(parts) == 2 and parts[1].strip() == "update-manifest.json":
-                if parts[0].strip() == manifest_hash:
-                    found = True
-                break
-        if not found and any("update-manifest.json" in line for line in sums_raw.splitlines()):
-            raise RuntimeError(
-                "update-manifest.json hash does not match SHA256SUMS. "
-                "Refusing to install."
-            )
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
-        pass  # SHA256SUMS not yet available
-
-    return payload
-
-
 def load_config() -> dict[str, Any]:
-    """Load config.json, falling back to Hermes .env, env vars, and defaults."""
+    """Load outreachmagic_config.json, falling back to Hermes .env, env vars, and defaults."""
     ensure_hermes_env_loaded()
     skill_dir = _find_skill_dir()
-    cfg_path = skill_dir / "config.json"
+    cfg_path = skill_dir / "config" / "outreachmagic_config.json"
 
     cfg: dict[str, Any] = {}
     if cfg_path.exists():
@@ -1430,7 +1333,7 @@ def cmd_doctor() -> None:
     # 5. Credential files
     skill_dir = _find_skill_dir()
     expected_files = [
-        ("config.json", skill_dir / "config.json"),
+        ("outreachmagic_config.json", skill_dir / "config" / "outreachmagic_config.json"),
         ("shared.py", skill_dir / "scripts" / "shared.py"),
         ("enrich.py", skill_dir / "scripts" / "enrich.py"),
     ]
@@ -1803,55 +1706,13 @@ def cmd_map_to_om(input_file: str, workspace: str = "", *, preview: bool = False
 
 
 def cmd_update(check_only: bool = False, explicit_tag: str = "") -> None:
-    skill_dir = _find_skill_dir()
-    current = _current_skill_version()
-    target_tag = _normalize_tag(explicit_tag) if explicit_tag else _fetch_latest_tag()
-    target_version = target_tag[1:] if target_tag.startswith("v") else target_tag
-    current_v = _parse_version_tuple(current)
-    target_v = _parse_version_tuple(target_version)
-    update_available = current != target_version
-    if current_v is not None and target_v is not None:
-        update_available = current_v < target_v
-
-    if check_only:
-        print(json.dumps({
-            "status": "ok",
-            "current_version": current,
-            "latest_tag": target_tag,
-            "latest_version": target_version,
-            "update_available": update_available,
-        }, indent=2))
-        return
-
-    manifest = _fetch_manifest(target_tag)
-    manifest_files = manifest.get("files") or {}
-    if not manifest_files:
-        raise RuntimeError("Manifest has no files. Refusing update.")
-    updated: list[str] = []
-
-    for rel_path in sorted(manifest_files.keys()):
-        expected = manifest_files[rel_path]
-        if not expected:
-            raise RuntimeError(
-                f"Manifest missing checksum for {rel_path}. Refusing update."
-            )
-        content = _fetch_url(f"{_repo_base_for_tag(target_tag)}/{rel_path}")
-        if _sha256_hex(content) != expected:
-            raise RuntimeError(
-                f"Checksum mismatch for {rel_path}. Refusing update."
-            )
-        dest = skill_dir / rel_path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(content)
-        updated.append(rel_path)
-
     print(json.dumps({
-        "status": "updated",
-        "from_version": current,
-        "to_version": target_version,
-        "tag": target_tag,
-        "files": updated,
-        "path": str(skill_dir),
+        "status": "deprecated",
+        "message": (
+            "enrich.py is bundled inside the consolidated outreachmagic skill and no "
+            "longer has its own release channel (the standalone lead-enrich repo is retired). "
+            "Run `pipeline.py update` instead."
+        ),
     }, indent=2))
 
 

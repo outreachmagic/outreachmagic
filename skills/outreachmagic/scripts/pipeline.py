@@ -348,9 +348,11 @@ AGENT_DIR_NAMES = list(AGENT_DIR_MAP.keys())
 RELAY_URL = "https://api.outreachmagic.io"
 
 SKILL_SCRIPTS_DIR = f"skills/{SKILL_NAME}/scripts"
-# Every scripts/*.py — auto-discovered so new modules are not skipped by update.
+# Every scripts/**/*.py — auto-discovered so new modules (incl. subpackages
+# like crm_drivers/) are not skipped by update.
+_SCRIPTS_ROOT = Path(__file__).resolve().parent
 UPDATE_SCRIPT_FILES = tuple(
-    sorted(p.name for p in Path(__file__).resolve().parent.glob("*.py"))
+    sorted(p.relative_to(_SCRIPTS_ROOT).as_posix() for p in _SCRIPTS_ROOT.glob("**/*.py"))
 )
 UPDATE_MANIFEST_FILES = (*UPDATE_SCRIPT_FILES, "VERSION")
 # Files at skill root (not in scripts/), handled separately by update_skill().

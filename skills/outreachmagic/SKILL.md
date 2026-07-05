@@ -4,7 +4,7 @@ description: >
   Your agent goes blind after send. Sync sequencer webhooks, research leads
   via Serper, and find/verify emails — all in one local SQLite DB your agent
   queries directly.
-version: 1.3.0
+version: 1.4.0
 author: Outreach Magic
 license: MIT
 platforms: [macos, linux]
@@ -116,7 +116,7 @@ Config keys: `data_root` (share DB across agents), `api_base_url`, `dev_repo`.
 ## Platform install
 
 ```bash
-OM_VERSION=v1.3.0
+OM_VERSION=v1.4.0
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"
@@ -163,6 +163,7 @@ Setup portal: https://app.outreachmagic.io/onboarding. Account errors (`account_
 | "Deep verify catch-all emails" | `email_finder.py verify-with-scrubby --workspace W --dry-run` → `--yes` |
 | "Export to Google Sheets" | `whoami --json` → `share_email`, then `sheets export ...` |
 | "Connect Smartlead / Instantly" | `connections create --platform ...` and share webhook URL |
+| "Push leads to our CRM" | `crm-sync sync --workspace W --dry-run` first, then without `--dry-run` (GHL / HubSpot) |
 
 `whoami --json` returns account email, org, and plan. `init` creates the local DB. Sync dashboard API keys: `pipeline.py sync-secrets`.
 
@@ -261,6 +262,8 @@ pipeline.py platform-map --json                   # vendor event type map
 pipeline.py campaign-map list                     # show routing rules
 pipeline.py campaign-map add --platform P --workspace W  # add routing rule
 pipeline.py agent-changes                         # cross-platform sync (JSON)
+pipeline.py crm-sync sync --workspace W --dry-run # preview CRM push (GHL/HubSpot)
+pipeline.py crm-sync sync --workspace W           # push leads to CRM
 pipeline.py sync                                  # push to relay
 pipeline.py refresh --yes                         # backup + rebuild DB
 ```

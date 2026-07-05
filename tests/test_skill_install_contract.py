@@ -45,7 +45,7 @@ def test_outreachmagic_manifest_covers_all_scripts():
     scripts = skill_dir("outreachmagic") / "scripts"
     manifest = json.loads((skill_dir("outreachmagic") / "update-manifest.json").read_text(encoding="utf-8"))
     manifest_py = {n for n in manifest.get("files", {}) if n.endswith(".py")}
-    on_disk = {p.name for p in scripts.glob("*.py")}
+    on_disk = {p.relative_to(scripts).as_posix() for p in scripts.glob("**/*.py")}
     assert manifest_py == on_disk
 
 

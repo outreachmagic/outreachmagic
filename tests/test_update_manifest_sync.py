@@ -21,7 +21,7 @@ from skill_suite import manifest_relative_paths  # noqa: E402
 
 class UpdateManifestSyncTests(unittest.TestCase):
     def test_update_script_files_include_every_script_module(self):
-        all_py = {p.name for p in SCRIPTS.glob("*.py")}
+        all_py = {p.relative_to(SCRIPTS).as_posix() for p in SCRIPTS.glob("**/*.py")}
         self.assertEqual(set(om.UPDATE_SCRIPT_FILES), all_py)
 
     def test_manifest_lists_every_script_module(self):
@@ -30,7 +30,7 @@ class UpdateManifestSyncTests(unittest.TestCase):
             name for name in manifest.get("files", {})
             if name.endswith(".py")
         }
-        all_py = {p.name for p in SCRIPTS.glob("*.py")}
+        all_py = {p.relative_to(SCRIPTS).as_posix() for p in SCRIPTS.glob("**/*.py")}
         self.assertEqual(manifest_scripts, all_py)
 
     def test_update_download_names_uses_manifest(self):

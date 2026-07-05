@@ -30,7 +30,7 @@ def resolve_manifest_path(skill_name: str, rel: str) -> Path:
     base = skill_dir(skill_name)
     cfg = skill_def(skill_name)
     extra = set(cfg.get("extra_files") or [])
-    if cfg.get("layout") == "flat_scripts" and rel not in ("SKILL.md", "VERSION") and rel not in extra and "/" not in rel:
+    if cfg.get("layout") == "flat_scripts" and rel not in ("SKILL.md", "VERSION") and rel not in extra:
         return base / "scripts" / rel
     if rel == "VERSION":
         return base / "scripts" / "VERSION"

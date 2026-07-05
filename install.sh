@@ -130,7 +130,7 @@ Options:
   --no-profiles            Hermes only: skip profile symlinks
   --all-profiles           Hermes only: symlink all existing profiles (default when profiles/ exists)
   --profile NAME           Hermes only: symlink one profile (repeatable)
-  --tag TAG                outreachmagic release tag (e.g. v1.3.0)
+  --tag TAG                outreachmagic release tag (e.g. v1.4.0)
   --dry-run                Print planned actions without writing
   --yes                    Skip interactive prompts (non-interactive init)
   --uninstall              Remove installed skill for this platform

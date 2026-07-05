@@ -548,6 +548,7 @@ def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release"
     if local_src:
         for name in download_names:
             src = local_src / name
+            (dest / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest / name)
             updated.append(name)
         skill_md_src = local_src.parent / "SKILL.md"
@@ -568,6 +569,7 @@ def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release"
                     f"Checksum mismatch for {name} from {source_label}. "
                     "Refusing to install. Try again or report at security@outreachmagic.io."
                 )
+            (dest / name).parent.mkdir(parents=True, exist_ok=True)
             (dest / name).write_bytes(content)
             updated.append(name)
         try:

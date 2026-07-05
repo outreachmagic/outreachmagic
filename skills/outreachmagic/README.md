@@ -80,7 +80,7 @@ Once it's installed, try prompts like these:
 | "Verify these emails: bill@acme.com, jane@xyz.io" | MillionVerifier deliverability check |
 | "Deep verify catch-all emails in my workspace" | Submits catch-all/unknown emails to Scrubby (24-72h) |
 | "Export my best performing copy to Sheets" | Pulls campaign stats, exports to Google Sheets |
-| "Analyse my most recent bounces" | `query bounced` — filter by bounce reason, domain, etc. |
+| "Analyse my most recent bounces" | `bounce-list` / `bounce-stats` — filter by bounce reason, domain, etc. |
 | "Find emails for everyone in leads.csv" | `batch-find` with OM dedup — skips leads already found |
 
 ## Install

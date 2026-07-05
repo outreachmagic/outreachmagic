@@ -11,7 +11,7 @@ Usage:
     email_finder.py find --name X --domain Y [--linkedin URL] [--save] [--workspace W]
     email_finder.py batch-find [options] input.json
     email_finder.py import-to-om --file PATH --workspace W [--source trykitt|icypeas]
-    email_finder.py update [--check] [--tag vX.Y.Z]
+    email_finder.py update                    # Deprecated — use `pipeline.py update` instead
 
 batch-find options:
     --workspace W --delay 8 --workers 1 --max 500 --provider trykitt|icypeas
@@ -21,14 +21,10 @@ batch-find options:
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -61,10 +57,9 @@ from waterfall import (
     validity_to_verify_status,
 )
 
-SKILL_NAME = "email-finder"
-GITHUB_REPO = "outreachmagic/email-finder"
-GITHUB_RELEASES_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-RAW_BASE = "https://raw.githubusercontent.com"
+SKILL_NAME = "outreachmagic"
+
+
 def _find_skill_dir() -> Path:
     return cc.skill_dir_from_script(__file__)
 
@@ -77,7 +72,7 @@ def load_config() -> dict[str, Any]:
     ensure_env_loaded()
     skill_dir = _find_skill_dir()
     cfg: dict[str, Any] = {}
-    cfg_path = skill_dir / "config.json"
+    cfg_path = skill_dir / "config" / "outreachmagic_config.json"
     if cfg_path.exists():
         try:
             cfg = json.loads(cfg_path.read_text())
@@ -1149,103 +1144,15 @@ def _tag_scrubby_deep_attempted(
         return {"status": "skipped", "tagged": 0}
 
 
-def _fetch_url(url: str) -> bytes:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "email-finder-updater", "Accept": "application/vnd.github+json"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read()
-
-
 def cmd_update(*, check_only: bool = False, explicit_tag: str = "") -> None:
-    current = _current_skill_version()
-    target_tag = _normalize_tag(explicit_tag) if explicit_tag else _normalize_tag(_fetch_latest_tag())
-    repo_base = f"{RAW_BASE}/{GITHUB_REPO}/{target_tag}"
-    manifest_raw = _fetch_url(f"{repo_base}/update-manifest.json")
-    manifest = json.loads(manifest_raw.decode("utf-8"))
-
-    # Defense-in-depth: verify manifest hash against SHA256SUMS
-    try:
-        sums_raw = _fetch_url(f"{repo_base}/SHA256SUMS").decode("utf-8")
-        manifest_hash = hashlib.sha256(manifest_raw).hexdigest()
-        found = False
-        for line in sums_raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(None, 1)
-            if len(parts) == 2 and parts[1].strip() == "update-manifest.json":
-                if parts[0].strip() == manifest_hash:
-                    found = True
-                break
-        if not found and any("update-manifest.json" in line for line in sums_raw.splitlines()):
-            raise RuntimeError(
-                "update-manifest.json hash does not match SHA256SUMS. "
-                "Refusing to install."
-            )
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
-        pass  # SHA256SUMS not yet available
-    target_version = manifest.get("version", target_tag.lstrip("v"))
-    if check_only:
-        print(json.dumps({
-            "current_version": current,
-            "latest_version": target_version,
-            "tag": target_tag,
-            "update_available": _parse_version_tuple(current) != _parse_version_tuple(target_version),
-        }, indent=2))
-        return
-    skill_dir = _find_skill_dir()
-    manifest_files = manifest.get("files") or {}
-    if not manifest_files:
-        raise RuntimeError("Manifest has no files")
-    updated: list[str] = []
-    for rel_path in sorted(manifest_files.keys()):
-        expected = manifest_files[rel_path]
-        if not expected:
-            raise RuntimeError(f"Manifest missing checksum for {rel_path}")
-        content = _fetch_url(f"{RAW_BASE}/{GITHUB_REPO}/{target_tag}/{rel_path}")
-        if hashlib.sha256(content).hexdigest() != expected:
-            raise RuntimeError(f"Checksum mismatch for {rel_path}")
-        dest = skill_dir / rel_path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(content)
-        updated.append(rel_path)
     print(json.dumps({
-        "status": "updated",
-        "from_version": current,
-        "to_version": target_version,
-        "tag": target_tag,
-        "files": updated,
+        "status": "deprecated",
+        "message": (
+            "email_finder.py is bundled inside the consolidated outreachmagic skill and no "
+            "longer has its own release channel (the standalone email-finder repo is retired). "
+            "Run `pipeline.py update` instead."
+        ),
     }, indent=2))
-
-
-def _current_skill_version() -> str:
-    text = (_find_skill_dir() / "SKILL.md").read_text(encoding="utf-8")
-    m = re.search(r"^version:\s*([^\s]+)\s*$", text, flags=re.M)
-    return m.group(1).strip() if m else "unknown"
-
-
-def _normalize_tag(tag: str) -> str:
-    t = tag.strip()
-    return t if t.startswith("v") else f"v{t}"
-
-
-def _parse_version_tuple(version: str) -> Optional[tuple[int, ...]]:
-    raw = (version or "").strip()
-    if raw.startswith("v"):
-        raw = raw[1:]
-    if not re.fullmatch(r"\d+(\.\d+)*", raw):
-        return None
-    return tuple(int(p) for p in raw.split("."))
-
-
-def _fetch_latest_tag() -> str:
-    payload = json.loads(_fetch_url(GITHUB_RELEASES_LATEST).decode("utf-8"))
-    tag = str(payload.get("tag_name", "")).strip()
-    if not tag:
-        raise RuntimeError("Latest release missing tag_name")
-    return _normalize_tag(tag)
 
 
 def _parse_find_args(argv: list[str]) -> tuple[str, str, str, str, str, bool, list[str]]:

@@ -52,6 +52,70 @@ def _remap_to_lead_review_export(args) -> None:
             setattr(args, name, default)
 
 
+LEAD_REVIEW_MAX_ROWS_PER_TAB = 1000
+
+
+def _export_lead_review_chunked(
+    api_base: str,
+    tok: str,
+    *,
+    template: str,
+    title: str,
+    share_email: Any,
+    public_link: bool,
+    sheet_id: Any,
+    parent_sheet_id: Any,
+    tab_title: Any,
+    detail: Any,
+    headers: Any,
+    rows: list,
+    workspace: str,
+    columns: Any,
+    freeze_header: Any,
+) -> dict:
+    """Auto-chunk lead-review exports over LEAD_REVIEW_MAX_ROWS_PER_TAB rows across
+    multiple tabs of one spreadsheet, reusing the existing parent_sheet_id/tab_title
+    plumbing. Exports at or under the threshold, or exports already targeting an
+    explicit sheet_id/parent_sheet_id, are sent exactly as before (single call)."""
+    if len(rows) <= LEAD_REVIEW_MAX_ROWS_PER_TAB or sheet_id or parent_sheet_id:
+        return review_cloud.export_review(
+            api_base, tok,
+            template=template, title=title, share_email=share_email, public_link=public_link,
+            sheet_id=sheet_id, parent_sheet_id=parent_sheet_id, tab_title=tab_title,
+            detail=detail, headers=headers, rows=rows,
+            workspace=workspace, columns=columns, freeze_header=freeze_header,
+        )
+    chunks = [
+        rows[i:i + LEAD_REVIEW_MAX_ROWS_PER_TAB]
+        for i in range(0, len(rows), LEAD_REVIEW_MAX_ROWS_PER_TAB)
+    ]
+    first_title = tab_title or "Page 1"
+    result = review_cloud.export_review(
+        api_base, tok,
+        template=template, title=title, share_email=share_email, public_link=public_link,
+        sheet_id=None, parent_sheet_id=None, tab_title=first_title,
+        detail=detail, headers=headers, rows=chunks[0],
+        workspace=workspace, columns=columns, freeze_header=freeze_header,
+    )
+    base_sheet_id = result.get("sheet_id")
+    tabs = [{"tab_title": first_title, "rows": len(chunks[0])}]
+    for n, chunk in enumerate(chunks[1:], start=2):
+        page_title = f"Page {n}"
+        review_cloud.export_review(
+            api_base, tok,
+            template=template, title=title, share_email=None, public_link=False,
+            sheet_id=None, parent_sheet_id=base_sheet_id, tab_title=page_title,
+            detail=detail, headers=headers, rows=chunk,
+            workspace=workspace, columns=columns, freeze_header=freeze_header,
+        )
+        tabs.append({"tab_title": page_title, "rows": len(chunk)})
+    result = dict(result)
+    result["rows"] = len(rows)
+    result["tabs"] = tabs
+    result["chunked"] = True
+    return result
+
+
 def _cmd_sheets_campaign_stats(args) -> None:
     """Handler for `sheets campaign-stats` — build payload and POST to backend."""
     import pipeline as _pipeline
@@ -2653,7 +2717,7 @@ def main():
                     sheet_id = getattr(args, "sheet_id", None)
                     parent_sheet_id = getattr(args, "parent_sheet_id", None)
                     tab_name = getattr(args, "tab_name", None)
-                    result = review_cloud.export_review(
+                    result = _export_lead_review_chunked(
                         api_base,
                         tok,
                         template=template,

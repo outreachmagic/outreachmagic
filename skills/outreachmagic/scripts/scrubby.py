@@ -18,6 +18,22 @@ from credits import verify_credits_used
 SCRUBBY_BASE = "https://api.scrubby.io"
 HTTP_TIMEOUT = 60
 
+# Bulk submit validates every email synchronously before returning an identifier —
+# for large batches (1000+ emails) this can legitimately take well over 60s. A
+# client-side timeout here doesn't cancel the submission (credits are still
+# deducted and the job still runs), it just means we never learn the identifier —
+# so this needs to be generous rather than tight.
+SUBMIT_DEEP_TIMEOUT_PER_EMAIL = 0.1
+SUBMIT_DEEP_TIMEOUT_MIN = 60
+SUBMIT_DEEP_TIMEOUT_MAX = 300
+
+
+def submit_deep_timeout(email_count: int) -> int:
+    return min(
+        SUBMIT_DEEP_TIMEOUT_MAX,
+        max(SUBMIT_DEEP_TIMEOUT_MIN, int(email_count * SUBMIT_DEEP_TIMEOUT_PER_EMAIL)),
+    )
+
 # Default poll interval: check every 4 hours (deep results take 24-72h).
 # First poll sooner (12h) to catch early 24h results.
 DEFAULT_POLL_INTERVAL = 4 * 3600
@@ -75,7 +91,7 @@ class ScrubbyProvider:
         except (urllib.error.URLError, TimeoutError) as e:
             return {"status": "error", "error": str(e)}
 
-    def submit_deep(self, emails: list[str]) -> dict[str, Any]:
+    def submit_deep(self, emails: list[str], *, timeout: Optional[int] = None) -> dict[str, Any]:
         """POST /validate_bulk_emails/deep — submit batch for deep verification.
 
         Returns: status, identifier, total, credits_used, remaining_credits, retry_after_seconds
@@ -87,7 +103,10 @@ class ScrubbyProvider:
         if not filtered:
             return {"error": "no valid emails", "status": "bad_input"}
         body = json.dumps({"email": filtered}).encode("utf-8")
-        payload = self._http_json("POST", f"{SCRUBBY_BASE}/validate_bulk_emails/deep", data=body)
+        submit_timeout = timeout if timeout is not None else submit_deep_timeout(len(filtered))
+        payload = self._http_json(
+            "POST", f"{SCRUBBY_BASE}/validate_bulk_emails/deep", data=body, timeout=submit_timeout,
+        )
         if payload.get("status") in ("http_error", "error", "no_key"):
             return payload
         if str(payload.get("error") or "").strip():

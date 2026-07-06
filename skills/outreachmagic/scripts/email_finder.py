@@ -547,20 +547,30 @@ def cmd_verify(email: str, workspace: str = "") -> None:
         sys.exit(1)
     om_dir = find_outreachmagic(cfg)
     if om_dir and workspace:
-        try:
-            cc.run_verify_email_batch(
-                om_dir,
-                [{
-                    "email": email,
-                    "status": result.get("status"),
-                    "source": "millionverifier",
-                    "source_detail": "email-finder/verify",
-                }],
-                skill_dir=_find_skill_dir(),
-            )
-            result["saved_to_om"] = True
-        except RuntimeError as e:
-            result["save_error"] = str(e)
+        em = (email or "").strip().lower()
+        lead_id = _lead_id_map_for_emails(om_dir, workspace, [em]).get(em)
+        if not lead_id:
+            result["saved_to_om"] = False
+            result["save_error"] = "no matching lead found for this email in workspace"
+        else:
+            try:
+                vout = cc.run_verify_email_batch(
+                    om_dir,
+                    [{
+                        "lead_id": lead_id,
+                        "email": email,
+                        "status": result.get("status"),
+                        "source": "millionverifier",
+                        "source_detail": "email-finder/verify",
+                    }],
+                    skill_dir=_find_skill_dir(),
+                )
+                result["saved_to_om"] = bool(vout.get("recorded"))
+                if not vout.get("recorded"):
+                    result["save_error"] = vout.get("errors") or "not recorded"
+            except RuntimeError as e:
+                result["saved_to_om"] = False
+                result["save_error"] = str(e)
     print(json.dumps(result, indent=2))
 
 
@@ -583,25 +593,34 @@ def _tag_mv_attempted(
         return {"status": "error", "error": str(exc)}
 
 
+def _lead_id_map_for_emails(om_dir: Path, workspace: str, emails: list[str]) -> dict[str, int]:
+    """Resolve email -> lead_id with one batched pipeline.py batch-lead-lookup call
+    (run_batch_lead_lookup already chunks internally for large lists — no need to
+    spawn one subprocess per email)."""
+    items = [
+        {"index": i, "email": (e or "").strip().lower()}
+        for i, e in enumerate(emails)
+        if (e or "").strip()
+    ]
+    if not items:
+        return {}
+    try:
+        payload = cc.run_batch_lead_lookup(
+            om_dir, items, workspace=workspace, skill_dir=_find_skill_dir(),
+        )
+    except RuntimeError:
+        return {}
+    out: dict[str, int] = {}
+    for row in payload.get("results") or []:
+        if row.get("status") == "found" and row.get("lead_id"):
+            email = (row.get("email") or "").strip().lower()
+            if email:
+                out[email] = int(row["lead_id"])
+    return out
+
+
 def _lead_ids_for_emails(om_dir: Path, workspace: str, emails: list[str]) -> list[int]:
-    lead_ids: list[int] = []
-    for email in emails:
-        em = (email or "").strip().lower()
-        if not em:
-            continue
-        try:
-            payload = cc.run_batch_lead_lookup(
-                om_dir,
-                [{"index": 0, "email": em}],
-                workspace=workspace,
-                skill_dir=_find_skill_dir(),
-            )
-        except RuntimeError:
-            continue
-        for row in payload.get("results") or []:
-            if row.get("status") == "found" and row.get("lead_id"):
-                lead_ids.append(int(row["lead_id"]))
-    return lead_ids
+    return list(_lead_id_map_for_emails(om_dir, workspace, emails).values())
 
 
 def cmd_verify_credits() -> None:
@@ -729,20 +748,26 @@ def cmd_verify_bulk(
     if poll:
         status = mv.poll_until_complete(file_id)
         out["poll_status"] = status
-        if str(status.get("status")).lower() == "completed":
+        if str(status.get("status")).lower() in ("completed", "finished"):
             rows = mv.download_results(file_id)
             out["results_count"] = len(rows)
             om_dir = find_outreachmagic(cfg)
             if om_dir and workspace:
+                result_emails = [
+                    (r.get("email") or "").strip() for r in rows if (r.get("email") or "").strip()
+                ]
+                lead_id_map = _lead_id_map_for_emails(om_dir, workspace, result_emails)
                 verify_items = [
                     {
-                        "email": (r.get("email") or "").strip(),
+                        "lead_id": lead_id_map[em.lower()],
+                        "email": em,
                         "status": mv_to_om_status(str(r.get("status") or "")),
                         "source": "millionverifier",
                         "source_detail": "email-finder/verify-bulk",
                     }
                     for r in rows
-                    if (r.get("email") or "").strip()
+                    for em in [(r.get("email") or "").strip()]
+                    if em and em.lower() in lead_id_map
                 ]
                 vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=_find_skill_dir())
                 out["verify"] = vout
@@ -752,7 +777,7 @@ def cmd_verify_bulk(
                     if lead.get("lead_id")
                 ]
                 if not lead_ids and workspace:
-                    lead_ids = _lead_ids_for_emails(om_dir, workspace, emails)
+                    lead_ids = list(lead_id_map.values()) or _lead_ids_for_emails(om_dir, workspace, emails)
                 out["mv_tag"] = _tag_mv_attempted(om_dir, workspace, lead_ids)
     print(json.dumps(out, indent=2))
 
@@ -786,14 +811,15 @@ def cmd_verify_download(file_id: str, workspace: str = "") -> None:
     om_dir = find_outreachmagic(cfg)
     tag_result: dict[str, Any] = {"status": "skipped", "tagged": 0}
     if om_dir and workspace:
-        vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=_find_skill_dir())
+        lead_id_map = _lead_id_map_for_emails(om_dir, workspace, [v["email"] for v in verify_items])
+        save_items = [
+            {**item, "lead_id": lead_id_map[item["email"].lower()]}
+            for item in verify_items
+            if item["email"].lower() in lead_id_map
+        ]
+        vout = cc.run_verify_email_batch(om_dir, save_items, skill_dir=_find_skill_dir())
         saved = int(vout.get("recorded") or 0)
-        lead_ids = _lead_ids_for_emails(
-            om_dir,
-            workspace,
-            [(r.get("email") or "").strip() for r in rows],
-        )
-        tag_result = _tag_mv_attempted(om_dir, workspace, lead_ids)
+        tag_result = _tag_mv_attempted(om_dir, workspace, list(lead_id_map.values()))
     stats = {
         "downloaded": len(rows),
         "emails_verified": len(verify_items),
@@ -936,6 +962,12 @@ def cmd_scrubby_deep_submit(
         }
         print(json.dumps(plan, indent=2))
         return
+    print(
+        f"Submitting {len(emails)} email(s) to Scrubby Deep Verification — "
+        "this validates synchronously and can take a while for large batches...",
+        file=sys.stderr,
+        flush=True,
+    )
     result = scrubby.submit_deep(emails)
     identifier = str(result.get("identifier") or "")
     if not identifier:
@@ -1001,21 +1033,21 @@ def cmd_scrubby_deep_fetch(
             "source_detail": "email-finder/scrubby-deep-fetch",
             "sub_status": result,
         })
-    job = _scrubby_load_job(_find_skill_dir(), identifier)
     email_count = len(verify_items)
     saved = 0
     tag_result: dict[str, Any] = {"status": "skipped", "tagged": 0}
     if verify_items and workspace:
         om_dir = find_outreachmagic(cfg)
         if om_dir:
-            vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=_find_skill_dir())
+            lead_id_map = _lead_id_map_for_emails(om_dir, workspace, [v["email"] for v in verify_items])
+            save_items = [
+                {**item, "lead_id": lead_id_map[item["email"].lower()]}
+                for item in verify_items
+                if item["email"] and item["email"].lower() in lead_id_map
+            ]
+            vout = cc.run_verify_email_batch(om_dir, save_items, skill_dir=_find_skill_dir())
             saved = int(vout.get("recorded") or 0)
-            lead_ids: list[int] = []
-            if job.get("unique_lead_ids"):
-                lead_ids = list(job["unique_lead_ids"])
-            elif job.get("emails"):
-                lead_ids = _lead_ids_for_emails(om_dir, workspace, [str(e) for e in job["emails"]])
-            tag_result = _tag_scrubby_deep_attempted(om_dir, workspace, lead_ids)
+            tag_result = _tag_scrubby_deep_attempted(om_dir, workspace, list(lead_id_map.values()))
     stats: dict[str, Any] = {
         "identifier": identifier,
         "fetched": email_count,

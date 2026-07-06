@@ -6,6 +6,8 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -955,6 +957,169 @@ class TestFindSaveByDefault(unittest.TestCase):
             with patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()):
                 lemail.cmd_find("Jane", "acme.com", dry_run=True)
         mock_save.assert_not_called()
+
+
+class TestLeadIdResolution(unittest.TestCase):
+    """verify-bulk-save-bugs.md Bug 2/4: verify_items must carry lead_id or
+    pipeline.py verify-email --batch silently rejects every row."""
+
+    @patch.object(lemail.cc, "run_batch_lead_lookup")
+    def test_lead_id_map_is_one_batched_call(self, mock_lookup):
+        mock_lookup.return_value = {
+            "results": [
+                {"index": 0, "status": "found", "lead_id": 1, "email": "a@x.com"},
+                {"index": 1, "status": "found", "lead_id": 2, "email": "b@x.com"},
+                {"index": 2, "status": "not_found", "email": "c@x.com"},
+            ]
+        }
+        result = lemail._lead_id_map_for_emails(
+            Path("/tmp/om"), "ws", ["a@x.com", "b@x.com", "c@x.com", "d@x.com"],
+        )
+        self.assertEqual(mock_lookup.call_count, 1)
+        self.assertEqual(result, {"a@x.com": 1, "b@x.com": 2})
+
+    @patch.object(lemail.cc, "run_batch_lead_lookup")
+    def test_lead_ids_for_emails_still_returns_list(self, mock_lookup):
+        mock_lookup.return_value = {
+            "results": [{"index": 0, "status": "found", "lead_id": 5, "email": "a@x.com"}]
+        }
+        self.assertEqual(lemail._lead_ids_for_emails(Path("/tmp/om"), "ws", ["a@x.com"]), [5])
+
+    @patch.object(lemail, "_lead_id_map_for_emails")
+    @patch.object(lemail, "find_outreachmagic")
+    @patch.object(lemail, "_mv_verify_single")
+    def test_cmd_verify_includes_lead_id_and_saves(self, mock_single, mock_om, mock_map):
+        mock_single.return_value = {"status": "valid"}
+        mock_om.return_value = Path("/tmp/om")
+        mock_map.return_value = {"a@x.com": 7}
+        with patch.object(
+            lemail.cc, "run_verify_email_batch", return_value={"recorded": 1, "errors": []},
+        ) as mock_batch:
+            buf = StringIO()
+            with redirect_stdout(buf):
+                lemail.cmd_verify("a@x.com", workspace="ws")
+        payload = json.loads(buf.getvalue())
+        self.assertTrue(payload["saved_to_om"])
+        items = mock_batch.call_args[0][1]
+        self.assertEqual(items[0]["lead_id"], 7)
+
+    @patch.object(lemail, "_lead_id_map_for_emails")
+    @patch.object(lemail, "find_outreachmagic")
+    @patch.object(lemail, "_mv_verify_single")
+    def test_cmd_verify_no_lead_found_reports_not_saved(self, mock_single, mock_om, mock_map):
+        mock_single.return_value = {"status": "valid"}
+        mock_om.return_value = Path("/tmp/om")
+        mock_map.return_value = {}
+        buf = StringIO()
+        with redirect_stdout(buf):
+            lemail.cmd_verify("a@x.com", workspace="ws")
+        payload = json.loads(buf.getvalue())
+        self.assertFalse(payload["saved_to_om"])
+
+    @patch.object(lemail, "_tag_mv_attempted")
+    @patch.object(lemail.cc, "run_verify_email_batch")
+    @patch.object(lemail, "_lead_id_map_for_emails")
+    @patch.object(lemail, "find_outreachmagic")
+    @patch.object(lemail, "_mv_provider")
+    def test_verify_bulk_accepts_finished_status_and_resolves_lead_id(
+        self, mock_provider, mock_om, mock_map, mock_batch, mock_tag,
+    ):
+        mv = MagicMock()
+        mv.create_bulk.return_value = {"file_id": "f1"}
+        mv.poll_until_complete.return_value = {"status": "finished"}
+        mv.download_results.return_value = [{"email": "a@x.com", "status": "valid"}]
+        mock_provider.return_value = mv
+        mock_om.return_value = Path("/tmp/om")
+        mock_map.return_value = {"a@x.com": 42}
+        mock_batch.return_value = {"recorded": 1, "errors": []}
+        mock_tag.return_value = {"status": "ok", "tagged": 1}
+
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+            f.write("email\na@x.com\n")
+            path = f.name
+        try:
+            buf = StringIO()
+            with redirect_stdout(buf):
+                lemail.cmd_verify_bulk(workspace="ws", file_path=path, poll=True)
+            payload = json.loads(buf.getvalue())
+        finally:
+            Path(path).unlink()
+
+        self.assertEqual(payload["poll_status"]["status"], "finished")
+        self.assertEqual(payload["verify"]["recorded"], 1)
+        items = mock_batch.call_args[0][1]
+        self.assertEqual(items[0]["lead_id"], 42)
+
+    @patch.object(lemail, "_tag_mv_attempted")
+    @patch.object(lemail.cc, "run_verify_email_batch")
+    @patch.object(lemail, "_lead_id_map_for_emails")
+    @patch.object(lemail, "find_outreachmagic")
+    @patch.object(lemail, "_mv_provider")
+    def test_verify_download_skips_unmatched_emails(
+        self, mock_provider, mock_om, mock_map, mock_batch, mock_tag,
+    ):
+        mv = MagicMock()
+        mv.download_results.return_value = [
+            {"email": "matched@x.com", "status": "valid"},
+            {"email": "unmatched@x.com", "status": "valid"},
+        ]
+        mock_provider.return_value = mv
+        mock_om.return_value = Path("/tmp/om")
+        mock_map.return_value = {"matched@x.com": 9}
+        mock_batch.return_value = {"recorded": 1, "errors": []}
+        mock_tag.return_value = {"status": "ok", "tagged": 1}
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            lemail.cmd_verify_download("f1", workspace="ws")
+
+        items = mock_batch.call_args[0][1]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["email"], "matched@x.com")
+        self.assertEqual(items[0]["lead_id"], 9)
+
+    @patch.object(lemail, "_tag_scrubby_deep_attempted")
+    @patch.object(lemail.cc, "run_verify_email_batch")
+    @patch.object(lemail, "_lead_id_map_for_emails")
+    @patch.object(lemail, "find_outreachmagic")
+    @patch.object(lemail, "_scrubby_provider")
+    def test_scrubby_deep_fetch_includes_lead_id(
+        self, mock_provider, mock_om, mock_map, mock_batch, mock_tag,
+    ):
+        scrubby = MagicMock()
+        scrubby.fetch_results.return_value = {"status": "completed"}
+        scrubby.aggregate_results.return_value = {"a@x.com": {"result": "Valid"}}
+        mock_provider.return_value = scrubby
+        mock_om.return_value = Path("/tmp/om")
+        mock_map.return_value = {"a@x.com": 11}
+        mock_batch.return_value = {"recorded": 1, "errors": []}
+        mock_tag.return_value = {"status": "ok", "tagged": 1}
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            lemail.cmd_scrubby_deep_fetch("id1", workspace="ws")
+        payload = json.loads(buf.getvalue())
+
+        self.assertEqual(payload["saved_to_om"], 1)
+        items = mock_batch.call_args[0][1]
+        self.assertEqual(items[0]["lead_id"], 11)
+
+
+class TestScrubbySubmitTimeout(unittest.TestCase):
+    def test_timeout_scales_with_batch_size(self):
+        import scrubby as scr
+
+        self.assertEqual(scr.submit_deep_timeout(10), 60)
+        self.assertEqual(scr.submit_deep_timeout(1697), 169)
+        self.assertEqual(scr.submit_deep_timeout(100000), 300)
+
+    def test_submit_deep_passes_scaled_timeout(self):
+        import scrubby as scr
+
+        provider = scr.ScrubbyProvider("key")
+        with patch.object(provider, "_http_json", return_value={"identifier": "x"}) as mock_http:
+            provider.submit_deep(["a@x.com"] * 1697)
+        self.assertEqual(mock_http.call_args.kwargs["timeout"], 169)
 
 
 if __name__ == "__main__":

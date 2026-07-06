@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -59,3 +60,51 @@ def test_local_dry_run_includes_outreachmagic():
     assert "outreachmagic" in proc.stdout
     assert "lead-enrich" not in proc.stdout
     assert "email-finder" not in proc.stdout
+
+
+def test_uninstall_backs_up_config_and_databases_before_deleting(tmp_path: Path):
+    """--uninstall must not silently destroy agent_key/last_sync/the local DB."""
+    skill_dir = tmp_path / ".claude" / "skills" / "outreachmagic"
+    (skill_dir / "config").mkdir(parents=True)
+    (skill_dir / "databases").mkdir(parents=True)
+    (skill_dir / "config" / "outreachmagic_config.json").write_text('{"agent_key": "om_agent_test"}')
+    (skill_dir / "databases" / "outreachmagic.db").write_text("fake db")
+    (skill_dir / "SKILL.md").write_text("fake skill\n")
+
+    env = dict(os.environ)
+    env["HOME"] = str(tmp_path)
+    proc = subprocess.run(
+        ["bash", str(INSTALL), "--platform", "claude", "--uninstall"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+
+    assert not skill_dir.exists()
+    backups = list((tmp_path / ".claude" / "skills").glob("outreachmagic-backup-*"))
+    assert len(backups) == 1, proc.stdout + proc.stderr
+    backup = backups[0]
+    assert (backup / "config" / "outreachmagic_config.json").read_text() == '{"agent_key": "om_agent_test"}'
+    assert (backup / "databases" / "outreachmagic.db").read_text() == "fake db"
+
+
+def test_uninstall_no_backup_when_nothing_to_preserve(tmp_path: Path):
+    """A skill dir with no config/databases (e.g. never initialized) needs no backup."""
+    skill_dir = tmp_path / ".claude" / "skills" / "outreachmagic"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("fake skill\n")
+
+    env = dict(os.environ)
+    env["HOME"] = str(tmp_path)
+    subprocess.run(
+        ["bash", str(INSTALL), "--platform", "claude", "--uninstall"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+
+    assert not skill_dir.exists()
+    backups = list((tmp_path / ".claude" / "skills").glob("outreachmagic-backup-*"))
+    assert backups == []

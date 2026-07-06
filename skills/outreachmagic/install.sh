@@ -15,17 +15,22 @@ set -euo pipefail
 SKILL_NAME="outreachmagic"
 HOME_DIR="${HOME}"
 
-# Known agent skill directories
-declare -A AGENT_DIRS
-AGENT_DIRS[cursor]="${HOME_DIR}/.cursor/skills/${SKILL_NAME}"
-AGENT_DIRS[claude]="${HOME_DIR}/.claude/skills/${SKILL_NAME}"
-AGENT_DIRS[hermes]="${HOME_DIR}/.hermes/skills/${SKILL_NAME}"
+# Known agent skill directories (function instead of an associative array —
+# associative arrays need bash 4+, but macOS ships bash 3.2 as /bin/bash).
+agent_dir_for() {
+    case "$1" in
+        cursor) echo "${HOME_DIR}/.cursor/skills/${SKILL_NAME}" ;;
+        agents) echo "${HOME_DIR}/.agents/skills/${SKILL_NAME}" ;;
+        claude) echo "${HOME_DIR}/.claude/skills/${SKILL_NAME}" ;;
+        hermes) echo "${HOME_DIR}/.hermes/skills/${SKILL_NAME}" ;;
+    esac
+}
 
 # ── Detect which agent directories have the skill installed ──
 
 INSTALLED=()
 for name in cursor agents claude hermes; do
-    dir="${AGENT_DIRS[$name]}"
+    dir="$(agent_dir_for "$name")"
     if [[ -d "$dir" && -f "$dir/SKILL.md" ]]; then
         INSTALLED+=("$name")
     fi
@@ -68,7 +73,7 @@ if [[ -z "$AGENT_CHOICE" ]]; then
         echo ""
         for i in "${!INSTALLED[@]}"; do
             idx=$((i + 1))
-            echo "  $idx) ${INSTALLED[$i]}  (${AGENT_DIRS[${INSTALLED[$i]}]})"
+            echo "  $idx) ${INSTALLED[$i]}  ($(agent_dir_for "${INSTALLED[$i]}"))"
         done
         echo ""
         while true; do
@@ -82,7 +87,7 @@ if [[ -z "$AGENT_CHOICE" ]]; then
     fi
 fi
 
-CANONICAL_DIR="${AGENT_DIRS[$AGENT_CHOICE]}"
+CANONICAL_DIR="$(agent_dir_for "$AGENT_CHOICE")"
 echo ""
 echo "✓ Using ${AGENT_CHOICE}: ${CANONICAL_DIR}"
 
@@ -93,7 +98,7 @@ DATA_ROOT="${HOME_DIR}/.${AGENT_CHOICE}"
 CONFIG_SUBDIR="config/outreachmagic_config.json"
 
 for name in "${INSTALLED[@]}"; do
-    dir="${AGENT_DIRS[$name]}"
+    dir="$(agent_dir_for "$name")"
     config_file="${dir}/${CONFIG_SUBDIR}"
     config_dir="$(dirname "$config_file")"
     mkdir -p "$config_dir"
@@ -140,7 +145,7 @@ if [[ ${#INSTALLED[@]} -gt 1 ]]; then
             if [[ "$name" == "$AGENT_CHOICE" ]]; then
                 continue
             fi
-            dir="${AGENT_DIRS[$name]}"
+            dir="$(agent_dir_for "$name")"
             echo "  Replacing ${name} copy with symlink..."
             rm -rf "$dir"
             ln -s "$CANONICAL_DIR" "$dir"

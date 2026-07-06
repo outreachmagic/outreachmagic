@@ -224,6 +224,9 @@ copy_skill_tree() {
 _plan_uninstall() {
   echo "[dry-run] Would remove:"
   echo "  $SKILLS_DIR/outreachmagic"
+  if [[ -d "$SKILLS_DIR/outreachmagic/config" || -d "$SKILLS_DIR/outreachmagic/databases" ]]; then
+    echo "  (config/databases would be backed up first to $SKILLS_DIR/outreachmagic-backup-<timestamp>)"
+  fi
   if [[ "$PLATFORM" == "hermes" && ${#PROFILES[@]} -gt 0 ]]; then
     local profile
     for profile in "${PROFILES[@]}"; do
@@ -234,6 +237,13 @@ _plan_uninstall() {
 
 _do_uninstall() {
   if [[ -d "$SKILLS_DIR/outreachmagic" ]]; then
+    if [[ -d "$SKILLS_DIR/outreachmagic/config" || -d "$SKILLS_DIR/outreachmagic/databases" ]]; then
+      local backup="$SKILLS_DIR/outreachmagic-backup-$(date +%Y%m%d-%H%M%S)"
+      mkdir -p "$backup"
+      [[ -d "$SKILLS_DIR/outreachmagic/config" ]] && cp -a "$SKILLS_DIR/outreachmagic/config" "$backup/"
+      [[ -d "$SKILLS_DIR/outreachmagic/databases" ]] && cp -a "$SKILLS_DIR/outreachmagic/databases" "$backup/"
+      _log_step "Backed up config/databases to $backup before uninstall"
+    fi
     _log_step "Removing $SKILLS_DIR/outreachmagic"
     rm -rf "$SKILLS_DIR/outreachmagic"
   fi

@@ -1202,24 +1202,34 @@ def upsert_workspace_lead(
     contact_priority: Optional[int] = None,
 ) -> str:
     row = conn.execute(
-        "SELECT id, status FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
+        """SELECT id, status, current_status_label, current_status_sentiment, contact_priority
+           FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?""",
         (workspace_id, lead_id),
     ).fetchone()
     if row:
         extra_sets = []
         extra_params = []
-        if current_status_label is not None:
+        # Only bump updated_at (and therefore mark this row as needing a push)
+        # when a provided field actually differs from what's stored — an UPDATE
+        # that changes nothing is not a local change, and treating it as one is
+        # exactly the self-bump loop in bug-pending-sync-self-bump.md (relay
+        # syncs echoing back data we already have, forever, never settling).
+        changed = False
+        if current_status_label is not None and current_status_label != row["current_status_label"]:
             extra_sets.append("current_status_label = ?")
             extra_params.append(current_status_label)
-        if current_status_sentiment is not None:
+            changed = True
+        if current_status_sentiment is not None and current_status_sentiment != row["current_status_sentiment"]:
             extra_sets.append("current_status_sentiment = ?")
             extra_params.append(current_status_sentiment)
-        if contact_priority is not None:
+            changed = True
+        if contact_priority is not None and contact_priority != row["contact_priority"]:
             extra_sets.append("contact_priority = ?")
             extra_params.append(contact_priority)
-        sets = "updated_at = datetime('now')"
-        if extra_sets:
-            sets += ", " + ", ".join(extra_sets)
+            changed = True
+        if not changed:
+            return row["id"]
+        sets = "updated_at = datetime('now'), " + ", ".join(extra_sets)
         conn.execute(
             f"UPDATE workspace_leads SET {sets} WHERE id = ?",
             (*extra_params, row["id"]),

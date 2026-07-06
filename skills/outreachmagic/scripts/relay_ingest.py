@@ -455,6 +455,18 @@ def unsynced_workspace_lead_clause(ws_lead_alias: str = "wl") -> str:
     )"""
 
 
+def relay_bump_explained_clause(lead_id_ref: str, updated_at_ref: str) -> str:
+    """SQL fragment: true when relay_ingested already has an entry at least as
+    recent as updated_at_ref — i.e. this row's updated_at bump was relay data
+    being re-applied locally (a pull echoing back what we already pushed/pulled),
+    not a genuine local change that still needs pushing.
+    """
+    return f"""EXISTS (
+        SELECT 1 FROM relay_ingested r
+        WHERE r.lead_id = {lead_id_ref} AND r.ingested_at >= {updated_at_ref}
+    )"""
+
+
 def prefetch_relay_ingested(
     dedupe_keys: list[str],
     conn: Optional[sqlite3.Connection] = None,

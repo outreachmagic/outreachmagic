@@ -364,6 +364,57 @@ class TimestampSyncTests(unittest.TestCase):
         lead_entries = [e for e in result["entries"] if e["action"] == "lead_core_update"]
         self.assertEqual(len(lead_entries), 3)
 
+    def test_self_bumped_lead_not_counted_pending(self):
+        """bug-pending-sync-self-bump.md: a lead whose updated_at was bumped by
+        re-applying relay data it already has (echoed back, not a genuine local
+        change) must not count as pending — otherwise the count never settles."""
+        result = om.resolve_lead(
+            email="selfbump@example.com", name="Self Bump", company="Acme",
+            source="csv", source_platform="csv",
+        )
+        lead_id = result["id"]
+        conn = om.get_conn()
+        ws_row = om.resolve_workspace_identity(conn, "default")
+        om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_row["id"], lead_id)
+        conn.commit()
+        conn.close()
+
+        om.set_last_sync("2026-01-01T00:00:00Z")
+
+        # Simulate the self-bump cycle: relay data gets re-applied, bumping
+        # updated_at, and relay_ingested is marked at (or after) that same time
+        # — exactly what a real pull/apply cycle does.
+        conn = om.get_conn()
+        conn.execute(
+            "UPDATE leads SET updated_at = '2026-06-01 00:00:00' WHERE id = ?", (lead_id,),
+        )
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = '2026-06-01 00:00:00' WHERE lead_id = ?",
+            (lead_id,),
+        )
+        conn.commit()
+        conn.close()
+        om.mark_relay_ingested(f"selfbump-test-{lead_id}", lead_id)
+
+        with mock.patch.object(om, "get_agent_key", return_value="om_agent_test"):
+            with mock.patch.object(om.routing_cloud, "cloud_routing_enabled", return_value=True):
+                with mock.patch.object(
+                    om.routing_cloud, "fetch_routing_bundle",
+                    return_value={"workspaces": [], "campaignMaps": []},
+                ):
+                    status = om.get_sync_status()
+                    lead_push = om._push_pending_lead_snapshots(
+                        "om_agent_test", dry_run=True, sample_limit=50,
+                    )
+
+        core_keys = {e["entity_key"] for e in lead_push.get("sample_core_entries", [])}
+        ws_keys = {e["entity_key"] for e in lead_push.get("sample_ws_entries", [])}
+        self.assertNotIn("selfbump@example.com", core_keys)
+        self.assertNotIn("selfbump@example.com", ws_keys)
+        # Sanity: get_sync_status should still be internally consistent (no crash,
+        # a sane non-negative count) even though this specific lead is excluded.
+        self.assertGreaterEqual(status["leads_pending"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

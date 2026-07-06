@@ -689,7 +689,7 @@ def apply_agent_lead_core_payload(
     if loc_sets:
         loc_params.append(lead_id)
         conn.execute(
-            f"UPDATE leads SET {', '.join(loc_sets)}, updated_at = datetime('now') WHERE id = ?",
+            f"UPDATE leads SET {', '.join(loc_sets)} WHERE id = ?",
             loc_params,
         )
 
@@ -811,7 +811,10 @@ def apply_agent_lead_workspace_payload(
         apply_activity_sync_payload(
             conn, lead_id, workspace_id, activity, merge=True,
         )
-    # Restore CRM entity map from relay snapshot so IDs survive refresh
+    # Restore CRM entity map from relay snapshot so IDs survive refresh.
+    # ON CONFLICT ... WHERE only fires the UPDATE (and therefore the
+    # crm_entity_map bump triggers on leads/workspace_leads) when something
+    # actually changed — re-applying an identical snapshot is a no-op.
     crm_map = payload.get("crm_entity_map")
     if crm_map:
         for entry in crm_map:
@@ -819,11 +822,29 @@ def apply_agent_lead_workspace_payload(
             if not platform:
                 continue
             conn.execute(
-                """INSERT OR REPLACE INTO crm_entity_map
+                """INSERT INTO crm_entity_map
                    (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
                     crm_company_id, crm_owner_id, last_synced_at, last_event_id_synced,
                     last_sync_status, sync_hash, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT (workspace_id, lead_id, platform) DO UPDATE SET
+                       crm_contact_id = excluded.crm_contact_id,
+                       crm_deal_id = excluded.crm_deal_id,
+                       crm_company_id = excluded.crm_company_id,
+                       crm_owner_id = excluded.crm_owner_id,
+                       last_synced_at = excluded.last_synced_at,
+                       last_event_id_synced = excluded.last_event_id_synced,
+                       last_sync_status = excluded.last_sync_status,
+                       sync_hash = excluded.sync_hash,
+                       updated_at = datetime('now')
+                   WHERE crm_entity_map.crm_contact_id IS NOT excluded.crm_contact_id
+                      OR crm_entity_map.crm_deal_id IS NOT excluded.crm_deal_id
+                      OR crm_entity_map.crm_company_id IS NOT excluded.crm_company_id
+                      OR crm_entity_map.crm_owner_id IS NOT excluded.crm_owner_id
+                      OR crm_entity_map.last_synced_at IS NOT excluded.last_synced_at
+                      OR crm_entity_map.last_event_id_synced IS NOT excluded.last_event_id_synced
+                      OR crm_entity_map.last_sync_status IS NOT excluded.last_sync_status
+                      OR crm_entity_map.sync_hash IS NOT excluded.sync_hash""",
                 (
                     workspace_id, lead_id, platform,
                     entry.get("crm_contact_id"),
@@ -836,16 +857,6 @@ def apply_agent_lead_workspace_payload(
                     entry.get("sync_hash"),
                 ),
             )
-        # Bump workspace_leads.updated_at so the restored mapping triggers
-        # a snapshot push on next sync (belt-and-suspenders with DB trigger).
-        conn.execute(
-            "UPDATE workspace_leads SET updated_at = datetime('now') WHERE workspace_id = ? AND lead_id = ?",
-            (workspace_id, lead_id),
-        )
-        conn.execute(
-            "UPDATE leads SET updated_at = datetime('now') WHERE id = ?",
-            (lead_id,),
-        )
     if own_conn:
         conn.commit()
         conn.close()

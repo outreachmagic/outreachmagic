@@ -161,7 +161,7 @@ Setup portal: https://app.outreachmagic.io/onboarding. Account errors (`account_
 | "Import my Sales Nav CSV" | `import-profiles --file ... --workspace W --dry-run` first |
 | "Research Jane Doe at Acme Corp" | `enrich.py check "Jane Doe" "Acme Corp"` → if `not_found`, run Serper search pack |
 | "Research my CSV of leads" | `enrich.py batch-check --workspace W file.csv` → then Serper for unmatched |
-| "Find email for Bill at stripe.com" | `email_finder.py find --name "Bill" --domain stripe.com` or with `--save` |
+| "Find email for Bill at stripe.com" | `email_finder.py find --name "Bill" --domain stripe.com` (saves by default, use `--no-save` to skip or `--dry-run` to preview) |
 | "Find emails for my CSV" | `email_finder.py batch-find --dry-run` → `--yes` |
 | "Verify these emails" | `email_finder.py verify-bulk --yes` |
 | "Deep verify catch-all emails" | `email_finder.py verify-with-scrubby --workspace W --dry-run` → `--yes` |

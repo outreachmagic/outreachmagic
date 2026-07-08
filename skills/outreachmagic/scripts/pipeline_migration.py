@@ -503,6 +503,10 @@ def migrate_db(conn=None):
         CREATE INDEX IF NOT EXISTS idx_lead_emails_lead ON lead_emails(lead_id);
         CREATE INDEX IF NOT EXISTS idx_lead_emails_email ON lead_emails(email);
     """)
+    try:
+        conn.execute("ALTER TABLE crm_entity_map ADD COLUMN crm_note_id TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     if own_conn:
         conn.close()

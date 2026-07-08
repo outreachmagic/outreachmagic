@@ -655,6 +655,13 @@ def sync_workspace(
                         )
                         results["errors"] += 1
 
+            # ---- Summary note sync (Phase 6) ----
+            if not dry_run and contact_id and c_action != "error":
+                _sync_om_summary_note(
+                    conn, lead, ws_id, platform, driver, contact_id,
+                    extra_emails=lead.get("additional_emails", []),
+                )
+
             # Commit per-lead so entity map and event cursor survive crashes
             if not dry_run:
                 conn.commit()
@@ -783,6 +790,139 @@ def maybe_push_crm_sync_status(conn, *, workspace_id: str = "") -> dict:
         }
     except Exception:
         return {"crm_sync_status_reported": "skipped_error"}
+
+
+# ---------------------------------------------------------------------------
+# Summary note builder
+# ---------------------------------------------------------------------------
+
+def _build_om_summary_body(lead: dict, conn, ws_id: str,
+                           extra_emails: list[str] | None = None) -> str:
+    """Build the Outreach Magic summary note body for a lead."""
+    name = lead.get("name") or "?"
+    email = lead.get("email") or ""
+    company = lead.get("company_name") or lead.get("company") or ""
+    title = lead.get("title") or ""
+    industry = lead.get("industry") or ""
+    headcount = lead.get("headcount") or ""
+    status = lead.get("status") or ""
+    sentiment = lead.get("current_status_sentiment") or ""
+    label = lead.get("current_status_label") or ""
+    linkedin = lead.get("linkedin_url") or ""
+    source = lead.get("latest_source_detail") or lead.get("original_source_detail") or ""
+
+    lines = [
+        "**Outreach Magic Lead Summary**",
+        "",
+        f"**Name:** {name}",
+        f"**Email:** {email}",
+    ]
+    if company:
+        parts = [f"**Company:** {company}"]
+        if title:
+            parts.append(f"**Title:** {title}")
+        lines.append(" | ".join(parts))
+    if industry or headcount:
+        parts = []
+        if industry:
+            parts.append(f"**Industry:** {industry}")
+        if headcount:
+            parts.append(f"**Headcount:** {headcount}")
+        lines.append(" | ".join(parts))
+    lines.append(f"**LinkedIn:** {linkedin}")
+
+    # Status line
+    status_parts = [f"**Stage:** {status}"]
+    if sentiment:
+        status_parts.append(f"**Sentiment:** {sentiment}")
+    if label:
+        status_parts.append(f"**Label:** {label}")
+    lines.append("")
+    lines.append(" | ".join(status_parts))
+    lines.append("")
+
+    # Additional emails
+    try:
+        extra_rows = conn.execute(
+            "SELECT email FROM lead_emails WHERE lead_id = ? AND is_primary = 0 ORDER BY email",
+            (lead.get("lead_id") or lead.get("id"),),
+        ).fetchall()
+        all_extra = [r[0] for r in extra_rows]
+    except Exception:
+        all_extra = extra_emails or []
+    if all_extra:
+        lines.append("**Additional Emails**")
+        for ae in all_extra:
+            lines.append(f"- {ae}")
+        lines.append("")
+
+    # Tags
+    try:
+        tag_rows = conn.execute(
+            """SELECT tag FROM workspace_lead_tags
+               WHERE workspace_id = ? AND lead_id = ?
+               ORDER BY tag""",
+            (ws_id, lead.get("lead_id") or lead.get("id")),
+        ).fetchall()
+        if tag_rows:
+            lines.append("**Tags:** " + ", ".join(r[0] for r in tag_rows))
+            lines.append("")
+    except Exception:
+        pass
+
+    # Sources
+    if source:
+        lines.append(f"**Source:** {source}")
+        lines.append("")
+
+    # Activity summary
+    try:
+        lid = lead.get("lead_id") or lead.get("id")
+        event_count = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE lead_id = ?", (lid,),
+        ).fetchone()[0]
+        if event_count:
+            lines.append(f"**Activity:** {event_count} events")
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
+def _sync_om_summary_note(
+    conn, lead: dict, ws_id: str, platform: str, driver,
+    contact_id: str, *, extra_emails: list[str] | None = None,
+) -> None:
+    """Create or update the OM summary note on a CRM contact."""
+    lead_id = lead.get("lead_id") or lead.get("id")
+    if not lead_id:
+        return
+
+    body = _build_om_summary_body(lead, conn, ws_id, extra_emails=extra_emails)
+
+    entity = conn.execute(
+        "SELECT crm_note_id FROM crm_entity_map WHERE workspace_id = ? AND lead_id = ? AND platform = ?",
+        (ws_id, lead_id, platform),
+    ).fetchone()
+
+    existing_note_id = entity["crm_note_id"] if entity and entity["crm_note_id"] else None
+
+    if existing_note_id:
+        # Update existing note
+        if driver.update_note(contact_id, existing_note_id, body):
+            pass  # updated successfully
+    else:
+        # Create new note
+        note_id = driver.create_note(contact_id, body)
+        if note_id:
+            try:
+                conn.execute(
+                    "UPDATE crm_entity_map SET crm_note_id = ?, updated_at = datetime('now') "
+                    "WHERE workspace_id = ? AND lead_id = ? AND platform = ?",
+                    (note_id, ws_id, lead_id, platform),
+                )
+            except Exception:
+                pass  # Non-fatal if entity_map write fails
 
 
 # ---------------------------------------------------------------------------

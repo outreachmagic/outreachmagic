@@ -392,6 +392,28 @@ class GhlDriver:
         resp = self._request("GET", "/opportunities/pipelines?locationId=" + self.location_id)
         return resp.get("pipelines", [])
 
+    # ------------------------------------------------------------------
+    # Notes (Outreach Magic summary)
+    # ------------------------------------------------------------------
+
+    def create_note(self, contact_id: str, body: str) -> str | None:
+        """Create a note on a GHL contact. Returns note ID."""
+        try:
+            result = self._request("POST", f"/contacts/{contact_id}/notes",
+                                    body={"body": body})
+            return result.get("note", {}).get("id")
+        except Exception:
+            return None
+
+    def update_note(self, contact_id: str, note_id: str, body: str) -> bool:
+        """Update an existing note. Returns True on success."""
+        try:
+            self._request("PUT", f"/contacts/{contact_id}/notes/{note_id}",
+                          body={"body": body})
+            return True
+        except Exception:
+            return False
+
     def test_connection(self, config: dict | None = None) -> tuple[bool, str]:
         """Test GHL connection by listing pipelines."""
         try:

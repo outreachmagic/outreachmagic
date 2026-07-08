@@ -123,6 +123,14 @@ class MockDriver:
     def sync_sentiment_tag(self, contact_id: str, sentiment: str) -> None:
         self._record("sync_sentiment_tag", contact_id, sentiment)
 
+    def create_note(self, contact_id: str, body: str) -> str | None:
+        """Create a note on a contact. Returns note ID or None."""
+        raise NotImplementedError
+
+    def update_note(self, contact_id: str, note_id: str, body: str) -> bool:
+        """Update an existing note on a contact. Returns True on success."""
+        raise NotImplementedError
+
     def test_connection(self, config: dict | None = None) -> tuple[bool, str]:
         self._record("test_connection", "")
         return True, "connected"

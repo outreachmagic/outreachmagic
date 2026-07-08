@@ -170,6 +170,8 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
     When ``last_sync_at`` is provided, only leads updated after that time
     are returned (incremental sync). When ``lead_id`` is provided, only
     that specific lead is returned regardless of status.
+    When ``max_age`` is provided (e.g. '7d', '30d'), only leads with
+    ``updated_at`` within that window are returned.
     """
     params: list = [workspace_id]
     where = ["wl.workspace_id = ?"]

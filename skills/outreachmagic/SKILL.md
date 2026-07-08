@@ -268,6 +268,7 @@ pipeline.py campaign-map add --platform P --workspace W  # add routing rule
 pipeline.py agent-changes                         # cross-platform sync (JSON)
 pipeline.py crm-sync sync --workspace W --dry-run # preview CRM push (GHL/HubSpot)
 pipeline.py crm-sync sync --workspace W           # push leads to CRM
+pipeline.py crm-sync sync --workspace W --max-age 30d  # only leads active in last 30 days
 pipeline.py sync                                  # push to relay
 pipeline.py refresh --yes                         # backup + rebuild DB
 ```

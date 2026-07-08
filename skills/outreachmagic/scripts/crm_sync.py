@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -136,8 +137,33 @@ def load_driver(platform: str, config: dict):
 # Lead selection
 # ---------------------------------------------------------------------------
 
+_MAX_AGE_UNIT_WORDS = {"d": "days", "w": "weeks", "m": "months", "y": "years"}
+
+
+def _parse_max_age(max_age: str) -> str:
+    """Convert shorthand durations (7d, 30d, 90d, 1y, ...) into a SQLite
+    ``datetime()`` modifier string ("N days", "N years", ...).
+
+    SQLite's datetime() modifiers require a space and a spelled-out unit
+    (e.g. "-30 days"); it silently returns NULL for terse forms like "-30d".
+    Values that don't match the shorthand pattern are passed through
+    unchanged, so callers can also supply a raw SQLite modifier directly
+    (e.g. "30 days").
+    """
+    m = re.fullmatch(r"(\d+)\s*([dwmy])", max_age.strip(), re.IGNORECASE)
+    if not m:
+        return max_age
+    n, unit = int(m.group(1)), m.group(2).lower()
+    unit_word = _MAX_AGE_UNIT_WORDS[unit]
+    if unit == "w":
+        # SQLite has no native "weeks" modifier -- convert to days.
+        n, unit_word = n * 7, "days"
+    return f"{n} {unit_word}"
+
+
 def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
-                 lead_id: int | None = None) -> list[dict]:
+                 lead_id: int | None = None,
+                 max_age: str | None = None) -> list[dict]:
     """Select leads ready for CRM sync from a workspace.
 
     Returns only leads in SYNCABLE_STATUSES, ordered by updated_at ASC.
@@ -158,6 +184,9 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
         if last_sync_at is not None:
             where.append("wl.updated_at > ?")
             params.append(last_sync_at)
+        if max_age is not None:
+            where.append("wl.updated_at >= datetime('now', ?)")
+            params.append(f"-{_parse_max_age(max_age)}")
 
     query = f"""
         SELECT wl.lead_id, wl.status, wl.updated_at, wl.current_status_sentiment,
@@ -499,6 +528,7 @@ def sync_workspace(
     dry_run: bool = False,
     skip_events: bool = False,
     single_lead_id: Optional[int] = None,
+    max_age: Optional[str] = None,
     driver: Optional[Any] = None,
 ) -> dict:
     """Sync a single workspace + platform config.
@@ -521,7 +551,7 @@ def sync_workspace(
     # syncs. Currently disabled because event-only changes (new workspace_lead_events
     # rows) don't update workspace_leads.updated_at, so a cursor filter would
     # incorrectly skip leads that have new events but no lead-data changes.
-    leads = select_leads(conn, ws_id, last_sync_at=None, lead_id=single_lead_id)
+    leads = select_leads(conn, ws_id, last_sync_at=None, lead_id=single_lead_id, max_age=max_age)
 
     results = {
         "leads_checked": len(leads),
@@ -764,6 +794,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     sync_p.add_argument("--lead-id", type=int, help="Sync a single lead by ID")
     sync_p.add_argument("--skip-events", action="store_true", help="Skip event history push")
     sync_p.add_argument("--platform", choices=["ghl", "hubspot"], help="Filter by platform")
+    sync_p.add_argument("--max-age", help="Only sync leads active in last N days (e.g. 7d, 30d, 90d)")
 
     # discover
     disc_p = sub.add_parser("discover", help="Discover CRM pipelines")
@@ -837,6 +868,7 @@ def _cmd_sync(args, conn):
     skip_events = getattr(args, "skip_events", False)
     single_lead_id = getattr(args, "lead_id", None)
     platform_filter = getattr(args, "platform", None)
+    max_age = getattr(args, "max_age", None)
 
     # Determine workspaces
     if getattr(args, "workspace", None):
@@ -880,6 +912,7 @@ def _cmd_sync(args, conn):
                     dry_run=dry_run,
                     skip_events=skip_events,
                     single_lead_id=single_lead_id,
+                    max_age=max_age,
                 )
                 if not dry_run:
                     print(

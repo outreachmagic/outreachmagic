@@ -3,7 +3,7 @@
   "files": {
     "README.md": "4e01d6c4e4e6b15d597b5ea8f171e945ee527f2d43f40c0f71b71a9a97945a15",
     "SECURITY.md": "db20902ceb5c57e81ac4caa2cf9257cbaaba53fd03b813417ccff21d99c92a32",
-    "SKILL.md": "1e64daeb3dc9f4cb292cc7a5f5e57a1199b20c9781fe12a3e80c73460344da7c",
+    "SKILL.md": "b6773ca6db600d54f157ad8757e8418a465bf11c015b7dec4ba5624f5570bb48",
     "VERSION": "78b591400c56b7b67b8cb3b2b8a8e65e9093897f02ce0878e6b5405c68620fa7",
     "activity_sync.py": "8ca5f23f7fcde99ef820a3934951664712a151b32f0508322fa7b37a491aed6e",
     "agent_secrets_cloud.py": "6b221f34d52187159f55b108f0858df6cf6e9fb8c4f10dda3116a1286bafb6ba",
@@ -18,7 +18,7 @@
     "crm_drivers/base.py": "e9f1c798e39212a82777b12d836adfd2230b6872225f8d8e9f20bb2f59076d7e",
     "crm_drivers/ghl.py": "f457c1b4f589971d3b12f34d5c0ffe50a1e12297befa2a74636b4c1bc3b75e1b",
     "crm_drivers/hubspot.py": "f9d3d35d30c0d9fff757a1d245641c0dd9c1493edc17739c66062207c0a2e4ca",
-    "crm_sync.py": "4a3295ca4ec13d63c087f28fbc9c7426eec58b61a86d9191c8858352c27cca7c",
+    "crm_sync.py": "5736af28f36d84af09c8048308d258593d2853a212de6e9bca4b55e2c1104589",
     "data_freshness.py": "ec3dc68995a90f997a106ebd05e75355347b185a013838164faff14f9a97d8dd",
     "db_conn.py": "aaa6950456075b9c27c0491974f848bc3938a03c425d437e46d8b9b3a12abddf",
     "db_health.py": "19ef962d55a2cdd62a3ef7c6763f9a2839989a9440314e95d5d8da7e161a4c74",

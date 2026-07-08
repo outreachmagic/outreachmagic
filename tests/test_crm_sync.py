@@ -402,6 +402,7 @@ def _make_namespace(**kwargs):
         "lead_id": None,
         "skip_events": False,
         "platform": None,
+        "max_age": None,
         "command": "sync",
     }
     defaults.update(kwargs)
@@ -447,6 +448,93 @@ def test_phase_1_lead_selection_stale_filter():
         # With an old timestamp, all match
         old_leads = crm_sync.select_leads(conn, WS1_ID, last_sync_at="2020-01-01T00:00:00")
         assert len(old_leads) == 7
+    finally:
+        conn.close()
+
+
+def test_phase_1_lead_selection_max_age_filter():
+    """max_age excludes leads with stale updated_at; None preserves current behavior."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_1_data(conn)
+
+        # Make lead 1 (Alice) stale -- last touched 60 days ago
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = datetime('now', '-60 days') "
+            "WHERE workspace_id = ? AND lead_id = ?",
+            (WS1_ID, 1),
+        )
+        conn.commit()
+
+        # No max_age -- unchanged, all 7 syncable leads returned
+        all_leads = crm_sync.select_leads(conn, WS1_ID)
+        assert len(all_leads) == 7
+
+        # max_age=30d (documented shorthand) -- stale lead 1 excluded, rest remain
+        recent_leads = crm_sync.select_leads(conn, WS1_ID, max_age="30d")
+        recent_ids = {l["lead_id"] for l in recent_leads}
+        assert 1 not in recent_ids, "stale lead should be excluded by max_age"
+        assert len(recent_leads) == 6
+
+        # max_age=90d -- wide enough window to include the stale lead again
+        wide_leads = crm_sync.select_leads(conn, WS1_ID, max_age="90d")
+        assert len(wide_leads) == 7
+
+        # A raw SQLite modifier string (spelled-out unit) also works, unchanged
+        raw_leads = crm_sync.select_leads(conn, WS1_ID, max_age="30 days")
+        assert len(raw_leads) == 6
+    finally:
+        conn.close()
+
+
+def test_phase_1_lead_selection_max_age_ignored_with_lead_id():
+    """max_age has no effect when a specific lead_id is requested."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_1_data(conn)
+
+        # Make lead 1 (Alice) very stale
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = datetime('now', '-5 years') "
+            "WHERE workspace_id = ? AND lead_id = ?",
+            (WS1_ID, 1),
+        )
+        conn.commit()
+
+        leads = crm_sync.select_leads(conn, WS1_ID, lead_id=1, max_age="1d")
+        assert len(leads) == 1, "lead_id lookup should ignore max_age entirely"
+        assert leads[0]["lead_id"] == 1
+    finally:
+        conn.close()
+
+
+def test_parse_max_age_shorthand():
+    """_parse_max_age converts shorthand durations to SQLite modifier strings."""
+    assert crm_sync._parse_max_age("7d") == "7 days"
+    assert crm_sync._parse_max_age("30d") == "30 days"
+    assert crm_sync._parse_max_age("90d") == "90 days"
+    assert crm_sync._parse_max_age("1y") == "1 years"
+    assert crm_sync._parse_max_age("2w") == "14 days"  # no native "weeks" modifier
+    assert crm_sync._parse_max_age("6m") == "6 months"
+    assert crm_sync._parse_max_age("1D") == "1 days"  # case-insensitive
+
+    # Already-valid SQLite modifiers pass through unchanged
+    assert crm_sync._parse_max_age("30 days") == "30 days"
+
+    # Unrecognized forms pass through as-is (will safely match nothing downstream)
+    assert crm_sync._parse_max_age("foobar") == "foobar"
+
+
+def test_max_age_garbage_value_matches_nothing():
+    """An unparseable --max-age value produces no matches, not an exception."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_1_data(conn)
+        leads = crm_sync.select_leads(conn, WS1_ID, max_age="foobar")
+        assert leads == []
     finally:
         conn.close()
 
@@ -611,6 +699,38 @@ def test_phase_1_sync_single_lead():
         conn.close()
 
 
+def test_phase_1_sync_workspace_max_age():
+    """sync_workspace(max_age=...) excludes stale leads end-to-end."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_1_data(conn)
+        # Make lead 1 (Alice) stale -- last touched 60 days ago
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = datetime('now', '-60 days') "
+            "WHERE workspace_id = ? AND lead_id = ?",
+            (WS1_ID, 1),
+        )
+        conn.commit()
+
+        mock = MockDriver()
+        cfg = {
+            "platform": "ghl",
+            "pipeline_id": "pipe-1",
+            "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
+        }
+        results = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock, max_age="30d")
+        # 7 syncable leads total, minus the 1 stale lead
+        assert results["leads_checked"] == 6
+
+        # Baseline: no max_age still checks all 7
+        mock2 = MockDriver()
+        results2 = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock2)
+        assert results2["leads_checked"] == 7
+    finally:
+        conn.close()
+
+
 def test_phase_1_sync_log_written():
     """After sync, crm_sync_log has a completed row with correct counts."""
     om.init_db()
@@ -733,6 +853,32 @@ def test_phase_1_nonexistent_workspace(capsys):
             conn2.close()
     finally:
         pass
+
+
+def test_phase_1_cmd_sync_max_age_wired(capsys):
+    """--max-age flows from the CLI through cmd_sync down to select_leads."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_1_data(conn)
+        # Make lead 1 (Alice) stale -- last touched 60 days ago
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = datetime('now', '-60 days') "
+            "WHERE workspace_id = ? AND lead_id = ?",
+            (WS1_ID, 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    args = _make_namespace(
+        command="sync", workspace=WS1_SLUG, dry_run=True, max_age="30d",
+    )
+    crm_sync.cmd_sync(args)
+    captured = capsys.readouterr().out
+    # 6 fresh leads synced per platform config (ghl + hubspot = 2 configs -> 12 lines)
+    assert captured.count("Would create contact") == 12
+    assert "alice@example.com" not in captured, "stale lead should be excluded"
 
 
 def test_phase_1_missing_crm_sync_py():

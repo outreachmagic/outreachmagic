@@ -266,6 +266,8 @@ def _cmd_crm_sync(args) -> None:
             cmd.append("--skip-events")
         if getattr(args, "platform", None):
             cmd.extend(["--platform", args.platform])
+        if getattr(args, "max_age", None):
+            cmd.extend(["--max-age", args.max_age])
     elif action == "discover":
         ws = getattr(args, "workspace", None)
         platform = getattr(args, "platform", None)
@@ -869,6 +871,7 @@ def main():
     crm_sync_p.add_argument("--lead-id", type=int, help="Sync a single lead by ID")
     crm_sync_p.add_argument("--skip-events", action="store_true", help="Skip event history push")
     crm_sync_p.add_argument("--platform", choices=["ghl", "hubspot"], help="Filter by platform")
+    crm_sync_p.add_argument("--max-age", help="Only sync leads active in last N days (e.g. 7d, 30d, 90d)")
 
     conn_p = sub.add_parser("connections", help="List connected platforms with webhook URLs and stats")
     conn_p.add_argument("--json", action="store_true")

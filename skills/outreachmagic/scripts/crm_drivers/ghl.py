@@ -559,7 +559,7 @@ class GhlDriver:
     # ------------------------------------------------------------------
 
     SENTIMENT_TAG_PREFIX = "om_"
-    SENTIMENT_VALUES = {"positive", "negative", "autoreply", "invalid"}
+    SENTIMENT_VALUES = {"positive", "negative", "autoreply", "invalid", "neutral"}
     _sentiment_tags_loaded: bool = False
     _existing_tag_names: set[str] = set()
 

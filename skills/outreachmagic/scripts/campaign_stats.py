@@ -234,7 +234,7 @@ def build_campaign_stats_payload(
     FROM ranked_status rs
     JOIN campaigns c ON rs.campaign_id = c.id
     WHERE rs.rn = 1
-      AND rs.sentiment IN ('positive', 'negative', 'autoreply', 'invalid')
+      AND rs.sentiment IN ('positive', 'negative', 'autoreply', 'invalid', 'neutral')
       AND c.name LIKE ?
     GROUP BY c.name, rs.sentiment
     ORDER BY campaign, lead_count DESC
@@ -347,7 +347,7 @@ def build_campaign_stats_payload(
         funnel_rows.append([])  # spacer
 
     # \u2500\u2500 Build Sheet 3: Lead Sentiment \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    sentiment_order = ["positive", "negative", "autoreply", "invalid"]
+    sentiment_order = ["positive", "negative", "autoreply", "invalid", "neutral"]
     sentiment_headers = ["Campaign"] + [s.capitalize() for s in sentiment_order] + ["Total Tagged", "Positivity Rate"]
     sentiment_body = []
 

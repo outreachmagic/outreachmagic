@@ -334,7 +334,7 @@ def main():
         help="With --pull, always contact relay (ignore 5m freshness cache)",
     )
     show_p.add_argument("--stage")
-    show_p.add_argument("--sentiment", choices=("positive", "negative", "autoreply", "invalid"),
+    show_p.add_argument("--sentiment", choices=("positive", "negative", "autoreply", "invalid", "neutral"),
                         help="Filter by current lead status sentiment (latest status event)")
     show_p.add_argument("--auto-reply", dest="auto_reply", choices=("true", "false"),
                         help="Filter by current auto-reply flag (OOO, etc.)")
@@ -358,7 +358,7 @@ def main():
         help="With --pull, always contact relay (ignore 5m freshness cache)",
     )
     lead_table_p.add_argument("--stage")
-    lead_table_p.add_argument("--sentiment", choices=("positive", "negative", "autoreply", "invalid"),
+    lead_table_p.add_argument("--sentiment", choices=("positive", "negative", "autoreply", "invalid", "neutral"),
                               help="Filter by current lead status sentiment (latest status event)")
     lead_table_p.add_argument("--auto-reply", dest="auto_reply", choices=("true", "false"),
                               help="Filter by current auto-reply flag (OOO, etc.)")
@@ -616,7 +616,7 @@ def main():
     up_p = sub.add_parser("update-stage", help="Update lead stage")
     up_p.add_argument("--id", type=int, required=True); up_p.add_argument("--stage", required=True)
     up_p.add_argument("--next-action")
-    up_p.add_argument("--sentiment", choices=["positive", "negative", "autoreply", "invalid"],
+    up_p.add_argument("--sentiment", choices=["positive", "negative", "autoreply", "invalid", "neutral"],
                       help="Qualitative sentiment for this stage change")
     up_p.add_argument("--label", help="Human-readable status label (e.g. 'not interested', 'meeting booked')")
     up_p.add_argument("--workspace", help="Workspace for this stage change (required in multi-workspace mode)")
@@ -1171,7 +1171,7 @@ def main():
     )
     segment_p.add_argument(
         "--positive-sentiment",
-        choices=("positive", "negative", "autoreply", "invalid"),
+        choices=("positive", "negative", "autoreply", "invalid", "neutral"),
         help="Optional sentiment to combine with --positive-lead-status",
     )
     segment_p.add_argument(

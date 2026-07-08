@@ -246,9 +246,6 @@ def relay_target_stage(
     resolved_stage: Optional[str] = None,
 ) -> Optional[str]:
     """Pipeline stage to apply after ingest; None = leave stage unchanged."""
-    if resolved_stage:
-        return resolved_stage
-
     et = envelope_event_type.lower()
     label = (metadata.get("lead_status_raw") or raw.get("label") or "").lower()
     sentiment = (metadata.get("lead_status_sentiment") or "").lower()
@@ -256,10 +253,15 @@ def relay_target_stage(
     positive_labels = ("interested", "qc_interested", "meeting_booked", "meeting_completed", "qc_crm_only")
     negative_labels = ("not_interested", "not interested", "wrong_person", "closed")
 
+    # Auto-replies never advance the pipeline stage (stays in contacted/prospecting).
+    if is_auto:
+        return None
+
+    if resolved_stage:
+        return resolved_stage
+
     if platform in PLUSVIBE_PLATFORMS:
         if local_type == "email_bounce" or et in PLUSVIBE_BOUNCE_EVENTS or sentiment == "invalid":
-            return None
-        if is_auto:
             return None
         if (
             et in PLUSVIBE_NEGATIVE_TERMINAL_EVENTS

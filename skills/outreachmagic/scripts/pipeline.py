@@ -877,6 +877,12 @@ def merge_leads(
         headcount = (keep["headcount"] or "") or (other["headcount"] or "") or None
         company_id = keep["company_id"] or other["company_id"]
         merge_entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, merge_id)
+        # Add the merged lead's email as an additional email if it differs from primary
+        if other["email"] and other["email"] != keep["email"]:
+            conn.execute(
+                "INSERT OR IGNORE INTO lead_emails (lead_id, email, is_primary) VALUES (?, ?, 0)",
+                (keep_id, other["email"]),
+            )
         conn.execute(
             """INSERT INTO lead_merges (keep_id, merge_id, reason, merge_entity_key, relay_delete_pushed)
                VALUES (?, ?, ?, ?, 0)""",

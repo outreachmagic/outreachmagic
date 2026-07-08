@@ -378,7 +378,7 @@ def sync_single_lead(
     entity = None
     if conn:
         entity = conn.execute(
-            """SELECT crm_contact_id, crm_deal_id, crm_company_id, sync_hash
+            """SELECT crm_contact_id, crm_deal_id, crm_company_id, sync_hash, last_event_id_synced
                FROM crm_entity_map
                WHERE workspace_id = ? AND lead_id = ? AND platform = ?""",
             (ws_id, lead_id_val, platform),
@@ -400,16 +400,17 @@ def sync_single_lead(
         # Persist company_id immediately to avoid duplicates on partial failure
         if company_id and ws_id:
             try:
+                partial_event_id = entity["last_event_id_synced"] if entity and "last_event_id_synced" in entity.keys() else None
                 conn.execute(
                     """INSERT OR REPLACE INTO crm_entity_map
                        (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                        crm_company_id, last_synced_at, last_sync_status, sync_hash,
+                        crm_company_id, last_event_id_synced, last_synced_at, last_sync_status, sync_hash,
                         updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'partial', ?, datetime('now'))""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 'partial', ?, datetime('now'))""",
                     (ws_id, lead_id_val, platform,
                      entity["crm_contact_id"] if entity else "",
                      entity["crm_deal_id"] if entity else "",
-                     company_id, new_hash),
+                     company_id, partial_event_id, new_hash),
                 )
             except Exception:
                 pass  # Non-fatal if entity_map write fails
@@ -469,14 +470,21 @@ def sync_single_lead(
 
     # -- Write entity map --
     if conn and ws_id and d_action != "error":
+        # Preserve last_event_id_synced so re-syncs don't re-push events
+        existing = conn.execute(
+            "SELECT last_event_id_synced FROM crm_entity_map WHERE workspace_id = ? AND lead_id = ? AND platform = ?",
+            (ws_id, lead_id_val, platform),
+        ).fetchone()
+        existing_event_id = existing["last_event_id_synced"] if existing else None
+
         conn.execute(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                crm_company_id, last_synced_at, last_sync_status, sync_hash,
+                crm_company_id, last_event_id_synced, last_synced_at, last_sync_status, sync_hash,
                 updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, datetime('now'))""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, datetime('now'))""",
             (ws_id, lead_id_val, platform, contact_id, deal_id,
-             company_id or None, new_hash),
+             company_id or None, existing_event_id, new_hash),
         )
         # Bump workspace_leads.updated_at so timestamp-based relay sync
         # re-pushes the snapshot (which now carries the entity mapping).

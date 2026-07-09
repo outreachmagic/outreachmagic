@@ -39,7 +39,7 @@ _PLUSVIBE_SPEC = {
     },
     "event": {
         "subject": ("subject", "last_lead_reply_subject", "latest_subject"),
-        "body": ("body", "text_body", "last_lead_reply", "snippet"),
+        "body": ("body", "text_body", "body_preview", "last_lead_reply", "snippet"),
         "campaign": ("campaign_name", "campaign"),
         "campaign_id": ("campaign_id", "data.campaign_id", "campaign.id"),
         "campaign_name": ("campaign_name", "campaign"),

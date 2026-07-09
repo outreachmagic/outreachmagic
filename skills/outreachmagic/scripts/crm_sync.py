@@ -193,6 +193,7 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
     query = f"""
         SELECT wl.lead_id, wl.status, wl.updated_at, wl.current_status_sentiment,
                l.name, l.email, l.title, l.industry, l.headcount,
+               l.headcount_numeric,
                l.linkedin_url, l.company,
                l.original_source, l.original_source_detail,
                l.latest_source_detail,
@@ -622,6 +623,9 @@ def sync_workspace(
                 results["opportunities_created"] += 1  # unexpected action, assume created
 
             # ---- Event push (Phase 5) ----
+            # Only email_sent and email_reply are pushed as individual messages.
+            # All other events (LinkedIn, bounces, status updates, etc.) are
+            # included only in the OM summary note to avoid GHL timeline clutter.
             if not skip_events and contact_id:
                 entity_row = conn.execute(
                     """SELECT last_event_id_synced FROM crm_entity_map
@@ -629,31 +633,41 @@ def sync_workspace(
                     (ws_id, lead_id_val, platform),
                 ).fetchone()
                 last_event_id = entity_row["last_event_id_synced"] if entity_row else None
-                events = collect_pending_events(
+                all_events = collect_pending_events(
                     conn, ws_id, lead_id_val, last_event_id,
                 )
-                if events:
-                    # Inject lead's linkedin URL into events for note formatting
-                    receiver_li = lead.get("linkedin_url", "")
-                    for ev in events:
-                        ev["receiver_linkedin_url"] = receiver_li
-                    try:
-                        count, max_pushed = driver.push_events(contact_id, deal_id, events)
-                        results["events_pushed"] += count
-                        if max_pushed is not None:
-                            conn.execute(
-                                """UPDATE crm_entity_map
-                                   SET last_event_id_synced = ?, updated_at = datetime('now')
-                                   WHERE workspace_id = ? AND lead_id = ? AND platform = ?""",
-                                (max_pushed, ws_id, lead_id_val, platform),
+                if all_events:
+                    max_collected = max(
+                        e["rowid"] for e in all_events if e.get("rowid") is not None
+                    ) if any(e.get("rowid") is not None for e in all_events) else None
+
+                    # Filter to only email events for GHL conversation push
+                    email_events = [e for e in all_events
+                                    if e.get("event_type") in ("email_sent", "email_reply")]
+                    if email_events:
+                        receiver_li = lead.get("linkedin_url", "")
+                        for ev in email_events:
+                            ev["receiver_linkedin_url"] = receiver_li
+                        try:
+                            count, _ = driver.push_events(contact_id, deal_id, email_events)
+                            results["events_pushed"] += count
+                        except Exception as ev_exc:
+                            print(
+                                f"  Error pushing events for lead {lead_id_val}: "
+                                f"{ev_exc}",
+                                file=sys.stderr,
                             )
-                    except Exception as ev_exc:
-                        print(
-                            f"  Error pushing events for lead {lead_id_val}: "
-                            f"{ev_exc}",
-                            file=sys.stderr,
+                            results["errors"] += 1
+
+                    # Advance cursor past ALL collected events (including non-email)
+                    # so they are not re-collected, even though they weren't pushed.
+                    if max_collected is not None:
+                        conn.execute(
+                            """UPDATE crm_entity_map
+                               SET last_event_id_synced = ?, updated_at = datetime('now')
+                               WHERE workspace_id = ? AND lead_id = ? AND platform = ?""",
+                            (max_collected, ws_id, lead_id_val, platform),
                         )
-                        results["errors"] += 1
 
             # ---- Summary note sync (Phase 6) ----
             if not dry_run and contact_id and c_action != "error":
@@ -798,93 +812,199 @@ def maybe_push_crm_sync_status(conn, *, workspace_id: str = "") -> dict:
 
 def _build_om_summary_body(lead: dict, conn, ws_id: str,
                            extra_emails: list[str] | None = None) -> str:
-    """Build the Outreach Magic summary note body for a lead."""
+    """Build the Outreach Magic summary note body for a lead (plain text)."""
     name = lead.get("name") or "?"
     email = lead.get("email") or ""
-    company = lead.get("company_name") or lead.get("company") or ""
+    company_name = lead.get("company") or ""
     title = lead.get("title") or ""
     industry = lead.get("industry") or ""
-    headcount = lead.get("headcount") or ""
+    hc = lead.get("headcount_numeric") or lead.get("headcount") or ""
     status = lead.get("status") or ""
     sentiment = lead.get("current_status_sentiment") or ""
     label = lead.get("current_status_label") or ""
-    linkedin = lead.get("linkedin_url") or ""
+    linkedin_url = lead.get("linkedin_url") or ""
     source = lead.get("latest_source_detail") or lead.get("original_source_detail") or ""
+    lid = lead.get("lead_id") or lead.get("id")
 
-    lines = [
-        "**Outreach Magic Lead Summary**",
-        "",
-        f"**Name:** {name}",
-        f"**Email:** {email}",
-    ]
-    if company:
-        parts = [f"**Company:** {company}"]
-        if title:
-            parts.append(f"**Title:** {title}")
-        lines.append(" | ".join(parts))
-    if industry or headcount:
-        parts = []
-        if industry:
-            parts.append(f"**Industry:** {industry}")
-        if headcount:
-            parts.append(f"**Headcount:** {headcount}")
-        lines.append(" | ".join(parts))
-    lines.append(f"**LinkedIn:** {linkedin}")
+    lines = []
+    lines.append("OUTREACH MAGIC SUMMARY")
+    lines.append("")
 
-    # Status line
-    status_parts = [f"**Stage:** {status}"]
+    # Lead info section
+    info_line = name
+    if title:
+        info_line += f", {title}"
+    if company_name:
+        info_line += f" @ {company_name}"
+    lines.append(info_line)
+    if email:
+        lines.append(email)
+
+    meta = []
+    if status:
+        meta.append(status)
     if sentiment:
-        status_parts.append(f"**Sentiment:** {sentiment}")
+        meta.append(sentiment)
     if label:
-        status_parts.append(f"**Label:** {label}")
-    lines.append("")
-    lines.append(" | ".join(status_parts))
-    lines.append("")
+        meta.append(label)
+    if meta:
+        lines.append(" | ".join(meta))
+
+    detail_parts = []
+    if industry:
+        detail_parts.append(industry)
+    if hc:
+        detail_parts.append(str(hc) + " employees")
+    if detail_parts:
+        lines.append(" | ".join(detail_parts))
 
     # Additional emails
     try:
         extra_rows = conn.execute(
             "SELECT email FROM lead_emails WHERE lead_id = ? AND is_primary = 0 ORDER BY email",
-            (lead.get("lead_id") or lead.get("id"),),
+            (lid,),
         ).fetchall()
-        all_extra = [r[0] for r in extra_rows]
+        all_extra = [r[0] for r in extra_rows] if extra_rows else (extra_emails or [])
     except Exception:
         all_extra = extra_emails or []
     if all_extra:
-        lines.append("**Additional Emails**")
-        for ae in all_extra:
-            lines.append(f"- {ae}")
         lines.append("")
+        lines.append("Also: " + ", ".join(all_extra))
 
     # Tags
     try:
         tag_rows = conn.execute(
-            """SELECT tag FROM workspace_lead_tags
-               WHERE workspace_id = ? AND lead_id = ?
-               ORDER BY tag""",
-            (ws_id, lead.get("lead_id") or lead.get("id")),
+            "SELECT tag FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ? ORDER BY tag",
+            (ws_id, lid),
         ).fetchall()
         if tag_rows:
-            lines.append("**Tags:** " + ", ".join(r[0] for r in tag_rows))
-            lines.append("")
+            lines.append("Tags: " + ", ".join(r[0] for r in tag_rows))
     except Exception:
         pass
 
-    # Sources
+    # Source
     if source:
-        lines.append(f"**Source:** {source}")
-        lines.append("")
+        lines.append("Source: " + source)
 
-    # Activity summary
+    if linkedin_url:
+        lines.append("LI: " + linkedin_url)
+
+    # Full event timeline
     try:
-        lid = lead.get("lead_id") or lead.get("id")
-        event_count = conn.execute(
-            "SELECT COUNT(*) FROM events WHERE lead_id = ?", (lid,),
-        ).fetchone()[0]
-        if event_count:
-            lines.append(f"**Activity:** {event_count} events")
+        events = conn.execute("""
+            SELECT event_type, direction, subject, body_preview, created_at, sender
+            FROM events WHERE lead_id = ?
+            ORDER BY created_at ASC
+        """, (lid,)).fetchall()
     except Exception:
-        pass
+        events = []
+
+    if events:
+        lines.append("")
+        lines.append("Timeline")
+        lines.append("-" * 30)
+
+        # Collapse related LinkedIn events
+        _skip_connect = False
+        _skip_accept = False
+
+        for ev in events:
+            d = dict(ev)
+            ts = str(d.get("created_at") or "")[:10]
+            etype = d.get("event_type") or ""
+            direction = d.get("direction") or ""
+            subject = d.get("subject") or ""
+            body_preview = d.get("body_preview") or ""
+            sender = d.get("sender") or ""
+
+            # Collapse: linkedin_connect_sent + linkedin_connect (same second = same event)
+            if etype == "linkedin_connect_sent":
+                _skip_connect = True
+                continue
+            if etype == "linkedin_connect" and _skip_connect:
+                _skip_connect = False
+                lines.append(f"  {ts} -- LinkedIn: connected (via treybuck)")
+                continue
+
+            # Collapse: linkedin_accept_invite + linkedin_connection_accepted
+            if etype == "linkedin_accept_invite":
+                _skip_accept = True
+                continue
+            if etype == "linkedin_connection_accepted" and _skip_accept:
+                _skip_accept = False
+                lines.append(f"  {ts} -- LinkedIn: accepted")
+                continue
+
+            # Reset collapse trackers if broken sequence
+            if etype not in ("linkedin_connect",):
+                _skip_connect = False
+            if etype not in ("linkedin_connection_accepted",):
+                _skip_accept = False
+
+            # Direction icon
+            icon = "Sent" if direction == "outbound" else "Rcvd"
+
+            # Human-readable label
+            label_map = {
+                "email_sent": "Email",
+                "email_reply": "Reply via email",
+                "email_bounce": "Bounced",
+                "linkedin_connect": "LinkedIn connect",
+                "linkedin_connection_accepted": "LinkedIn accepted",
+                "linkedin_message": "LinkedIn DM",
+                "linkedin_dm_message_sent": "LinkedIn DM",
+                "linkedin_inmail": "InMail",
+                "meeting_booked": "Meeting booked",
+                "meeting_completed": "Meeting completed",
+                "lead_status_updated": "Status update",
+                "withdraw_connection": "Withdrew connection",
+            }
+            short = label_map.get(etype, etype.replace("_", " ").title())
+
+            # Build the timeline line
+            if etype == "email_sent":
+                subj = subject or "(no subject)"
+                lines.append(f"  {ts} -- {icon}: {subj}")
+                if body_preview and body_preview != "From linkedin.com/in/treybuck":
+                    preview = body_preview[:120].replace("\n", " ").strip()
+                    lines.append(f"       {preview}")
+
+            elif etype in ("linkedin_message", "linkedin_dm_message_sent"):
+                if body_preview and body_preview not in ("From linkedin.com/in/treybuck", ""):
+                    preview = body_preview[:150].replace("\n", " ").strip()
+                    lines.append(f"  {ts} -- {icon}: {preview}")
+                else:
+                    lines.append(f"  {ts} -- {icon}: LinkedIn DM (no body)")
+
+            elif etype == "meeting_booked":
+                subj = subject or "Meeting"
+                lines.append(f"  {ts} -- Rcvd: {subj}")
+                preview = body_preview or ""
+                date_match = re.search(r'[A-Z][a-z]{2}\s+\d+,\s+\d{4}\s+\d+:\d+\s+(?:AM|PM)',
+                                       preview)
+                if date_match:
+                    lines.append(f"       {date_match.group(0)}")
+                elif "Status:" in preview:
+                    for line in preview.split("\n"):
+                        line = line.strip()
+                        if line and line != "active":
+                            lines.append(f"       {line}")
+                            break
+
+            elif etype == "lead_status_updated":
+                if body_preview and "out of office" in body_preview.lower() or "automatic reply" in body_preview.lower():
+                    lines.append(f"  {ts} -- Auto-reply detected")
+                else:
+                    lines.append(f"  {ts} -- Status updated")
+
+            elif etype == "email_bounce":
+                lines.append(f"  {ts} -- Email bounced")
+                if body_preview:
+                    preview = body_preview[:100].replace("\n", " ").strip()
+                    lines.append(f"       {preview}")
+
+            else:
+                lines.append(f"  {ts} -- {short}")
 
     return "\n".join(lines)
 

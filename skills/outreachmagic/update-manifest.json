@@ -49,7 +49,7 @@
     "pipeline_update.py": "ed0a561ee6a56a0e65310641236c2cdca318a6f96f9c07b2843e0c4648a20dc1",
     "pipeline_utils.py": "d7d17312c273afd54df2ccad2c3272385278103d67d8fec4ff2b38d9d530c280",
     "pipeline_workspace.py": "fe0cc31a60d4106ea5b5c8df166e82fdfca6ecaf348ff678265e3cc260f44a1e",
-    "platform_registry.py": "2ed0e4e9513944eff15fdb58637527fa33a86a1c310c6fe7f728386a41028bd4",
+    "platform_registry.py": "4ecccbb696f8137580f405122b2d6c1b8a4f7de13502a34baf7bec2ecbf08dce",
     "progress.py": "3de4fedf1c2c93b371b96b4b0f5bf8f3c7569893e7abfa9f0e07f5db147dc8fb",
     "quarantine_resolutions.py": "62f0f3080f3174317cf946453a5b964b963008ceb76b55067a59671b7d53eeca",
     "query_cli.py": "7e9fe447a6a9c569e4e5c0fa061a3b173440356d91e29bc45bfecef2a48d7311",

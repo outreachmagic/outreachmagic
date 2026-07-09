@@ -297,7 +297,11 @@ def sync_company(
     conn, workspace_id: str, platform: str,
 ) -> str:
     """Sync company record to CRM. Returns company_id or empty string."""
-    company_name = lead.get("company_name") or lead.get("company") or ""
+    company_name = (
+        lead.get("company")               # l.company — human-readable name
+        or lead.get("company_name")       # c.name — often wrong (domain instead of name)
+        or ""
+    )
     if not company_name:
         return ""
 
@@ -643,23 +647,11 @@ def sync_workspace(
                         e["rowid"] for e in all_events if e.get("rowid") is not None
                     ) if any(e.get("rowid") is not None for e in all_events) else None
 
-                    # Filter to only email events for GHL conversation push
-                    email_events = [e for e in all_events
-                                    if e.get("event_type") in ("email_sent", "email_reply")]
-                    if email_events:
-                        receiver_li = lead.get("linkedin_url", "")
-                        for ev in email_events:
-                            ev["receiver_linkedin_url"] = receiver_li
-                        try:
-                            count, _ = driver.push_events(contact_id, deal_id, email_events)
-                            results["events_pushed"] += count
-                        except Exception as ev_exc:
-                            print(
-                                f"  Error pushing events for lead {lead_id_val}: "
-                                f"{ev_exc}",
-                                file=sys.stderr,
-                            )
-                            results["errors"] += 1
+                    # Individual email_sent/email_reply events are no longer pushed
+                    # as GHL conversation messages. They are included in the OM
+                    # summary note below (Phase 6) which gets updated on each sync.
+                    # This reduces GHL timeline clutter while preserving full
+                    # event history in notes.
 
                     # Advance cursor past ALL collected events (including non-email)
                     # so they are not re-collected, even though they weren't pushed.
@@ -812,6 +804,16 @@ def maybe_push_crm_sync_status(conn, *, workspace_id: str = "") -> dict:
 # Summary note builder
 # ---------------------------------------------------------------------------
 
+def _friendly_sender(sender: str) -> str:
+    """Shorten a LinkedIn profile URL sender to its handle (e.g.
+    'linkedin.com/in/janedoe' -> 'janedoe'); other sender formats pass through."""
+    if not sender:
+        return ""
+    if "linkedin.com/in/" in sender:
+        return sender.rstrip("/").rsplit("/", 1)[-1]
+    return sender
+
+
 def _build_om_summary_body(lead: dict, conn, ws_id: str,
                            extra_emails: list[str] | None = None) -> str:
     """Build the Outreach Magic summary note body for a lead (plain text)."""
@@ -891,6 +893,22 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
     if linkedin_url:
         lines.append("LI: " + linkedin_url)
 
+    # Senders used (email + LinkedIn)
+    try:
+        sender_rows = conn.execute("""
+            SELECT DISTINCT sender FROM events
+            WHERE lead_id = ? AND sender IS NOT NULL AND sender != ''
+            AND event_type IN ('email_sent', 'email_reply', 'linkedin_message',
+                               'linkedin_dm_message_sent', 'linkedin_inmail',
+                               'linkedin_connect', 'linkedin_connect_sent')
+            ORDER BY sender
+        """, (lid,)).fetchall()
+        if sender_rows:
+            senders = [r[0] for r in sender_rows]
+            lines.append("Senders: " + ", ".join(senders))
+    except Exception:
+        pass
+
     # Full event timeline
     try:
         events = conn.execute("""
@@ -909,6 +927,7 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
         # Collapse related LinkedIn events
         _skip_connect = False
         _skip_accept = False
+        _connect_sender = ""
 
         for ev in events:
             d = dict(ev)
@@ -931,10 +950,13 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
             # Collapse: linkedin_connect_sent + linkedin_connect (same second = same event)
             if etype == "linkedin_connect_sent":
                 _skip_connect = True
+                _connect_sender = sender
                 continue
             if etype == "linkedin_connect" and _skip_connect:
                 _skip_connect = False
-                lines.append(f"  {ts} -- LinkedIn: connected (via treybuck)")
+                via_sender = _friendly_sender(_connect_sender or sender)
+                via = f" (via {via_sender})" if via_sender else ""
+                lines.append(f"  {ts} -- LinkedIn: connected{via}")
                 continue
 
             # Collapse: linkedin_accept_invite + linkedin_connection_accepted
@@ -972,23 +994,28 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
             }
             short = label_map.get(etype, etype.replace("_", " ").title())
 
+            # Body may just be the generic "From <sender>" placeholder
+            # relay_ingest falls back to when there's no real message
+            # content — don't print that as if it were a preview.
+            no_body_placeholder = f"From {sender}" if sender else ""
+
             # Build the timeline line
             if etype == "email_sent":
                 subj = subject or "(no subject)"
                 lines.append(f"  {ts} -- EML Sent: {subj}")
-                if body and body != "From linkedin.com/in/treybuck":
+                if body and body != no_body_placeholder:
                     preview = body[:500].replace("\n", " ").strip()
                     lines.append(f"       {preview}")
 
             elif etype == "email_reply":
                 subj = subject or "(no subject)"
                 lines.append(f"  {ts} -- EML Rcvd: {subj}")
-                if body and body not in ("From linkedin.com/in/treybuck", ""):
+                if body and body not in (no_body_placeholder, ""):
                     preview = body[:500].replace("\n", " ").strip()
                     lines.append(f"       {preview}")
 
             elif etype in ("linkedin_message", "linkedin_dm_message_sent"):
-                if body and body not in ("From linkedin.com/in/treybuck", ""):
+                if body and body not in (no_body_placeholder, ""):
                     preview = body[:500].replace("\n", " ").strip()
                     lines.append(f"  {ts} -- LI Rcvd: {preview}" if direction == "inbound" else f"  {ts} -- LI Sent: {preview}")
                 else:

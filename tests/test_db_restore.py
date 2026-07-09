@@ -22,7 +22,7 @@ def _isolate_db(tmp_path, monkeypatch):
 
 def _seed_live_db() -> Path:
     om.init_db()
-    om.create_workspace("PopCam", "popcam", sync=False)
+    om.create_workspace("AcmeCo", "acme", sync=False)
     db_path = om.get_db_path()
     conn = om.get_conn()
     conn.execute(

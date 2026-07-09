@@ -24,7 +24,7 @@ Usage:
   pipeline.py history --name "Jane"         # Look up by name (partial)
   pipeline.py stats                         # Quick stats
   pipeline.py campaigns                   # Counts by campaign name
-  pipeline.py query engagement --workspace popcam --since 48h --json
+  pipeline.py query engagement --workspace acme --since 48h --json
   pipeline.py update                        # Install latest release (user-triggered)
   pipeline.py update --check                # Check for newer release without installing
 """

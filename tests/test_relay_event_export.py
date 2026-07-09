@@ -39,7 +39,7 @@ class RelayEventExportTests(unittest.TestCase):
             lead_id,
             "email_sent",
             metadata={"source": "csv"},
-            campaign="popcam | test campaign",
+            campaign="acme | test campaign",
         )
         conn = om.get_conn()
         conn.execute("DELETE FROM relay_ingested WHERE dedupe_key LIKE 'event:%'")
@@ -49,7 +49,7 @@ class RelayEventExportTests(unittest.TestCase):
         export = om.export_local_changes(events_only=True)
         logs = [e for e in export["entries"] if e.get("action") == "event_log"]
         self.assertEqual(len(logs), 1)
-        self.assertEqual(logs[0]["payload"].get("campaign"), "popcam | test campaign")
+        self.assertEqual(logs[0]["payload"].get("campaign"), "acme | test campaign")
         self.assertIsNotNone(logs[0].get("event_id"))
 
     def test_ingest_event_log_restores_campaign(self):
@@ -81,7 +81,7 @@ class RelayEventExportTests(unittest.TestCase):
                         "event_type": "email_reply",
                         "direction": "inbound",
                         "channel": "email",
-                        "campaign": "popcam | career services",
+                        "campaign": "acme | career services",
                     },
                 },
             }
@@ -95,7 +95,7 @@ class RelayEventExportTests(unittest.TestCase):
         conn.close()
         self.assertIsNotNone(row)
         meta = json.loads(row["metadata_json"])
-        self.assertEqual(meta.get("campaign"), "popcam | career services")
+        self.assertEqual(meta.get("campaign"), "acme | career services")
         self.assertIsNotNone(row["campaign_id"])
 
 

@@ -30,7 +30,7 @@ class AgentSyncTimestampTests(unittest.TestCase):
             "event_type": "email_sent",
             "direction": "outbound",
             "channel": "email",
-            "campaign": "popcam | test",
+            "campaign": "acme | test",
             **payload_extra,
         }
         return om.ingest_agent_entry(
@@ -96,14 +96,14 @@ class AgentSyncTimestampTests(unittest.TestCase):
         lead_id = self._ingest_event_log(
             entity_key="sender-replay@example.com",
             timestamp="2026-05-20T10:00:00Z",
-            sender="outreach@popcam.com",
+            sender="outreach@acme.com",
         )
         conn = om.get_conn()
         row = conn.execute(
             "SELECT sender FROM events WHERE lead_id = ?", (lead_id,)
         ).fetchone()
         conn.close()
-        self.assertEqual(row["sender"], "outreach@popcam.com")
+        self.assertEqual(row["sender"], "outreach@acme.com")
 
     def test_export_includes_sender_in_payload(self):
         result = om.resolve_lead(
@@ -199,8 +199,8 @@ class AgentSyncTimestampTests(unittest.TestCase):
                     "event_type": "email_sent",
                     "direction": "outbound",
                     "channel": "email",
-                    "campaign": "popcam | headshot lounge",
-                    "sender": "jackson@popcam.com",
+                    "campaign": "acme | headshot lounge",
+                    "sender": "jackson@acme.com",
                 },
             },
         }
@@ -235,7 +235,7 @@ class AgentSyncTimestampTests(unittest.TestCase):
         ).fetchone()
         conn.close()
         self.assertTrue(str(ev["created_at"]).startswith("2026-03-17"))
-        self.assertEqual(ev["sender"], "jackson@popcam.com")
+        self.assertEqual(ev["sender"], "jackson@acme.com")
         self.assertTrue(str(wle["event_at"]).startswith("2026-03-17"))
 
 

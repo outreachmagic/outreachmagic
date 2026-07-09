@@ -11,9 +11,7 @@ dist/
 # Outreach Magic — local database, config, and secrets
 skills/outreachmagic/config/
 skills/outreachmagic/databases/
-skills/outreachmagic/export/batch_sync.log
-skills/outreachmagic/export/*.log
-skills/outreachmagic/export/*.db
+skills/outreachmagic/export/
 *.pre_*.db
 
 # Outreach Magic — email finder / enrichment results

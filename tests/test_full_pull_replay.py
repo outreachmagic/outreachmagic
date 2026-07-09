@@ -96,7 +96,7 @@ def test_agent_sync_payload_from_entity_key_email():
 def test_event_log_bootstraps_lead_from_entity_key():
     om.init_db()
     om.set_workspace_routing("multi")
-    om.create_workspace("PopCam", "popcam", sync=False)
+    om.create_workspace("AcmeCo", "acme", sync=False)
     conn = om.get_conn()
     config = om.get_org_routing_config(conn, DEFAULT_ORG_ID)
     ws_map = om._pull_workspace_slug_map(conn, DEFAULT_ORG_ID)
@@ -110,13 +110,13 @@ def test_event_log_bootstraps_lead_from_entity_key():
         "payload": {
             "action": "event_log",
             "client_id": "remote-replay-client",
-            "workspace": "popcam",
+            "workspace": "acme",
             "timestamp": "2026-06-01T12:00:00Z",
             "data": {
                 "event_type": "email_sent",
                 "direction": "outbound",
                 "channel": "email",
-                "campaign": "popcam | headshot lounge",
+                "campaign": "acme | headshot lounge",
                 "body_preview": "Hello",
             },
         },
@@ -177,7 +177,7 @@ def test_full_pull_replays_event_log_after_core_snapshot(monkeypatch):
                 "event_type": "email_sent",
                 "direction": "outbound",
                 "channel": "email",
-                "campaign": "popcam | headshot lounge",
+                "campaign": "acme | headshot lounge",
                 "body_preview": "Hi",
             },
         },
@@ -243,7 +243,7 @@ def test_full_pull_replays_event_log_after_core_snapshot(monkeypatch):
     conn.close()
     assert int(count) >= 1
     assert meta is not None
-    assert json.loads(meta["metadata_json"]).get("campaign") == "popcam | headshot lounge"
+    assert json.loads(meta["metadata_json"]).get("campaign") == "acme | headshot lounge"
     assert ts_row is not None
     assert str(ts_row["created_at"]).startswith("2026-06-01")
     assert int(wle["n"]) >= 1
@@ -268,7 +268,7 @@ def test_event_log_bootstraps_even_when_events_run_before_snapshots(monkeypatch)
                 "event_type": "email_sent",
                 "direction": "outbound",
                 "channel": "email",
-                "campaign": "popcam | career services",
+                "campaign": "acme | career services",
             },
         },
     }
@@ -334,7 +334,7 @@ def test_many_event_logs_after_snapshots(monkeypatch):
                     "event_type": "email_sent",
                     "direction": "outbound",
                     "channel": "email",
-                    "campaign": "popcam | marketing",
+                    "campaign": "acme | marketing",
                 },
             },
         }

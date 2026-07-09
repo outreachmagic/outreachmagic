@@ -311,7 +311,7 @@ def test_phase_0_defaults():
 # ---------------------------------------------------------------------------
 
 WS1_ID = "ws-phase1-a"
-WS1_SLUG = "popcam"
+WS1_SLUG = "acme"
 WS2_ID = "ws-phase1-b"
 WS2_SLUG = "sideproj"
 
@@ -325,7 +325,7 @@ def _setup_phase_1_data(conn):
     )
     conn.execute(
         "INSERT OR IGNORE INTO workspaces (id, org_id, name, slug) VALUES (?, ?, ?, ?)",
-        (WS1_ID, DEFAULT_ORG_ID, "Popcam", WS1_SLUG),
+        (WS1_ID, DEFAULT_ORG_ID, "Acme", WS1_SLUG),
     )
     conn.execute(
         "INSERT OR IGNORE INTO workspaces (id, org_id, name, slug) VALUES (?, ?, ?, ?)",
@@ -351,7 +351,7 @@ def _setup_phase_1_data(conn):
     # Company
     conn.execute(
         "INSERT OR IGNORE INTO companies (id, name, domain) VALUES (?, ?, ?)",
-        (1, "Popcam Inc", "popcam.com"),
+        (1, "Acme Inc", "acme.com"),
     )
     conn.execute("UPDATE leads SET company_id = 1 WHERE id = 1")
     conn.execute("UPDATE leads SET company_id = 1 WHERE id = 2")
@@ -376,14 +376,14 @@ def _setup_phase_1_data(conn):
             (wl_id, DEFAULT_ORG_ID, ws_id, lead_id, status),
         )
 
-    # CRM config for popcam / ghl
+    # CRM config for acme / ghl
     conn.execute(
         "INSERT OR IGNORE INTO crm_workspace_config (workspace_id, platform, api_key, pipeline_id, stage_mapping) VALUES (?, ?, ?, ?, ?)",
         (WS1_ID, "ghl", "mock-key-1", "pipe-1",
          '{"interested":"stage-interested","scheduled":"stage-proposal","won":"stage-won","lost":"stage-lost"}'),
     )
 
-    # Second config for popcam / hubspot
+    # Second config for acme / hubspot
     conn.execute(
         "INSERT OR IGNORE INTO crm_workspace_config (workspace_id, platform, api_key, pipeline_id, stage_mapping) VALUES (?, ?, ?, ?, ?)",
         (WS1_ID, "hubspot", "mock-key-hs", "hs-pipe-1",
@@ -550,8 +550,8 @@ def test_phase_1_lead_selection_joins():
         assert alice["name"] == "Alice"
         assert alice["email"] == "alice@example.com"
         assert alice["title"] == "CEO"
-        assert alice["company_name"] == "Popcam Inc"
-        assert alice["company_domain"] == "popcam.com"
+        assert alice["company_name"] == "Acme Inc"
+        assert alice["company_domain"] == "acme.com"
 
         # Charlie has no company — domain should be None
         charlie = next(l for l in leads if l.get("email") == "charlie@example.com")
@@ -609,7 +609,7 @@ def test_phase_1_dry_run_no_calls():
             "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
         }
         results = crm_sync.sync_workspace(
-            conn, WS1_ID, "Popcam", cfg, dry_run=True, driver=mock,
+            conn, WS1_ID, "Acme", cfg, dry_run=True, driver=mock,
         )
         # Driver should have zero calls
         assert len(mock.calls) == 0, f"driver should have no calls in dry-run, got {mock.calls}"
@@ -631,7 +631,7 @@ def test_phase_1_dry_run_prints_actions(capsys):
             "pipeline_id": "pipe-1",
             "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
         }
-        crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, dry_run=True, driver=mock)
+        crm_sync.sync_workspace(conn, WS1_ID, "Acme", cfg, dry_run=True, driver=mock)
         captured = capsys.readouterr().out
         assert "Would create contact" in captured
         assert "Would upsert deal" in captured
@@ -640,7 +640,7 @@ def test_phase_1_dry_run_prints_actions(capsys):
 
 
 def test_phase_1_sync_single_workspace():
-    """--workspace popcam filters to that workspace only."""
+    """--workspace acme filters to that workspace only."""
     om.init_db()
     conn = get_conn()
     try:
@@ -659,7 +659,7 @@ def test_phase_1_sync_single_workspace():
             "pipeline_id": "pipe-1",
             "stage_mapping": {"interested": "s1"},
         }
-        results = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock)
+        results = crm_sync.sync_workspace(conn, WS1_ID, "Acme", cfg, driver=mock)
         # 7 leads in ws1 (excluding contacted), none from ws2
         assert results["leads_checked"] == 7
     finally:
@@ -672,7 +672,7 @@ def test_phase_1_sync_all_workspaces():
     conn = get_conn()
     try:
         _setup_phase_1_data(conn)
-        # Only popcam has config, sideproj has none
+        # Only acme has config, sideproj has none
         config_ids = [
             r["workspace_id"]
             for r in conn.execute(
@@ -719,13 +719,13 @@ def test_phase_1_sync_workspace_max_age():
             "pipeline_id": "pipe-1",
             "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
         }
-        results = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock, max_age="30d")
+        results = crm_sync.sync_workspace(conn, WS1_ID, "Acme", cfg, driver=mock, max_age="30d")
         # 7 syncable leads total, minus the 1 stale lead
         assert results["leads_checked"] == 6
 
         # Baseline: no max_age still checks all 7
         mock2 = MockDriver()
-        results2 = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock2)
+        results2 = crm_sync.sync_workspace(conn, WS1_ID, "Acme", cfg, driver=mock2)
         assert results2["leads_checked"] == 7
     finally:
         conn.close()
@@ -743,7 +743,7 @@ def test_phase_1_sync_log_written():
             "pipeline_id": "pipe-1",
             "stage_mapping": {"interested": "s1", "scheduled": "s2", "won": "s3", "lost": "s4"},
         }
-        results = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock)
+        results = crm_sync.sync_workspace(conn, WS1_ID, "Acme", cfg, driver=mock)
 
         log_rows = conn.execute(
             "SELECT * FROM crm_sync_log WHERE workspace_id = ? AND platform = ? ORDER BY started_at DESC LIMIT 1",
@@ -796,7 +796,7 @@ def test_phase_1_status(capsys):
         args = _make_namespace(command="status")
         crm_sync.cmd_status(args)
         captured = capsys.readouterr().out
-        assert "Popcam" in captured
+        assert "Acme" in captured
         assert "ghl" in captured
         assert "Yes" in captured
         assert "pipe-1" in captured
@@ -1267,14 +1267,14 @@ def test_ghl_push_events_note_format():
     # LinkedIn events — structured multi-line format (plain text)
     note = _format_event_note({
         "event_type": "linkedin_connect", "direction": "outbound",
-        "event": {"sender": "linkedin.com/in/treybuck"},
+        "event": {"sender": "linkedin.com/in/exampleuser"},
         "receiver_linkedin_url": "linkedin.com/in/jasonceckert",
         "body_preview": "sent a connection request",
         "subject": "sent a connection request",
     })
     assert "LinkedIn Connect" in note
     assert "Direction: outbound" in note
-    assert "Sender: linkedin.com/in/treybuck" in note
+    assert "Sender: linkedin.com/in/exampleuser" in note
     assert "Receiver: linkedin.com/in/jasonceckert" in note
     assert "Subject: sent a connection request" in note
     assert "Body:" in note
@@ -1282,7 +1282,7 @@ def test_ghl_push_events_note_format():
 
     note = _format_event_note({
         "event_type": "linkedin_connection_accepted", "direction": "inbound",
-        "event": {"sender": "linkedin.com/in/treybuck"},
+        "event": {"sender": "linkedin.com/in/exampleuser"},
         "receiver_linkedin_url": "linkedin.com/in/jasonceckert",
         "body_preview": "accepted a connection request",
     })
@@ -1292,7 +1292,7 @@ def test_ghl_push_events_note_format():
     # LinkedIn message with no body → no Body: line
     note = _format_event_note({
         "event_type": "linkedin_message", "direction": "outbound",
-        "event": {"sender": "linkedin.com/in/treybuck"},
+        "event": {"sender": "linkedin.com/in/exampleuser"},
         "receiver_linkedin_url": "",
     })
     assert "LinkedIn Message" in note
@@ -2215,7 +2215,7 @@ def _setup_phase_4_data(conn):
     )
     conn.execute(
         "INSERT OR IGNORE INTO workspaces (id, org_id, name, slug) VALUES (?, ?, ?, ?)",
-        (WS1_ID, DEFAULT_ORG_ID, "Popcam", WS1_SLUG),
+        (WS1_ID, DEFAULT_ORG_ID, "Acme", WS1_SLUG),
     )
     conn.execute(
         "INSERT OR IGNORE INTO leads (id, name, email, title, industry) VALUES (?, ?, ?, ?, ?)",
@@ -2812,7 +2812,7 @@ def _setup_phase_5_event_data(conn):
     )
     conn.execute(
         "INSERT OR IGNORE INTO workspaces (id, org_id, name, slug) VALUES (?, ?, ?, ?)",
-        (WS1_ID, DEFAULT_ORG_ID, "Popcam", WS1_SLUG),
+        (WS1_ID, DEFAULT_ORG_ID, "Acme", WS1_SLUG),
     )
     # Ensure lead 1 exists with a workspace_lead
     conn.execute(
@@ -2910,7 +2910,7 @@ def test_event_collection_limit():
         )
         conn.execute(
             "INSERT OR IGNORE INTO workspaces (id, org_id, name, slug) VALUES (?, ?, ?, ?)",
-            (WS1_ID, DEFAULT_ORG_ID, "Popcam", WS1_SLUG),
+            (WS1_ID, DEFAULT_ORG_ID, "Acme", WS1_SLUG),
         )
         conn.execute(
             "INSERT OR IGNORE INTO leads (id, name, email) VALUES (?, ?, ?)",
@@ -2952,7 +2952,7 @@ def test_event_collection_empty():
         )
         conn.execute(
             "INSERT OR IGNORE INTO workspaces (id, org_id, name, slug) VALUES (?, ?, ?, ?)",
-            (WS1_ID, DEFAULT_ORG_ID, "Popcam", WS1_SLUG),
+            (WS1_ID, DEFAULT_ORG_ID, "Acme", WS1_SLUG),
         )
         conn.execute(
             "INSERT OR IGNORE INTO leads (id, name, email) VALUES (?, ?, ?)",
@@ -3024,7 +3024,7 @@ def _setup_phase_5_sync_data(conn):
     )
     conn.execute(
         "INSERT OR IGNORE INTO workspaces (id, org_id, name, slug) VALUES (?, ?, ?, ?)",
-        (WS1_ID, DEFAULT_ORG_ID, "Popcam", WS1_SLUG),
+        (WS1_ID, DEFAULT_ORG_ID, "Acme", WS1_SLUG),
     )
     conn.execute(
         "INSERT OR IGNORE INTO leads (id, name, email, title, industry) VALUES (?, ?, ?, ?, ?)",
@@ -3071,7 +3071,9 @@ def _setup_phase_5_sync_data(conn):
 
 
 def test_event_cursor_updated():
-    """After push, last_event_id_synced updated to max event rowid."""
+    """Cursor (last_event_id_synced) advances past collected events even though
+    individual email events are no longer pushed as GHL conversation messages
+    (they're folded into the OM summary note instead)."""
     om.init_db()
     conn = get_conn()
     try:
@@ -3091,31 +3093,32 @@ def test_event_cursor_updated():
             "headcount": None, "linkedin_url": None,
         }
 
-        results = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock)
+        results = crm_sync.sync_workspace(conn, WS1_ID, "Acme", cfg, driver=mock)
 
-        # Events should have been pushed
-        assert results["events_pushed"] == 2, f"expected 2 events pushed, got {results['events_pushed']}"
-        assert mock.pushed_events_count == 2
+        # No individual conversation-message push anymore
+        assert results["events_pushed"] == 0, f"expected 0 events pushed, got {results['events_pushed']}"
+        assert mock.pushed_events_count == 0
 
-        # Cursor should be set
+        # Cursor should still be set (advanced past the collected events)
         entity = conn.execute(
             "SELECT last_event_id_synced FROM crm_entity_map WHERE workspace_id = ? AND lead_id = ? AND platform = ?",
             (WS1_ID, 1, "ghl"),
         ).fetchone()
         assert entity is not None
-        assert entity["last_event_id_synced"] is not None, "cursor should be set after event push"
+        assert entity["last_event_id_synced"] is not None, "cursor should be set after processing events"
     finally:
         conn.close()
 
 
 def test_event_cursor_incremental():
-    """Re-sync after new events pushes only new ones."""
+    """Re-sync after new events advances the cursor incrementally (no individual
+    conversation-message push anymore, but the cursor still only ever moves
+    forward past newly-collected events)."""
     om.init_db()
     conn = get_conn()
     try:
         _setup_phase_5_sync_data(conn)
 
-        # First sync: push 2 events, cursor advances
         mock1 = MockDriver()
         cfg = {
             "workspace_id": WS1_ID,
@@ -3131,28 +3134,37 @@ def test_event_cursor_incremental():
             "headcount": None, "linkedin_url": None,
         }
 
-        r1 = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock1)
-        assert r1["events_pushed"] == 2, f"first sync: expected 2 events, got {r1['events_pushed']}"
+        r1 = crm_sync.sync_workspace(conn, WS1_ID, "Acme", cfg, driver=mock1)
+        assert r1["events_pushed"] == 0
+        cursor_after_first = conn.execute(
+            "SELECT last_event_id_synced FROM crm_entity_map WHERE workspace_id = ? AND lead_id = ? AND platform = ?",
+            (WS1_ID, 1, "ghl"),
+        ).fetchone()["last_event_id_synced"]
+        assert cursor_after_first is not None, "cursor should advance after first sync"
 
-        # Add 1 new email event (meeting_booked wouldn't be pushed at all,
-        # since only email_sent/email_reply go to the conversation timeline)
+        # Add 1 new event
         conn.execute(
             """INSERT OR IGNORE INTO workspace_lead_events
                (id, org_id, workspace_id, lead_id, event_type, event_at,
                 source_platform, idempotency_key, payload_json)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ("ev-incremental", DEFAULT_ORG_ID, WS1_ID, 1, "email_sent",
+            ("ev-incremental", DEFAULT_ORG_ID, WS1_ID, 1, "meeting_booked",
              "2026-06-02T10:00:00Z", "email", "ikey-incremental", '{}'),
         )
         conn.commit()
 
-        # Second sync: only 1 new event
+        # Second sync: still no conversation-message push, but the cursor
+        # should advance further to cover the newly-collected event.
         mock2 = MockDriver()
-        r2 = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock2)
-        assert r2["events_pushed"] == 1, f"second sync: expected 1 new event, got {r2['events_pushed']}"
-
-        # Verify mock2 only received 1 event
-        assert mock2.pushed_events_count == 1
+        r2 = crm_sync.sync_workspace(conn, WS1_ID, "Acme", cfg, driver=mock2)
+        assert r2["events_pushed"] == 0
+        cursor_after_second = conn.execute(
+            "SELECT last_event_id_synced FROM crm_entity_map WHERE workspace_id = ? AND lead_id = ? AND platform = ?",
+            (WS1_ID, 1, "ghl"),
+        ).fetchone()["last_event_id_synced"]
+        assert cursor_after_second > cursor_after_first, (
+            "cursor should advance past the new event on incremental re-sync"
+        )
     finally:
         conn.close()
 
@@ -3174,7 +3186,7 @@ def test_skip_events_flag():
         }
 
         results = crm_sync.sync_workspace(
-            conn, WS1_ID, "Popcam", cfg, driver=mock, skip_events=True,
+            conn, WS1_ID, "Acme", cfg, driver=mock, skip_events=True,
         )
         assert results["events_pushed"] == 0, f"expected 0 events with skip, got {results['events_pushed']}"
         assert mock.pushed_events_count == 0, "driver should not have pushed any events"
@@ -3532,10 +3544,10 @@ def _setup_phase_6_data(conn):
         (DEFAULT_ORG_ID, "test-org"),
     )
     ws_id = "ws-p6-001"
-    ws_slug = "popcam"
+    ws_slug = "acme"
     conn.execute(
         "INSERT OR IGNORE INTO workspaces (id, org_id, name, slug) VALUES (?, ?, ?, ?)",
-        (ws_id, DEFAULT_ORG_ID, "Popcam", ws_slug),
+        (ws_id, DEFAULT_ORG_ID, "Acme", ws_slug),
     )
     # Lead with all required fields for CRM sync
     conn.execute(
@@ -3591,7 +3603,7 @@ def test_hook_update_stage_triggers_crm_sync():
         _setup_phase_6_data(conn)
         mock_popen = _call_pipeline([
             "update-stage", "--id", "9001", "--stage", "interested",
-            "--workspace", "popcam", "--crm-sync",
+            "--workspace", "acme", "--crm-sync",
         ])
         assert mock_popen.called, "subprocess.Popen should have been called"
         call_args = mock_popen.call_args[0][0]
@@ -3601,7 +3613,7 @@ def test_hook_update_stage_triggers_crm_sync():
         assert "--lead-id" in call_args
         assert "9001" in call_args
         assert "--workspace" in call_args
-        assert "popcam" in call_args
+        assert "acme" in call_args
     finally:
         conn.close()
 
@@ -3615,7 +3627,7 @@ def test_hook_log_event_triggers_crm_sync():
         mock_popen = _call_pipeline([
             "log-event", "--lead-id", "9001", "--type", "reply",
             "--direction", "inbound", "--subject", "Re: Hello",
-            "--workspace", "popcam", "--crm-sync",
+            "--workspace", "acme", "--crm-sync",
         ])
         assert mock_popen.called, "subprocess.Popen should have been called"
         call_args = mock_popen.call_args[0][0]
@@ -3625,7 +3637,7 @@ def test_hook_log_event_triggers_crm_sync():
         assert "--lead-id" in call_args
         assert "9001" in call_args
         assert "--workspace" in call_args
-        assert "popcam" in call_args
+        assert "acme" in call_args
     finally:
         conn.close()
 
@@ -3638,7 +3650,7 @@ def test_hook_update_stage_no_crm_sync():
         _setup_phase_6_data(conn)
         mock_popen = _call_pipeline([
             "update-stage", "--id", "9001", "--stage", "contacted",
-            "--workspace", "popcam",
+            "--workspace", "acme",
         ])
         assert not mock_popen.called, (
             "subprocess.Popen should NOT have been called without --crm-sync"
@@ -3656,7 +3668,7 @@ def test_hook_log_event_no_crm_sync():
         mock_popen = _call_pipeline([
             "log-event", "--lead-id", "9001", "--type", "reply",
             "--direction", "inbound", "--subject", "Re: Hello",
-            "--workspace", "popcam",
+            "--workspace", "acme",
         ])
         assert not mock_popen.called, (
             "subprocess.Popen should NOT have been called without --crm-sync"
@@ -3673,7 +3685,7 @@ def test_hook_update_stage_non_mapped_status():
         _setup_phase_6_data(conn)
         mock_popen = _call_pipeline([
             "update-stage", "--id", "9001", "--stage", "prospecting",
-            "--workspace", "popcam", "--crm-sync",
+            "--workspace", "acme", "--crm-sync",
         ])
         assert not mock_popen.called, (
             "prospecting stage should NOT trigger CRM sync"
@@ -3698,7 +3710,7 @@ def test_hook_missing_crm_sync_py():
 
         mock_popen = _call_pipeline([
             "update-stage", "--id", "9001", "--stage", "interested",
-            "--workspace", "popcam", "--crm-sync",
+            "--workspace", "acme", "--crm-sync",
         ])
         # Popen should NOT be called since crm_sync.py doesn't exist
         assert not mock_popen.called, (
@@ -3735,7 +3747,7 @@ def test_hook_stderr_output():
         try:
             with patch.object(sys, "argv", ["pipeline.py",
                     "update-stage", "--id", "9001", "--stage", "interested",
-                    "--workspace", "popcam", "--crm-sync"]), \
+                    "--workspace", "acme", "--crm-sync"]), \
                  patch.object(om.subprocess, "Popen", mock_popen):
                 try:
                     om.main()
@@ -3747,7 +3759,7 @@ def test_hook_stderr_output():
         combined_stderr = "".join(stderr_lines)
         assert "CRM sync triggered" in combined_stderr
         assert "lead 9001" in combined_stderr
-        assert "popcam" in combined_stderr
+        assert "acme" in combined_stderr
     finally:
         conn.close()
 
@@ -3766,7 +3778,7 @@ def test_hook_subprocess_does_not_block():
         start = time.time()
         with patch.object(sys, "argv", ["pipeline.py",
                 "update-stage", "--id", "9001", "--stage", "interested",
-                "--workspace", "popcam", "--crm-sync"]), \
+                "--workspace", "acme", "--crm-sync"]), \
              patch.object(om.subprocess, "Popen", mock_popen):
             try:
                 om.main()

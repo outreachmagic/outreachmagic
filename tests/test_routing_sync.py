@@ -28,7 +28,7 @@ class RoutingSyncPendingTests(unittest.TestCase):
         om.ensure_organization(conn)
         conn.execute(
             """INSERT OR IGNORE INTO workspaces (id, org_id, name, slug, cloud_synced, created_at, updated_at)
-               VALUES ('ws_popcam', ?, 'PopCam', 'popcam', 1, datetime('now'), datetime('now'))""",
+               VALUES ('ws_acme', ?, 'AcmeCo', 'acme', 1, datetime('now'), datetime('now'))""",
             (DEFAULT_ORG_ID,),
         )
         conn.commit()
@@ -40,23 +40,23 @@ class RoutingSyncPendingTests(unittest.TestCase):
             conn,
             DEFAULT_ORG_ID,
             source_platform="*",
-            workspace_id="ws_popcam",
-            campaign_name="popcam",
+            workspace_id="ws_acme",
+            campaign_name="acme",
             match_strategy="rule_contains",
         )
         conn.commit()
         conn.close()
 
         cloud_bundle = {
-            "workspaces": [{"id": "ws_popcam", "slug": "popcam", "name": "PopCam"}],
+            "workspaces": [{"id": "ws_acme", "slug": "acme", "name": "AcmeCo"}],
             "campaignMaps": [
                 {
                     "id": "cloud_cuid_abc",
                     "sourcePlatform": "*",
                     "matchStrategy": "rule_contains",
                     "campaignId": None,
-                    "campaignNameNormalized": "popcam",
-                    "workspaceSlug": "popcam",
+                    "campaignNameNormalized": "acme",
+                    "workspaceSlug": "acme",
                 }
             ],
         }
@@ -74,15 +74,15 @@ class RoutingSyncPendingTests(unittest.TestCase):
             conn,
             DEFAULT_ORG_ID,
             source_platform="*",
-            workspace_id="ws_popcam",
-            campaign_name="popcam",
+            workspace_id="ws_acme",
+            campaign_name="acme",
             match_strategy="rule_contains",
         )
         conn.commit()
         conn.close()
 
         cloud_bundle = {
-            "workspaces": [{"id": "ws_popcam", "slug": "popcam", "name": "PopCam"}],
+            "workspaces": [{"id": "ws_acme", "slug": "acme", "name": "AcmeCo"}],
             "campaignMaps": [],
         }
 
@@ -98,10 +98,10 @@ class RoutingSyncPendingTests(unittest.TestCase):
             source_platform="*",
             match_strategy="rule_contains",
             campaign_platform_id=None,
-            campaign_name_normalized="PopCam",
-            workspace_slug="popcam",
+            campaign_name_normalized="AcmeCo",
+            workspace_slug="acme",
         )
-        self.assertEqual(sig, ("*", "rule_contains", None, "popcam", "popcam"))
+        self.assertEqual(sig, ("*", "rule_contains", None, "acmeco", "acme"))
 
 
 if __name__ == "__main__":

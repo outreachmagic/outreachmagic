@@ -72,7 +72,7 @@ def test_export_format_includes_sheets():
     export_p = sub.add_parser("export")
     export_p.add_argument("--workspace", required=True)
     export_p.add_argument("--format", choices=("csv", "json", "sheets"), default="csv")
-    args = parser.parse_args(["export", "--workspace", "popcam", "--format", "sheets"])
+    args = parser.parse_args(["export", "--workspace", "acme", "--format", "sheets"])
     assert args.format == "sheets"
 
 
@@ -90,14 +90,14 @@ def test_sheets_export_parser_exists():
     sheets_p = sub.add_parser("sheets")
     sheets_sub = sheets_p.add_subparsers(dest="sheets_command", required=True)
     sheets_sub.add_parser("export").add_argument("--workspace", required=True)
-    args = parser.parse_args(["sheets", "export", "--workspace", "popcam"])
+    args = parser.parse_args(["sheets", "export", "--workspace", "acme"])
     assert args.command == "sheets"
     assert args.sheets_command == "export"
 
 
 def test_daily_digest_and_format():
   om.init_db()
-  om.create_workspace("PopCam", "popcam", sync=False)
+  om.create_workspace("AcmeCo", "acme", sync=False)
   result = om.resolve_lead(
     email="digest@example.com",
     name="Digest Lead",
@@ -109,15 +109,15 @@ def test_daily_digest_and_format():
     lead_id,
     event_type="email_sent",
     direction="outbound",
-    campaign="popcam | headshot lounge",
+    campaign="acme | headshot lounge",
   )
   om.log_event(
     lead_id,
     event_type="email_reply",
     direction="inbound",
-    campaign="popcam | headshot lounge",
+    campaign="acme | headshot lounge",
   )
-  digest = rq.daily_digest(workspace="popcam")
+  digest = rq.daily_digest(workspace="acme")
   assert digest["emails_sent"] >= 1
   assert digest["replies"] >= 1
   text = rq.format_daily_digest(digest)
@@ -128,8 +128,8 @@ def test_daily_digest_and_format():
 def test_refresh_pre_wipe_routing_summary(monkeypatch):
   """Improvement 6: routing verified before DB wipe."""
   om.init_db()
-  om.create_workspace("PopCam", "popcam", sync=False)
-  om.add_campaign_map_cli("*", "popcam", campaign_name="popcam", match_strategy="rule_contains")
+  om.create_workspace("AcmeCo", "acme", sync=False)
+  om.add_campaign_map_cli("*", "acme", campaign_name="acme", match_strategy="rule_contains")
 
   monkeypatch.setattr(om, "maybe_sync_routing_from_cloud", lambda **k: True)
   monkeypatch.setattr(om, "maybe_sync_agent_secrets_from_cloud", lambda **k: None)

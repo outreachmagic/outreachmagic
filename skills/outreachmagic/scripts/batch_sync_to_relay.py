@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Push the local Popcam SQLite DB to api.outreachmagic.io in controlled batches.
+Push the local Acme SQLite DB to api.outreachmagic.io in controlled batches.
 
 How it works (not server-side cron batches — local script batches):
   1. EVENTS phase (once): pipeline.py sync pushes legacy message events to POST /push.

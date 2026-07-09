@@ -33,7 +33,7 @@ PLUSVIBE_BOUNCE_SAMPLES = [
     },
     {
         "lead_email": "t.harner@psu.edu",
-        "sender_email": "sebastian@rentpopcam.com",
+        "sender_email": "sebastian@rentacme.com",
         "msg": "<t.harner@psu.edu>... User unknown",
         "lead_mx": "MICROSOFT365",
         "webhook_event": "bounced_email",

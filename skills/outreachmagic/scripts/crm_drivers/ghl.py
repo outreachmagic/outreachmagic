@@ -172,8 +172,8 @@ class GhlDriver:
             "email": lead_data.get("email", ""),
         }
 
-        if lead_data.get("company_name") or lead_data.get("company"):
-            body["companyName"] = lead_data.get("company_name") or lead_data.get("company")
+        if lead_data.get("company") or lead_data.get("company_name"):
+            body["companyName"] = lead_data.get("company") or lead_data.get("company_name")
 
         website_val = lead_data.get("company_domain", "")
         if website_val:
@@ -257,7 +257,7 @@ class GhlDriver:
             body["phone"] = new_phone
 
         # companyName
-        company_val = lead_data.get("company_name") or lead_data.get("company")
+        company_val = lead_data.get("company") or lead_data.get("company_name")
         if company_val:
             if overwrite_existing or not existing_contact.get("companyName"):
                 body["companyName"] = company_val
@@ -329,8 +329,8 @@ class GhlDriver:
     ) -> str | None:
         """Create or find a GHL business (company). Returns businessId or None."""
         company_name = (
-            lead_data.get("company_name")
-            or lead_data.get("company")
+            lead_data.get("company")          # l.company — human-readable name
+            or lead_data.get("company_name")  # c.name — often wrong (domain instead of name)
             or ""
         )
         if not company_name:
@@ -338,12 +338,23 @@ class GhlDriver:
 
         existing_id = self._search_business_by_name(company_name)
         if existing_id:
+            # Backfill website on existing business if missing
+            domain = lead_data.get("company_domain") or ""
+            if domain:
+                try:
+                    self._request("PUT", f"/businesses/{existing_id}",
+                                  body={"name": company_name, "website": domain})
+                except Exception:
+                    pass  # Non-fatal
             return existing_id
 
         body = {
             "name": company_name,
             "locationId": self.location_id,
         }
+        domain = lead_data.get("company_domain") or ""
+        if domain:
+            body["website"] = domain
         resp = self._request("POST", "/businesses/", body=body)
         return resp.get("business", {}).get("id")
 

@@ -22,11 +22,11 @@ class ReviewCloudExportTests(unittest.TestCase):
             "https://app.outreachmagic.io",
             "token",
             template="lead-review",
-            title="Popcam Review",
+            title="Acme Review",
             detail="full",
             headers=["lead_id", "✏️ Name"],
             rows=[[1, "Teresa"]],
-            workspace="popcam",
+            workspace="acme",
             columns=columns,
             freeze_header=True,
         )
@@ -62,18 +62,18 @@ class ReviewCloudExportTests(unittest.TestCase):
             "https://app.outreachmagic.io",
             "token",
             template="lead-review",
-            title="Popcam Review",
+            title="Acme Review",
             detail="full",
             headers=["lead_id", "name", "email"],
             rows=[[1, "Teresa", "teresa@purdueglobal.edu"]],
-            workspace="popcam",
+            workspace="acme",
             share_email="owner@example.com",
         )
         mock_request.assert_called_once()
         body = mock_request.call_args.kwargs["body"]
         self.assertEqual(body["template"], "lead-review")
         self.assertEqual(body["detail"], "full")
-        self.assertEqual(body["workspace"], "popcam")
+        self.assertEqual(body["workspace"], "acme")
         self.assertEqual(body["headers"], ["lead_id", "name", "email"])
         self.assertEqual(body["rows"], [[1, "Teresa", "teresa@purdueglobal.edu"]])
         self.assertEqual(body["share_email"], "owner@example.com")

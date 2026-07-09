@@ -1043,6 +1043,16 @@ def ingest_relay_event(
             f"UPDATE workspace_leads SET {', '.join(mat_sets)} WHERE id = ?", mat_params
         )
 
+    # Non-human replies (autoreply, invalid) should never show as "replied".
+    # Guarded on ws_status == "replied" so this can't downgrade a lead that
+    # had already advanced further (interested/proposal/etc.) via an earlier
+    # event — same downgrade protection furthest_stage() gives target_stage above.
+    if status_sentiment in ("autoreply", "invalid") and ws_status == "replied":
+        conn.execute(
+            "UPDATE workspace_leads SET status = 'contacted', updated_at = datetime('now') WHERE id = ?",
+            (ws_lead_id,),
+        )
+
     if sender_norm:
         event_at_ts = event_at or datetime.now(timezone.utc).isoformat()
         om._update_lead_sender(conn, lead_id, workspace_id, sender_norm, platform, event_at_ts)

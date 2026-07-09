@@ -1,6 +1,6 @@
 # Relay sync progress (log format)
 
-`pipeline.py pull` and `pipeline.py sync` print human-readable progress to stdout. When run via `export/batch_sync_to_relay.py`, each line is also prefixed with an ISO timestamp and phase label in `outreachmagic/logs/batch_sync.log`.
+`pipeline.py pull` and `pipeline.py sync` print human-readable progress to stdout. When run via `scripts/batch_sync_to_relay.py`, each line is also prefixed with an ISO timestamp and phase label in `outreachmagic/logs/batch_sync.log`.
 
 ## Streams
 

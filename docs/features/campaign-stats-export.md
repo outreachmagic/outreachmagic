@@ -19,22 +19,22 @@ Every sheet tab includes a **settings note in cell A1** with workspace, time win
 
 ```bash
 # Export all campaign stats for a workspace (last 14 days by default)
-pipeline.py sheets campaign-stats --workspace popcam
+pipeline.py sheets campaign-stats --workspace acme
 
 # Custom time window
-pipeline.py sheets campaign-stats --workspace popcam --since 30d
+pipeline.py sheets campaign-stats --workspace acme --since 30d
 
 # All-time (no time filter)
-pipeline.py sheets campaign-stats --workspace popcam --since all
+pipeline.py sheets campaign-stats --workspace acme --since all
 
 # Reuse the same sheet (cron-friendly -- saves and reuses the sheet ID)
-pipeline.py sheets campaign-stats --workspace popcam --since 14d --update
+pipeline.py sheets campaign-stats --workspace acme --since 14d --update
 
 # Custom share email
-pipeline.py sheets campaign-stats --workspace popcam --share-email client@example.com
+pipeline.py sheets campaign-stats --workspace acme --share-email client@example.com
 
 # JSON preview (debug / review before sheet creation)
-pipeline.py sheets campaign-stats --workspace popcam --since 14d --dry-run --json
+pipeline.py sheets campaign-stats --workspace acme --since 14d --dry-run --json
 ```
 
 ---
@@ -104,7 +104,7 @@ Campaign | Status | Sent | Delivered | Bounced | Bounce % | Total Replies | OOO 
 
 | # | Column | Source | Notes |
 |---|---|---|---|
-| 1 | **Campaign** | `campaigns.name` -- strip the workspace prefix. If name is `"popcam \| nace"`, display as `"nace"`. | Remove `"{workspace} \| "` prefix for display. |
+| 1 | **Campaign** | `campaigns.name` -- strip the workspace prefix. If name is `"acme \| nace"`, display as `"nace"`. | Remove `"{workspace} \| "` prefix for display. |
 | 2 | **Status** | Computed: if `sent_count > 0` in window -> `"active"`. If `sent_count = 0` but campaign has sends outside window -> `"paused"`. If `sent_count = 0` and no sends ever -> `"exhausted"`. | See Status Detection below. |
 | 3 | **Sent** | `COUNT(*) FROM events WHERE event_type IN ('email_sent', 'email_sent_auto') AND direction = 'outbound'` | |
 | 4 | **Delivered** | `sent - bounced` | Computed column. |
@@ -502,30 +502,30 @@ Use the existing `sheets export` infrastructure -- the sheet is created on `app.
 ```json
 {
   "template": "campaign-stats",
-  "workspace": "popcam",
-  "title": "Popcam Campaign Stats - 14d",
+  "workspace": "acme",
+  "title": "Acme Campaign Stats - 14d",
   "sheets": [
     {
       "title": "Campaign Overview",
-      "metadata": "Settings: workspace=popcam, since=14d, generated=2026-06-22T12:00:00Z, tz_offset=-4",
+      "metadata": "Settings: workspace=acme, since=14d, generated=2026-06-22T12:00:00Z, tz_offset=-4",
       "headers": ["Campaign", "Status", "Sent", ...],
       "rows": [["nace", "active", 607, ...], ...]
     },
     {
       "title": "Campaign Funnels",
-      "metadata": "Settings: workspace=popcam, since=14d, generated=2026-06-22T12:00:00Z, tz_offset=-4",
+      "metadata": "Settings: workspace=acme, since=14d, generated=2026-06-22T12:00:00Z, tz_offset=-4",
       "headers": ["Stage", "Volume", "% of Sent"],
       "rows": [["nace -- Funnel", "", ""], ["Emails Sent", 607, "100%"], ...]
     },
     {
       "title": "Lead Sentiment",
-      "metadata": "Settings: workspace=popcam, since=14d, generated=2026-06-22T12:00:00Z, tz_offset=-4",
+      "metadata": "Settings: workspace=acme, since=14d, generated=2026-06-22T12:00:00Z, tz_offset=-4",
       "headers": ["Campaign", "Positive", "Interested", ...],
       "rows": [["nace", 1, 2, ...], ...]
     },
     {
       "title": "Daily Breakdown",
-      "metadata": "Settings: workspace=popcam, since=14d, generated=2026-06-22T12:00:00Z, tz_offset=-4",
+      "metadata": "Settings: workspace=acme, since=14d, generated=2026-06-22T12:00:00Z, tz_offset=-4",
       "headers": ["Campaign", "Day", "Sent", ...],
       "rows": [["nace", "2026-06-22", 42, ...], ...]
     }

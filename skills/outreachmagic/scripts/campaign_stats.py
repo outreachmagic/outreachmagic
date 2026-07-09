@@ -88,7 +88,7 @@ def build_campaign_stats_payload(
 
     Args:
         conn: Open SQLite connection to OutreachMagic DB
-        workspace: Workspace slug (e.g. 'popcam')
+        workspace: Workspace slug (e.g. 'acme')
         since: Time window \u2014 '14d', '30d', '7d', 'all', or 'YYYY-MM-DD'
 
     Returns:

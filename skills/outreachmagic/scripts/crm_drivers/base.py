@@ -75,8 +75,8 @@ class MockDriver:
         self._company_counter += 1
         self.companies.append((workspace_id, lead_data, entity))
         company_name = (
-            lead_data.get("company_name")
-            or lead_data.get("company")
+            lead_data.get("company")          # l.company — human-readable name
+            or lead_data.get("company_name")  # c.name — often wrong (domain instead of name)
             or ""
         )
         if not company_name:

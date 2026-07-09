@@ -115,7 +115,7 @@ pipeline.py merge-leads --email j@acme.com --linkedin linkedin.com/in/janedoe
 ## Dedup (batch)
 
 ```bash
-pipeline.py dedup find --workspace popcam --tag campaign --output outreachmagic/exports/candidates.json
+pipeline.py dedup find --workspace acme --tag campaign --output outreachmagic/exports/candidates.json
 pipeline.py dedup merge --candidates outreachmagic/exports/candidates.json          # dry-run
 pipeline.py dedup merge --candidates outreachmagic/exports/candidates.json --commit # apply
 ```
@@ -125,14 +125,14 @@ pipeline.py dedup merge --candidates outreachmagic/exports/candidates.json --com
 Requires `pipeline.py login`. Sheets created on `app.outreachmagic.io`.
 
 ```bash
-pipeline.py sheets export --workspace popcam --title "NACE Leads"
-pipeline.py review export --template lead-review --workspace popcam --tag nace --detail standard --title "NACE Leads"
+pipeline.py sheets export --workspace acme --title "NACE Leads"
+pipeline.py review export --template lead-review --workspace acme --tag nace --detail standard --title "NACE Leads"
 ```
 
 ## Dedup review (hosted Google Sheets)
 
 ```bash
-pipeline.py review export --input outreachmagic/exports/candidates.json --title "Popcam Dedup"
+pipeline.py review export --input outreachmagic/exports/candidates.json --title "Acme Dedup"
 pipeline.py review sync --sheet-id SHEET_ID --dry-run
 pipeline.py review sync --sheet-id SHEET_ID --commit
 ```
@@ -143,17 +143,17 @@ Detail levels: `--detail basic|standard|full|custom`. Use `review presets` for c
 
 ```bash
 pipeline.py review presets --template lead-review
-pipeline.py review export-payload --workspace popcam --tag nace --detail standard
-pipeline.py review export --template lead-review --workspace popcam --tag nace --detail standard --title "NACE Review"
-pipeline.py review sync --template lead-review --workspace popcam --sheet-id SHEET_ID --detail standard --dry-run
-pipeline.py review sync --template lead-review --workspace popcam --sheet-id SHEET_ID --detail standard --commit
+pipeline.py review export-payload --workspace acme --tag nace --detail standard
+pipeline.py review export --template lead-review --workspace acme --tag nace --detail standard --title "NACE Review"
+pipeline.py review sync --template lead-review --workspace acme --sheet-id SHEET_ID --detail standard --dry-run
+pipeline.py review sync --template lead-review --workspace acme --sheet-id SHEET_ID --detail standard --commit
 ```
 
 ## Email-finder candidates
 
 ```bash
-pipeline.py email-finding-candidates --workspace popcam --tag nace --no-email --require-domain --never-contacted
-pipeline.py email-finding-candidates --workspace popcam --file outreachmagic/batches/find-batch.json
+pipeline.py email-finding-candidates --workspace acme --tag nace --no-email --require-domain --never-contacted
+pipeline.py email-finding-candidates --workspace acme --file outreachmagic/batches/find-batch.json
 ```
 
 ## Quarantine (multi-workspace)

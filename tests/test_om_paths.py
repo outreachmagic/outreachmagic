@@ -44,7 +44,7 @@ class TestOmPathsDataRoot(unittest.TestCase):
     def test_profile_copy_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            scripts = root / ".hermes" / "profiles" / "popcam" / "skills" / "outreachmagic" / "scripts"
+            scripts = root / ".hermes" / "profiles" / "acme" / "skills" / "outreachmagic" / "scripts"
             om = _load_om_paths_from_scripts_dir(scripts)
             warn = om.hermes_profile_copy_warning()
             self.assertIsNotNone(warn)
@@ -55,7 +55,7 @@ class TestOmPathsDataRoot(unittest.TestCase):
             root = Path(tmp)
             global_scripts = root / ".hermes" / "skills" / "outreachmagic" / "scripts"
             global_scripts.mkdir(parents=True)
-            prof_skills = root / ".hermes" / "profiles" / "popcam" / "skills"
+            prof_skills = root / ".hermes" / "profiles" / "acme" / "skills"
             prof_skills.mkdir(parents=True)
             os.symlink("../../../skills/outreachmagic", prof_skills / "outreachmagic")
             profile_scripts = (prof_skills / "outreachmagic" / "scripts").resolve()

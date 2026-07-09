@@ -531,7 +531,7 @@ class GhlDriver:
 
         if event_type == "email_sent":
             # Outbound: Outreach sender → contact
-            email_from = sender  # e.g. isabella@rentpopcam.com
+            email_from = sender if sender else contact_email
             email_to = contact_email
         elif event_type in ("email_reply", "reply"):
             # Inbound: contact replied → outreach sender

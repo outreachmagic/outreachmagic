@@ -894,7 +894,7 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
     # Full event timeline
     try:
         events = conn.execute("""
-            SELECT event_type, direction, subject, body_preview, created_at, sender
+            SELECT event_type, direction, subject, body_preview, created_at, sender, metadata_json
             FROM events WHERE lead_id = ?
             ORDER BY created_at ASC
         """, (lid,)).fetchall()
@@ -917,6 +917,15 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
             direction = d.get("direction") or ""
             subject = d.get("subject") or ""
             body_preview = d.get("body_preview") or ""
+            # Try to get full body from metadata_json (longer than body_preview)
+            body = body_preview
+            try:
+                meta = json.loads(d.get("metadata_json") or "{}")
+                meta_body = meta.get("body") or ""
+                if len(str(meta_body)) > len(body):
+                    body = str(meta_body)
+            except Exception:
+                pass
             sender = d.get("sender") or ""
 
             # Collapse: linkedin_connect_sent + linkedin_connect (same second = same event)
@@ -967,20 +976,20 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
             if etype == "email_sent":
                 subj = subject or "(no subject)"
                 lines.append(f"  {ts} -- EML Sent: {subj}")
-                if body_preview and body_preview != "From linkedin.com/in/treybuck":
-                    preview = body_preview[:120].replace("\n", " ").strip()
+                if body and body != "From linkedin.com/in/treybuck":
+                    preview = body[:500].replace("\n", " ").strip()
                     lines.append(f"       {preview}")
 
             elif etype == "email_reply":
                 subj = subject or "(no subject)"
                 lines.append(f"  {ts} -- EML Rcvd: {subj}")
-                if body_preview and body_preview not in ("From linkedin.com/in/treybuck", ""):
-                    preview = body_preview[:120].replace("\n", " ").strip()
+                if body and body not in ("From linkedin.com/in/treybuck", ""):
+                    preview = body[:500].replace("\n", " ").strip()
                     lines.append(f"       {preview}")
 
             elif etype in ("linkedin_message", "linkedin_dm_message_sent"):
-                if body_preview and body_preview not in ("From linkedin.com/in/treybuck", ""):
-                    preview = body_preview[:150].replace("\n", " ").strip()
+                if body and body not in ("From linkedin.com/in/treybuck", ""):
+                    preview = body[:500].replace("\n", " ").strip()
                     lines.append(f"  {ts} -- LI Rcvd: {preview}" if direction == "inbound" else f"  {ts} -- LI Sent: {preview}")
                 else:
                     lines.append(f"  {ts} -- LI Sent (no body)")
@@ -1008,8 +1017,8 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
 
             elif etype == "email_bounce":
                 lines.append(f"  {ts} -- Email bounced")
-                if body_preview:
-                    preview = body_preview[:100].replace("\n", " ").strip()
+                if body:
+                    preview = body[:500].replace("\n", " ").strip()
                     lines.append(f"       {preview}")
 
             else:

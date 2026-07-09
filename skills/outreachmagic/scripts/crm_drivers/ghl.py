@@ -543,10 +543,16 @@ class GhlDriver:
         # Build body HTML
         body_html = body_text
         if body_text:
-            # If the body is already HTML (contains tags), use it as-is.
-            # Otherwise, it's plain text — convert newlines to <br> so GHL
-            # renders line breaks properly.
-            if "<" in body_text and ">" in body_text:
+            # Only treat as HTML if it contains actual HTML tags, not just
+            # angle brackets from email addresses (e.g. <darla@fbla.org>).
+            has_html_tags = bool(
+                "<p" in body_text.lower()
+                or "<div" in body_text.lower()
+                or "<br" in body_text.lower()
+                or "<span" in body_text.lower()
+                or "<table" in body_text.lower()
+            )
+            if has_html_tags:
                 body_html = body_text
             else:
                 body_html = body_text.replace("\n", "<br>")

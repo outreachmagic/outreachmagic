@@ -536,7 +536,7 @@ class GhlDriver:
         elif event_type in ("email_reply", "reply"):
             # Inbound: contact replied → outreach sender
             email_from = contact_email
-            email_to = sender
+            email_to = sender if sender else contact_email
         else:
             return False
 

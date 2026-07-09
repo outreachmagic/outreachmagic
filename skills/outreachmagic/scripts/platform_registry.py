@@ -84,7 +84,7 @@ _PROSP_SPEC = {
         "email": ("eventData.profileInfo.email", "profileInfo.email", "email"),
         "linkedin_url": (
             "eventData.lead", "lead", "eventData.profileInfo.linkedinUrl",
-            "profileInfo.linkedinUrl", "linkedinUrl",
+            "profileInfo.linkedinUrl", "linkedinUrl", "lead_linkedin",
         ),
     },
 }

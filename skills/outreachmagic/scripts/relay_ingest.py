@@ -674,6 +674,14 @@ def ingest_relay_event(
     platform = event.get("platform", "unknown")
     payload = event.get("payload") or {}
     sender_raw = payload.get("sender", "") or event.get("sender", "")
+    if (not sender_raw or sender_raw.lower() == "unknown") and platform in PLUSVIBE_PLATFORMS:
+        sender_raw = (
+            payload.get("email_account_name")
+            or payload.get("from_email")
+            or payload.get("actual_replied_from")
+            or payload.get("sender_email")
+            or ""
+        )
     sender_norm = om.normalize_event_sender(platform, sender_raw)
     received_at = _relay_event_timestamp(event, om.normalize_relay_timestamp) or ""
 

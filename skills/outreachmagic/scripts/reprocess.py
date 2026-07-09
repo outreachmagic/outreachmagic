@@ -35,6 +35,7 @@ from bounces import (
     record_platform_bounce,
 )
 from db_conn import get_conn
+from constants import PLUSVIBE_PLATFORMS
 from platform_registry import resolve_event
 from relay_extractors import extract_relay_fields, extract_relay_identity
 from workspace_routing import DEFAULT_ORG_ID, extract_campaign_context
@@ -288,8 +289,17 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
         body_text = event_fields.get("body")
         if body_text:
             new_meta["body"] = body_text
-        if evt.get("sender"):
-            new_meta["sender"] = evt["sender"]
+        sender_raw = payload.get("sender", "") or evt.get("sender", "")
+        if (not sender_raw or sender_raw.lower() == "unknown") and platform in PLUSVIBE_PLATFORMS:
+            sender_raw = (
+                payload.get("email_account_name")
+                or payload.get("from_email")
+                or payload.get("actual_replied_from")
+                or payload.get("sender_email")
+                or ""
+            )
+        if sender_raw:
+            new_meta["sender"] = sender_raw
 
         # Determine re-extracted subject and timestamp for column updates.
         re_subject = event_fields.get("subject") or existing_subject.get(relay_id)
@@ -334,6 +344,14 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
             lead_id = lead_id_map.get(relay_id)
             if local_event_id is not None and lead_id is not None:
                 sender_raw = payload.get("sender", "") or evt.get("sender", "")
+                if (not sender_raw or sender_raw.lower() == "unknown") and platform in PLUSVIBE_PLATFORMS:
+                    sender_raw = (
+                        payload.get("email_account_name")
+                        or payload.get("from_email")
+                        or payload.get("actual_replied_from")
+                        or payload.get("sender_email")
+                        or ""
+                    )
                 sender_email = sender_raw or payload.get("sender_email") or "unknown"
                 lead_email = lead_email_map.get(lead_id) or envelope_lead or ""
                 campaign_name = event_fields.get("campaign") or campaign_ctx.campaign_name_raw

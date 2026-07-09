@@ -402,16 +402,17 @@ def sync_single_lead(
         if company_id and ws_id:
             try:
                 partial_event_id = entity["last_event_id_synced"] if entity and "last_event_id_synced" in entity.keys() else None
+                partial_note_id = entity["crm_note_id"] if entity and entity["crm_note_id"] else None
                 conn.execute(
                     """INSERT OR REPLACE INTO crm_entity_map
                        (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                        crm_company_id, last_event_id_synced, last_synced_at, last_sync_status, sync_hash,
+                        crm_company_id, last_event_id_synced, crm_note_id, last_synced_at, last_sync_status, sync_hash,
                         updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 'partial', ?, datetime('now'))""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'partial', ?, datetime('now'))""",
                     (ws_id, lead_id_val, platform,
                      entity["crm_contact_id"] if entity else "",
                      entity["crm_deal_id"] if entity else "",
-                     company_id, partial_event_id, new_hash),
+                     company_id, partial_event_id, partial_note_id, new_hash),
                 )
             except Exception:
                 pass  # Non-fatal if entity_map write fails
@@ -471,21 +472,22 @@ def sync_single_lead(
 
     # -- Write entity map --
     if conn and ws_id and d_action != "error":
-        # Preserve last_event_id_synced so re-syncs don't re-push events
+        # Preserve last_event_id_synced and crm_note_id so re-syncs don't re-push events or create duplicate notes
         existing = conn.execute(
-            "SELECT last_event_id_synced FROM crm_entity_map WHERE workspace_id = ? AND lead_id = ? AND platform = ?",
+            "SELECT last_event_id_synced, crm_note_id FROM crm_entity_map WHERE workspace_id = ? AND lead_id = ? AND platform = ?",
             (ws_id, lead_id_val, platform),
         ).fetchone()
         existing_event_id = existing["last_event_id_synced"] if existing else None
+        existing_note_id = existing["crm_note_id"] if existing and existing["crm_note_id"] else None
 
         conn.execute(
             """INSERT OR REPLACE INTO crm_entity_map
                (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
-                crm_company_id, last_event_id_synced, last_synced_at, last_sync_status, sync_hash,
+                crm_company_id, last_event_id_synced, crm_note_id, last_synced_at, last_sync_status, sync_hash,
                 updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, datetime('now'))""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'synced', ?, datetime('now'))""",
             (ws_id, lead_id_val, platform, contact_id, deal_id,
-             company_id or None, existing_event_id, new_hash),
+             company_id or None, existing_event_id, existing_note_id, new_hash),
         )
         # Bump workspace_leads.updated_at so timestamp-based relay sync
         # re-pushes the snapshot (which now carries the entity mapping).
@@ -964,17 +966,24 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
             # Build the timeline line
             if etype == "email_sent":
                 subj = subject or "(no subject)"
-                lines.append(f"  {ts} -- {icon}: {subj}")
+                lines.append(f"  {ts} -- EML Sent: {subj}")
                 if body_preview and body_preview != "From linkedin.com/in/treybuck":
+                    preview = body_preview[:120].replace("\n", " ").strip()
+                    lines.append(f"       {preview}")
+
+            elif etype == "email_reply":
+                subj = subject or "(no subject)"
+                lines.append(f"  {ts} -- EML Rcvd: {subj}")
+                if body_preview and body_preview not in ("From linkedin.com/in/treybuck", ""):
                     preview = body_preview[:120].replace("\n", " ").strip()
                     lines.append(f"       {preview}")
 
             elif etype in ("linkedin_message", "linkedin_dm_message_sent"):
                 if body_preview and body_preview not in ("From linkedin.com/in/treybuck", ""):
                     preview = body_preview[:150].replace("\n", " ").strip()
-                    lines.append(f"  {ts} -- {icon}: {preview}")
+                    lines.append(f"  {ts} -- LI Rcvd: {preview}" if direction == "inbound" else f"  {ts} -- LI Sent: {preview}")
                 else:
-                    lines.append(f"  {ts} -- {icon}: LinkedIn DM (no body)")
+                    lines.append(f"  {ts} -- LI Sent (no body)")
 
             elif etype == "meeting_booked":
                 subj = subject or "Meeting"

@@ -219,7 +219,7 @@ def _assemble_lead_workspace_sync_payload(
     crm_rows = conn.execute(
         """SELECT platform, crm_contact_id, crm_deal_id, crm_company_id,
                   crm_owner_id, last_synced_at, last_event_id_synced,
-                  last_sync_status, sync_hash
+                  last_sync_status, sync_hash, crm_note_id
            FROM crm_entity_map
            WHERE workspace_id = ? AND lead_id = ?""",
         (ws_id, lead_id),
@@ -825,8 +825,8 @@ def apply_agent_lead_workspace_payload(
                 """INSERT INTO crm_entity_map
                    (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
                     crm_company_id, crm_owner_id, last_synced_at, last_event_id_synced,
-                    last_sync_status, sync_hash, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    last_sync_status, sync_hash, crm_note_id, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                    ON CONFLICT (workspace_id, lead_id, platform) DO UPDATE SET
                        crm_contact_id = excluded.crm_contact_id,
                        crm_deal_id = excluded.crm_deal_id,
@@ -836,6 +836,7 @@ def apply_agent_lead_workspace_payload(
                        last_event_id_synced = excluded.last_event_id_synced,
                        last_sync_status = excluded.last_sync_status,
                        sync_hash = excluded.sync_hash,
+                       crm_note_id = excluded.crm_note_id,
                        updated_at = datetime('now')
                    WHERE crm_entity_map.crm_contact_id IS NOT excluded.crm_contact_id
                       OR crm_entity_map.crm_deal_id IS NOT excluded.crm_deal_id
@@ -844,7 +845,8 @@ def apply_agent_lead_workspace_payload(
                       OR crm_entity_map.last_synced_at IS NOT excluded.last_synced_at
                       OR crm_entity_map.last_event_id_synced IS NOT excluded.last_event_id_synced
                       OR crm_entity_map.last_sync_status IS NOT excluded.last_sync_status
-                      OR crm_entity_map.sync_hash IS NOT excluded.sync_hash""",
+                      OR crm_entity_map.sync_hash IS NOT excluded.sync_hash
+                      OR crm_entity_map.crm_note_id IS NOT excluded.crm_note_id""",
                 (
                     workspace_id, lead_id, platform,
                     entry.get("crm_contact_id"),
@@ -855,6 +857,7 @@ def apply_agent_lead_workspace_payload(
                     entry.get("last_event_id_synced"),
                     entry.get("last_sync_status", "synced"),
                     entry.get("sync_hash"),
+                    entry.get("crm_note_id"),
                 ),
             )
     if own_conn:

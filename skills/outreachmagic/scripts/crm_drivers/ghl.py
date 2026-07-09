@@ -530,13 +530,15 @@ class GhlDriver:
         sender = event.get("sender", "")
 
         if event_type == "email_sent":
-            # Outbound: Outreach sender → contact
-            email_from = sender if sender else contact_email
+            # Outbound: Outreach sender → contact. No fallback to contact_email
+            # here — that would make emailFrom == emailTo (nonsensical).
+            email_from = sender
             email_to = contact_email
         elif event_type in ("email_reply", "reply"):
-            # Inbound: contact replied → outreach sender
+            # Inbound: contact replied → outreach sender. No fallback to
+            # contact_email here either — that would make emailTo == emailFrom.
             email_from = contact_email
-            email_to = sender if sender else contact_email
+            email_to = sender
         else:
             return False
 

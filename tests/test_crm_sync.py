@@ -67,7 +67,7 @@ EXPECTED_COLUMNS = {
         "workspace_id", "lead_id", "platform", "crm_contact_id",
         "crm_deal_id", "crm_company_id", "crm_owner_id", "last_synced_at",
         "last_event_id_synced", "last_sync_status", "sync_error",
-        "sync_hash", "created_at", "updated_at",
+        "sync_hash", "created_at", "updated_at", "crm_note_id",
     },
     "crm_sync_log": {
         "id", "workspace_id", "platform", "started_at", "completed_at",
@@ -3055,7 +3055,7 @@ def _setup_phase_5_sync_data(conn):
     events_data = [
         ("ev-sync-1", WS1_ID, 1, "email_sent", "2026-06-01T10:00:00Z",
          "email-sync-ikey-1", '{}'),
-        ("ev-sync-2", WS1_ID, 1, "reply", "2026-06-01T11:00:00Z",
+        ("ev-sync-2", WS1_ID, 1, "email_reply", "2026-06-01T11:00:00Z",
          "email-sync-ikey-2", '{}'),
     ]
     for ev_id, ws_id, lid, etype, e_at, ikey, payload in events_data:
@@ -3134,13 +3134,14 @@ def test_event_cursor_incremental():
         r1 = crm_sync.sync_workspace(conn, WS1_ID, "Popcam", cfg, driver=mock1)
         assert r1["events_pushed"] == 2, f"first sync: expected 2 events, got {r1['events_pushed']}"
 
-        # Add 1 new event
+        # Add 1 new email event (meeting_booked wouldn't be pushed at all,
+        # since only email_sent/email_reply go to the conversation timeline)
         conn.execute(
             """INSERT OR IGNORE INTO workspace_lead_events
                (id, org_id, workspace_id, lead_id, event_type, event_at,
                 source_platform, idempotency_key, payload_json)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ("ev-incremental", DEFAULT_ORG_ID, WS1_ID, 1, "meeting_booked",
+            ("ev-incremental", DEFAULT_ORG_ID, WS1_ID, 1, "email_sent",
              "2026-06-02T10:00:00Z", "email", "ikey-incremental", '{}'),
         )
         conn.commit()

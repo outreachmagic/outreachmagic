@@ -257,6 +257,16 @@ def relay_target_stage(
     if is_auto:
         return None
 
+    # For non-PlusVibe platforms, check signal fields (label/sentiment) before
+    # resolved_stage — an email_reply with interested label should go to interested,
+    # not replied.
+    if platform not in PLUSVIBE_PLATFORMS and (label or sentiment):
+        if label in negative_labels or sentiment == "negative":
+            return "not_interested"
+        if label in positive_labels or sentiment == "positive":
+            return "interested"
+        return None
+
     if resolved_stage:
         return resolved_stage
 
@@ -286,15 +296,7 @@ def relay_target_stage(
             return "contacted"
         return None
 
-    # Non-PlusVibe platforms: apply stage from signal fields when available
-    if label or sentiment:
-        if is_auto:
-            return None
-        if label in negative_labels or sentiment == "negative":
-            return "not_interested"
-        if label in positive_labels or sentiment == "positive":
-            return "interested"
-
+    # Non-PlusVibe platforms: resolved_stage already handled above
     return None
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -1124,6 +1125,97 @@ MV_ATTEMPTED_TAG = "mv_attempted"
 SCRUBBY_DEEP_SUBMITTED_TAG = "scrubby_deep_submitted"
 SCRUBBY_DEEP_ATTEMPTED_TAG = "scrubby_deep_attempted"
 TAG_BULK_CHUNK_SIZE = 500
+
+
+# ---------------------------------------------------------------------------
+# Provider batch-job tracking (MillionVerifier, Scrubby, and future async
+# bulk providers) — a single generic mechanism so a new provider needs no
+# new table/no new code path, just a `provider` value.
+# ---------------------------------------------------------------------------
+
+def hash_item_set(items: list[str]) -> str:
+    """Stable, order-independent fingerprint for a set of items (e.g. an email
+    list) — same items submitted twice hash identically, so a duplicate batch
+    is detectable regardless of input ordering."""
+    normalized = sorted({str(i).strip().lower() for i in items if str(i).strip()})
+    return hashlib.sha256("\n".join(normalized).encode("utf-8")).hexdigest()
+
+
+def record_batch_job(
+    om_dir: Path,
+    *,
+    provider: str,
+    kind: str,
+    job_id: str,
+    item_count: int,
+    item_set_hash: str,
+    workspace: str = "",
+    metadata: Optional[dict[str, Any]] = None,
+    timeout: int = 30,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Record a submitted provider batch job via pipeline.py batch-job record."""
+    cmd = [
+        sys.executable, str(get_pipeline_path(om_dir)),
+        "batch-job", "record",
+        "--provider", provider, "--kind", kind, "--job-id", job_id,
+        "--item-count", str(item_count), "--item-hash", item_set_hash,
+    ]
+    if workspace:
+        cmd.extend(["--workspace", workspace])
+    if metadata:
+        cmd.extend(["--metadata", json.dumps(metadata)])
+    return _run_subprocess_json(cmd, temp_path=None, timeout=timeout, skill_dir=skill_dir)
+
+
+def find_pending_batch_job(
+    om_dir: Path,
+    *,
+    provider: str,
+    item_set_hash: str,
+    timeout: int = 30,
+    skill_dir: Optional[Path] = None,
+) -> Optional[dict[str, Any]]:
+    """Look up a not-yet-downloaded batch job for this exact item set, if any."""
+    cmd = [
+        sys.executable, str(get_pipeline_path(om_dir)),
+        "batch-job", "find-pending", "--provider", provider, "--item-hash", item_set_hash,
+    ]
+    result = _run_subprocess_json(cmd, temp_path=None, timeout=timeout, skill_dir=skill_dir)
+    return result.get("job")
+
+
+def mark_batch_job_status(
+    om_dir: Path,
+    *,
+    provider: str,
+    job_id: str,
+    status: str,
+    timeout: int = 30,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    cmd = [
+        sys.executable, str(get_pipeline_path(om_dir)),
+        "batch-job", "mark-status", "--provider", provider, "--job-id", job_id, "--status", status,
+    ]
+    return _run_subprocess_json(cmd, temp_path=None, timeout=timeout, skill_dir=skill_dir)
+
+
+def list_batch_jobs(
+    om_dir: Path,
+    *,
+    provider: str = "",
+    workspace: str = "",
+    timeout: int = 30,
+    skill_dir: Optional[Path] = None,
+) -> list[dict[str, Any]]:
+    cmd = [sys.executable, str(get_pipeline_path(om_dir)), "batch-job", "list"]
+    if provider:
+        cmd.extend(["--provider", provider])
+    if workspace:
+        cmd.extend(["--workspace", workspace])
+    result = _run_subprocess_json(cmd, temp_path=None, timeout=timeout, skill_dir=skill_dir)
+    return result.get("jobs") or []
 
 
 def run_tag_bulk(

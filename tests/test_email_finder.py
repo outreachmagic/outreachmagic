@@ -907,6 +907,101 @@ class TestCreditAccounting(unittest.TestCase):
                 self.assertEqual(payload["credits_required"], 2)
                 self.assertEqual(payload["credits_per_email"], 1)
 
+    @patch.object(lemail.cc, "record_batch_job")
+    @patch.object(lemail.cc, "find_pending_batch_job")
+    @patch.object(lemail, "find_outreachmagic")
+    @patch.object(lemail, "_mv_provider")
+    def test_verify_bulk_blocks_duplicate_submission_without_force(
+        self, mock_provider, mock_om, mock_find_pending, mock_record,
+    ):
+        import io
+
+        mock_om.return_value = Path("/tmp/om")
+        mock_find_pending.return_value = {
+            "job_id": "existing-file-1", "status": "submitted", "submitted_at": "2026-07-09T00:00:00Z",
+        }
+        mv = MagicMock()
+        mock_provider.return_value = mv
+
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+            f.write("email\na@x.com\n")
+            path = f.name
+        try:
+            buf = io.StringIO()
+            with self.assertRaises(SystemExit):
+                with patch("sys.stdout", buf):
+                    lemail.cmd_verify_bulk(file_path=path, poll=False)
+        finally:
+            Path(path).unlink()
+
+        mv.create_bulk.assert_not_called()
+        payload = json.loads(buf.getvalue())
+        self.assertIn("duplicate batch", payload["error"])
+        self.assertEqual(payload["existing_job_id"], "existing-file-1")
+
+    @patch.object(lemail.cc, "record_batch_job")
+    @patch.object(lemail.cc, "find_pending_batch_job")
+    @patch.object(lemail, "find_outreachmagic")
+    @patch.object(lemail, "_mv_provider")
+    def test_verify_bulk_force_bypasses_duplicate_check(
+        self, mock_provider, mock_om, mock_find_pending, mock_record,
+    ):
+        import io
+
+        mock_om.return_value = Path("/tmp/om")
+        mv = MagicMock()
+        mv.create_bulk.return_value = {"file_id": "f2"}
+        mock_provider.return_value = mv
+
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+            f.write("email\na@x.com\n")
+            path = f.name
+        try:
+            buf = io.StringIO()
+            with patch("sys.stdout", buf):
+                lemail.cmd_verify_bulk(file_path=path, poll=False, force=True)
+        finally:
+            Path(path).unlink()
+
+        mock_find_pending.assert_not_called()
+        mv.create_bulk.assert_called_once()
+        mock_record.assert_called_once()
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["file_id"], "f2")
+
+    @patch.object(lemail.cc, "record_batch_job")
+    @patch.object(lemail.cc, "find_pending_batch_job")
+    @patch.object(lemail, "find_outreachmagic")
+    @patch.object(lemail, "_scrubby_provider")
+    def test_scrubby_deep_submit_blocks_duplicate_submission_without_force(
+        self, mock_provider, mock_om, mock_find_pending, mock_record,
+    ):
+        import io
+
+        mock_om.return_value = Path("/tmp/om")
+        mock_find_pending.return_value = {
+            "job_id": "existing-scrubby-1", "status": "submitted", "submitted_at": "2026-07-09T00:00:00Z",
+        }
+        scrubby = MagicMock()
+        mock_provider.return_value = scrubby
+
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+            f.write("email\na@x.com\n")
+            path = f.name
+        try:
+            buf = io.StringIO()
+            with patch.object(lemail, "load_config", return_value={"scrubby_api_key": "sk"}):
+                with self.assertRaises(SystemExit):
+                    with patch("sys.stdout", buf):
+                        lemail.cmd_scrubby_deep_submit(file_path=path)
+        finally:
+            Path(path).unlink()
+
+        scrubby.submit_deep.assert_not_called()
+        payload = json.loads(buf.getvalue())
+        self.assertIn("duplicate batch", payload["error"])
+        self.assertEqual(payload["existing_job_id"], "existing-scrubby-1")
+
 
 class TestFindSaveByDefault(unittest.TestCase):
     def test_parse_find_args_saves_by_default(self):
@@ -1016,6 +1111,9 @@ class TestLeadIdResolution(unittest.TestCase):
         payload = json.loads(buf.getvalue())
         self.assertFalse(payload["saved_to_om"])
 
+    @patch.object(lemail.cc, "mark_batch_job_status")
+    @patch.object(lemail.cc, "record_batch_job")
+    @patch.object(lemail.cc, "find_pending_batch_job")
     @patch.object(lemail, "_tag_mv_attempted")
     @patch.object(lemail.cc, "run_verify_email_batch")
     @patch.object(lemail, "_lead_id_map_for_emails")
@@ -1023,6 +1121,7 @@ class TestLeadIdResolution(unittest.TestCase):
     @patch.object(lemail, "_mv_provider")
     def test_verify_bulk_accepts_finished_status_and_resolves_lead_id(
         self, mock_provider, mock_om, mock_map, mock_batch, mock_tag,
+        mock_find_pending, mock_record, mock_mark,
     ):
         mv = MagicMock()
         mv.create_bulk.return_value = {"file_id": "f1"}
@@ -1033,6 +1132,7 @@ class TestLeadIdResolution(unittest.TestCase):
         mock_map.return_value = {"a@x.com": 42}
         mock_batch.return_value = {"recorded": 1, "errors": []}
         mock_tag.return_value = {"status": "ok", "tagged": 1}
+        mock_find_pending.return_value = None
 
         with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
             f.write("email\na@x.com\n")

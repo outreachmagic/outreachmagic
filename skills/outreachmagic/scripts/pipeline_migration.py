@@ -502,11 +502,52 @@ def migrate_db(conn=None):
         );
         CREATE INDEX IF NOT EXISTS idx_lead_emails_lead ON lead_emails(lead_id);
         CREATE INDEX IF NOT EXISTS idx_lead_emails_email ON lead_emails(email);
+        CREATE TABLE IF NOT EXISTS provider_batch_jobs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider        TEXT NOT NULL,
+            kind            TEXT NOT NULL,
+            job_id          TEXT NOT NULL,
+            workspace_id    TEXT,
+            item_count      INTEGER NOT NULL DEFAULT 0,
+            item_set_hash   TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'submitted',
+            submitted_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            completed_at    TEXT,
+            metadata_json   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_batch_jobs_hash ON provider_batch_jobs(provider, item_set_hash);
+        CREATE INDEX IF NOT EXISTS idx_provider_batch_jobs_job_id ON provider_batch_jobs(provider, job_id);
     """)
     try:
         conn.execute("ALTER TABLE crm_entity_map ADD COLUMN crm_note_id TEXT")
     except sqlite3.OperationalError:
         pass
+
+    # Self-heal pre-existing lead_emails duplicates (case/whitespace variants
+    # of a lead's own primary email, or repeated inserts of the same email)
+    # before adding the uniqueness constraint below — CREATE UNIQUE INDEX
+    # fails if duplicates already exist.
+    conn.execute("""
+        DELETE FROM lead_emails
+        WHERE is_primary = 0
+          AND lower(trim(email)) = (
+              SELECT lower(trim(email)) FROM leads WHERE leads.id = lead_emails.lead_id
+          )
+    """)
+    conn.execute("""
+        DELETE FROM lead_emails
+        WHERE id NOT IN (
+            SELECT MIN(id) FROM lead_emails GROUP BY lead_id, lower(trim(email))
+        )
+    """)
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_emails_unique "
+            "ON lead_emails(lead_id, email COLLATE NOCASE)"
+        )
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     if own_conn:
         conn.close()

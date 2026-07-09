@@ -766,12 +766,17 @@ def extract_reply_body(
     metadata: dict,
     body_preview: str = "",
 ) -> str:
-    """Best-effort reply body for agents (prefers metadata.body over body_preview)."""
+    """Best-effort reply body for agents (prefers metadata.body over body_preview).
+
+    body_preview is a display-only fallback (e.g. "From <sender>" when no real
+    body was extracted) — it must never be promoted into metadata["body"],
+    which downstream code treats as real email content.
+    """
     meta_body = (metadata.get("body") or "").strip()
     if meta_body and meta_body != "A lead has replied":
         body = meta_body
     else:
-        body = meta_body or body_preview or ""
+        body = meta_body or ""
 
     plat = (platform or "").strip().lower()
     if plat == "prosp" and local_type == "linkedin_message":

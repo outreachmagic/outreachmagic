@@ -457,7 +457,7 @@ def main():
     imp_p.add_argument(
         "--no-sync",
         action="store_true",
-        help="Skip automatic pipeline.py sync after import (default: auto-sync when logged in)",
+        help="Deprecated, no-op — import-profiles never auto-syncs; run pipeline.py sync explicitly",
     )
     imp_p.add_argument(
         "--import-format",
@@ -506,6 +506,30 @@ def main():
         help="Fix malformed workspace tags (e.g. \"['nace']\" -> nace)",
     )
     tag_repair_p.add_argument("--dry-run", action="store_true", help="Preview fixes without writing")
+
+    bj_p = sub.add_parser(
+        "batch-job",
+        help="Generic async provider batch-job tracking (MillionVerifier, Scrubby, future providers)",
+    )
+    bj_sub = bj_p.add_subparsers(dest="batch_job_action")
+    bj_record_p = bj_sub.add_parser("record", help="Record a newly-submitted batch job")
+    bj_record_p.add_argument("--provider", required=True)
+    bj_record_p.add_argument("--kind", required=True, help="e.g. email_verification, email_finding")
+    bj_record_p.add_argument("--job-id", required=True)
+    bj_record_p.add_argument("--item-count", type=int, required=True)
+    bj_record_p.add_argument("--item-hash", required=True)
+    bj_record_p.add_argument("--workspace")
+    bj_record_p.add_argument("--metadata", help="JSON object")
+    bj_find_p = bj_sub.add_parser("find-pending", help="Look up a not-yet-downloaded job for an item set")
+    bj_find_p.add_argument("--provider", required=True)
+    bj_find_p.add_argument("--item-hash", required=True)
+    bj_status_p = bj_sub.add_parser("mark-status", help="Update a batch job's status")
+    bj_status_p.add_argument("--provider", required=True)
+    bj_status_p.add_argument("--job-id", required=True)
+    bj_status_p.add_argument("--status", required=True)
+    bj_list_p = bj_sub.add_parser("list", help="List batch jobs")
+    bj_list_p.add_argument("--provider")
+    bj_list_p.add_argument("--workspace")
 
     ver_p = sub.add_parser("verify-email", help="Record email verification result")
     ver_p.add_argument("--lead-id", type=int, help="Lead ID (single mode)")
@@ -886,6 +910,9 @@ def main():
     dp_p.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
 
     query_cli.register_query_parser(sub)
+    query_cli.register_sql_parser(sub)
+    query_cli.register_schema_parser(sub)
+    query_cli.register_tag_summary_parser(sub)
 
     bulk_lookup_p = sub.add_parser(
         "batch-lead-lookup",
@@ -2096,6 +2123,10 @@ def main():
         )
     elif args.command == "query":
         query_cli.cmd_query(args)
+    elif args.command == "schema":
+        query_cli.cmd_schema(args)
+    elif args.command == "tag-summary":
+        query_cli.cmd_tag_summary(args)
     elif args.command == "sheets" and getattr(args, "sheets_command", None) == "campaign-stats":
         _cmd_sheets_campaign_stats(args)
     elif args.command == "email-finding-candidates":
@@ -2274,22 +2305,13 @@ def main():
             import_batch_id=getattr(args, "import_batch_id", None),
             import_format=getattr(args, "import_format", None),
         )
-        if (
-            not args.dry_run
-            and not getattr(args, "no_sync", False)
-            and (summary.get("created") or summary.get("matched"))
-        ):
-            counts = _pipeline.get_local_pending_counts()
-            if counts.get("leads_pending") or counts.get("workspace_leads_pending"):
-                sync_result = _pipeline.sync_all(no_health_report=True)
-                summary["sync"] = sync_result
-                if sync_result.get("status") == "ok":
-                    summary["sync_hint"] = "Imported leads pushed to relay via pipeline.py sync."
-                else:
-                    summary["sync_hint"] = (
-                        f"Auto-sync failed: {sync_result.get('error', 'unknown')}. "
-                        "Run: pipeline.py sync"
-                    )
+        # import_profiles() already reports a sync_hint when leads are pending
+        # (see pipeline.py) without ever auto-syncing — network push only runs
+        # on an explicit `pipeline.py sync` (sync_all's own docstring). The
+        # auto-sync block that used to live here duplicated that logic AND
+        # violated it: it re-pushed the entire never-relay-seen lead backlog
+        # on every single-lead edit (unsynced_lead_clause has no updated_at
+        # cursor), turning a <1s import into a 30-60s+ full-workspace push.
         print(json.dumps(summary, indent=2))
     elif args.command == "apply-email-find-results":
         rows: list[dict] = []
@@ -2375,6 +2397,29 @@ def main():
             print(json.dumps(_pipeline.tag_bulk(ws_id, lead_ids, tags_list, remove=getattr(args, "remove", False))))
         else:
             print(json.dumps({"error": "tag subcommand required: add, remove, set, list, bulk, repair"}))
+    elif args.command == "batch-job":
+        bj_action = getattr(args, "batch_job_action", None)
+        if bj_action == "record":
+            metadata = json.loads(args.metadata) if getattr(args, "metadata", None) else None
+            print(json.dumps(_pipeline.record_batch_job(
+                provider=args.provider, kind=args.kind, job_id=args.job_id,
+                item_count=args.item_count, item_set_hash=args.item_hash,
+                workspace=getattr(args, "workspace", None), metadata=metadata,
+            )))
+        elif bj_action == "find-pending":
+            job = _pipeline.find_pending_batch_job(provider=args.provider, item_set_hash=args.item_hash)
+            print(json.dumps({"job": job}))
+        elif bj_action == "mark-status":
+            print(json.dumps(_pipeline.mark_batch_job_status(
+                provider=args.provider, job_id=args.job_id, status=args.status,
+            )))
+        elif bj_action == "list":
+            jobs = _pipeline.list_batch_jobs(
+                provider=getattr(args, "provider", None), workspace=getattr(args, "workspace", None),
+            )
+            print(json.dumps({"jobs": jobs, "count": len(jobs)}))
+        else:
+            print(json.dumps({"error": "batch-job subcommand required: record, find-pending, mark-status, list"}))
     elif args.command == "verify-email":
         if getattr(args, "batch", False):
             try:

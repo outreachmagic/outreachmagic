@@ -878,10 +878,13 @@ def merge_leads(
         company_id = keep["company_id"] or other["company_id"]
         merge_entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, merge_id)
         # Add the merged lead's email as an additional email if it differs from primary
-        if other["email"] and other["email"] != keep["email"]:
+        # (case/whitespace-normalized so "Alex@x.com" vs "alex@x.com" doesn't duplicate)
+        merged_email_norm = normalize_email(other["email"])
+        kept_email_norm = normalize_email(keep["email"])
+        if merged_email_norm and merged_email_norm != kept_email_norm:
             conn.execute(
                 "INSERT OR IGNORE INTO lead_emails (lead_id, email, is_primary) VALUES (?, ?, 0)",
-                (keep_id, other["email"]),
+                (keep_id, merged_email_norm),
             )
         conn.execute(
             """INSERT INTO lead_merges (keep_id, merge_id, reason, merge_entity_key, relay_delete_pushed)
@@ -1490,7 +1493,8 @@ def upsert_lead_profile(
     if company_domain and "company_domain" not in extra:
         extra["company_domain"] = company_domain
 
-    name = profile.get("name")
+    raw_name = profile.get("name")
+    name = raw_name
     if not name:
         em = normalize_email(profile.get("email"))
         name = name_from_email(em) if em else "Unknown"
@@ -1512,7 +1516,12 @@ def upsert_lead_profile(
         channel=channel,
         stage=stage,
         notes=notes,
-        enrich_name=enrich_name,
+        # If the input didn't include a name, don't let the synthesized
+        # create-time fallback (name_from_email / "Unknown") also overwrite an
+        # existing matched lead's real name when overwrite=True. resolve_lead
+        # treats enrich_name=None as "not specified, inherit `name`" — so we
+        # must pass "" (not None) to actually force "nothing to enrich with".
+        enrich_name=enrich_name if enrich_name is not None else (raw_name or ""),
         dry_run=dry_run,
         overwrite=overwrite,
         company_domain=company_domain,
@@ -2228,6 +2237,10 @@ def import_profiles(
 
     return summary
 
+
+from pipeline_batch_jobs import (
+    record_batch_job, find_pending_batch_job, mark_batch_job_status, list_batch_jobs,
+)
 
 from pipeline_tags import (
     tag_add, tag_remove, tag_set, tag_list, tag_bulk,

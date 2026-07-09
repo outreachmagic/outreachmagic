@@ -162,3 +162,34 @@ class TestFindMerge:
         conn.close()
         methods = {c["match_method"] for c in payload["candidates"]}
         assert "first_name_similar_company" in methods
+
+    def test_merge_leads_no_duplicate_lead_email_case_insensitive(self):
+        """merge_leads must not insert a lead_emails duplicate when the merged
+        lead's email matches the kept lead's primary email except for
+        case/whitespace (byte-exact comparison used to let this through)."""
+        _reset_db()
+        conn = om.get_conn()
+        conn.execute(
+            "INSERT INTO leads (name, email) VALUES ('Alex Dripchak', 'alex.dripchak@gmail.com')"
+        )
+        keep_id = conn.execute(
+            "SELECT id FROM leads WHERE email = 'alex.dripchak@gmail.com'"
+        ).fetchone()["id"]
+        conn.execute(
+            "INSERT INTO leads (name, email) VALUES ('Alex D', 'Alex.Dripchak@Gmail.com ')"
+        )
+        merge_id = conn.execute(
+            "SELECT id FROM leads WHERE name = 'Alex D'"
+        ).fetchone()["id"]
+        conn.commit()
+        conn.close()
+
+        result = om.merge_leads(keep_id, merge_id)
+        assert result.get("status") != "error"
+
+        conn = om.get_conn()
+        dupes = conn.execute(
+            "SELECT COUNT(*) AS n FROM lead_emails WHERE lead_id = ?", (keep_id,)
+        ).fetchone()["n"]
+        conn.close()
+        assert dupes == 0, "email matching kept lead's own primary email should not be duplicated"

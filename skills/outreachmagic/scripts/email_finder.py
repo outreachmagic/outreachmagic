@@ -16,6 +16,23 @@ Usage:
 batch-find options:
     --workspace W --delay 8 --workers 1 --max 500 --provider trykitt|icypeas
     --output-base PATH --output-csv PATH --no-save --skip-om --dry-run --yes
+
+MillionVerifier (bulk email verification):
+    email_finder.py verify EMAIL
+    email_finder.py verify-bulk [--workspace W | --file emails.csv] [--poll] [--output PATH]
+                                 [--dry-run] [--force] [--max-age N] [--skip-mv-days N]
+    email_finder.py verify-status --file-id ID
+    email_finder.py verify-list
+    email_finder.py verify-download --file-id ID [--workspace W]
+    email_finder.py verify-credits
+
+Scrubby (deep verification):
+    email_finder.py scrubby-deep-submit [--workspace W | --file emails.csv] [--dry-run] [--force]
+    email_finder.py scrubby-deep-fetch IDENTIFIER [--workspace W] [--poll]
+    email_finder.py scrubby-deep-status IDENTIFIER
+    email_finder.py scrubby-deep-list
+    email_finder.py scrubby-deep-credits
+    email_finder.py verify-with-scrubby ...
 """
 
 from __future__ import annotations
@@ -699,6 +716,7 @@ def cmd_verify_bulk(
     output_path: str = "",
     poll: bool = False,
     dry_run: bool = False,
+    force: bool = False,
     max_age_days: int = 30,
     skip_mv_days: int = 7,
 ) -> None:
@@ -730,11 +748,44 @@ def cmd_verify_bulk(
         print_verify_bulk_plan(plan)
         print(json.dumps(plan, indent=2))
         return
+
+    om_dir = find_outreachmagic(cfg)
+    item_hash = cc.hash_item_set(emails)
+    if om_dir and not force:
+        existing = cc.find_pending_batch_job(
+            om_dir, provider="millionverifier", item_set_hash=item_hash, skill_dir=_find_skill_dir(),
+        )
+        if existing:
+            print(json.dumps({
+                "error": "duplicate batch: this exact email set was already submitted",
+                "existing_job_id": existing.get("job_id"),
+                "existing_status": existing.get("status"),
+                "submitted_at": existing.get("submitted_at"),
+                "hint": (
+                    f"Use --force to resubmit, or check results with: "
+                    f"verify-status --file-id {existing.get('job_id')}"
+                ),
+            }, indent=2))
+            sys.exit(1)
+
     created = mv.create_bulk(emails)
     file_id = str(created.get("file_id") or "")
     if not file_id:
         print(json.dumps({"error": "bulk submit failed", "response": created}))
         sys.exit(1)
+    # Surface the file_id immediately — before polling — so it's never lost
+    # if --poll gets killed by an external timeout.
+    print(
+        f"Submitted as file_id {file_id}. If this times out, run: "
+        f"verify-download --file-id {file_id}" + (f" --workspace {workspace}" if workspace else ""),
+        file=sys.stderr, flush=True,
+    )
+    if om_dir:
+        cc.record_batch_job(
+            om_dir, provider="millionverifier", kind="email_verification", job_id=file_id,
+            item_count=len(emails), item_set_hash=item_hash, workspace=workspace,
+            skill_dir=_find_skill_dir(),
+        )
     if output_path:
         Path(output_path).write_text(file_id + "\n", encoding="utf-8")
     out: dict[str, Any] = {
@@ -748,10 +799,19 @@ def cmd_verify_bulk(
     if poll:
         status = mv.poll_until_complete(file_id)
         out["poll_status"] = status
+        if str(status.get("status")).lower() == "in_progress":
+            out["poll_status_note"] = (
+                "ok/catch_all/invalid breakdown stays 0 until MillionVerifier marks "
+                "the file fully complete — this is upstream API behavior, not a bug here."
+            )
         if str(status.get("status")).lower() in ("completed", "finished"):
             rows = mv.download_results(file_id)
             out["results_count"] = len(rows)
-            om_dir = find_outreachmagic(cfg)
+            if om_dir:
+                cc.mark_batch_job_status(
+                    om_dir, provider="millionverifier", job_id=file_id, status="downloaded",
+                    skill_dir=_find_skill_dir(),
+                )
             if om_dir and workspace:
                 result_emails = [
                     (r.get("email") or "").strip() for r in rows if (r.get("email") or "").strip()
@@ -840,37 +900,6 @@ def _scrubby_provider(cfg: dict[str, Any]) -> ScrubbyProvider:
     return ScrubbyProvider(str(cfg.get("scrubby_api_key") or ""))
 
 
-def _scrubby_job_path(skill_dir: Path) -> Path:
-    job_dir = skill_dir / "scrubby_jobs"
-    job_dir.mkdir(parents=True, exist_ok=True)
-    return job_dir
-
-
-def _scrubby_save_job(skill_dir: Path, identifier: str, job: dict[str, Any]) -> None:
-    path = _scrubby_job_path(skill_dir) / f"{identifier}.json"
-    path.write_text(json.dumps(job, indent=2, default=str), encoding="utf-8")
-
-
-def _scrubby_load_job(skill_dir: Path, identifier: str) -> dict[str, Any]:
-    path = _scrubby_job_path(skill_dir) / f"{identifier}.json"
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _scrubby_list_jobs(skill_dir: Path) -> list[dict[str, Any]]:
-    job_dir = _scrubby_job_path(skill_dir)
-    if not job_dir.exists():
-        return []
-    jobs: list[dict[str, Any]] = []
-    for f in sorted(job_dir.glob("*.json")):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            data["identifier"] = f.stem
-            jobs.append(data)
-        except (json.JSONDecodeError, OSError):
-            continue
-    return jobs
 
 
 def _collect_scrubby_deep_emails(
@@ -929,6 +958,7 @@ def cmd_scrubby_deep_submit(
     workspace: str = "",
     file_path: str = "",
     dry_run: bool = False,
+    force: bool = False,
     filter_catch_all: bool = False,
 ) -> None:
     """Submit a batch to Scrubby Deep Verification and tag leads."""
@@ -962,6 +992,27 @@ def cmd_scrubby_deep_submit(
         }
         print(json.dumps(plan, indent=2))
         return
+
+    om_dir = find_outreachmagic(cfg)
+    item_hash = cc.hash_item_set(emails)
+    skill_dir = _find_skill_dir()
+    if om_dir and not force:
+        existing = cc.find_pending_batch_job(
+            om_dir, provider="scrubby_deep", item_set_hash=item_hash, skill_dir=skill_dir,
+        )
+        if existing:
+            print(json.dumps({
+                "error": "duplicate batch: this exact email set was already submitted",
+                "existing_job_id": existing.get("job_id"),
+                "existing_status": existing.get("status"),
+                "submitted_at": existing.get("submitted_at"),
+                "hint": (
+                    f"Use --force to resubmit, or check results with: "
+                    f"scrubby-deep-status {existing.get('job_id')}"
+                ),
+            }, indent=2))
+            sys.exit(1)
+
     print(
         f"Submitting {len(emails)} email(s) to Scrubby Deep Verification — "
         "this validates synchronously and can take a while for large batches...",
@@ -973,17 +1024,13 @@ def cmd_scrubby_deep_submit(
     if not identifier:
         print(json.dumps({"error": "scrubby submit failed", "response": result}))
         sys.exit(1)
-    skill_dir = _find_skill_dir()
-    job = {
-        "identifier": identifier,
-        "emails": emails,
-        "email_count": len(emails),
-        "submitted_at": datetime.now(timezone.utc).isoformat(),
-        "candidates": candidate_meta.get("count"),
-        "unique_lead_ids": candidate_meta.get("unique_lead_ids"),
-    }
-    _scrubby_save_job(skill_dir, identifier, job)
-    om_dir = find_outreachmagic(cfg)
+    if om_dir:
+        cc.record_batch_job(
+            om_dir, provider="scrubby_deep", kind="email_verification", job_id=identifier,
+            item_count=len(emails), item_set_hash=item_hash, workspace=workspace,
+            metadata={"candidates": candidate_meta.get("count"), "unique_lead_ids": candidate_meta.get("unique_lead_ids")},
+            skill_dir=skill_dir,
+        )
     tag_result: dict[str, Any] = {"status": "skipped", "tagged": 0}
     if om_dir and workspace:
         lead_ids = [
@@ -1069,11 +1116,16 @@ def cmd_scrubby_deep_status(identifier: str) -> None:
 
 def cmd_scrubby_deep_list() -> None:
     """List all active/completed Scrubby deep verification jobs."""
-    jobs = _scrubby_list_jobs(_find_skill_dir())
     cfg = load_config()
+    om_dir = find_outreachmagic(cfg)
+    if not om_dir:
+        print(json.dumps({"error": "outreachmagic not found"}))
+        sys.exit(1)
+    jobs = cc.list_batch_jobs(om_dir, provider="scrubby_deep", skill_dir=_find_skill_dir())
     scrubby = _scrubby_provider(cfg)
     enriched: list[dict[str, Any]] = []
     for j in jobs:
+        j["identifier"] = j.get("job_id")
         status_payload = scrubby.fetch_results(j["identifier"])
         j["current_status"] = (status_payload.get("status") or "unknown")
         enriched.append(j)
@@ -1341,9 +1393,10 @@ def main() -> None:
             workspace = file_path = output_path = ""
             poll = "--poll" in sys.argv
             dry_run = "--dry-run" in sys.argv
+            force = "--force" in sys.argv
             max_age = 30
             skip_mv = 7
-            args = [a for a in sys.argv[2:] if a not in ("--poll", "--dry-run")]
+            args = [a for a in sys.argv[2:] if a not in ("--poll", "--dry-run", "--force")]
             i = 0
             while i < len(args):
                 if args[i] == "--workspace" and i + 1 < len(args):
@@ -1384,6 +1437,7 @@ def main() -> None:
                 output_path=output_path,
                 poll=poll,
                 dry_run=dry_run,
+                force=force,
                 max_age_days=max_age,
                 skip_mv_days=skip_mv,
             )
@@ -1428,6 +1482,7 @@ def main() -> None:
         elif cmd == "scrubby-deep-submit":
             workspace = file_path = ""
             dry_run = "--dry-run" in sys.argv
+            force = "--force" in sys.argv
             filter_catch_all = "--filter=catch_all" in sys.argv or "--filter" in sys.argv
             args = sys.argv[2:]
             i = 0
@@ -1453,6 +1508,7 @@ def main() -> None:
                 workspace=workspace,
                 file_path=file_path,
                 dry_run=dry_run,
+                force=force,
                 filter_catch_all=filter_catch_all,
             )
         elif cmd == "scrubby-deep-fetch":

@@ -62,6 +62,88 @@ def register_query_parser(sub) -> None:
     q.set_defaults(command="query")
 
 
+def register_sql_parser(sub) -> None:
+    """Shortcut for `query --sql "..."` — same handler, no separate implementation to drift."""
+    p = sub.add_parser("sql", help='Shortcut for query --sql "..." (ad-hoc SELECT)')
+    p.add_argument("sql", help="SELECT/WITH statement (quote it)")
+    p.add_argument(
+        "--params",
+        help='JSON array of SQL bind parameters (example: ["acme"])',
+    )
+    p.add_argument("--limit", type=int, default=read_queries.DEFAULT_ROW_LIMIT)
+    p.add_argument("--json", action="store_true", help="JSON output for agents")
+    p.set_defaults(
+        command="query", preset=None, workspace=None, campaign_prefix=None,
+        since=None, direction="inbound", event_types=None, file=None,
+    )
+
+
+def register_schema_parser(sub) -> None:
+    s = sub.add_parser("schema", help="List tables, or dump one table's columns (discovery/debugging)")
+    s.add_argument("table", nargs="?", help="Table name; omit to list all tables")
+    s.add_argument("--json", action="store_true", help="JSON output for agents")
+    s.set_defaults(command="schema")
+
+
+def cmd_schema(args) -> None:
+    try:
+        table = getattr(args, "table", None)
+        result = read_queries.table_schema(table) if table else read_queries.list_tables()
+    except ValueError as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(str(exc), file=sys.stderr)
+        sys.exit(1)
+        return
+
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2))
+        return
+
+    print(f"db_path: {result['db_path']}")
+    if "tables" in result:
+        for t in result["tables"]:
+            print(f"  {t}")
+    else:
+        print(f"table: {result['table']}")
+        for col in result["columns"]:
+            pk = " PK" if col["pk"] else ""
+            nn = " NOT NULL" if col["notnull"] else ""
+            default = f" DEFAULT {col['default']}" if col["default"] is not None else ""
+            print(f"  {col['name']}  {col['type']}{nn}{default}{pk}")
+
+
+def register_tag_summary_parser(sub) -> None:
+    s = sub.add_parser(
+        "tag-summary",
+        help="Tag-group summary: research, email quality, segments, workspace status",
+    )
+    s.add_argument("--tag", required=True, help="Tag to summarize (e.g. eace26)")
+    s.add_argument("--workspace", required=True, help="Workspace slug (tags are workspace-scoped)")
+    s.add_argument("--json", action="store_true", help="JSON output for agents")
+    s.set_defaults(command="tag-summary")
+
+
+def cmd_tag_summary(args) -> None:
+    try:
+        result = read_queries.tag_summary(workspace=args.workspace, tag=args.tag)
+    except ValueError as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(str(exc), file=sys.stderr)
+        sys.exit(1)
+        return
+
+    last_pull = _pipeline.get_last_pull() if _pipeline else None
+    print_freshness_stderr(last_pull)
+    if getattr(args, "json", False):
+        print(json.dumps(attach_freshness(result, last_pull=last_pull), indent=2))
+    else:
+        print(read_queries.format_tag_summary(result))
+
+
 def _parse_params(raw: Optional[str]) -> list[Any]:
     if not raw:
         return []

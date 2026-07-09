@@ -2,6 +2,7 @@
 """Regression tests for bug-report v2 items (2026-06-09)."""
 
 import argparse
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -18,6 +19,7 @@ from om_paths import set_data_root_override  # noqa: E402
 set_data_root_override(Path(_tmp))
 
 import pipeline as om  # noqa: E402
+import pipeline_cli  # noqa: E402
 import query_cli  # noqa: E402
 import read_queries as rq  # noqa: E402
 
@@ -157,4 +159,53 @@ def test_pull_if_stale_force_pull():
   cfg["last_pull"] = om.datetime.now(om.timezone.utc).isoformat()
   om.save_config(cfg)
   assert om.pull_if_stale_skip_result("5m", force=False) is not None
+
+
+def test_import_profiles_does_not_auto_sync(monkeypatch, capsys):
+  """import-profiles must never trigger a network push itself (sync_all's own
+  docstring: push only runs on an explicit `pipeline.py sync`). It used to
+  auto-trigger sync_all() after any created/matched lead, which re-pushed the
+  entire never-relay-seen lead backlog on every single-lead edit."""
+  om.init_db()
+
+  def _fail_if_called(**kwargs):
+    raise AssertionError("import-profiles must not call sync_all")
+
+  monkeypatch.setattr(om, "sync_all", _fail_if_called)
+  monkeypatch.setattr(
+    sys, "argv",
+    ["pipeline.py", "import-profiles", "--json",
+     '[{"name": "Auto Sync Guard", "email": "autosyncguard@example.com"}]'],
+  )
+  pipeline_cli.main()
+  summary = json.loads(capsys.readouterr().out)
+  assert summary.get("created") == 1
+  assert "sync" not in summary
+
+
+def test_import_profiles_overwrite_preserves_name_when_omitted():
+  """import-profiles --overwrite must not wipe an existing lead's real name
+  to a synthesized fallback ("Unknown" / derived from email) when the input
+  row simply omits "name" — only fields actually present should overwrite."""
+  om.init_db()
+  created = om.import_profiles(
+    [{"name": "Jane Doe", "email": "janedoe@example.com", "company": "Acme Corp"}],
+    overwrite=False,
+  )
+  assert created["created"] == 1
+
+  result = om.import_profiles(
+    [{"email": "janedoe@example.com", "linkedin": "https://linkedin.com/in/janedoe"}],
+    overwrite=True,
+  )
+  assert result["matched"] == 1
+
+  conn = om.get_conn()
+  row = conn.execute(
+    "SELECT name, company, linkedin_url FROM leads WHERE email = 'janedoe@example.com'"
+  ).fetchone()
+  conn.close()
+  assert row["name"] == "Jane Doe"
+  assert row["company"] == "Acme Corp"
+  assert "janedoe" in (row["linkedin_url"] or "")
   assert om.pull_if_stale_skip_result("5m", force=True) is None

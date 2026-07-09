@@ -240,6 +240,15 @@ class TestExtractReplyBody(unittest.TestCase):
         self.assertIn("Thanks for reaching out", body)
         self.assertNotIn("A lead has replied", body)
 
+    def test_does_not_promote_sender_placeholder_body_preview(self):
+        """body_preview is display-only ("From <sender>" when no real body
+        exists) — it must never be promoted into the returned body, which
+        relay_ingest.py writes into metadata["body"] as if it were real copy."""
+        body = pr.extract_reply_body(
+            "plusvibe", "email_sent", {}, {}, "From alexander@rentpopcam.com",
+        )
+        self.assertEqual(body, "")
+
 
 class TestHtmlBodyNormalization(unittest.TestCase):
     def test_looks_like_html(self):

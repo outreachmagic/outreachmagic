@@ -16,7 +16,10 @@ from typing import Any, Optional
 
 from db_conn import get_conn
 from event_classification import normalize_campaign_event_type
+from om_paths import get_db_path
 from platform_registry import reply_event_sql_condition
+from shared import MV_ATTEMPTED_TAG, SCRUBBY_DEEP_ATTEMPTED_TAG, SERPER_ATTEMPTED_TAG
+from workspace_routing import resolve_workspace_identity
 
 # Events that carry lead status / sentiment for current-state filters.
 STATUS_METADATA_PREDICATE = """(
@@ -398,6 +401,258 @@ def run_readonly_sql(
         }
     finally:
         conn.close()
+
+
+def list_tables() -> dict[str, Any]:
+    """All user table names in the connected DB, plus the resolved DB path.
+
+    `db_path` is the cheapest fix for "which database am I even talking to" —
+    print it whenever schema looks wrong before assuming a code bug.
+    """
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {"tables": [r[0] for r in rows], "db_path": str(get_db_path())}
+
+
+def table_schema(table: str) -> dict[str, Any]:
+    """Column name/type/notnull/default/pk for one table, plus the resolved DB path.
+
+    PRAGMA statements can't bind parameters for identifiers, so `table` is
+    validated against sqlite_master (a real catalog lookup) before being
+    interpolated into the PRAGMA — this also gives a much better error
+    ("table not found, available: ...") than a raw OperationalError.
+    """
+    conn = get_conn()
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        if not exists:
+            all_tables = [
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                ).fetchall()
+            ]
+            raise ValueError(f"Table not found: {table}. Available: {', '.join(all_tables)}")
+        cols = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+    finally:
+        conn.close()
+    return {
+        "table": table,
+        "columns": [
+            {"name": c[1], "type": c[2], "notnull": bool(c[3]), "default": c[4], "pk": bool(c[5])}
+            for c in cols
+        ],
+        "db_path": str(get_db_path()),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tag-group summary
+# ---------------------------------------------------------------------------
+
+# Known {provider}_attempted tags, classified so the summary doesn't lump
+# email-finding / email-verification activity in with lead research.
+# Unknown "%_attempted" tags fall back to category "other" (see tag_summary)
+# so a brand-new provider still shows up automatically — no config needed.
+ATTEMPT_TAG_META: dict[str, dict[str, str]] = {
+    SERPER_ATTEMPTED_TAG: {"category": "research", "label": "Serper"},
+    "trykitt_attempted": {"category": "email_finding", "label": "TryKitt"},
+    "icypeas_attempted": {"category": "email_finding", "label": "Icypeas"},
+    MV_ATTEMPTED_TAG: {"category": "email_verification", "label": "MillionVerifier"},
+    SCRUBBY_DEEP_ATTEMPTED_TAG: {"category": "email_verification", "label": "Scrubby (deep)"},
+}
+
+# Internal job-state tag suffixes excluded from the "segments" bucket (e.g.
+# scrubby_deep_submitted is a pipeline marker, not a lead segment like
+# "speaker" or "exhibitor").
+SYSTEM_TAG_SUFFIXES = ("_attempted", "_submitted")
+
+
+def _attempt_tag_meta(tag: str) -> dict[str, str]:
+    meta = ATTEMPT_TAG_META.get(tag)
+    if meta:
+        return meta
+    label = tag[: -len("_attempted")].replace("_", " ").title() if tag.endswith("_attempted") else tag
+    return {"category": "other", "label": label}
+
+
+def tag_summary(*, workspace: str, tag: str) -> dict[str, Any]:
+    """Aggregate research/email-quality/segment/status counts for a workspace-scoped tag group.
+
+    `pending` counts reflect current tag-group membership, not attempt
+    history — a lead added to the group after a bulk research run will show
+    as pending even if it was researched earlier under a different tag.
+    """
+    conn = get_conn()
+    try:
+        ws_row = resolve_workspace_identity(conn, workspace)
+        if not ws_row:
+            raise ValueError(f"workspace not found: {workspace}")
+        ws_id = ws_row["id"]
+
+        total_leads = conn.execute(
+            "SELECT COUNT(DISTINCT lead_id) FROM workspace_lead_tags WHERE workspace_id = ? AND tag = ?",
+            (ws_id, tag),
+        ).fetchone()[0]
+
+        attempt_rows = conn.execute(
+            """
+            SELECT wlt.tag, COUNT(DISTINCT wlt.lead_id) AS lead_count
+            FROM workspace_lead_tags wlt
+            JOIN workspace_lead_tags tl
+              ON tl.workspace_id = wlt.workspace_id AND tl.lead_id = wlt.lead_id
+            WHERE wlt.workspace_id = ? AND tl.tag = ?
+              AND wlt.tag LIKE '%\\_attempted' ESCAPE '\\'
+            GROUP BY wlt.tag
+            """,
+            (ws_id, tag),
+        ).fetchall()
+
+        segment_rows = conn.execute(
+            """
+            SELECT wlt.tag, COUNT(DISTINCT wlt.lead_id) AS lead_count
+            FROM workspace_lead_tags wlt
+            JOIN workspace_lead_tags tl
+              ON tl.workspace_id = wlt.workspace_id AND tl.lead_id = wlt.lead_id
+            WHERE wlt.workspace_id = ? AND tl.tag = ?
+              AND wlt.tag NOT LIKE '%\\_attempted' ESCAPE '\\'
+              AND wlt.tag NOT LIKE '%\\_submitted' ESCAPE '\\'
+              AND wlt.tag != ?
+            GROUP BY wlt.tag
+            ORDER BY lead_count DESC
+            """,
+            (ws_id, tag, tag),
+        ).fetchall()
+
+        quality_rows = conn.execute(
+            """
+            SELECT COALESCE(l.email_verification_status, 'unverified') AS status, COUNT(*) AS n
+            FROM leads l
+            JOIN workspace_lead_tags tl ON tl.lead_id = l.id
+            WHERE tl.workspace_id = ? AND tl.tag = ?
+            GROUP BY status
+            """,
+            (ws_id, tag),
+        ).fetchall()
+
+        completeness_row = conn.execute(
+            """
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN l.email IS NOT NULL AND l.email != '' THEN 1 ELSE 0 END) AS has_email,
+              SUM(CASE WHEN l.linkedin_url IS NOT NULL AND l.linkedin_url != '' THEN 1 ELSE 0 END) AS has_linkedin,
+              SUM(CASE WHEN l.company IS NOT NULL AND l.company != '' THEN 1 ELSE 0 END) AS has_company
+            FROM leads l
+            JOIN workspace_lead_tags tl ON tl.lead_id = l.id
+            WHERE tl.workspace_id = ? AND tl.tag = ?
+            """,
+            (ws_id, tag),
+        ).fetchone()
+
+        status_rows = conn.execute(
+            """
+            SELECT wl.status, COUNT(*) AS n
+            FROM workspace_leads wl
+            JOIN workspace_lead_tags tl ON tl.workspace_id = wl.workspace_id AND tl.lead_id = wl.lead_id
+            WHERE wl.workspace_id = ? AND tl.tag = ?
+            GROUP BY wl.status
+            """,
+            (ws_id, tag),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    research: list[dict[str, Any]] = []
+    email_finding: list[dict[str, Any]] = []
+    verification_attempts: list[dict[str, Any]] = []
+    other_attempts: list[dict[str, Any]] = []
+    for row in attempt_rows:
+        meta = _attempt_tag_meta(row["tag"])
+        attempted = row["lead_count"]
+        entry = {
+            "tag": row["tag"],
+            "label": meta["label"],
+            "attempted": attempted,
+            "pending": max(0, total_leads - attempted),
+        }
+        bucket = {
+            "research": research,
+            "email_finding": email_finding,
+            "email_verification": verification_attempts,
+        }.get(meta["category"], other_attempts)
+        bucket.append(entry)
+
+    return {
+        "workspace": ws_row["slug"],
+        "tag": tag,
+        "total_leads": total_leads,
+        "research": research,
+        "email_finding": email_finding,
+        "email_quality": {
+            "verification_status": {row["status"]: row["n"] for row in quality_rows},
+            "verification_attempts": verification_attempts,
+        },
+        "data_completeness": dict(completeness_row) if completeness_row else {},
+        "segments": [{"tag": row["tag"], "lead_count": row["lead_count"]} for row in segment_rows],
+        "workspace_status": {row["status"]: row["n"] for row in status_rows},
+        "other_attempts": other_attempts,
+    }
+
+
+def format_tag_summary(data: dict[str, Any]) -> str:
+    total = data.get("total_leads", 0)
+    lines = [f"=== {data.get('tag')} Summary ({total} leads, workspace={data.get('workspace')}) ==="]
+
+    def _section(title: str, entries: list[dict[str, Any]]) -> None:
+        if not entries:
+            return
+        lines.append("")
+        lines.append(f"{title}:")
+        for e in entries:
+            lines.append(f"  {e['label']} attempted: {e['attempted']} / {total}  (pending {e['pending']})")
+
+    _section("Research", data.get("research") or [])
+    _section("Email Finding", data.get("email_finding") or [])
+    _section("Email Verification", (data.get("email_quality") or {}).get("verification_attempts") or [])
+    if data.get("other_attempts"):
+        _section("Other", data["other_attempts"])
+
+    vs = (data.get("email_quality") or {}).get("verification_status") or {}
+    if vs:
+        lines.append("")
+        lines.append("Email Verification Status:")
+        for status, n in sorted(vs.items(), key=lambda kv: -kv[1]):
+            lines.append(f"  {status}: {n}")
+
+    comp = data.get("data_completeness") or {}
+    if comp:
+        lines.append("")
+        lines.append("Data Completeness:")
+        lines.append(f"  Has email: {comp.get('has_email', 0)} / {comp.get('total', total)}")
+        lines.append(f"  Has LinkedIn: {comp.get('has_linkedin', 0)} / {comp.get('total', total)}")
+        lines.append(f"  Has company: {comp.get('has_company', 0)} / {comp.get('total', total)}")
+
+    segments = data.get("segments") or []
+    if segments:
+        lines.append("")
+        lines.append("Segments:")
+        for s in segments:
+            lines.append(f"  {s['tag']}: {s['lead_count']}")
+
+    ws_status = data.get("workspace_status") or {}
+    if ws_status:
+        lines.append("")
+        lines.append("Workspace Status:")
+        for status, n in sorted(ws_status.items(), key=lambda kv: -kv[1]):
+            lines.append(f"  {status}: {n}")
+
+    return "\n".join(lines)
 
 
 def format_query_result_text(result: dict[str, Any]) -> str:

@@ -543,8 +543,6 @@ class GhlDriver:
         # Build body HTML
         body_html = body_text
         if body_text:
-            # Only treat as HTML if it contains actual HTML tags, not just
-            # angle brackets from email addresses (e.g. <darla@fbla.org>).
             has_html_tags = bool(
                 "<p" in body_text.lower()
                 or "<div" in body_text.lower()
@@ -555,7 +553,18 @@ class GhlDriver:
             if has_html_tags:
                 body_html = body_text
             else:
+                # Convert newlines to <br> for proper paragraph rendering
                 body_html = body_text.replace("\n", "<br>")
+                body_html = body_html.replace("\r\n", "<br>")
+                # If no newlines at all (body stored as one line), insert
+                # paragraph breaks at sentence boundaries for readability.
+                if "<br>" not in body_html:
+                    import re
+                    body_html = re.sub(
+                        r"\.\s+(?=[A-Z\"\'\(])",
+                        ".<br><br>",
+                        body_html,
+                    )
 
         payload: dict = {
             "contactId": contact_id,

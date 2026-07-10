@@ -2632,7 +2632,7 @@ def main():
             _pipeline.append_workspace_event(
                 conn, _pipeline.DEFAULT_ORG_ID, ws_row["id"], args.lead_id, ws_lead_id,
                 event_type=args.event_type,
-                event_at=datetime.now(timezone.utc).isoformat(),
+                event_at=_pipeline.utc_now_for_storage(),
                 source_platform="agent",
                 idempotency_key=idem_key,
                 payload={"subject": args.subject, "direction": args.direction,

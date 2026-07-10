@@ -71,6 +71,13 @@ def extract_relay_identity(
     """Resolve email and LinkedIn from raw payload and relay envelope lead field."""
     fields = extract_relay_fields(platform, raw)
     identity = dict(fields.get("identity") or {})
+    email = identity.get("email")
+    if email and "@" not in email:
+        # Some platforms (Prosp) reuse the same field name for a real email
+        # on one webhook variant and a LinkedIn URL on another -- don't let
+        # a non-email value masquerade as the lead's email address.
+        identity.pop("email", None)
+        identity.setdefault("linkedin_url", email)
     env = (envelope_lead or "").strip()
     if env:
         if "@" in env:

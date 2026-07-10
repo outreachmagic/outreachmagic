@@ -57,7 +57,11 @@ def _insert_event(
             "body": body,
         }
     )
-    created_at = created_at_override or datetime.now(timezone.utc).isoformat()
+    # Storage format (SQLite datetime('now') shape) -- matches what
+    # log_event/normalize_relay_timestamp_for_storage actually write in
+    # production, so dedup queries comparing against e.created_at behave the
+    # same way here as they do for real ingested events.
+    created_at = created_at_override or om.utc_now_for_storage()
     conn.execute(
         """INSERT INTO events (lead_id, event_type, direction, channel, body_preview, metadata_json, created_at)
            VALUES (?, ?, 'inbound', 'email', ?, ?, ?)""",
@@ -196,7 +200,7 @@ class TestPlusvibeEventIsDuplicate:
         _seed_db()
         conn = _get_conn()
         lead_id = _insert_lead(conn, "old@example.com")
-        old_time = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        old_time = (datetime.now(timezone.utc) - timedelta(seconds=10)).strftime("%Y-%m-%d %H:%M:%S")
         _insert_event(
             conn, lead_id, event_type="email_reply",
             body="Hello world", webhook_event="all_email_replies",

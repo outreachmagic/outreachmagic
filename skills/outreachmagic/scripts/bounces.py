@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from db_conn import get_conn
+from pipeline_update import normalize_relay_timestamp_for_storage, utc_now_for_storage
 from relay_extractors import extract_bounce_fields
 from workspace_routing import DEFAULT_ORG_ID, normalize_email
 
@@ -144,7 +145,7 @@ def record_bounce_event(
 ) -> dict:
     """Persist deduplicated bounce analytics (one row per lead + sender)."""
     sender_norm = _normalize_bounce_sender(sender_email)
-    now_ts = event_at or datetime.now(timezone.utc).isoformat()
+    now_ts = event_at or utc_now_for_storage()
     bounce_id = _bounce_event_id(lead_id, sender_norm)
     message = (payload.get("bounce_message") or "").strip()
     existing = conn.execute(
@@ -401,7 +402,7 @@ def record_platform_bounce(
     org_id = DEFAULT_ORG_ID
     sub = "hard_bounce" if bounce_type == "hard" else "soft_bounce"
     ver_id = f"ver_{lead_id}_platform_bounce"
-    now_ts = event_at or datetime.now(timezone.utc).isoformat()
+    now_ts = event_at or utc_now_for_storage()
     conn.execute(
         """INSERT INTO lead_email_verification
            (id, org_id, lead_id, email, status, sub_status, source, source_detail,
@@ -456,7 +457,11 @@ def verify_email(
         email = row["email"] or ""
     org_id = DEFAULT_ORG_ID
     ver_id = f"ver_{lead_id}_{source}"
-    now_ts = verified_at or datetime.now(timezone.utc).isoformat()
+    # verified_at may come straight from a relay snapshot payload (see
+    # apply_agent_lead_workspace_payload in lead_sync.py) in whatever shape
+    # the cloud sent, so it needs the same storage normalization as event_at
+    # elsewhere -- not just an `or` fallback for the missing case.
+    now_ts = normalize_relay_timestamp_for_storage(verified_at)
     conn.execute(
         """INSERT INTO lead_email_verification
            (id, org_id, lead_id, email, status, sub_status, source, source_detail,
@@ -505,7 +510,7 @@ def verify_email_batch(results: list[dict]) -> dict:
         status = item.get("status", "unknown")
         source = item.get("source", "unknown")
         ver_id = f"ver_{lid}_{source}"
-        now_ts = datetime.now(timezone.utc).isoformat()
+        now_ts = utc_now_for_storage()
         conn.execute(
             """INSERT INTO lead_email_verification
                (id, org_id, lead_id, email, status, sub_status, source, source_detail,

@@ -124,6 +124,32 @@ def test_plusvibe_status_events_map_and_advance_stage(event_type, expected_type,
     assert evt["event_type"] == expected_type
 
 
+def test_not_interested_is_not_absorbing_for_later_positive_reclassification():
+    """Regression: an AI auto-classification of not_interested must not block
+    a later human QC reclassification with positive sentiment from advancing
+    the stage to interested. Previously, furthest_stage() ranked
+    'not_interested' (which sorts after 'won' in PIPELINE_STAGES) as more
+    advanced than 'interested', so the override was silently discarded and
+    the lead stayed stuck at not_interested despite the positive relabel."""
+    not_interested = _status_event("lead_marked_as_not_interested", relay_id=300)
+    lead_id = ri.ingest_relay_event(not_interested, force_workspace_id="ws_pv-test")
+    assert lead_id is not None
+
+    conn = om.get_conn()
+    row = conn.execute("SELECT status FROM workspace_leads WHERE lead_id = ?", (lead_id,)).fetchone()
+    conn.close()
+    assert row["status"] == "not_interested"
+
+    reclassified = _status_event("lead_marked_as_qc_interested", relay_id=301)
+    lead_id_2 = ri.ingest_relay_event(reclassified, force_workspace_id="ws_pv-test")
+    assert lead_id_2 == lead_id
+
+    conn = om.get_conn()
+    row = conn.execute("SELECT status FROM workspace_leads WHERE lead_id = ?", (lead_id,)).fetchone()
+    conn.close()
+    assert row["status"] == "interested"
+
+
 def test_migrate_db_backfill_uses_shared_connection():
     conn = om.get_conn()
     conn.execute("INSERT INTO leads (name, email) VALUES ('No Camp', 'nocamp@example.com')")

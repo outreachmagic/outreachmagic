@@ -16,7 +16,7 @@ import shutil
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -484,6 +484,40 @@ def test_phase_1_lead_selection_max_age_filter():
         # A raw SQLite modifier string (spelled-out unit) also works, unchanged
         raw_leads = crm_sync.select_leads(conn, WS1_ID, max_age="30 days")
         assert len(raw_leads) == 6
+    finally:
+        conn.close()
+
+
+def test_phase_1_max_age_immune_to_relay_timestamp_format():
+    """Regression: a relay/webhook-sourced updated_at must sort correctly
+    against max_age's datetime('now', ...) cutoff, regardless of the
+    timestamp shape the webhook payload arrived in.
+
+    Before the fix, relay_ingest.py wrote ISO-8601 ("...T...+00:00") into
+    updated_at while max_age's cutoff is SQLite's plain "YYYY-MM-DD
+    HH:MM:SS" -- 'T' (0x54) sorts after ' ' (0x20), so any lead last
+    touched via the relay path always compared as "recent" no matter how
+    old it actually was (see crm-sync-timezone-bug.md).
+    """
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_1_data(conn)
+
+        # Simulate the exact write path relay_ingest.py uses for a webhook
+        # event that is genuinely 60 days old.
+        old_iso = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        stored = om.normalize_relay_timestamp_for_storage(old_iso)
+        assert "T" not in stored, "storage-format timestamps must not contain 'T'"
+        conn.execute(
+            "UPDATE workspace_leads SET updated_at = ? WHERE workspace_id = ? AND lead_id = ?",
+            (stored, WS1_ID, 1),
+        )
+        conn.commit()
+
+        recent_leads = crm_sync.select_leads(conn, WS1_ID, max_age="30d")
+        recent_ids = {l["lead_id"] for l in recent_leads}
+        assert 1 not in recent_ids, "relay-sourced stale lead should be excluded by max_age"
     finally:
         conn.close()
 

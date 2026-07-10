@@ -452,7 +452,9 @@ def test_agent_event_log_reuses_pull_conn(monkeypatch):
     assert logged[0]["conn"] is pull
     assert logged[0]["commit"] is False
     assert logged[0]["refresh_activity"] is False
-    assert logged[0]["event_at"] == "2026-01-01T00:00:00Z"
+    # Storage format (SQLite datetime('now') shape), not ISO passthrough --
+    # see normalize_relay_timestamp_for_storage.
+    assert logged[0]["event_at"] == "2026-01-01 00:00:00"
     assert workspace_conns == [pull, pull]
 
 

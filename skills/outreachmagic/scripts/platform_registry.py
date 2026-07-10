@@ -67,6 +67,7 @@ _PROSP_SPEC = {
         "subject": ("eventData.subject", "subject"),
         "body": (
             "eventData.body", "eventData.content", "content", "body", "message",
+            "body_preview",  # both Prosp webhook variants (send_msg, linkedin_dm_message_sent) use this
         ),
         "campaign": (
             "eventData.campaignName", "campaignName", "eventData.campaign", "campaign",
@@ -81,7 +82,7 @@ _PROSP_SPEC = {
         "webhook_event": ("eventType", "event_type"),
     },
     "identity": {
-        "email": ("eventData.profileInfo.email", "profileInfo.email", "email"),
+        "email": ("eventData.profileInfo.email", "profileInfo.email", "email", "lead_email"),
         "linkedin_url": (
             "eventData.lead", "lead", "eventData.profileInfo.linkedinUrl",
             "profileInfo.linkedinUrl", "linkedinUrl", "lead_linkedin",
@@ -313,6 +314,9 @@ def _prosp_mappings() -> tuple[EventMapping, ...]:
         _em("send_connection", "linkedin_connect", "outbound", "contacted", "linkedin_connection_sent"),
         _em("send_msg", "linkedin_message", "outbound", "contacted", "linkedin_message_sent",
             "Prosp outbound LinkedIn DM sent"),
+        _em("linkedin_dm_message_sent", "linkedin_message", "outbound", "contacted",
+            "linkedin_message_sent",
+            "Prosp outbound LinkedIn DM (duplicates send_msg -- dedup via time window)"),
         _em("linkedin_reply", "linkedin_message", "inbound", "replied", "linkedin_message_reply"),
         _em("linkedin_message", "linkedin_message", "outbound", None, "linkedin_message_sent"),
         _em("accept_invite", "linkedin_connection_accepted", "inbound", None,

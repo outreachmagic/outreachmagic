@@ -53,7 +53,9 @@ from pipeline_update import (
     get_snapshot_cursor,
     load_config,
     normalize_relay_timestamp,
+    normalize_relay_timestamp_for_storage,
     save_config,
+    utc_now_for_storage,
     set_last_max_id,
     set_last_pull,
     set_last_sync,
@@ -784,7 +786,7 @@ def ingest_agent_entry(
                     conn.close()
                     conn = None
                 if lead_id:
-                    event_at = normalize_relay_timestamp(timestamp) if timestamp else None
+                    event_at = normalize_relay_timestamp_for_storage(timestamp) if timestamp else None
                     event_meta = {"source": "agent_sync", "origin_client": client_id}
                     if payload.get("body"):
                         event_meta["body"] = str(payload.get("body"))
@@ -835,7 +837,7 @@ def ingest_agent_entry(
                             lead_id,
                             ws_lead_id,
                             event_type=local_type,
-                            event_at=event_at or datetime.now(timezone.utc).isoformat(),
+                            event_at=event_at or utc_now_for_storage(),
                             source_platform="agent",
                             idempotency_key=f"ws:{dedupe_key}",
                             payload=ws_payload,

@@ -301,9 +301,15 @@ def relay_target_stage(
 
 
 def relay_dedupe_key(event: dict) -> str:
+    payload = event.get("payload") or {}
+    # PlusVibe fires all_email_replies and all_positive_replies for the same
+    # reply with different relay_ids but the same message_id -- check that
+    # first so both collapse to one dedup key instead of being treated as
+    # distinct events.
+    if event.get("platform") in PLUSVIBE_PLATFORMS and payload.get("message_id"):
+        return f"msg:{payload['message_id']}"
     if event.get("relay_id"):
         return f"relay:{event['relay_id']}"
-    payload = event.get("payload") or {}
     if event.get("platform") in PLUSVIBE_PLATFORMS and payload.get("webhook_id"):
         return f"pv:{payload['webhook_id']}"
     if payload.get("sent_email_id"):
@@ -318,6 +324,40 @@ def relay_dedupe_key(event: dict) -> str:
 
 RELAY_INGESTED_PREFETCH_CHUNK = 500
 PLUSVIBE_POSITIVE_REPLY_DEDUP_SECONDS = 60
+PROSP_LINKEDIN_DM_DEDUP_SECONDS = 10
+
+
+def prosp_linkedin_dm_is_duplicate(
+    conn: sqlite3.Connection,
+    *,
+    lead_id: Optional[int],
+    event_at: str,
+    window_seconds: int = PROSP_LINKEDIN_DM_DEDUP_SECONDS,
+) -> bool:
+    """Prosp fires both `send_msg` and `linkedin_dm_message_sent` webhooks for
+    the same outbound LinkedIn DM within ~1s of each other; both map to local
+    type `linkedin_message`. Skip the second arrival for the same lead within
+    a short window instead of double-logging it (see d1-webhook-dedup-fix-plan).
+    """
+    if not lead_id or not event_at:
+        return False
+    try:
+        # event_at is always storage-format by the time this runs (see
+        # normalize_relay_timestamp_for_storage), so a plain strptime/BETWEEN
+        # window works without any ISO/format juggling.
+        center = datetime.strptime(event_at, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return False
+    lo = (center - timedelta(seconds=window_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    hi = (center + timedelta(seconds=window_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    row = conn.execute(
+        """SELECT 1 FROM events
+           WHERE lead_id = ? AND event_type = 'linkedin_message' AND direction = 'outbound'
+             AND created_at BETWEEN ? AND ?
+           LIMIT 1""",
+        (lead_id, lo, hi),
+    ).fetchone()
+    return row is not None
 
 
 def _plusvibe_body_fingerprint(body: str) -> str:
@@ -346,7 +386,11 @@ def plusvibe_positive_reply_is_duplicate(
     if since:
         try:
             ts = datetime.fromisoformat(since.replace("Z", "+00:00"))
-            since = (ts - timedelta(seconds=window_seconds)).isoformat()
+            # Storage format, not ISO -- compared directly against
+            # e.created_at below, which is always written in SQLite's
+            # datetime('now') shape (see normalize_relay_timestamp_for_storage).
+            cutoff = ts - timedelta(seconds=window_seconds)
+            since = cutoff.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         except ValueError:
             since = None
     params: list = [email_norm]
@@ -386,7 +430,7 @@ def plusvibe_positive_reply_is_duplicate(
     return row is not None
 
 
-def _skip_plusvibe_positive_reply_duplicate(
+def _skip_duplicate_event(
     dedupe_key: str,
     *,
     defer_mark: bool,
@@ -395,6 +439,7 @@ def _skip_plusvibe_positive_reply_duplicate(
     own_conn: bool,
     conn: sqlite3.Connection,
     quiet: bool,
+    reason: str = "plusvibe all_positive_replies duplicate",
 ) -> None:
     if defer_mark and pending_marks is not None:
         pending_marks.append((dedupe_key, None))
@@ -404,13 +449,18 @@ def _skip_plusvibe_positive_reply_duplicate(
             (dedupe_key, None),
         )
     else:
+        # mark_relay_ingested() opens its own connection. If the caller has
+        # pending writes on `conn` (e.g. lead upsert/identity aliasing that
+        # ran before this duplicate was detected), flush them first so the
+        # two connections don't deadlock on SQLite's write lock.
+        if own_conn:
+            conn.commit()
         mark_relay_ingested(dedupe_key, None)
     if own_conn:
         conn.close()
     if not quiet:
         print(
-            "[relay] skipped plusvibe all_positive_replies duplicate "
-            f"(dedupe_key={dedupe_key})",
+            f"[relay] skipped {reason} (dedupe_key={dedupe_key})",
             file=sys.stderr,
         )
 
@@ -690,7 +740,12 @@ def ingest_relay_event(
     event_fields = extracted["event"]
 
     sent_on = event_fields.get("sent_on")
-    event_at = om.normalize_relay_timestamp(sent_on) if sent_on else received_at
+    # Storage-format (not ISO) -- this flows straight into leads.updated_at /
+    # workspace_leads.updated_at / events.created_at, which are compared via
+    # SQLite's datetime('now', ...); a differently-shaped string sorts wrong
+    # even when it encodes the same instant as `received_at` (ISO, kept as-is
+    # for the dedup-window math below and the relay_received_at metadata).
+    event_at = om.normalize_relay_timestamp_for_storage(sent_on or received_at)
 
     # Normalize HTML bodies to plain text at extraction time so all
     # downstream comparisons (dedup checks, DB storage) see clean text.
@@ -738,7 +793,7 @@ def ingest_relay_event(
             body=str(dup_body or ""),
             received_at=received_at,
         ):
-            _skip_plusvibe_positive_reply_duplicate(
+            _skip_duplicate_event(
                 dedupe_key,
                 defer_mark=defer_mark,
                 pending_marks=pending_marks,
@@ -952,6 +1007,24 @@ def ingest_relay_event(
                 f"normalized_sentiment={normalized_sentiment or '-'}"
             )
 
+    if (
+        platform == "prosp"
+        and local_type == "linkedin_message"
+        and direction == "outbound"
+        and prosp_linkedin_dm_is_duplicate(conn, lead_id=lead_id, event_at=event_at)
+    ):
+        _skip_duplicate_event(
+            dedupe_key,
+            defer_mark=defer_mark,
+            pending_marks=pending_marks,
+            pull_conn=pull_conn,
+            own_conn=own_conn,
+            conn=conn,
+            quiet=quiet,
+            reason="prosp linkedin_message duplicate (send_msg/linkedin_dm_message_sent co-fire)",
+        )
+        return None
+
     campaign_name_for_event = event_fields.get("campaign") or campaign_ctx.campaign_name_raw
     event_id = om.log_event(
         lead_id=lead_id,
@@ -983,9 +1056,16 @@ def ingest_relay_event(
                 "SELECT status FROM workspace_leads WHERE lead_id = ? AND org_id = ? ORDER BY id DESC LIMIT 1",
                 (lead_id, DEFAULT_ORG_ID),
             ).fetchone()
-            if current and current[0]:
+            current_status = current[0] if current else None
+            # not_interested/lost are terminal negative branches, not points
+            # further along PIPELINE_STAGES' positive track -- but they sort
+            # after 'won' in that list, so furthest_stage() would otherwise
+            # treat them as more advanced than any new positive-track stage
+            # and silently revert it. A later positive-sentiment webhook must
+            # be able to override a stale not_interested/lost classification.
+            if current_status and current_status not in ("not_interested", "lost"):
                 from pipeline import furthest_stage
-                target_stage = furthest_stage(current[0], target_stage)
+                target_stage = furthest_stage(current_status, target_stage)
         om.update_lead_stage(
             lead_id,
             target_stage,
@@ -999,7 +1079,7 @@ def ingest_relay_event(
         conn, DEFAULT_ORG_ID, workspace_id, lead_id, status=ws_status,
     )
     if target_stage:
-        stage_ts = event_time or datetime.now(timezone.utc).isoformat()
+        stage_ts = event_time or om.utc_now_for_storage()
         conn.execute(
             "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
             (target_stage, stage_ts, ws_lead_id),
@@ -1020,7 +1100,7 @@ def ingest_relay_event(
         lead_id,
         ws_lead_id,
         event_type=local_type,
-        event_at=event_at or datetime.now(timezone.utc).isoformat(),
+        event_at=event_at or om.utc_now_for_storage(),
         source_platform=platform,
         idempotency_key=ws_idempotency,
         payload=ws_payload,
@@ -1054,13 +1134,13 @@ def ingest_relay_event(
         )
 
     if sender_norm:
-        event_at_ts = event_at or datetime.now(timezone.utc).isoformat()
+        event_at_ts = event_at or om.utc_now_for_storage()
         om._update_lead_sender(conn, lead_id, workspace_id, sender_norm, platform, event_at_ts)
 
     if local_type in ("linkedin_connect", "linkedin_connection_accepted") and workspace_id:
         sender_li = sender_norm or om.normalize_linkedin(sender_raw)
         if sender_li:
-            event_at_ts = event_at or datetime.now(timezone.utc).isoformat()
+            event_at_ts = event_at or om.utc_now_for_storage()
             om.upsert_linkedin_status(
                 conn, workspace_id, lead_id, sender_li, local_type, event_at_ts
             )

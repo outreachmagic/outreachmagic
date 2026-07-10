@@ -172,6 +172,7 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
         from relay_ingest import (
             ingest_relay_event,  # noqa: PLC0415
             mark_relay_ingested_many,
+            relay_dedupe_key,
         )
 
         # Phase 1: Delete all existing rows & dedup entries for the batch.
@@ -182,26 +183,26 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
             if rid is None:
                 continue
             existing_id = event_id_map.get(rid)
-            dedupe_key = f"relay:{rid}"
-            ws_key = f"ws:{dedupe_key}"
+            # relay_dedupe_key() may key PlusVibe events by message_id rather
+            # than relay_id, so also clear the legacy relay:{rid} key in case
+            # this row was ingested before that dedup scheme existed.
+            dedupe_keys = {relay_dedupe_key(evt), f"relay:{rid}"}
+            ws_keys = {f"ws:{k}" for k in dedupe_keys}
             if existing_id is not None:
                 conn.execute(
                     "UPDATE bounce_events SET first_event_id = NULL, latest_event_id = NULL "
                     "WHERE first_event_id = ? OR latest_event_id = ?",
                     (existing_id, existing_id),
                 )
+            for dedupe_key in dedupe_keys:
                 conn.execute("DELETE FROM relay_ingested WHERE dedupe_key = ?", (dedupe_key,))
+            for ws_key in ws_keys:
                 conn.execute(
                     "DELETE FROM workspace_lead_events WHERE org_id = ? AND idempotency_key = ?",
                     (DEFAULT_ORG_ID, ws_key),
                 )
+            if existing_id is not None:
                 conn.execute("DELETE FROM events WHERE id = ?", (existing_id,))
-            else:
-                conn.execute("DELETE FROM relay_ingested WHERE dedupe_key = ?", (dedupe_key,))
-                conn.execute(
-                    "DELETE FROM workspace_lead_events WHERE org_id = ? AND idempotency_key = ?",
-                    (DEFAULT_ORG_ID, ws_key),
-                )
         conn.commit()
 
         # Phase 2: Re-ingest from scratch.  Use defer_mark so

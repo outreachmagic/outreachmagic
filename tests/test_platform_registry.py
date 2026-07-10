@@ -48,6 +48,16 @@ class TestResolveEvent(unittest.TestCase):
         flags = pr.classify_activity_flags("send_msg", "outbound", "linkedin")
         self.assertTrue(flags["linkedin_sent"])
 
+    def test_prosp_linkedin_dm_message_sent_maps_to_linkedin_message(self):
+        """Regression: linkedin_dm_message_sent used to fall through to the
+        generic fallback as its own raw local_type, so it never matched
+        send_msg (both webhooks fire for the same outbound DM) and dedup
+        never applied. See d1-webhook-dedup-fix-plan.md Fix A1."""
+        resolved = pr.resolve_event("prosp", "linkedin_dm_message_sent", {})
+        self.assertEqual(resolved.local_type, "linkedin_message")
+        self.assertEqual(resolved.direction, "outbound")
+        self.assertEqual(resolved.target_stage, "contacted")
+
     def test_prosp_accept_invite(self):
         resolved = pr.resolve_event("prosp", "accept_invite", {})
         self.assertEqual(resolved.local_type, "linkedin_connection_accepted")
@@ -245,7 +255,7 @@ class TestExtractReplyBody(unittest.TestCase):
         exists) — it must never be promoted into the returned body, which
         relay_ingest.py writes into metadata["body"] as if it were real copy."""
         body = pr.extract_reply_body(
-            "plusvibe", "email_sent", {}, {}, "From alexander@rentpopcam.com",
+            "plusvibe", "email_sent", {}, {}, "From alexander@example.com",
         )
         self.assertEqual(body, "")
 
@@ -405,6 +415,51 @@ class TestEmailBisonCampaignExtraction(unittest.TestCase):
         ctx = self.wr.extract_campaign_context("emailbison", event_fields, raw)
         self.assertEqual(ctx.campaign_platform_id, "42")
         self.assertEqual(ctx.campaign_name_raw, "Test Campaign")
+
+
+class TestProspLinkedinDmExtraction(unittest.TestCase):
+    """See d1-webhook-dedup-fix-plan.md Fix A2/A3: both Prosp LinkedIn DM
+    webhook variants send fields at the top level (no eventData wrapper),
+    and reuse the `lead_email` key for a real email on one variant but a
+    LinkedIn URL on the other."""
+
+    def setUp(self):
+        import relay_extractors  # noqa: E402
+
+        self.extractors = relay_extractors
+
+    def test_linkedin_dm_message_sent_body_and_identity(self):
+        raw = {
+            "campaign_id": "12345678-...",
+            "campaign_name": "acme_corp | nace",
+            "sender": "linkedin.com/in/janedoe",
+            "lead_email": "john.smith@example.com",
+            "sent_on": "2026-06-09T20:46:03.170000",
+            "body_preview": "Hi John, Thanks for connecting!...",
+            "lead_linkedin": "linkedin.com/in/johnsmith06",
+        }
+        fields = self.extractors.extract_relay_fields("prosp", raw)
+        self.assertEqual(fields["event"]["body"], "Hi John, Thanks for connecting!...")
+
+        identity = self.extractors.extract_relay_identity("prosp", raw)
+        self.assertEqual(identity["email"], "john.smith@example.com")
+        self.assertEqual(identity["linkedin_url"], "linkedin.com/in/johnsmith06")
+
+    def test_send_msg_lead_email_is_actually_a_linkedin_url(self):
+        """send_msg reuses `lead_email` for a LinkedIn URL, not an email --
+        it must not leak into identity["email"]."""
+        raw = {
+            "sender": "linkedin.com/in/janedoe",
+            "lead_email": "linkedin.com/in/johnsmith06",
+            "campaign_id": "12345678-...",
+            "campaign_name": "acme_corp | nace",
+            "firstName": "John",
+            "lastName": "Smith",
+            "linkedinUrl": "https://www.linkedin.com/in/johnsmith06",
+        }
+        identity = self.extractors.extract_relay_identity("prosp", raw)
+        self.assertNotIn("email", identity)
+        self.assertEqual(identity["linkedin_url"], "https://www.linkedin.com/in/johnsmith06")
 
 
 if __name__ == "__main__":

@@ -881,6 +881,58 @@ def normalize_relay_timestamp(ts: Optional[str]) -> str:
     return s
 
 
+def _parse_timestamp_to_utc(ts: str) -> Optional[datetime]:
+    """Parse an epoch, ISO-8601, or naive "YYYY-MM-DD HH:MM:SS" string into an
+    aware UTC datetime. Naive input is assumed to already be UTC -- the same
+    convention SQLite's own ``datetime('now')`` uses. Returns None if ``ts``
+    doesn't match any recognized shape.
+    """
+    s = ts.strip()
+    if re.fullmatch(r"\d{13}", s):
+        return datetime.fromtimestamp(int(s) / 1000, tz=timezone.utc)
+    if re.fullmatch(r"\d{10}(\.\d+)?", s):
+        return datetime.fromtimestamp(float(s), tz=timezone.utc)
+    iso = s[:-1] + "+00:00" if s.endswith("Z") else s
+    if "T" not in iso:
+        m = re.match(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)?$", iso)
+        if not m:
+            return None
+        iso = f"{m.group(1)}T{m.group(2)}{m.group(3) or ''}"
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def utc_now_for_storage() -> str:
+    """Current UTC time in the exact shape SQLite's ``datetime('now')`` produces.
+
+    Every ``*_at`` column in the schema defaults to and is compared against
+    that shape (``datetime('now', '-N days')`` etc). Writing anything else --
+    e.g. ``datetime.now(timezone.utc).isoformat()`` -- into one of those
+    columns sorts incorrectly against such filters even though it encodes a
+    valid, correct instant, because the comparison is a plain text comparison.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def normalize_relay_timestamp_for_storage(ts: Optional[str]) -> str:
+    """Normalize a relay/webhook timestamp for writing into a ``*_at`` column.
+
+    Unlike ``normalize_relay_timestamp`` (which produces ISO-8601 for outbound
+    export payloads), this always returns SQLite's own ``datetime('now')``
+    shape so lexicographic ``datetime('now', ...)`` range filters stay valid
+    regardless of which code path wrote the row. Unparseable input is passed
+    through unchanged rather than silently replaced with "now", so bad data
+    stays visible instead of being masked.
+    """
+    if not ts:
+        return utc_now_for_storage()
+    dt = _parse_timestamp_to_utc(str(ts))
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt is not None else str(ts).strip()
+
+
 def set_last_max_id(max_id: int):
     cfg = load_config()
     cfg["last_max_id"] = max_id

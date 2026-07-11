@@ -28,8 +28,8 @@ HEADER_ALIASES: dict[str, str] = {
     "member linkedin id": "_member_linkedin_id",
     "member linkedin sales nav id": "member linkedin sales nav id",
     "phone": "phone",
-    "summary": "_summary_note",
-    "headline": "_headline_note",
+    "summary": "linkedin_bio",
+    "headline": "linkedin_headline",
 }
 
 OM_MAPPED_FIELDS = frozenset({
@@ -37,7 +37,7 @@ OM_MAPPED_FIELDS = frozenset({
     "location_city", "location_state", "location_country",
     "company_domain", "hq_city", "hq_state", "hq_country",
     "external_id", "personalized_first_name", "personalized_company_name", "notes",
-    "first_name", "last_name",
+    "first_name", "last_name", "linkedin_headline", "linkedin_bio",
 })
 
 
@@ -117,11 +117,7 @@ def normalize_import_row(raw: dict[str, Any], *, import_format: Optional[str] = 
         if target is None:
             target = nk.replace(" ", "_")
         if target.startswith("_"):
-            if target == "_summary_note" and str(val).strip():
-                notes_parts.append(f"LinkedIn bio: {str(val).strip()}")
-            elif target == "_headline_note" and str(val).strip():
-                notes_parts.append(f"LinkedIn headline: {str(val).strip()}")
-            elif target == "_member_linkedin_id" and str(val).strip():
+            if target == "_member_linkedin_id" and str(val).strip():
                 urn = str(val).strip()
                 if not urn.startswith("sales_navigator:"):
                     urn = f"sales_navigator:{urn}"

@@ -349,6 +349,14 @@ def migrate_db(conn=None):
         except sqlite3.OperationalError:
             pass
     for col, col_type in [
+        ("linkedin_headline", "TEXT"),
+        ("linkedin_bio", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+    for col, col_type in [
         ("headcount_numeric", "INTEGER"),
         ("hq_city", "TEXT"),
         ("hq_state", "TEXT"),

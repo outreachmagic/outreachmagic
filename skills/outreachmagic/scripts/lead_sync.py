@@ -31,6 +31,7 @@ SYNC_PROFILE_FIELDS = (
     "name", "title", "stage", "notes",
     "location_city", "location_state", "location_country",
     "email_verification_status",
+    "linkedin_headline", "linkedin_bio",
 )
 
 WORKSPACE_ACTIVITY_SELECT = """

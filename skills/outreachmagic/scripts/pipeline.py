@@ -920,6 +920,17 @@ def merge_leads(
                 company, title, industry, headcount, new_stage, keep_id,
             ),
         )
+        # Merge just modified the survivor (secondary email, moved children, etc.),
+        # but relay_ingested may already carry an entry for keep_id at least as
+        # recent (from the pull that brought both leads in) -- if the pull and
+        # this merge land in the same wall-clock second, relay_bump_explained_clause
+        # would wrongly treat the merge's updated_at bump as relay data being
+        # echoed back rather than a genuine local change. Downdate so the survivor
+        # is unambiguously pending re-sync regardless of timestamp resolution.
+        conn.execute(
+            "UPDATE relay_ingested SET ingested_at = datetime('now', '-1 second') WHERE lead_id = ?",
+            (keep_id,),
+        )
         if own_conn:
             conn.execute("COMMIT")
     except Exception:

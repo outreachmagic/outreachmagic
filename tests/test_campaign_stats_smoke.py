@@ -265,14 +265,14 @@ def run_tests():
 
     st = p["sheets"][2]
     sm_row = [r for r in st["rows"] if r[0] == "sentiment-mix"][0]
-    check("sentiment tab has 4 sentiment columns + campaign + total + rate",
-          len(sm_row) == 7, f"got {len(sm_row)} cols: {sm_row}")
+    check("sentiment tab has 5 sentiment columns + campaign + total + rate",
+          len(sm_row) == 8, f"got {len(sm_row)} cols: {sm_row}")
     check("positive count", sm_row[1] == 2, f"got {sm_row[1]}")
     check("negative count", sm_row[2] == 2, f"got {sm_row[2]}")
     check("autoreply count", sm_row[3] == 1, f"got {sm_row[3]}")
     check("invalid count", sm_row[4] == 1, f"got {sm_row[4]}")
-    check("total tagged=6", sm_row[5] == 6, f"got {sm_row[5]}")
-    check("positivity rate=50%", sm_row[6] == "50.0%", f"got {sm_row[6]}")
+    check("total tagged=6", sm_row[6] == 6, f"got {sm_row[6]}")
+    check("positivity rate=50%", sm_row[7] == "50.0%", f"got {sm_row[7]}")
     conn5.close()
     tmp5.cleanup()
 

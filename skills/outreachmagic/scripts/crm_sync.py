@@ -95,7 +95,8 @@ def read_crm_config(conn, workspace_id: str) -> list[dict]:
     """Read CRM workspace config rows for a workspace. Returns parsed stage_mapping."""
     rows = conn.execute(
         """SELECT workspace_id, platform, api_key, location_id, pipeline_id,
-                  stage_mapping, contact_field_mapping, overwrite_existing, enabled, updated_at
+                  stage_mapping, contact_field_mapping, overwrite_existing,
+                  contact_owner_id, enabled, updated_at
            FROM crm_workspace_config
            WHERE workspace_id = ? AND enabled = 1""",
         (workspace_id,),
@@ -140,6 +141,17 @@ def load_driver(platform: str, config: dict):
 # ---------------------------------------------------------------------------
 
 _MAX_AGE_UNIT_WORDS = {"d": "days", "w": "weeks", "m": "months", "y": "years"}
+
+# workspace_leads.updated_at bumps on every touch (outbound send, pull import,
+# etc.), not just inbound/CRM-worthy activity -- using it directly for
+# --max-age massively overcounts (e.g. 5,127 "pending" leads vs. 12 with
+# actual CRM-relevant activity in the same window). Filter on these event
+# types in workspace_lead_events instead, which only reflects activity a CRM
+# should actually care about.
+CRM_WORTHY_EVENT_TYPES = frozenset({
+    "email_reply", "lead_status_updated", "lead_disposition",
+    "meeting_booked", "linkedin_connection_accepted",
+})
 
 
 def _parse_max_age(max_age: str) -> str:
@@ -189,11 +201,22 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
             where.append("wl.updated_at > ?")
             params.append(last_sync_at)
         if max_age is not None:
-            where.append("wl.updated_at >= datetime('now', ?)")
+            event_placeholders = ",".join("?" for _ in CRM_WORTHY_EVENT_TYPES)
+            where.append(f"""
+                EXISTS (
+                    SELECT 1 FROM workspace_lead_events wle
+                    WHERE wle.lead_id = wl.lead_id
+                      AND wle.workspace_id = wl.workspace_id
+                      AND wle.event_type IN ({event_placeholders})
+                      AND wle.event_at >= datetime('now', ?)
+                )
+            """)
+            params.extend(sorted(CRM_WORTHY_EVENT_TYPES))
             params.append(f"-{_parse_max_age(max_age)}")
 
     query = f"""
         SELECT wl.lead_id, wl.status, wl.updated_at, wl.current_status_sentiment,
+               wl.current_status_label,
                l.name, l.email, l.title, l.industry, l.headcount,
                l.headcount_numeric,
                l.linkedin_url, l.company,
@@ -366,7 +389,8 @@ def _build_sync_hash(lead: dict, contact_field_mapping: dict | None,
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def preview_lead_sync(lead: dict, cfg: dict, conn, workspace_id: str) -> dict:
+def preview_lead_sync(lead: dict, cfg: dict, conn, workspace_id: str,
+                      max_age: str | None = None) -> dict:
     """Read-only preview of what sync_single_lead() would do for this lead,
     with no CRM API calls. Faithful, not a guess: sync_single_lead() itself
     decides skip-vs-not using the cached crm_entity_map.crm_company_id for
@@ -378,7 +402,7 @@ def preview_lead_sync(lead: dict, cfg: dict, conn, workspace_id: str) -> dict:
     status = lead.get("status", "")
 
     entity = conn.execute(
-        """SELECT crm_contact_id, crm_deal_id, crm_company_id, sync_hash
+        """SELECT crm_contact_id, crm_deal_id, crm_company_id, crm_note_id, sync_hash
            FROM crm_entity_map WHERE workspace_id = ? AND lead_id = ? AND platform = ?""",
         (workspace_id, lead_id_val, platform),
     ).fetchone()
@@ -396,14 +420,33 @@ def preview_lead_sync(lead: dict, cfg: dict, conn, workspace_id: str) -> dict:
         else:
             deal_action = "update" if (entity and entity["crm_deal_id"]) else "create"
 
+    event_trigger = ""
+    if max_age is not None:
+        placeholders = ",".join("?" for _ in CRM_WORTHY_EVENT_TYPES)
+        trigger_row = conn.execute(
+            f"""SELECT event_type FROM workspace_lead_events
+                WHERE workspace_id = ? AND lead_id = ?
+                  AND event_type IN ({placeholders})
+                  AND event_at >= datetime('now', ?)
+                ORDER BY event_at DESC LIMIT 1""",
+            (workspace_id, lead_id_val, *sorted(CRM_WORTHY_EVENT_TYPES), f"-{_parse_max_age(max_age)}"),
+        ).fetchone()
+        event_trigger = trigger_row["event_type"] if trigger_row else ""
+
     return {
         "lead_id": lead_id_val,
         "name": lead.get("name", ""),
         "email": lead.get("email", ""),
         "status": status,
+        "sentiment": lead.get("current_status_sentiment") or "",
+        "ws_label": lead.get("current_status_label") or "",
         "contact_action": contact_action,
         "deal_action": deal_action,
         "stage": stage_id,
+        "contact_id": (entity["crm_contact_id"] if entity else "") or "",
+        "deal_id": (entity["crm_deal_id"] if entity else "") or "",
+        "note_id": (entity["crm_note_id"] if entity else "") or "",
+        "event_trigger": event_trigger,
     }
 
 
@@ -467,12 +510,13 @@ def sync_single_lead(
     # -- Contact --
     contact_id = entity["crm_contact_id"] if entity else None
     c_action = "skipped"
+    contact_owner_id = cfg.get("contact_owner_id") or ""
 
     if contact_id:
         try:
             driver.update_contact(contact_id, lead, cfg.get("contact_field_mapping"),
                                   overwrite_existing=bool(cfg.get("overwrite_existing", False)),
-                                  company_id=company_id)
+                                  company_id=company_id, contact_owner_id=contact_owner_id)
             c_action = "updated_contact"
         except Exception as exc:
             print(f"  Error updating contact for lead {lead_id_val}: {exc}", file=sys.stderr)
@@ -485,7 +529,7 @@ def sync_single_lead(
             else:
                 contact_id = driver.create_contact(
                     lead, cfg.get("contact_field_mapping"),
-                    company_id=company_id,
+                    company_id=company_id, contact_owner_id=contact_owner_id,
                 )
             c_action = "created_contact"
         except Exception as exc:
@@ -631,7 +675,7 @@ def sync_workspace(
     field_coverage_logged = False
 
     if dry_run:
-        previews = [preview_lead_sync(lead, cfg, conn, ws_id) for lead in leads]
+        previews = [preview_lead_sync(lead, cfg, conn, ws_id, max_age=max_age) for lead in leads]
         print(format_crm_sync_preview_table(previews))
         print(f"[crm-sync] {format_crm_sync_preview_summary(previews)}")
         for p in previews:

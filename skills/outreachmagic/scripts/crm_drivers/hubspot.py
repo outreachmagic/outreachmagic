@@ -165,9 +165,15 @@ class HubspotDriver:
 
     def create_contact(
         self, lead_data: dict, field_mapping: dict | None = None,
-        *, company_id: str = "",
+        *, company_id: str = "", contact_owner_id: str = "",
     ) -> str:
-        """Create a HubSpot contact. Returns contactId."""
+        """Create a HubSpot contact. Returns contactId.
+
+        contact_owner_id is accepted for interface parity with the GHL
+        driver but not used -- HubSpot has its own owner model
+        (hubspot_owner_id) that's out of scope for this feature (GHL-only
+        for now, see crm-contact-owner-assignment-plan.md).
+        """
         name = lead_data.get("name") or "Unknown"
         parts = name.split(" ", 1)
         properties: dict = {
@@ -215,8 +221,13 @@ class HubspotDriver:
     def update_contact(
         self, contact_id: str, lead_data: dict, field_mapping: dict | None = None,
         *, overwrite_existing: bool = False, company_id: str = "",
+        contact_owner_id: str = "",
     ) -> None:
-        """Update an existing HubSpot contact. Non-destructive by default."""
+        """Update an existing HubSpot contact. Non-destructive by default.
+
+        contact_owner_id is accepted for interface parity with the GHL
+        driver but not used -- see create_contact.
+        """
         field_map = {
             "title": "jobtitle",
             "linkedin_url": "linkedinbio",

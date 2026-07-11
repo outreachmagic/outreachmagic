@@ -159,7 +159,7 @@ class GhlDriver:
 
     def create_contact(
         self, lead_data: dict, field_mapping: dict | None = None,
-        *, company_id: str = "",
+        *, company_id: str = "", contact_owner_id: str = "",
     ) -> str:
         """Create a GHL contact. Returns contactId.
 
@@ -202,6 +202,9 @@ class GhlDriver:
         if add_emails:
             body["alternateEmails"] = add_emails
 
+        if contact_owner_id:
+            body["assignedTo"] = contact_owner_id
+
         try:
             resp = self._request("POST", "/contacts/", body=body)
         except GhlError as e:
@@ -223,6 +226,7 @@ class GhlDriver:
     def update_contact(
         self, contact_id: str, lead_data: dict, field_mapping: dict | None = None,
         *, overwrite_existing: bool = False, company_id: str = "",
+        contact_owner_id: str = "",
     ) -> None:
         """Update an existing GHL contact. Non-destructive by default.
 
@@ -301,6 +305,14 @@ class GhlDriver:
         add_emails = lead_data.get("additional_emails", [])
         if add_emails:
             body["alternateEmails"] = add_emails
+
+        # Owner reassignment always follows the current workspace config --
+        # not gated by overwrite_existing/existing-value checks like the
+        # fields above. If the selected owner changes after contacts already
+        # exist, the next sync intentionally reassigns them (see
+        # crm-contact-owner-assignment-plan.md edge cases).
+        if contact_owner_id:
+            body["assignedTo"] = contact_owner_id
 
         if body:
             self._request("PUT", f"/contacts/{contact_id}", body=body)

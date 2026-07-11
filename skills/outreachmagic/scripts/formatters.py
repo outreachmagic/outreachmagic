@@ -92,7 +92,8 @@ def format_crm_sync_preview_table(previews):
     if not previews:
         return "No leads matched the sync filter."
 
-    headers = ["Lead", "Email", "Status", "Contact", "Deal"]
+    headers = ["Lead", "Email", "Status", "Sentiment", "WS Label",
+               "Contact ID", "Deal ID", "Note ID", "Event Trigger"]
     rows = []
     for p in previews:
         rows.append(
@@ -100,8 +101,12 @@ def format_crm_sync_preview_table(previews):
                 (p.get("name") or "—").strip() or "—",
                 (p.get("email") or "—").strip() or "—",
                 (p.get("status") or "—").strip() or "—",
-                p.get("contact_action") or "—",
-                p.get("deal_action") or "—",
+                (p.get("sentiment") or "—").strip() or "—",
+                (p.get("ws_label") or "—").strip() or "—",
+                p.get("contact_id") or p.get("contact_action") or "—",
+                p.get("deal_id") or p.get("deal_action") or "—",
+                p.get("note_id") or "create",
+                p.get("event_trigger") or "—",
             ]
         )
 

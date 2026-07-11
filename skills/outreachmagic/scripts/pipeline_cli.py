@@ -1942,11 +1942,18 @@ def main():
                     flush=True,
                 )
 
+        # A first-ever pull (no cursor yet) backfills everything regardless of
+        # the --full flag, but only `full=True` triggers the end-of-pull
+        # last_sync bump (pipeline_sync.py) that keeps freshly-pulled data
+        # from looking like locally-pending changes on the next sync
+        # --dry-run. Auto-detect that case, matching the pattern already used
+        # at pipeline_sync.py's own sync_from_relay_org("full=not get_last_max_id()") call site.
+        effective_full = args.full or not _pipeline.get_last_max_id()
         try:
             imported, skipped = _pipeline.sync_from_relay_org(
                 agent_key,
-                after_id=None if args.full else _pipeline.get_last_max_id(),
-                full=args.full,
+                after_id=None if effective_full else _pipeline.get_last_max_id(),
+                full=effective_full,
                 debug_sentiment=args.debug_sentiment,
                 quiet=args.cron,
                 stats=pull_stats,

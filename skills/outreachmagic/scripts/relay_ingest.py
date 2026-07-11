@@ -325,19 +325,25 @@ def relay_dedupe_key(event: dict) -> str:
 RELAY_INGESTED_PREFETCH_CHUNK = 500
 PLUSVIBE_POSITIVE_REPLY_DEDUP_SECONDS = 60
 PROSP_LINKEDIN_DM_DEDUP_SECONDS = 10
+PROSP_CONNECTION_ACCEPTED_DEDUP_SECONDS = 60
 
 
-def prosp_linkedin_dm_is_duplicate(
+def prosp_event_is_duplicate(
     conn: sqlite3.Connection,
     *,
     lead_id: Optional[int],
     event_at: str,
-    window_seconds: int = PROSP_LINKEDIN_DM_DEDUP_SECONDS,
+    event_type: str,
+    direction: str,
+    window_seconds: int,
 ) -> bool:
-    """Prosp fires both `send_msg` and `linkedin_dm_message_sent` webhooks for
-    the same outbound LinkedIn DM within ~1s of each other; both map to local
-    type `linkedin_message`. Skip the second arrival for the same lead within
-    a short window instead of double-logging it (see d1-webhook-dedup-fix-plan).
+    """Prosp sometimes fires two differently-named webhooks for the same
+    underlying action (e.g. `send_msg` + `linkedin_dm_message_sent` for one
+    outbound DM; `accept_invite` + `linkedin_accept_invite` for one accepted
+    connection), a few seconds apart, both mapping to the same local
+    event_type/direction. Skip the second arrival for the same lead within a
+    short window instead of double-logging it (see d1-webhook-dedup-fix-plan,
+    prosp-duplicate-accept-events.md).
     """
     if not lead_id or not event_at:
         return False
@@ -352,12 +358,31 @@ def prosp_linkedin_dm_is_duplicate(
     hi = (center + timedelta(seconds=window_seconds)).strftime("%Y-%m-%d %H:%M:%S")
     row = conn.execute(
         """SELECT 1 FROM events
-           WHERE lead_id = ? AND event_type = 'linkedin_message' AND direction = 'outbound'
+           WHERE lead_id = ? AND event_type = ? AND direction = ?
              AND created_at BETWEEN ? AND ?
            LIMIT 1""",
-        (lead_id, lo, hi),
+        (lead_id, event_type, direction, lo, hi),
     ).fetchone()
     return row is not None
+
+
+def prosp_linkedin_dm_is_duplicate(
+    conn: sqlite3.Connection,
+    *,
+    lead_id: Optional[int],
+    event_at: str,
+    window_seconds: int = PROSP_LINKEDIN_DM_DEDUP_SECONDS,
+) -> bool:
+    """Prosp fires both `send_msg` and `linkedin_dm_message_sent` webhooks for
+    the same outbound LinkedIn DM within ~1s of each other; both map to local
+    type `linkedin_message`. Skip the second arrival for the same lead within
+    a short window instead of double-logging it (see d1-webhook-dedup-fix-plan).
+    """
+    return prosp_event_is_duplicate(
+        conn, lead_id=lead_id, event_at=event_at,
+        event_type="linkedin_message", direction="outbound",
+        window_seconds=window_seconds,
+    )
 
 
 def _plusvibe_body_fingerprint(body: str) -> str:
@@ -1026,6 +1051,28 @@ def ingest_relay_event(
             conn=conn,
             quiet=quiet,
             reason="prosp linkedin_message duplicate (send_msg/linkedin_dm_message_sent co-fire)",
+        )
+        return None
+
+    if (
+        platform == "prosp"
+        and local_type == "linkedin_connection_accepted"
+        and direction == "inbound"
+        and prosp_event_is_duplicate(
+            conn, lead_id=lead_id, event_at=event_at,
+            event_type="linkedin_connection_accepted", direction="inbound",
+            window_seconds=PROSP_CONNECTION_ACCEPTED_DEDUP_SECONDS,
+        )
+    ):
+        _skip_duplicate_event(
+            dedupe_key,
+            defer_mark=defer_mark,
+            pending_marks=pending_marks,
+            pull_conn=pull_conn,
+            own_conn=own_conn,
+            conn=conn,
+            quiet=quiet,
+            reason="prosp linkedin_connection_accepted duplicate (accept_invite/linkedin_accept_invite co-fire)",
         )
         return None
 

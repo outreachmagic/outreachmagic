@@ -35,10 +35,13 @@ class MockDriver:
 
     def create_contact(
         self, lead_data: dict, field_mapping: dict | None = None,
-        *, company_id: str = "",
+        *, company_id: str = "", contact_owner_id: str = "",
     ) -> str:
         self._contact_counter += 1
-        self.creates.append({"lead": lead_data, "field_mapping": field_mapping, "company_id": company_id})
+        self.creates.append({
+            "lead": lead_data, "field_mapping": field_mapping,
+            "company_id": company_id, "contact_owner_id": contact_owner_id,
+        })
         cid = f"mock-contact-{self._contact_counter:03d}"
         self._record("create_contact", cid)
         return cid
@@ -47,9 +50,10 @@ class MockDriver:
         self, contact_id: str, lead_data: dict,
         field_mapping: dict | None = None,
         *, overwrite_existing: bool = False, company_id: str = "",
+        contact_owner_id: str = "",
     ) -> None:
         self.updates.append(
-            (contact_id, lead_data, field_mapping, overwrite_existing, company_id),
+            (contact_id, lead_data, field_mapping, overwrite_existing, company_id, contact_owner_id),
         )
         self.updated_contacts.append(lead_data)
         self._record("update_contact", contact_id)

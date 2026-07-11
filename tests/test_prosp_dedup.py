@@ -180,6 +180,89 @@ class TestIngestRelayEventProspDedup:
         assert result is not None
 
 
+# ── ingest_relay_event Prosp accept-invite co-fire skipping (integration) ──
+
+class TestIngestRelayEventProspAcceptDedup:
+    def test_linkedin_accept_invite_after_accept_invite_skipped(self, monkeypatch):
+        """accept_invite then linkedin_accept_invite for the same connection
+        accept, ~7s apart per the source report -- the second (different
+        relay_id, same lead+time window) must be skipped."""
+        _setup_ingest_env(_get_conn())
+        _patch_routing(monkeypatch)
+        r1 = ri.ingest_relay_event(
+            _build_prosp_event(
+                410001, "accept_invite",
+                lead_email="linkedin.com/in/janeaccept",
+                extra_payload={
+                    "firstName": "Jane", "lastName": "Accept",
+                    "linkedinUrl": "https://www.linkedin.com/in/janeaccept",
+                },
+            ),
+            quiet=True,
+        )
+        assert r1 is not None
+
+        r2 = ri.ingest_relay_event(
+            _build_prosp_event(
+                410002, "linkedin_accept_invite",
+                lead_email="linkedin.com/in/janeaccept",
+                extra_payload={
+                    "firstName": "Jane", "lastName": "Accept",
+                    "linkedinUrl": "https://www.linkedin.com/in/janeaccept",
+                },
+            ),
+            quiet=True,
+        )
+        assert r2 is None
+
+    def test_reverse_order_also_deduped(self, monkeypatch):
+        """Order isn't guaranteed on arrival -- linkedin_accept_invite first,
+        accept_invite second, must dedup the same way."""
+        _setup_ingest_env(_get_conn())
+        _patch_routing(monkeypatch)
+        r1 = ri.ingest_relay_event(
+            _build_prosp_event(
+                410010, "linkedin_accept_invite",
+                lead_email="linkedin.com/in/reverseorder",
+                extra_payload={
+                    "firstName": "Rev", "lastName": "Order",
+                    "linkedinUrl": "https://www.linkedin.com/in/reverseorder",
+                },
+            ),
+            quiet=True,
+        )
+        assert r1 is not None
+
+        r2 = ri.ingest_relay_event(
+            _build_prosp_event(
+                410011, "accept_invite",
+                lead_email="linkedin.com/in/reverseorder",
+                extra_payload={
+                    "firstName": "Rev", "lastName": "Order",
+                    "linkedinUrl": "https://www.linkedin.com/in/reverseorder",
+                },
+            ),
+            quiet=True,
+        )
+        assert r2 is None
+
+    def test_first_accept_invite_ingested(self, monkeypatch):
+        _setup_ingest_env(_get_conn())
+        _patch_routing(monkeypatch)
+        result = ri.ingest_relay_event(
+            _build_prosp_event(
+                410020, "accept_invite",
+                lead_email="linkedin.com/in/soloaccept",
+                extra_payload={
+                    "firstName": "Solo", "lastName": "Accept",
+                    "linkedinUrl": "https://www.linkedin.com/in/soloaccept",
+                },
+            ),
+            quiet=True,
+        )
+        assert result is not None
+
+
 # ── relay_dedupe_key Fix C: message_id before relay_id for PlusVibe ─────
 
 def test_plusvibe_dedupe_key_prioritizes_message_id():

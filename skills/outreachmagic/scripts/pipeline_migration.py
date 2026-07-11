@@ -422,6 +422,7 @@ def migrate_db(conn=None):
             stage_mapping        TEXT NOT NULL DEFAULT '{}',
             contact_field_mapping TEXT,
             overwrite_existing   INTEGER NOT NULL DEFAULT 0,
+            contact_owner_id     TEXT,
             enabled              INTEGER NOT NULL DEFAULT 1,
             updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE (workspace_id, platform),
@@ -520,6 +521,10 @@ def migrate_db(conn=None):
     """)
     try:
         conn.execute("ALTER TABLE crm_entity_map ADD COLUMN crm_note_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE crm_workspace_config ADD COLUMN contact_owner_id TEXT")
     except sqlite3.OperationalError:
         pass
 

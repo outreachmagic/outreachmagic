@@ -364,8 +364,8 @@ def _apply_crm_config_to_sqlite(
                 """INSERT INTO crm_workspace_config
                    (workspace_id, platform, api_key, location_id, pipeline_id,
                     stage_mapping, contact_field_mapping, overwrite_existing,
-                    enabled, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    contact_owner_id, enabled, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                    ON CONFLICT(workspace_id, platform) DO UPDATE SET
                      api_key = excluded.api_key,
                      location_id = excluded.location_id,
@@ -373,6 +373,7 @@ def _apply_crm_config_to_sqlite(
                      stage_mapping = excluded.stage_mapping,
                      contact_field_mapping = excluded.contact_field_mapping,
                      overwrite_existing = excluded.overwrite_existing,
+                     contact_owner_id = excluded.contact_owner_id,
                      enabled = excluded.enabled,
                      updated_at = datetime('now')""",
                 (
@@ -384,6 +385,7 @@ def _apply_crm_config_to_sqlite(
                     stage_mapping,
                     json.dumps(cfm) if cfm else None,
                     cfg.get("overwrite_existing", 0),
+                    cfg.get("contact_owner_id"),
                     cfg.get("enabled", 1),
                 ),
             )

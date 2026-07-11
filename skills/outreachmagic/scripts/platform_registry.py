@@ -323,6 +323,9 @@ def _prosp_mappings() -> tuple[EventMapping, ...]:
             "linkedin_connection_accepted", "Prosp connection invite accepted"),
         _em("linkedin_connection_accepted", "linkedin_connection_accepted", "inbound", None,
             "linkedin_connection_accepted"),
+        _em("linkedin_accept_invite", "linkedin_connection_accepted", "inbound", None,
+            "linkedin_connection_accepted",
+            "Prosp connection-accepted (duplicates accept_invite -- dedup via time window)"),
     )
 
 

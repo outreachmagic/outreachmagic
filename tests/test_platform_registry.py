@@ -64,6 +64,17 @@ class TestResolveEvent(unittest.TestCase):
         self.assertEqual(resolved.direction, "inbound")
         self.assertEqual(resolved.reporting_bucket, "linkedin_connection_accepted")
 
+    def test_prosp_linkedin_accept_invite_maps_same_as_accept_invite(self):
+        """Regression: linkedin_accept_invite used to fall through to the
+        generic fallback as its own raw local_type, so it never matched
+        accept_invite (both webhooks fire ~7s apart for the same accepted
+        connection) and dedup never applied. See
+        prosp-duplicate-accept-events.md."""
+        resolved = pr.resolve_event("prosp", "linkedin_accept_invite", {})
+        self.assertEqual(resolved.local_type, "linkedin_connection_accepted")
+        self.assertEqual(resolved.direction, "inbound")
+        self.assertEqual(resolved.reporting_bucket, "linkedin_connection_accepted")
+
     def test_prosp_accept_invite_legacy_reporting_without_platform(self):
         bucket = pr.normalize_reporting_bucket("accept_invite", "outbound", "linkedin")
         self.assertEqual(bucket, "linkedin_connection_accepted")

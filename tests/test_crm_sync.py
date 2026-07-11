@@ -61,7 +61,7 @@ EXPECTED_COLUMNS = {
     "crm_workspace_config": {
         "workspace_id", "platform", "api_key", "location_id",
         "pipeline_id", "stage_mapping", "contact_field_mapping",
-        "overwrite_existing", "enabled", "updated_at",
+        "overwrite_existing", "contact_owner_id", "enabled", "updated_at",
     },
     "crm_entity_map": {
         "workspace_id", "lead_id", "platform", "crm_contact_id",
@@ -452,32 +452,62 @@ def test_phase_1_lead_selection_stale_filter():
         conn.close()
 
 
+def _now_sql(conn) -> str:
+    return conn.execute("SELECT datetime('now')").fetchone()[0]
+
+
+def _ago_sql(conn, modifier: str) -> str:
+    return conn.execute("SELECT datetime('now', ?)", (modifier,)).fetchone()[0]
+
+
+def _insert_ws_event(conn, *, workspace_id, lead_id, event_type, event_at, idx=0):
+    """Minimal workspace_lead_events row for max_age filter tests."""
+    conn.execute(
+        """INSERT INTO workspace_lead_events
+           (id, org_id, workspace_id, lead_id, event_type, event_at, source_platform, idempotency_key)
+           VALUES (?, ?, ?, ?, ?, ?, 'test', ?)""",
+        (
+            f"wle_test_{workspace_id}_{lead_id}_{idx}",
+            DEFAULT_ORG_ID, workspace_id, lead_id, event_type, event_at,
+            f"idem_{workspace_id}_{lead_id}_{idx}",
+        ),
+    )
+
+
 def test_phase_1_lead_selection_max_age_filter():
-    """max_age excludes leads with stale updated_at; None preserves current behavior."""
+    """max_age only selects leads with a CRM-worthy event (see
+    CRM_WORTHY_EVENT_TYPES) within the window -- not any workspace_leads
+    touch. workspace_leads.updated_at is irrelevant to this filter now."""
     om.init_db()
     conn = get_conn()
     try:
         _setup_phase_1_data(conn)
 
-        # Make lead 1 (Alice) stale -- last touched 60 days ago
-        conn.execute(
-            "UPDATE workspace_leads SET updated_at = datetime('now', '-60 days') "
-            "WHERE workspace_id = ? AND lead_id = ?",
-            (WS1_ID, 1),
-        )
+        # Recent CRM-worthy events for leads 2-7 (matches the doc's example
+        # event types: reply, status update, meeting booked).
+        recent_events = [
+            (2, "email_reply"), (3, "lead_status_updated"), (4, "meeting_booked"),
+            (5, "lead_disposition"), (6, "linkedin_connection_accepted"), (7, "email_reply"),
+        ]
+        for lead_id, etype in recent_events:
+            _insert_ws_event(conn, workspace_id=WS1_ID, lead_id=lead_id, event_type=etype,
+                              event_at=_now_sql(conn))
+        # Lead 1 (Alice) only has a CRM-worthy event from 60 days ago.
+        _insert_ws_event(conn, workspace_id=WS1_ID, lead_id=1, event_type="email_reply",
+                          event_at=_ago_sql(conn, "-60 days"))
         conn.commit()
 
-        # No max_age -- unchanged, all 7 syncable leads returned
+        # No max_age -- unchanged, all 7 syncable leads returned regardless of events
         all_leads = crm_sync.select_leads(conn, WS1_ID)
         assert len(all_leads) == 7
 
-        # max_age=30d (documented shorthand) -- stale lead 1 excluded, rest remain
+        # max_age=30d -- lead 1's only event is 60 days old, excluded; rest have recent events
         recent_leads = crm_sync.select_leads(conn, WS1_ID, max_age="30d")
         recent_ids = {l["lead_id"] for l in recent_leads}
-        assert 1 not in recent_ids, "stale lead should be excluded by max_age"
+        assert 1 not in recent_ids, "lead with only a stale CRM-worthy event should be excluded"
         assert len(recent_leads) == 6
 
-        # max_age=90d -- wide enough window to include the stale lead again
+        # max_age=90d -- wide enough window to include lead 1's event again
         wide_leads = crm_sync.select_leads(conn, WS1_ID, max_age="90d")
         assert len(wide_leads) == 7
 
@@ -488,36 +518,56 @@ def test_phase_1_lead_selection_max_age_filter():
         conn.close()
 
 
+def test_phase_1_max_age_ignores_non_crm_worthy_touches():
+    """Regression: outbound-only activity (email_sent, routine imports) must
+    not make a lead look 'recently active' for --max-age -- only genuine
+    CRM-worthy activity should. This is the exact reported false positive
+    (5,127 leads via any updated_at touch vs. 12 with real activity)."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_1_data(conn)
+        # Lead 1's workspace_leads row was touched "now" (routine import/
+        # outbound send bumps updated_at) but has no CRM-worthy event at all.
+        _insert_ws_event(conn, workspace_id=WS1_ID, lead_id=1, event_type="email_sent",
+                         event_at=_now_sql(conn))
+        conn.commit()
+
+        recent_leads = crm_sync.select_leads(conn, WS1_ID, max_age="1d")
+        recent_ids = {l["lead_id"] for l in recent_leads}
+        assert 1 not in recent_ids, "outbound-only activity must not count as CRM-worthy"
+        assert recent_leads == []
+    finally:
+        conn.close()
+
+
 def test_phase_1_max_age_immune_to_relay_timestamp_format():
-    """Regression: a relay/webhook-sourced updated_at must sort correctly
+    """Regression: a relay/webhook-sourced event_at must sort correctly
     against max_age's datetime('now', ...) cutoff, regardless of the
     timestamp shape the webhook payload arrived in.
 
-    Before the fix, relay_ingest.py wrote ISO-8601 ("...T...+00:00") into
-    updated_at while max_age's cutoff is SQLite's plain "YYYY-MM-DD
-    HH:MM:SS" -- 'T' (0x54) sorts after ' ' (0x20), so any lead last
-    touched via the relay path always compared as "recent" no matter how
-    old it actually was (see crm-sync-timezone-bug.md).
+    relay_ingest.py writes storage-format timestamps ("YYYY-MM-DD HH:MM:SS",
+    no 'T') into workspace_lead_events.event_at -- if a differently-shaped
+    string ever leaked in (e.g. ISO-8601 with 'T'), it would sort
+    incorrectly against the datetime('now', ...) cutoff (see
+    crm-sync-timezone-bug.md, originally about workspace_leads.updated_at --
+    same class of column, same risk).
     """
     om.init_db()
     conn = get_conn()
     try:
         _setup_phase_1_data(conn)
 
-        # Simulate the exact write path relay_ingest.py uses for a webhook
-        # event that is genuinely 60 days old.
         old_iso = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
         stored = om.normalize_relay_timestamp_for_storage(old_iso)
         assert "T" not in stored, "storage-format timestamps must not contain 'T'"
-        conn.execute(
-            "UPDATE workspace_leads SET updated_at = ? WHERE workspace_id = ? AND lead_id = ?",
-            (stored, WS1_ID, 1),
-        )
+        _insert_ws_event(conn, workspace_id=WS1_ID, lead_id=1, event_type="email_reply",
+                         event_at=stored)
         conn.commit()
 
         recent_leads = crm_sync.select_leads(conn, WS1_ID, max_age="30d")
         recent_ids = {l["lead_id"] for l in recent_leads}
-        assert 1 not in recent_ids, "relay-sourced stale lead should be excluded by max_age"
+        assert 1 not in recent_ids, "relay-sourced stale event should be excluded by max_age"
     finally:
         conn.close()
 
@@ -735,17 +785,19 @@ def test_phase_1_sync_single_lead():
 
 
 def test_phase_1_sync_workspace_max_age():
-    """sync_workspace(max_age=...) excludes stale leads end-to-end."""
+    """sync_workspace(max_age=...) excludes leads with no recent CRM-worthy
+    activity end-to-end."""
     om.init_db()
     conn = get_conn()
     try:
         _setup_phase_1_data(conn)
-        # Make lead 1 (Alice) stale -- last touched 60 days ago
-        conn.execute(
-            "UPDATE workspace_leads SET updated_at = datetime('now', '-60 days') "
-            "WHERE workspace_id = ? AND lead_id = ?",
-            (WS1_ID, 1),
-        )
+        # Leads 2-7 have a recent CRM-worthy event; lead 1 (Alice) only has
+        # one from 60 days ago.
+        for lead_id in (2, 3, 4, 5, 6, 7):
+            _insert_ws_event(conn, workspace_id=WS1_ID, lead_id=lead_id,
+                             event_type="email_reply", event_at=_now_sql(conn))
+        _insert_ws_event(conn, workspace_id=WS1_ID, lead_id=1, event_type="email_reply",
+                         event_at=_ago_sql(conn, "-60 days"))
         conn.commit()
 
         mock = MockDriver()
@@ -896,12 +948,13 @@ def test_phase_1_cmd_sync_max_age_wired(capsys):
     conn = get_conn()
     try:
         _setup_phase_1_data(conn)
-        # Make lead 1 (Alice) stale -- last touched 60 days ago
-        conn.execute(
-            "UPDATE workspace_leads SET updated_at = datetime('now', '-60 days') "
-            "WHERE workspace_id = ? AND lead_id = ?",
-            (WS1_ID, 1),
-        )
+        # Leads 2-7 have a recent CRM-worthy event; lead 1 (Alice) only has
+        # one from 60 days ago.
+        for lead_id in (2, 3, 4, 5, 6, 7):
+            _insert_ws_event(conn, workspace_id=WS1_ID, lead_id=lead_id,
+                             event_type="email_reply", event_at=_now_sql(conn))
+        _insert_ws_event(conn, workspace_id=WS1_ID, lead_id=1, event_type="email_reply",
+                         event_at=_ago_sql(conn, "-60 days"))
         conn.commit()
     finally:
         conn.close()
@@ -1034,6 +1087,72 @@ def test_ghl_create_contact_all_fields():
     assert "cf_industry_id" in cf_ids
     assert "cf_hc_id" in cf_ids
     assert "cf_li_id" in cf_ids
+
+
+def test_ghl_create_contact_sets_assigned_to_when_owner_provided():
+    """contact_owner_id sets GHL's assignedTo field on create."""
+    driver = GhlDriver(_make_ghl_config())
+    lead_data = {"name": "Jane Doe", "email": "jane@example.com"}
+
+    sent_body = None
+
+    def capture_request(req, timeout=30):
+        nonlocal sent_body
+        if req.data:
+            sent_body = json.loads(req.data)
+        cm = MagicMock()
+        cm.__enter__.return_value.read.return_value = json.dumps({"contact": {"id": "new-001"}}).encode()
+        return cm
+
+    with patch("urllib.request.urlopen", side_effect=capture_request):
+        driver.create_contact(lead_data, None, contact_owner_id="ghl-user-123")
+
+    assert sent_body["assignedTo"] == "ghl-user-123"
+
+
+def test_ghl_create_contact_omits_assigned_to_when_owner_unset():
+    """No contact_owner_id ('None' selected) -- assignedTo is not sent, GHL defaults apply."""
+    driver = GhlDriver(_make_ghl_config())
+    lead_data = {"name": "Jane Doe", "email": "jane@example.com"}
+
+    sent_body = None
+
+    def capture_request(req, timeout=30):
+        nonlocal sent_body
+        if req.data:
+            sent_body = json.loads(req.data)
+        cm = MagicMock()
+        cm.__enter__.return_value.read.return_value = json.dumps({"contact": {"id": "new-001"}}).encode()
+        return cm
+
+    with patch("urllib.request.urlopen", side_effect=capture_request):
+        driver.create_contact(lead_data, None)
+
+    assert "assignedTo" not in sent_body
+
+
+def test_ghl_update_contact_sets_assigned_to_when_owner_provided():
+    """contact_owner_id reassignment on update -- always follows current
+    config, not gated by overwrite_existing (see crm-contact-owner-assignment-plan.md
+    edge case: owner changes after contacts exist should reassign)."""
+    driver = GhlDriver(_make_ghl_config())
+    lead_data = {"name": "Jane Doe", "email": "jane@example.com"}
+
+    sent_bodies = []
+
+    def capture_request(req, timeout=30):
+        if req.data:
+            sent_bodies.append(json.loads(req.data))
+        cm = MagicMock()
+        cm.__enter__.return_value.read.return_value = json.dumps({"contact": {}}).encode()
+        return cm
+
+    with patch("urllib.request.urlopen", side_effect=capture_request):
+        driver.update_contact("contact-1", lead_data, None, overwrite_existing=True,
+                              contact_owner_id="ghl-user-456")
+
+    put_bodies = [b for b in sent_bodies if "assignedTo" in b]
+    assert put_bodies and put_bodies[0]["assignedTo"] == "ghl-user-456"
 
 
 def test_ghl_create_contact_no_custom_fields():
@@ -2329,6 +2448,55 @@ def test_phase_4_entity_map_first_sync_creates():
         conn.close()
 
 
+def test_sync_single_lead_passes_contact_owner_id_to_driver():
+    """sync_single_lead() reads contact_owner_id from the workspace CRM
+    config and passes it through to the driver's create_contact call."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_4_data(conn)
+        mock = MockDriver()
+        cfg = {
+            "platform": "ghl", "workspace_id": WS1_ID,
+            "stage_mapping": {"interested": "stage-1"}, "contact_field_mapping": None,
+            "contact_owner_id": "ghl-user-789",
+        }
+        lead = {
+            "lead_id": 1, "name": "Alice", "email": "alice@example.com",
+            "title": "CEO", "status": "interested",
+            "industry": None, "headcount": None, "company": None,
+            "company_name": None, "company_domain": None, "linkedin_url": None,
+        }
+        crm_sync.sync_single_lead(lead, cfg, mock, conn=conn, workspace_id=WS1_ID)
+        assert mock.creates[-1]["contact_owner_id"] == "ghl-user-789"
+    finally:
+        conn.close()
+
+
+def test_sync_single_lead_omits_contact_owner_id_when_unset():
+    """No contact_owner_id configured ('None' selected) -- passed through as
+    empty string, so the driver omits assignedTo entirely."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_4_data(conn)
+        mock = MockDriver()
+        cfg = {
+            "platform": "ghl", "workspace_id": WS1_ID,
+            "stage_mapping": {"interested": "stage-1"}, "contact_field_mapping": None,
+        }
+        lead = {
+            "lead_id": 1, "name": "Alice", "email": "alice@example.com",
+            "title": "CEO", "status": "interested",
+            "industry": None, "headcount": None, "company": None,
+            "company_name": None, "company_domain": None, "linkedin_url": None,
+        }
+        crm_sync.sync_single_lead(lead, cfg, mock, conn=conn, workspace_id=WS1_ID)
+        assert mock.creates[-1]["contact_owner_id"] == ""
+    finally:
+        conn.close()
+
+
 def test_phase_4_entity_map_second_sync_updates():
     """entity_map has IDs -> UPDATE not CREATE."""
     om.init_db()
@@ -2438,6 +2606,49 @@ def test_preview_lead_sync_no_entity_map_is_create_create():
         assert preview["contact_action"] == "create"
         assert preview["deal_action"] == "create"
         assert preview["stage"] == "stage-1"
+    finally:
+        conn.close()
+
+
+def test_preview_lead_sync_includes_debug_columns():
+    """preview_lead_sync exposes sentiment/ws_label/contact_id/deal_id/note_id
+    /event_trigger for dry-run debugging (crm-sync-max-age-false-positive doc)."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_4_data(conn)
+        conn.execute(
+            "UPDATE workspace_leads SET current_status_sentiment = 'positive', "
+            "current_status_label = 'qc_interested' WHERE workspace_id = ? AND lead_id = 1",
+            (WS1_ID,),
+        )
+        _insert_ws_event(conn, workspace_id=WS1_ID, lead_id=1, event_type="meeting_booked",
+                         event_at=_now_sql(conn))
+        conn.execute(
+            """INSERT INTO crm_entity_map
+               (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id, crm_note_id,
+                last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, 1, 'ghl', 'contact-1', 'deal-1', 'note-1', datetime('now'), 'synced', 'stale-hash')""",
+            (WS1_ID,),
+        )
+        conn.commit()
+
+        cfg = {"platform": "ghl", "workspace_id": WS1_ID,
+               "stage_mapping": {"interested": "stage-1"}, "contact_field_mapping": None}
+        lead = {
+            "lead_id": 1, "name": "Alice", "email": "alice@example.com",
+            "title": "CEO", "status": "interested",
+            "current_status_sentiment": "positive", "current_status_label": "qc_interested",
+            "industry": None, "headcount": None, "company": None,
+            "company_name": None, "company_domain": None, "linkedin_url": None,
+        }
+        preview = crm_sync.preview_lead_sync(lead, cfg, conn, WS1_ID, max_age="1d")
+        assert preview["sentiment"] == "positive"
+        assert preview["ws_label"] == "qc_interested"
+        assert preview["contact_id"] == "contact-1"
+        assert preview["deal_id"] == "deal-1"
+        assert preview["note_id"] == "note-1"
+        assert preview["event_trigger"] == "meeting_booked"
     finally:
         conn.close()
 

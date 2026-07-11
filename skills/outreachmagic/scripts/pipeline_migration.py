@@ -255,6 +255,12 @@ def migrate_db(conn=None):
            WHERE email LIKE '%@%' AND (email_domain IS NULL OR email_domain = '')"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_email_domain ON leads(email_domain)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_lead_identities_lead_type ON lead_identities(lead_id, identity_type)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_lead_identities_type ON lead_identities(identity_type, lead_id)"
+    )
     try:
         conn.execute(
             "ALTER TABLE events ADD COLUMN campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL"

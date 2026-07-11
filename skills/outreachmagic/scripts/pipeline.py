@@ -182,6 +182,7 @@ from constants import (
     RELAY_PUSH_TIMEOUT_SECONDS,
     COMPANY_DOMAIN_SQL,
     SHARED_EMAIL_DOMAINS,
+    is_non_company_name,
     STAGE_EMOJI,
     require_professional_domain_clause,
     USAGE_WARNING_PERCENT,
@@ -393,6 +394,13 @@ def ensure_company(
     if domain and domain in SHARED_EMAIL_DOMAINS:
         domain = None
     name = (name or "").strip() or None
+    # "Self-Employed", "Freelance", "N/A", etc. describe employment status, not
+    # a company -- never let them become (or receive a domain via) a shared
+    # companies row. Falls through to domain-only matching below when a real
+    # domain is present, so each person still gets their own company record
+    # instead of being bucketed under a mega "Self-Employed" company.
+    if name and is_non_company_name(name):
+        name = None
     if not name and not domain:
         return None
     if domain:
@@ -492,6 +500,12 @@ def backfill_companies_from_leads(conn: sqlite3.Connection):
         if domain and domain in SHARED_EMAIL_DOMAINS:
             domain = None
         name = (row["company"] or "").strip() or None
+        if name and is_non_company_name(name):
+            # Bucket-reassignment below is keyed on this local `name`, not just
+            # what ensure_company() does internally -- must null it here too or
+            # every "Self-Employed" lead still gets merged onto one shared
+            # company via the by-name UPDATE a few lines down.
+            name = None
         if not name and not domain:
             continue
         cid = ensure_company(

@@ -1,5 +1,7 @@
 """Shared constants for outreachmagic pipeline scripts."""
 
+import re
+
 from platform_registry import (
     PLUSVIBE_BOUNCE_EVENTS,
     PLUSVIBE_REPLY_EVENTS,
@@ -56,6 +58,35 @@ SHARED_EMAIL_DOMAINS = frozenset({
     "tutanota.com", "twc.com", "verizon.net", "virgilio.it", "virginmedia.com", "wanadoo.fr", "web.de",
     "windstream.net", "wp.pl", "yahoo.com", "yandex.com", "yandex.ru", "ymail.com",
 })
+
+# "Company" text that describes employment status, not a real company — must
+# never be used as a company-matching key (name or domain). Matched as exact
+# whole-value equality after squashing (lowercase, non-alphanumeric stripped),
+# never substring/prefix/regex — real companies like "Independent Sector",
+# "Independent Publishers Group", "Self Help Africa", and "Self-Help Federal
+# Credit Union" legitimately start with these words and must not be caught.
+NON_COMPANY_NAMES = frozenset({
+    "self", "selfemployed", "selfemployeed", "selfemployedcontractor", "selfemployedconsultant",
+    "freelance", "freelancer", "freelanceselfemployed", "freelancecontract", "freelancecontracted",
+    "contractfreelance", "consultantfreelance", "consultantcontractor", "contract", "contractwork",
+    "independent", "independentconsultant", "independentcontractor",
+    "independentcontracter", "indepentcontractor", "indpendantcontractor",
+    "individual", "na", "none", "notapplicable", "unemployed", "unemployedlookingforwork",
+    "retired", "retiree",
+})
+
+
+def squash_company_name(value: str | None) -> str:
+    """Lowercase, strip everything but letters/digits — collapses separator
+    variants ('Self-Employed' / 'self employed' / 'Self Employed.') onto one
+    key for exact NON_COMPANY_NAMES membership checks."""
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def is_non_company_name(value: str | None) -> bool:
+    squashed = squash_company_name(value)
+    return bool(squashed) and squashed in NON_COMPANY_NAMES
+
 
 # Shared SELECT fragment for lead+company joins (read path).
 _SHARED_DOMAIN_SQL_LIST = ", ".join(f"'{d}'" for d in sorted(SHARED_EMAIL_DOMAINS))

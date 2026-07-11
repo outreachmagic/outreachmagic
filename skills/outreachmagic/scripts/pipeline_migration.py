@@ -178,6 +178,7 @@ def migrate_db(conn=None):
         );
         CREATE INDEX IF NOT EXISTS idx_wlt_workspace_tag ON workspace_lead_tags(workspace_id, tag);
         CREATE INDEX IF NOT EXISTS idx_wlt_lead ON workspace_lead_tags(lead_id);
+        CREATE INDEX IF NOT EXISTS idx_wlt_tag_ws_lead ON workspace_lead_tags(tag, workspace_id, lead_id);
         CREATE TABLE IF NOT EXISTS workspace_lead_linkedin_status (
             id TEXT PRIMARY KEY,
             workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -280,6 +281,7 @@ def migrate_db(conn=None):
            ON leads(linkedin_url) WHERE linkedin_url IS NOT NULL"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_company_name ON leads(company)")
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain) WHERE domain IS NOT NULL"
     )

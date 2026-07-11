@@ -62,6 +62,10 @@ _PROSP_SPEC = {
         "industry": ("eventData.profileInfo.industry", "profileInfo.industry", "industry"),
         "company_name": ("eventData.profileInfo.company", "profileInfo.company", "company"),
         "headcount": ("eventData.profileInfo.headcount", "profileInfo.headcount", "headcount"),
+        # Only present on the native profileInfo format, not the legacy flat
+        # webhook variants -- absent there, which is expected, not a bug.
+        "bio": ("eventData.profileInfo.bio", "profileInfo.bio", "bio"),
+        "headline": ("eventData.profileInfo.headline", "profileInfo.headline", "headline"),
     },
     "event": {
         "subject": ("eventData.subject", "subject"),
@@ -86,6 +90,11 @@ _PROSP_SPEC = {
         "linkedin_url": (
             "eventData.lead", "lead", "eventData.profileInfo.linkedinUrl",
             "profileInfo.linkedinUrl", "linkedinUrl", "lead_linkedin",
+        ),
+        # Sales Navigator member token. Only on the native profileInfo format --
+        # the legacy flat webhook variants never carried it.
+        "linkedin_sales_nav_id": (
+            "eventData.profileInfo.linkedinId", "profileInfo.linkedinId", "linkedinId",
         ),
     },
 }

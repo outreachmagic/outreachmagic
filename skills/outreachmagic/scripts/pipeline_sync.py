@@ -255,6 +255,7 @@ def _agent_sync_payload_from_entity_key(
         "linkedin" in key.lower()
         or key.startswith("http")
         or key.startswith("ACwAA")
+        or key.startswith("ACoAA")
         or key.lower().startswith("urn:li:")
     ):
         merged["linkedin"] = key
@@ -270,7 +271,13 @@ def find_lead_by_identifier(conn: sqlite3.Connection, entity_key: str) -> Option
     key = entity_key.strip()
     if "@" in key:
         return find_lead_by_email(conn, key.lower())
-    if "linkedin" in key.lower() or key.startswith("http") or key.startswith("ACwAA") or key.lower().startswith("urn:li:"):
+    if (
+        "linkedin" in key.lower()
+        or key.startswith("http")
+        or key.startswith("ACwAA")
+        or key.startswith("ACoAA")
+        or key.lower().startswith("urn:li:")
+    ):
         for itype, val in parse_linkedin_value(key):
             found = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
             if found:

@@ -938,6 +938,25 @@ def ingest_relay_event(
         return None
     lead_id = upsert_result["id"]
 
+    li_headline = lead_fields.get("headline")
+    li_bio = lead_fields.get("bio")
+    if li_headline or li_bio:
+        li_row = conn.execute(
+            "SELECT linkedin_headline, linkedin_bio FROM leads WHERE id = ?", (lead_id,)
+        ).fetchone()
+        li_sets: list[str] = []
+        li_params: list = []
+        if li_headline and not (li_row["linkedin_headline"] or "").strip():
+            li_sets.append("linkedin_headline = ?")
+            li_params.append(li_headline)
+        if li_bio and not (li_row["linkedin_bio"] or "").strip():
+            li_sets.append("linkedin_bio = ?")
+            li_params.append(li_bio)
+        if li_sets:
+            li_sets.append("updated_at = datetime('now')")
+            li_params.append(lead_id)
+            conn.execute(f"UPDATE leads SET {', '.join(li_sets)} WHERE id = ?", li_params)
+
     # get_org_routing_config() already calls ensure_default_org_workspace()
     # internally whenever needed and returns the result as
     # cfg.default_workspace_id -- calling it again here per-event (single-

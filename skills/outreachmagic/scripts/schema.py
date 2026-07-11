@@ -92,6 +92,7 @@ CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_unique ON leads(email) WHERE email IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_linkedin_unique ON leads(linkedin_url) WHERE linkedin_url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
+CREATE INDEX IF NOT EXISTS idx_leads_company_name ON leads(company);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain) WHERE domain IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS lead_merges (
@@ -280,6 +281,7 @@ CREATE TABLE IF NOT EXISTS workspace_lead_tags (
 
 CREATE INDEX IF NOT EXISTS idx_wlt_workspace_tag ON workspace_lead_tags(workspace_id, tag);
 CREATE INDEX IF NOT EXISTS idx_wlt_lead ON workspace_lead_tags(lead_id);
+CREATE INDEX IF NOT EXISTS idx_wlt_tag_ws_lead ON workspace_lead_tags(tag, workspace_id, lead_id);
 
 CREATE TABLE IF NOT EXISTS workspace_lead_linkedin_status (
     id                 TEXT PRIMARY KEY,

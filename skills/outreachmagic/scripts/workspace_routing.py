@@ -157,7 +157,7 @@ def normalize_email(email: Optional[str]) -> Optional[str]:
 
 def is_sales_nav_hash_slug(slug: str) -> bool:
     """True when a linkedin.com/in/ slug is a Sales Navigator member token, not a public handle."""
-    return bool(re.match(r"^acwaa[\w-]{20,}$", (slug or "").strip(), re.IGNORECASE))
+    return bool(re.match(r"^ac(?:w|o)aa[\w-]{20,}$", (slug or "").strip(), re.IGNORECASE))
 
 
 def linkedin_in_slug(url_or_slug: str) -> Optional[str]:
@@ -176,10 +176,13 @@ def normalize_linkedin_sales_nav_id(value: str) -> Optional[str]:
     raw = (value or "").strip()
     if not raw:
         return None
-    m = re.match(r"^ACwAA[\w-]+$", raw, re.IGNORECASE)
+    # ACwAA... is the fs_salesProfile URN encoding; ACoAA... is the token
+    # tools like Prosp surface for the same Sales Navigator lookup (confirmed
+    # working against Sales Navigator directly) -- both are valid here.
+    m = re.match(r"^AC(?:w|o)AA[\w-]+$", raw, re.IGNORECASE)
     if m:
         return m.group(0)
-    m = re.search(r"urn:li:fs_salesProfile:\((ACwAA[^,]+)", raw, re.IGNORECASE)
+    m = re.search(r"urn:li:fs_salesProfile:\((AC(?:w|o)AA[^,]+)", raw, re.IGNORECASE)
     if m:
         return m.group(1)
     return None
@@ -255,7 +258,7 @@ def parse_linkedin_value(raw: str) -> list[tuple[str, str]]:
     if "urn:li:member:" in lower:
         add("linkedin_member_id", normalize_linkedin_member_id(text))
     sales_nav = None
-    if "fs_salesprofile" in lower or re.match(r"^ACwAA", text, re.IGNORECASE):
+    if "fs_salesprofile" in lower or re.match(r"^AC(?:w|o)AA", text, re.IGNORECASE):
         sales_nav = normalize_linkedin_sales_nav_id(text)
         add("linkedin_sales_nav_id", sales_nav)
     if "linkedin.com/in/" in lower:
@@ -1012,6 +1015,7 @@ def collect_identities_from_event(
     if li:
         for itype, val in parse_linkedin_value(li):
             add(itype, val)
+    add("linkedin_sales_nav_id", identity.get("linkedin_sales_nav_id"))
     add("phone", identity.get("phone"))
     provider_lead = (raw or {}).get("lead_id") or (raw or {}).get("sl_lead_email")
     if provider_lead and platform:

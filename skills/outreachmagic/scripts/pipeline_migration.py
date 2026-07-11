@@ -68,6 +68,10 @@ def migrate_db(conn=None):
             reason TEXT,
             merged_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS migration_flags (
+            name TEXT PRIMARY KEY,
+            done_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS organizations (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -413,7 +417,13 @@ def migrate_db(conn=None):
            WHERE last_contacted_at IS NULL AND last_activity_at IS NOT NULL"""
     )
     repair_malformed_tags(conn)
-    backfill_bounce_events_from_events(conn)
+    if not conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'bounce_events_backfill'"
+    ).fetchone():
+        backfill_bounce_events_from_events(conn)
+        conn.execute(
+            "INSERT INTO migration_flags (name) VALUES ('bounce_events_backfill')"
+        )
     from pipeline import maybe_backfill_null_campaign_quarantine
 
     maybe_backfill_null_campaign_quarantine(quiet=True, conn=conn)

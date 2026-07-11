@@ -950,6 +950,7 @@ def _current_row_state(
 ) -> dict[str, Any]:
     lead = conn.execute(
         """SELECT l.name, l.email, l.company, l.title, l.notes, l.linkedin_url,
+                  l.linkedin_headline, l.linkedin_bio,
                   l.company_id, COALESCE(co.name, l.company) AS company_display
            FROM leads l
            LEFT JOIN companies co ON l.company_id = co.id
@@ -1002,6 +1003,8 @@ def _current_row_state(
         "linkedin": (lead["linkedin_url"] if lead else "") or "",
         "linkedin_url": (lead["linkedin_url"] if lead else "") or "",
         "linkedin_sales_nav_id": (sn_row["identity_value_normalized"] if sn_row else "") or "",
+        "linkedin_headline": (lead["linkedin_headline"] if lead else "") or "",
+        "linkedin_bio": (lead["linkedin_bio"] if lead else "") or "",
         "notes": (lead["notes"] if lead else "") or "",
         "workspace_stage": (wl["status"] if wl else "") or "",
         "lead_status": (wl["current_status_label"] if wl else "") or "",
@@ -1110,7 +1113,10 @@ def apply_lead_review_sync(
                 if not _sheet_value_equal(field, current.get(field), val):
                     row_changes[field] = val
 
-        for field in ("name", "email", "company", "title", "linkedin", "linkedin_url"):
+        for field in (
+            "name", "email", "company", "title", "linkedin", "linkedin_url",
+            "linkedin_headline", "linkedin_bio",
+        ):
             val = _find_in_row(raw, field)
             if val is not None and str(val).strip():
                 val = str(val).strip()
@@ -1236,6 +1242,8 @@ def apply_lead_review_sync(
             ("title", "title"),
             ("linkedin", "linkedin_url"),
             ("notes", "notes"),
+            ("linkedin_headline", "linkedin_headline"),
+            ("linkedin_bio", "linkedin_bio"),
         ):
             if field in row_changes:
                 lead_sets.append(f"{col} = ?")

@@ -143,58 +143,42 @@ def record_bounce_event(
     event_at: Optional[str] = None,
     relay_id: Optional[str] = None,
 ) -> dict:
-    """Persist deduplicated bounce analytics (one row per lead + sender)."""
+    """Persist deduplicated bounce analytics (one row per lead + sender).
+
+    Single atomic UPSERT keyed on the table's (lead_id, sender_email) UNIQUE
+    constraint -- avoids a separate existence-check SELECT before the
+    write, and closes the race where two callers could otherwise both see
+    "no existing row" and double-insert.
+    """
     sender_norm = _normalize_bounce_sender(sender_email)
     now_ts = event_at or utc_now_for_storage()
     bounce_id = _bounce_event_id(lead_id, sender_norm)
     message = (payload.get("bounce_message") or "").strip()
-    existing = conn.execute(
-        """SELECT id, bounce_message, occurrence_count FROM bounce_events
-           WHERE lead_id = ? AND sender_email = ?""",
-        (lead_id, sender_norm),
-    ).fetchone()
-    if existing:
-        keep_message = existing["bounce_message"] or ""
-        if message and (not keep_message or len(message) > len(keep_message)):
-            keep_message = message
-        conn.execute(
-            """UPDATE bounce_events SET
-                   latest_event_id = COALESCE(?, latest_event_id),
-                   bounce_message = ?,
-                   bounce_type = ?,
-                   smtp_code = COALESCE(?, smtp_code),
-                   recipient_mx = COALESCE(?, recipient_mx),
-                   sender_mx = COALESCE(?, sender_mx),
-                   relay_id = COALESCE(?, relay_id),
-                   occurrence_count = occurrence_count + 1,
-                   last_seen_at = ?,
-                   updated_at = datetime('now')
-               WHERE id = ?""",
-            (
-                event_id,
-                keep_message or None,
-                payload.get("bounce_type") or "unknown",
-                payload.get("smtp_code"),
-                payload.get("recipient_mx"),
-                payload.get("sender_mx"),
-                relay_id,
-                now_ts,
-                existing["id"],
-            ),
-        )
-        return {
-            "status": "duplicate",
-            "id": existing["id"],
-            "occurrence_count": int(existing["occurrence_count"]) + 1,
-        }
-
-    conn.execute(
+    row = conn.execute(
         """INSERT INTO bounce_events (
                id, org_id, lead_id, first_event_id, latest_event_id, platform,
                sender_email, lead_email, bounce_type, bounce_message, smtp_code,
                recipient_mx, sender_mx, campaign_id, campaign_name, workspace_id,
                relay_id, occurrence_count, first_seen_at, last_seen_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+           ON CONFLICT (lead_id, sender_email) DO UPDATE SET
+               latest_event_id = COALESCE(excluded.latest_event_id, bounce_events.latest_event_id),
+               bounce_message = CASE
+                   WHEN excluded.bounce_message IS NOT NULL
+                        AND (bounce_events.bounce_message IS NULL
+                             OR length(excluded.bounce_message) > length(bounce_events.bounce_message))
+                   THEN excluded.bounce_message
+                   ELSE bounce_events.bounce_message
+               END,
+               bounce_type = excluded.bounce_type,
+               smtp_code = COALESCE(excluded.smtp_code, bounce_events.smtp_code),
+               recipient_mx = COALESCE(excluded.recipient_mx, bounce_events.recipient_mx),
+               sender_mx = COALESCE(excluded.sender_mx, bounce_events.sender_mx),
+               relay_id = COALESCE(excluded.relay_id, bounce_events.relay_id),
+               occurrence_count = bounce_events.occurrence_count + 1,
+               last_seen_at = excluded.last_seen_at,
+               updated_at = datetime('now')
+           RETURNING id, occurrence_count""",
         (
             bounce_id,
             DEFAULT_ORG_ID,
@@ -216,8 +200,11 @@ def record_bounce_event(
             now_ts,
             now_ts,
         ),
-    )
-    return {"status": "recorded", "id": bounce_id, "occurrence_count": 1}
+    ).fetchone()
+    # occurrence_count can only be 1 immediately after the initial INSERT branch;
+    # the UPDATE branch always increments an existing count of >= 1.
+    status = "recorded" if row["occurrence_count"] == 1 else "duplicate"
+    return {"status": status, "id": row["id"], "occurrence_count": row["occurrence_count"]}
 
 
 def backfill_bounce_events_from_events(conn: sqlite3.Connection) -> int:

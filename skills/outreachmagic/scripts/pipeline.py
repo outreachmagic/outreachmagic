@@ -1565,6 +1565,7 @@ IMPORT_EXTRA_FIELDS = (
     "external_id", "notes",
     "last_message_sent", "last_message_received",
     "member linkedin sales nav id", "linkedin_sales_nav_id", "sales_nav_id",
+    "linkedin_headline", "linkedin_bio",
 )
 
 # Canonical → alias mapping applied before _extract_extra_import_fields.
@@ -1574,12 +1575,19 @@ _EXTRA_FIELD_ALIASES: dict[str, str] = {
     "domain": "company_domain",
 }
 
+# Fields pulled into `extra` that map to real `leads`/`workspace_leads` columns
+# (handled by dedicated write blocks below) rather than the generic
+# personalization loop -- anything NOT in this set gets written to
+# lead_personalization/company_personalization instead. linkedin_headline and
+# linkedin_bio must stay listed here; otherwise they'd double-write into
+# personalization as bogus custom merge-fields in addition to the leads columns.
 RESERVED_IMPORT_FIELDS = frozenset([
     "company_domain", "is_connected_linkedin", "is_linkedin_request_pending",
     "lead_status", "lead_sentiment", "import_name", "list_source",
     "tags", "contact_order", "hq_city", "hq_state", "hq_country",
     "external_id", "notes", "last_message_sent", "last_message_received",
     "member linkedin sales nav id", "linkedin_sales_nav_id", "sales_nav_id",
+    "linkedin_headline", "linkedin_bio",
 ])
 
 def csv_import_source_fields(
@@ -2135,6 +2143,29 @@ def import_profiles(
             continue
 
         lead_id = result["id"]
+
+        headline = extra.get("linkedin_headline")
+        bio = extra.get("linkedin_bio")
+        if headline or bio:
+            li_conn = shared_conn or get_conn()
+            li_row = li_conn.execute(
+                "SELECT linkedin_headline, linkedin_bio FROM leads WHERE id = ?", (lead_id,)
+            ).fetchone()
+            li_sets, li_params = [], []
+            if headline and (overwrite or not (li_row["linkedin_headline"] or "").strip()):
+                li_sets.append("linkedin_headline = ?")
+                li_params.append(headline)
+            if bio and (overwrite or not (li_row["linkedin_bio"] or "").strip()):
+                li_sets.append("linkedin_bio = ?")
+                li_params.append(bio)
+            if li_sets:
+                li_sets.append("updated_at = datetime('now')")
+                li_params.append(lead_id)
+                li_conn.execute(f"UPDATE leads SET {', '.join(li_sets)} WHERE id = ?", li_params)
+                if li_conn is not shared_conn:
+                    li_conn.commit()
+            if li_conn is not shared_conn:
+                li_conn.close()
 
         lead_items = []
         co_items = []

@@ -1380,6 +1380,56 @@ def test_ghl_retry_on_network_error():
         assert mock_urlopen.call_count == 4
 
 
+def test_ghl_400_error_fails_immediately_no_retry():
+    """400 is non-transient -- must not be retried."""
+    import urllib.error
+    driver = GhlDriver(_make_ghl_config())
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        # Only one item in side_effect: if the code retried, the second call
+        # would raise StopIteration and fail the test for the wrong reason.
+        mock_urlopen.side_effect = [
+            urllib.error.HTTPError("https://test", 400, "Bad Request", {}, None),
+        ]
+        with patch("time.sleep") as mock_sleep:
+            with pytest.raises(GhlError, match="GHL HTTP 400"):
+                driver._request("GET", "/contacts/lookup")
+            mock_sleep.assert_not_called()
+        assert mock_urlopen.call_count == 1
+
+
+def test_ghl_404_error_fails_immediately_no_retry():
+    """404 is non-transient -- must not be retried (tested against the raw
+    _request() layer, since lookup_contact() itself translates a 404
+    GhlError into a None return -- see test_ghl_lookup_contact_not_found)."""
+    import urllib.error
+    driver = GhlDriver(_make_ghl_config())
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = [
+            urllib.error.HTTPError("https://test", 404, "Not Found", {}, None),
+        ]
+        with patch("time.sleep") as mock_sleep:
+            with pytest.raises(GhlError, match="GHL HTTP 404"):
+                driver._request("GET", "/contacts/some-id")
+            mock_sleep.assert_not_called()
+        assert mock_urlopen.call_count == 1
+
+
+def test_ghl_500_error_still_retries():
+    """5xx server errors remain transient and should still be retried."""
+    import urllib.error
+    driver = GhlDriver(_make_ghl_config())
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = [
+            urllib.error.HTTPError("https://test", 500, "Server Error", {}, None),
+            urllib.error.HTTPError("https://test", 500, "Server Error", {}, None),
+            _mock_response({"contacts": [{"id": "found"}]}),
+        ]
+        with patch("time.sleep"):
+            result = driver._request("GET", "/contacts/some-id")
+            assert result == {"contacts": [{"id": "found"}]}
+        assert mock_urlopen.call_count == 3
+
+
 # ---------------------------------------------------------------------------
 # Event formatting tests
 # ---------------------------------------------------------------------------

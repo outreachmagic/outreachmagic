@@ -128,6 +128,10 @@ class GhlDriver:
                     time.sleep(wait)
                     last_exc = RateLimitError("GHL rate limited")
                     continue
+                if 400 <= e.code < 500:
+                    # Client errors (400/404/422/etc.) are non-transient --
+                    # retrying wastes time and rate-limit budget, so fail fast.
+                    raise GhlError(f"GHL HTTP {e.code}: {err_body[:500]}") from e
                 last_exc = GhlError(f"GHL HTTP {e.code}: {err_body[:500]}")
             except (urllib.error.URLError, OSError) as e:
                 last_exc = NetworkError(f"GHL network error: {e}")

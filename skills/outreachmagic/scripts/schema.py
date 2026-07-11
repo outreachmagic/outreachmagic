@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS leads (
     email                    TEXT,
     email_domain             TEXT,
     linkedin_url             TEXT,
+    linkedin_sales_nav_id    TEXT,
     location_city            TEXT,
     location_state           TEXT,
     location_country         TEXT,
@@ -47,7 +48,6 @@ CREATE TABLE IF NOT EXISTS leads (
     updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
     last_contact_at          TEXT,
     next_action              TEXT,
-    next_action_at           TEXT,
     latest_sender            TEXT,
     latest_sender_platform   TEXT
 );
@@ -91,6 +91,11 @@ CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_unique ON leads(email) WHERE email IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_linkedin_unique ON leads(linkedin_url) WHERE linkedin_url IS NOT NULL;
+-- idx_leads_sales_nav_id_unique intentionally NOT here: linkedin_sales_nav_id
+-- is a new column added via migrate_db()'s ALTER TABLE, which runs AFTER this
+-- script on existing databases. Indexing it here would run before the column
+-- exists on any pre-existing leads table and crash init_db() for everyone
+-- who isn't starting from a brand-new database. See pipeline_migration.py.
 CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
 CREATE INDEX IF NOT EXISTS idx_leads_company_name ON leads(company);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain) WHERE domain IS NOT NULL;

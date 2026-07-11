@@ -21,6 +21,7 @@ from workspace_routing import (
     import_extra_from_entity_key,
     lead_external_id_value,
     normalize_linkedin,
+    normalize_linkedin_sales_nav_id,
     parse_entity_key,
     parse_linkedin_value,
     upsert_all_identities,
@@ -31,7 +32,7 @@ SYNC_PROFILE_FIELDS = (
     "name", "title", "stage", "notes",
     "location_city", "location_state", "location_country",
     "email_verification_status",
-    "linkedin_headline", "linkedin_bio",
+    "linkedin_headline", "linkedin_bio", "linkedin_sales_nav_id",
 )
 
 WORKSPACE_ACTIVITY_SELECT = """
@@ -693,7 +694,7 @@ def apply_agent_lead_core_payload(
         )
 
     loc_sets, loc_params = [], []
-    for col in ("location_city", "location_state", "location_country"):
+    for col in ("location_city", "location_state", "location_country", "linkedin_headline", "linkedin_bio"):
         if payload.get(col):
             loc_sets.append(f"{col} = ?")
             loc_params.append(payload[col])
@@ -713,6 +714,10 @@ def apply_agent_lead_core_payload(
         for itype, val in parse_linkedin_value(str(payload["linkedin"])):
             if not any(t == itype and v == val for t, v in identities):
                 identities.append((itype, val))
+    if payload.get("linkedin_sales_nav_id"):
+        sn_norm = normalize_linkedin_sales_nav_id(str(payload["linkedin_sales_nav_id"]))
+        if sn_norm and not any(t == "linkedin_sales_nav_id" and v == sn_norm for t, v in identities):
+            identities.append(("linkedin_sales_nav_id", sn_norm))
     for addr in payload.get("secondary_emails") or []:
         addr_norm = str(addr).strip().lower()
         if addr_norm and not any(t == "email" and v == addr_norm for t, v in identities):

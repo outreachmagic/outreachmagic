@@ -43,6 +43,7 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 import shared as cc
+from constants import is_non_company_name
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -266,8 +267,12 @@ def append_serper_attempted(tags: Optional[list[str]]) -> list[str]:
     return out
 
 
-def skip_reason_from_tags(tags: Optional[list[str]], linkedin_url: Optional[str]) -> str:
+def skip_reason_from_tags(
+    tags: Optional[list[str]], linkedin_url: Optional[str], company: Optional[str] = None,
+) -> str:
     """Return skip reason when Serper is not needed, else empty string."""
+    if is_non_company_name(company):
+        return "non_company_name"
     if linkedin_url and str(linkedin_url).strip():
         return "has_linkedin"
     if SERPER_ATTEMPTED_TAG in (tags or []):
@@ -471,7 +476,7 @@ def check_lead_exists(
         )
         if lead:
             _apply_lead_match(result, lead, input_company=company, force=False)
-            skip = skip_reason_from_tags(result.get("tags"), result.get("linkedin_url"))
+            skip = skip_reason_from_tags(result.get("tags"), result.get("linkedin_url"), result.get("company"))
             if skip:
                 result["skip_reason"] = skip
             if skip_tagged and skip == "skipped_serper_attempted":
@@ -493,7 +498,7 @@ def check_lead_exists(
                 force=False,
                 raw=json.dumps({"lead": lead}),
             )
-            skip = skip_reason_from_tags(result.get("tags"), result.get("linkedin_url"))
+            skip = skip_reason_from_tags(result.get("tags"), result.get("linkedin_url"), result.get("company"))
             if skip:
                 result["skip_reason"] = skip
             if skip_tagged and skip == "skipped_serper_attempted":
@@ -767,22 +772,28 @@ def build_serper_queries(person: dict[str, Any]) -> list[dict[str, str]]:
 
     queries: list[dict[str, str]] = []
 
-    # 2a — Company strict (always)
-    queries.append({
-        "label": "company_discovery_strict",
-        "query": f'"{company}" official website',
-        "always": True,
-        "fallback_query": f"{company} website",
-    })
+    # "Self-Employed", "Freelance", "N/A", etc. aren't real companies -- a
+    # website-discovery search for one is guaranteed to waste a credit on
+    # zero useful results. Skip those two, but still look up the person's own
+    # LinkedIn profile below -- that's independently useful regardless of
+    # whether they have a "real" company.
+    if not is_non_company_name(company):
+        # 2a — Company strict (always)
+        queries.append({
+            "label": "company_discovery_strict",
+            "query": f'"{company}" official website',
+            "always": True,
+            "fallback_query": f"{company} website",
+        })
 
-    # 2b — Company broad (conditional placeholder — agent decides)
-    queries.append({
-        "label": "company_discovery_broad",
-        "query": f"{company} official website",
-        "always": False,
-        "fallback_query": "",
-        "condition": "No organic results with http(s) links in strict search",
-    })
+        # 2b — Company broad (conditional placeholder — agent decides)
+        queries.append({
+            "label": "company_discovery_broad",
+            "query": f"{company} official website",
+            "always": False,
+            "fallback_query": "",
+            "condition": "No organic results with http(s) links in strict search",
+        })
 
     # 2c — LinkedIn profile (always, unquoted company for loose matching)
     queries.append({
@@ -1619,6 +1630,11 @@ def cmd_serper_queries(input_file: str) -> None:
             "person": {"full_name": p["full_name"], "company_name": p["company_name"]},
             "queries": [],
         }
+        if is_non_company_name(p["company_name"]):
+            entry["note"] = (
+                "company_name looks like a non-company placeholder "
+                "(self-employed/freelance/etc.) -- company-discovery queries skipped"
+            )
         for q in queries:
             entry["queries"].append({
                 "label": q["label"],

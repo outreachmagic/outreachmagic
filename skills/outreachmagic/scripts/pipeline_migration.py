@@ -280,6 +280,14 @@ def migrate_db(conn=None):
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_linkedin_unique
            ON leads(linkedin_url) WHERE linkedin_url IS NOT NULL"""
     )
+    try:
+        conn.execute("ALTER TABLE leads ADD COLUMN linkedin_sales_nav_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_sales_nav_id_unique
+           ON leads(linkedin_sales_nav_id) WHERE linkedin_sales_nav_id IS NOT NULL"""
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_company_name ON leads(company)")
     conn.execute(

@@ -73,6 +73,16 @@ ENTITY_KEY_IDENTITY_TYPES = (
     "import_key",
 )
 
+# Fuzzy composite types built for the "is there *some* identity" check and
+# entity-key fallback -- never used for actual lead matching (see
+# STRONG_IDENTITY_TYPES in pipeline.py's resolve_lead), and >96% redundant
+# with a strong identity already on the same lead. Not persisted to
+# lead_identities; lead_entity_key() recomputes the same fingerprint on the
+# fly from the leads row instead of reading a stored row.
+NON_PERSISTED_IDENTITY_TYPES = frozenset({
+    "name_company_domain", "name_company_domain_title", "name_company", "import_key",
+})
+
 # Identity types safe enough to trigger an AUTOMATIC merge queue on conflict.
 # Narrower than STRONG_IDENTITY_TYPES (pipeline.py) on purpose: external_id's
 # safety depends on the source provider's own guarantees (not verifiable
@@ -540,6 +550,65 @@ def promote_linkedin_url_from_identities(
     return None
 
 
+def linkedin_sales_nav_id_field_conflict(
+    conn: sqlite3.Connection,
+    lead_id: int,
+    sales_nav_id: str,
+) -> Optional[dict]:
+    """Return conflict metadata when another lead already owns this sales-nav id."""
+    if not sales_nav_id:
+        return None
+    row = conn.execute(
+        "SELECT id FROM leads WHERE linkedin_sales_nav_id = ? AND id != ?",
+        (sales_nav_id, lead_id),
+    ).fetchone()
+    if not row:
+        return None
+    owner_id = int(row["id"])
+    return {
+        "type": "linkedin_sales_nav_id_conflict",
+        "linkedin_sales_nav_id": sales_nav_id,
+        "existing_lead_id": owner_id,
+        "message": (
+            f"linkedin_sales_nav_id {sales_nav_id} is already set on lead {owner_id}; "
+            "field left unchanged — consider dedup merge"
+        ),
+    }
+
+
+def promote_linkedin_sales_nav_id_from_identities(
+    conn: sqlite3.Connection,
+    org_id: str,
+    lead_id: int,
+) -> Optional[dict]:
+    """Promote the sales-nav-id identity to leads.linkedin_sales_nav_id.
+
+    Returns conflict metadata when the id is already owned by another lead.
+    """
+    row = conn.execute(
+        "SELECT linkedin_sales_nav_id FROM leads WHERE id = ?", (lead_id,)
+    ).fetchone()
+    if row and (row["linkedin_sales_nav_id"] or "").strip():
+        return None
+    candidate = conn.execute(
+        """SELECT identity_value_normalized FROM lead_identities
+           WHERE org_id = ? AND lead_id = ? AND identity_type = 'linkedin_sales_nav_id'
+           ORDER BY created_at DESC LIMIT 1""",
+        (org_id, lead_id),
+    ).fetchone()
+    if not candidate:
+        return None
+    sales_nav_id = candidate["identity_value_normalized"]
+    conflict = linkedin_sales_nav_id_field_conflict(conn, lead_id, sales_nav_id)
+    if conflict:
+        return conflict
+    conn.execute(
+        "UPDATE leads SET linkedin_sales_nav_id = ?, updated_at = datetime('now') WHERE id = ?",
+        (sales_nav_id, lead_id),
+    )
+    return None
+
+
 def upsert_all_identities(
     conn: sqlite3.Connection,
     org_id: str,
@@ -552,6 +621,8 @@ def upsert_all_identities(
     conflicts: list[dict] = []
     linkedin_conflicts: list[dict] = []
     for itype, val in identities:
+        if itype in NON_PERSISTED_IDENTITY_TYPES:
+            continue
         try:
             upsert_identity_alias(
                 conn, org_id, lead_id, itype, val, source=source,
@@ -571,6 +642,9 @@ def upsert_all_identities(
     prom = promote_linkedin_url_from_identities(conn, org_id, lead_id)
     if prom:
         linkedin_conflicts.append(prom)
+    sn_prom = promote_linkedin_sales_nav_id_from_identities(conn, org_id, lead_id)
+    if sn_prom:
+        linkedin_conflicts.append(sn_prom)
     return conflicts, linkedin_conflicts
 
 
@@ -1054,24 +1128,46 @@ def find_lead_by_identity(
 
 
 def lead_entity_key(conn: sqlite3.Connection, org_id: str, lead_id: int) -> str:
-    """Stable relay push/replay key: email > linkedin > prefixed identity alias."""
+    """Stable relay push/replay key: email > linkedin > external_id > composite fallback.
+
+    The composite (name+company[+domain[+title]]) tier is computed on the fly
+    from the leads/companies row rather than read from lead_identities -- those
+    fuzzy types are no longer persisted there (NON_PERSISTED_IDENTITY_TYPES),
+    since they were never used for actual lead matching and were >96%
+    redundant with a strong identity already on the same lead.
+    """
     row = conn.execute(
-        "SELECT email, linkedin_url FROM leads WHERE id = ?", (lead_id,)
+        """SELECT l.email, l.linkedin_url, l.name, l.company, l.title,
+                  co.domain AS company_domain
+           FROM leads l LEFT JOIN companies co ON co.id = l.company_id
+           WHERE l.id = ?""",
+        (lead_id,),
     ).fetchone()
     if row and row["email"]:
         return str(row["email"]).strip().lower()
     if row and row["linkedin_url"]:
         return str(row["linkedin_url"]).strip()
-    placeholders = ",".join("?" for _ in ENTITY_KEY_IDENTITY_TYPES)
     id_row = conn.execute(
-        f"""SELECT identity_type, identity_value_normalized FROM lead_identities
-            WHERE org_id = ? AND lead_id = ?
-            AND identity_type IN ({placeholders})
-            ORDER BY identity_type LIMIT 1""",
-        (org_id, lead_id, *ENTITY_KEY_IDENTITY_TYPES),
+        """SELECT identity_type, identity_value_normalized FROM lead_identities
+           WHERE org_id = ? AND lead_id = ? AND identity_type = 'external_id'
+           ORDER BY created_at LIMIT 1""",
+        (org_id, lead_id),
     ).fetchone()
     if id_row:
         return f"{id_row['identity_type']}:{id_row['identity_value_normalized']}"
+    if not row:
+        return ""
+    norm_name = normalize_person_name(row["name"])
+    domain = (row["company_domain"] or "").strip().lower()
+    title = (row["title"] or "").strip().lower()
+    if norm_name and domain:
+        if title:
+            return f"name_company_domain_title:{norm_name}|{domain}|{title}"
+        return f"name_company_domain:{norm_name}|{domain}"
+    if norm_name and row["company"]:
+        ckey = normalize_company_name_key(row["company"])
+        if ckey:
+            return f"name_company:{norm_name}|{ckey}"
     return ""
 
 
@@ -1140,6 +1236,8 @@ def upsert_identity_alias(
     )
     if identity_type == "linkedin_url" and promote_linkedin:
         promote_linkedin_url_from_identities(conn, org_id, lead_id)
+    elif identity_type == "linkedin_sales_nav_id" and promote_linkedin:
+        promote_linkedin_sales_nav_id_from_identities(conn, org_id, lead_id)
 
 
 def enqueue_identity_conflict_merge(

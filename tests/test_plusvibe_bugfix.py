@@ -150,6 +150,193 @@ def test_not_interested_is_not_absorbing_for_later_positive_reclassification():
     assert row["status"] == "interested"
 
 
+def test_ingest_does_not_call_ensure_default_org_workspace_per_event(monkeypatch):
+    """Regression: get_org_routing_config() already ensures the default org/
+    workspace exists and returns it as cfg.default_workspace_id -- calling
+    ensure_default_org_workspace() again per-event (single-workspace mode)
+    was 4 redundant SQL statements x every event in a bulk pull."""
+    from workspace_routing import OrgRoutingConfig, WORKSPACE_ROUTING_SINGLE
+
+    calls = []
+    monkeypatch.setattr(
+        om, "ensure_default_org_workspace", lambda *a, **k: calls.append(1),
+    )
+    routing_config = OrgRoutingConfig(mode=WORKSPACE_ROUTING_SINGLE, default_workspace_id="ws_pv-test")
+
+    event = _status_event("lead_marked_as_qc_interested", relay_id=400)
+    lead_id = ri.ingest_relay_event(
+        event, force_workspace_id="ws_pv-test", routing_config=routing_config,
+    )
+    assert lead_id is not None
+    assert calls == []
+
+
+def test_workspace_lead_events_payload_does_not_duplicate_subject_and_body():
+    """Regression: subject/body used to be stored both at the top level of
+    payload_json AND nested under payload_json["event"] (== events.metadata_json),
+    doubling row size for no reason -- workspace_lead_events is an outbox/
+    idempotency table, not a content store."""
+    event = {
+        "relay_id": 500,
+        "platform": "plusvibe",
+        "event_type": "all_email_replies",
+        "lead": "dup-payload@example.com",
+        "received_at": "2026-06-10T12:00:01Z",
+        "payload": {
+            "campaign_name": "Test Campaign",
+            "campaign_id": "camp-1",
+            "subject": "Re: hello there",
+            "text_body": "Sure, let's talk",
+            "body": "Sure, let's talk",
+        },
+    }
+    lead_id = ri.ingest_relay_event(event, force_workspace_id="ws_pv-test")
+    assert lead_id is not None
+
+    conn = om.get_conn()
+    row = conn.execute(
+        "SELECT payload_json FROM workspace_lead_events WHERE lead_id = ?", (lead_id,),
+    ).fetchone()
+    conn.close()
+    payload = json.loads(row["payload_json"])
+    assert "subject" not in payload
+    assert "body_preview" not in payload
+    assert payload["event"]["subject"] == "Re: hello there"
+    assert payload["event"]["body"] == "Sure, let's talk"
+
+
+def test_auto_merge_safe_identity_types_membership():
+    """Sanity check the allowlist boundary itself: only email + LinkedIn's
+    own unique identifiers are solid enough to trigger an automatic merge;
+    external_id/phone/provider_id are not, even though external_id/phone are
+    still fine as additive aliases on the current lead."""
+    from workspace_routing import AUTO_MERGE_SAFE_IDENTITY_TYPES
+
+    assert AUTO_MERGE_SAFE_IDENTITY_TYPES == {
+        "email", "linkedin_url", "linkedin_sales_nav_id", "linkedin_member_id",
+    }
+
+
+def test_shared_provider_id_does_not_queue_merge_forwarded_thread_scenario():
+    """Regression: PlusVibe assigns the same provider_id (its internal
+    thread/conversation id) to both parties on a forwarded-email reply --
+    two genuinely different people must not get queued for merge."""
+    forwarder = {
+        "relay_id": 600,
+        "platform": "plusvibe",
+        "event_type": "all_email_replies",
+        "lead": "forwarder@example.com",
+        "received_at": "2026-06-10T12:00:01Z",
+        "payload": {
+            "campaign_name": "Test Campaign",
+            "campaign_id": "camp-1",
+            "lead_id": "conv-thread-1",
+            "text_body": "Forwarding this to a colleague",
+            "body": "Forwarding this to a colleague",
+        },
+    }
+    forwardee = {
+        "relay_id": 601,
+        "platform": "plusvibe",
+        "event_type": "all_email_replies",
+        "lead": "forwardee@example.com",
+        "received_at": "2026-06-10T12:00:05Z",
+        "payload": {
+            "campaign_name": "Test Campaign",
+            "campaign_id": "camp-1",
+            "lead_id": "conv-thread-1",
+            "text_body": "Thanks for forwarding, I'm interested",
+            "body": "Thanks for forwarding, I'm interested",
+        },
+    }
+    lead_a = ri.ingest_relay_event(forwarder, force_workspace_id="ws_pv-test")
+    lead_b = ri.ingest_relay_event(forwardee, force_workspace_id="ws_pv-test")
+    assert lead_a is not None and lead_b is not None
+    assert lead_a != lead_b
+
+    conn = om.get_conn()
+    count = conn.execute("SELECT COUNT(*) FROM lead_merge_jobs").fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
+def test_shared_external_id_does_not_queue_automatic_merge():
+    """external_id's safety depends on the source provider's own guarantees
+    (not verifiable here) -- it's fine as an additive alias but must not
+    trigger an automatic merge on conflict."""
+    first = {
+        "relay_id": 610,
+        "platform": "plusvibe",
+        "event_type": "all_email_replies",
+        "lead": "ext-a@example.com",
+        "received_at": "2026-06-10T12:00:01Z",
+        "payload": {
+            "campaign_name": "Test Campaign",
+            "campaign_id": "camp-1",
+            "external_id": "crm-shared-id-1",
+            "text_body": "Hello",
+            "body": "Hello",
+        },
+    }
+    second = {
+        "relay_id": 611,
+        "platform": "plusvibe",
+        "event_type": "all_email_replies",
+        "lead": "ext-b@example.com",
+        "received_at": "2026-06-10T12:00:05Z",
+        "payload": {
+            "campaign_name": "Test Campaign",
+            "campaign_id": "camp-1",
+            "external_id": "crm-shared-id-1",
+            "text_body": "Hi there",
+            "body": "Hi there",
+        },
+    }
+    lead_a = ri.ingest_relay_event(first, force_workspace_id="ws_pv-test")
+    lead_b = ri.ingest_relay_event(second, force_workspace_id="ws_pv-test")
+    assert lead_a is not None and lead_b is not None
+    assert lead_a != lead_b
+
+    conn = om.get_conn()
+    count = conn.execute("SELECT COUNT(*) FROM lead_merge_jobs").fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
+def test_email_conflict_still_queues_automatic_merge():
+    """Proves the allowlist isn't over-broad: a genuine conflict on a safe
+    identity type (email) still queues a merge job for review."""
+    from workspace_routing import (
+        AUTO_MERGE_SAFE_IDENTITY_TYPES,
+        enqueue_identity_conflict_merge,
+        upsert_identity_alias,
+    )
+
+    lead_a = om.resolve_lead(email="lead-a-conflict@example.com", name="A")["id"]
+    lead_b = om.resolve_lead(email="lead-b-conflict@example.com", name="B")["id"]
+
+    conn = om.get_conn()
+    try:
+        upsert_identity_alias(
+            conn, om.DEFAULT_ORG_ID, lead_b, "email",
+            "lead-a-conflict@example.com", source="plusvibe",
+        )
+        conflict_raised = False
+    except ValueError:
+        conflict_raised = True
+        assert "email" in AUTO_MERGE_SAFE_IDENTITY_TYPES
+        enqueue_identity_conflict_merge(
+            conn, om.DEFAULT_ORG_ID, lead_b, "email",
+            "lead-a-conflict@example.com", source="plusvibe",
+        )
+    conn.commit()
+    assert conflict_raised
+
+    count = conn.execute("SELECT COUNT(*) FROM lead_merge_jobs").fetchone()[0]
+    conn.close()
+    assert count == 1
+
+
 def test_migrate_db_backfill_uses_shared_connection():
     conn = om.get_conn()
     conn.execute("INSERT INTO leads (name, email) VALUES ('No Camp', 'nocamp@example.com')")

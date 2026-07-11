@@ -952,6 +952,12 @@ def main():
     )
     dedup_merge_p.add_argument("--reason", default="dedup", help="Reason stored in lead_merges")
 
+    dedup_events_p = sub.add_parser(
+        "dedup-events",
+        help="Merge historical duplicate email_reply events sharing a message_id",
+    )
+    dedup_events_p.add_argument("--commit", action="store_true", help="Perform the merge (default dry-run)")
+
     review_p = sub.add_parser(
         "review",
         help="Dedup review and two-way Google Sheet sync workflows (not the same as sheets export)",
@@ -3082,6 +3088,15 @@ def main():
         else:
             print(json.dumps({"error": f"unknown dedup subcommand: {args.dedup_command}"}))
             sys.exit(1)
+    elif args.command == "dedup-events":
+        import event_dedup
+
+        conn = _pipeline.get_conn()
+        try:
+            result = event_dedup.dedupe_reply_events(conn, commit=args.commit)
+        finally:
+            conn.close()
+        print(json.dumps(result, indent=2))
     elif args.command == "merge-leads":
         if args.keep and args.merge:
             result = _pipeline.merge_leads(args.keep, args.merge, reason="manual_cli")

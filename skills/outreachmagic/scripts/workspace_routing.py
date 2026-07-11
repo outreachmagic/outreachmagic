@@ -73,6 +73,17 @@ ENTITY_KEY_IDENTITY_TYPES = (
     "import_key",
 )
 
+# Identity types safe enough to trigger an AUTOMATIC merge queue on conflict.
+# Narrower than STRONG_IDENTITY_TYPES (pipeline.py) on purpose: external_id's
+# safety depends on the source provider's own guarantees (not verifiable
+# here), phone numbers are frequently shared company lines, and PlusVibe's
+# provider_id is a conversation/thread id shared by both parties on a
+# forwarded reply thread -- none of those should trigger an automatic merge,
+# only email and LinkedIn's own unique identifiers are solid enough for that.
+AUTO_MERGE_SAFE_IDENTITY_TYPES = frozenset({
+    "email", "linkedin_url", "linkedin_sales_nav_id", "linkedin_member_id",
+})
+
 
 @dataclass
 class CampaignContext:

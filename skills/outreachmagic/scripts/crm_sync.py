@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from formatters import format_crm_sync_preview_summary, format_crm_sync_preview_table
+
 try:
     from crm_drivers.ghl import AuthError as GhlAuthError, GhlError, NetworkError as GhlNetworkError, RateLimitError as GhlRateLimitError
     from crm_drivers.hubspot import AuthError as HsAuthError, HubspotError, NetworkError as HsNetworkError, RateLimitError as HsRateLimitError
@@ -364,6 +366,47 @@ def _build_sync_hash(lead: dict, contact_field_mapping: dict | None,
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def preview_lead_sync(lead: dict, cfg: dict, conn, workspace_id: str) -> dict:
+    """Read-only preview of what sync_single_lead() would do for this lead,
+    with no CRM API calls. Faithful, not a guess: sync_single_lead() itself
+    decides skip-vs-not using the cached crm_entity_map.crm_company_id for
+    the hash check (not a freshly-resolved one), so this preview uses the
+    exact same locally-cached state.
+    """
+    platform = cfg["platform"]
+    lead_id_val = lead.get("lead_id", lead.get("id", 0))
+    status = lead.get("status", "")
+
+    entity = conn.execute(
+        """SELECT crm_contact_id, crm_deal_id, crm_company_id, sync_hash
+           FROM crm_entity_map WHERE workspace_id = ? AND lead_id = ? AND platform = ?""",
+        (workspace_id, lead_id_val, platform),
+    ).fetchone()
+
+    existing_co_id = entity["crm_company_id"] if entity else ""
+    new_hash = _build_sync_hash(lead, cfg.get("contact_field_mapping"), company_id=existing_co_id or "")
+    stage_id = cfg["stage_mapping"].get(status, "")
+
+    if entity and entity["sync_hash"] == new_hash:
+        contact_action, deal_action = "unchanged", "unchanged"
+    else:
+        contact_action = "update" if (entity and entity["crm_contact_id"]) else "create"
+        if not stage_id:
+            deal_action = "no_mapping"
+        else:
+            deal_action = "update" if (entity and entity["crm_deal_id"]) else "create"
+
+    return {
+        "lead_id": lead_id_val,
+        "name": lead.get("name", ""),
+        "email": lead.get("email", ""),
+        "status": status,
+        "contact_action": contact_action,
+        "deal_action": deal_action,
+        "stage": stage_id,
+    }
+
+
 def sync_single_lead(
     lead: dict, cfg: dict, driver, *,
     conn: "sqlite3.Connection | None" = None,
@@ -587,16 +630,27 @@ def sync_workspace(
     # Track which OM fields were covered vs. skipped (log once per sync)
     field_coverage_logged = False
 
+    if dry_run:
+        previews = [preview_lead_sync(lead, cfg, conn, ws_id) for lead in leads]
+        print(format_crm_sync_preview_table(previews))
+        print(f"[crm-sync] {format_crm_sync_preview_summary(previews)}")
+        for p in previews:
+            if p["contact_action"] == "create":
+                results["contacts_created"] += 1
+            elif p["contact_action"] == "update":
+                results["contacts_updated"] += 1
+            else:
+                results["skipped"] += 1
+            if p["deal_action"] == "create":
+                results["opportunities_created"] += 1
+            elif p["deal_action"] == "update":
+                results["opportunities_updated"] += 1
+        return results
+
     for lead in leads:
         status = lead.get("status", "")
         lead_name = lead.get("name", f"lead-{lead.get('lead_id', '?')}")
         lead_id_val = lead.get("lead_id", lead.get("id", "?"))
-
-        if dry_run:
-            stage_id = cfg["stage_mapping"].get(status, "unknown-stage")
-            print(f"  Would create contact: {lead_name} ({lead.get('email', 'no-email')})")
-            print(f"  Would upsert deal: {lead_id_val} -> stage {stage_id}")
-            continue
 
         try:
             contact_id, deal_id, c_action, d_action = sync_single_lead(
@@ -928,6 +982,10 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
         _skip_connect = False
         _skip_accept = False
         _connect_sender = ""
+        # Defense-in-depth: PlusVibe fires all_email_replies + all_positive_replies
+        # for one reply, sharing a message_id -- collapse duplicates here too in
+        # case any slip past ingest-level dedup (see relay_dedupe_key).
+        _seen_reply_message_ids: set[str] = set()
 
         for ev in events:
             d = dict(ev)
@@ -1008,6 +1066,11 @@ def _build_om_summary_body(lead: dict, conn, ws_id: str,
                     lines.append(f"       {preview}")
 
             elif etype == "email_reply":
+                msg_id = meta.get("message_id")
+                if msg_id:
+                    if msg_id in _seen_reply_message_ids:
+                        continue
+                    _seen_reply_message_ids.add(msg_id)
                 subj = subject or "(no subject)"
                 lines.append(f"  {ts} -- EML Rcvd: {subj}")
                 if body and body not in (no_body_placeholder, ""):
@@ -1229,12 +1292,12 @@ def _cmd_sync(args, conn):
                     single_lead_id=single_lead_id,
                     max_age=max_age,
                 )
-                if not dry_run:
-                    print(
-                        f"[crm-sync] Done: {results['contacts_created']} contacts, "
-                        f"{results['opportunities_created']} deals, "
-                        f"{results['errors']} errors"
-                    )
+                label = "DRY RUN preview" if dry_run else "Done"
+                print(
+                    f"[crm-sync] {label}: {results['contacts_created']} contacts, "
+                    f"{results['opportunities_created']} deals, "
+                    f"{results['errors']} errors"
+                )
 
             if not dry_run and configs:
                 push_result = maybe_push_crm_sync_status(conn, workspace_id=ws_id)

@@ -586,6 +586,17 @@ def _pull_page_already_ingested(
     return bool(agent_key and agent_key in ingested_set)
 
 
+# Snapshot actions carry data (crm_entity_map, tags, LinkedIn status) that has
+# no other path to get recreated -- unlike stage_change/event_log, which are
+# redundant with the raw webhook events the non-agent ingest path already
+# replays. Applying a snapshot pushed by this same client is safe even when
+# client_id matches: the underlying INSERT ... ON CONFLICT ... WHERE clauses
+# (crm_entity_map, tags delete+reinsert, etc.) are already idempotent no-ops
+# when nothing changed -- so on a wiped/fresh DB, where the relay is the only
+# remaining source of this data, self-pushed snapshots must still be applied.
+SNAPSHOT_ACTIONS = frozenset({"company_update", "lead_core_update", "lead_workspace_update"})
+
+
 def ingest_agent_entry(
     event: dict,
     quiet: bool = False,
@@ -627,7 +638,7 @@ def ingest_agent_entry(
     entity_key = event.get("entity_key", "")
 
     local_client_id = get_or_create_client_id()
-    if client_id == local_client_id:
+    if client_id == local_client_id and action not in SNAPSHOT_ACTIONS:
         return None
 
     dedupe_key = f"agent:{client_id}:{entity_key}:{action}:{timestamp}"

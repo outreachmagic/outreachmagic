@@ -76,6 +76,7 @@ from relay_extractors import (
     name_from_email,
 )
 from workspace_routing import (
+    AUTO_MERGE_SAFE_IDENTITY_TYPES,
     CampaignContext,
     CampaignRoutingCache,
     DEFAULT_ORG_ID,

@@ -654,7 +654,8 @@ def test_phase_1_dry_run_no_calls():
 
 
 def test_phase_1_dry_run_prints_actions(capsys):
-    """Dry-run prints 'Would create contact' and 'Would upsert deal' for each lead."""
+    """Dry-run prints an accurate per-lead preview table (create/update/
+    unchanged, not a blind 'would create' for every lead) plus a summary."""
     om.init_db()
     conn = get_conn()
     try:
@@ -667,8 +668,8 @@ def test_phase_1_dry_run_prints_actions(capsys):
         }
         crm_sync.sync_workspace(conn, WS1_ID, "Acme", cfg, dry_run=True, driver=mock)
         captured = capsys.readouterr().out
-        assert "Would create contact" in captured
-        assert "Would upsert deal" in captured
+        assert "create" in captured
+        assert "new contacts" in captured and "new deals" in captured
     finally:
         conn.close()
 
@@ -910,8 +911,8 @@ def test_phase_1_cmd_sync_max_age_wired(capsys):
     )
     crm_sync.cmd_sync(args)
     captured = capsys.readouterr().out
-    # 6 fresh leads synced per platform config (ghl + hubspot = 2 configs -> 12 lines)
-    assert captured.count("Would create contact") == 12
+    # 6 fresh leads previewed per platform config (ghl + hubspot = 2 configs)
+    assert captured.count("6 new contacts") == 2
     assert "alice@example.com" not in captured, "stale lead should be excluded"
 
 
@@ -2415,6 +2416,113 @@ def test_phase_4_entity_map_contact_updated_on_re_sync():
         # Verify updated_contacts list has the new title
         assert len(mock.updated_contacts) > 0
         assert mock.updated_contacts[0].get("title") == "VP of Sales"
+    finally:
+        conn.close()
+
+
+def test_preview_lead_sync_no_entity_map_is_create_create():
+    """No crm_entity_map row at all -- both contact and deal previews as create."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_4_data(conn)
+        cfg = {"platform": "ghl", "workspace_id": WS1_ID,
+               "stage_mapping": {"interested": "stage-1"}, "contact_field_mapping": None}
+        lead = {
+            "lead_id": 1, "name": "Alice", "email": "alice@example.com",
+            "title": "CEO", "status": "interested",
+            "industry": None, "headcount": None, "company": None,
+            "company_name": None, "company_domain": None, "linkedin_url": None,
+        }
+        preview = crm_sync.preview_lead_sync(lead, cfg, conn, WS1_ID)
+        assert preview["contact_action"] == "create"
+        assert preview["deal_action"] == "create"
+        assert preview["stage"] == "stage-1"
+    finally:
+        conn.close()
+
+
+def test_preview_lead_sync_matching_hash_is_unchanged():
+    """A crm_entity_map row whose sync_hash already matches -- both unchanged."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_4_data(conn)
+        cfg = {"platform": "ghl", "workspace_id": WS1_ID,
+               "stage_mapping": {"interested": "stage-1"}, "contact_field_mapping": None}
+        lead = {
+            "lead_id": 1, "name": "Alice", "email": "alice@example.com",
+            "title": "CEO", "status": "interested",
+            "industry": None, "headcount": None, "company": None,
+            "company_name": None, "company_domain": None, "linkedin_url": None,
+        }
+        current_hash = crm_sync._build_sync_hash(lead, cfg.get("contact_field_mapping"), company_id="")
+        conn.execute(
+            """INSERT INTO crm_entity_map
+               (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
+                last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', ?)""",
+            (WS1_ID, 1, "ghl", "contact-1", "deal-1", current_hash),
+        )
+        conn.commit()
+
+        preview = crm_sync.preview_lead_sync(lead, cfg, conn, WS1_ID)
+        assert preview["contact_action"] == "unchanged"
+        assert preview["deal_action"] == "unchanged"
+    finally:
+        conn.close()
+
+
+def test_preview_lead_sync_stale_hash_existing_contact_no_deal_is_update_create():
+    """Stale hash + existing crm_contact_id but no crm_deal_id -- contact
+    update, deal create."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_4_data(conn)
+        cfg = {"platform": "ghl", "workspace_id": WS1_ID,
+               "stage_mapping": {"interested": "stage-1"}, "contact_field_mapping": None}
+        lead = {
+            "lead_id": 1, "name": "Alice", "email": "alice@example.com",
+            "title": "CEO", "status": "interested",
+            "industry": None, "headcount": None, "company": None,
+            "company_name": None, "company_domain": None, "linkedin_url": None,
+        }
+        conn.execute(
+            """INSERT INTO crm_entity_map
+               (workspace_id, lead_id, platform, crm_contact_id, crm_deal_id,
+                last_synced_at, last_sync_status, sync_hash)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 'synced', ?)""",
+            (WS1_ID, 1, "ghl", "contact-1", None, "stale-hash-0000"),
+        )
+        conn.commit()
+
+        preview = crm_sync.preview_lead_sync(lead, cfg, conn, WS1_ID)
+        assert preview["contact_action"] == "update"
+        assert preview["deal_action"] == "create"
+    finally:
+        conn.close()
+
+
+def test_preview_lead_sync_no_stage_mapping_is_no_mapping():
+    """Status with no stage_mapping entry -- deal preview is no_mapping,
+    regardless of contact action."""
+    om.init_db()
+    conn = get_conn()
+    try:
+        _setup_phase_4_data(conn)
+        cfg = {"platform": "ghl", "workspace_id": WS1_ID,
+               "stage_mapping": {}, "contact_field_mapping": None}
+        lead = {
+            "lead_id": 1, "name": "Alice", "email": "alice@example.com",
+            "title": "CEO", "status": "interested",
+            "industry": None, "headcount": None, "company": None,
+            "company_name": None, "company_domain": None, "linkedin_url": None,
+        }
+        preview = crm_sync.preview_lead_sync(lead, cfg, conn, WS1_ID)
+        assert preview["contact_action"] == "create"
+        assert preview["deal_action"] == "no_mapping"
+        assert preview["stage"] == ""
     finally:
         conn.close()
 
@@ -4942,6 +5050,34 @@ def test_hubspot_sentiment_property_created_when_missing():
         f"Expected POST to create om_sentiment property, got: {api_calls}"
     )
     assert driver._sentiment_property_ensured is True
+
+
+def test_summary_body_collapses_duplicate_reply_message_id():
+    """Defense-in-depth: PlusVibe fires all_email_replies + all_positive_replies
+    for one reply, sharing a message_id -- even if both slip past ingest-level
+    dedup, the summary note timeline must show the reply only once."""
+    om.init_db()
+    conn = get_conn()
+    conn.execute("INSERT INTO leads (id, name, email) VALUES (1, 'Dup Reply', 'dup-reply@example.com')")
+    for created_at, body in (
+        ("2026-06-10 12:00:00", "Sure, let's talk"),
+        ("2026-06-10 12:00:02", "Sure, let's talk"),
+    ):
+        conn.execute(
+            """INSERT INTO events (lead_id, event_type, direction, channel, subject, body_preview, metadata_json, created_at)
+               VALUES (1, 'email_reply', 'inbound', 'email', 'Re: hello', ?, ?, ?)""",
+            (
+                body,
+                json.dumps({"message_id": "shared-msg-1", "body": body}),
+                created_at,
+            ),
+        )
+    conn.commit()
+
+    lead = {"lead_id": 1, "name": "Dup Reply", "email": "dup-reply@example.com"}
+    body_text = crm_sync._build_om_summary_body(lead, conn, "ws-test")
+    conn.close()
+    assert body_text.count("EML Rcvd") == 1
 
 
 if __name__ == "__main__":

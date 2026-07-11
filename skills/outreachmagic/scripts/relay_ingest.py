@@ -913,14 +913,18 @@ def ingest_relay_event(
         return None
     lead_id = upsert_result["id"]
 
+    # get_org_routing_config() already calls ensure_default_org_workspace()
+    # internally whenever needed and returns the result as
+    # cfg.default_workspace_id -- calling it again here per-event (single-
+    # workspace mode) was 4 redundant SQL statements x every event in a pull.
     cfg = routing_config or om.get_org_routing_config(conn, DEFAULT_ORG_ID)
-    if cfg.mode == om.WORKSPACE_ROUTING_SINGLE:
-        om.ensure_default_org_workspace(conn)
     identities = om.collect_identities_from_event(identity, payload, platform)
     for itype, val in identities:
         try:
             om.upsert_identity_alias(conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform)
         except ValueError:
+            if itype not in om.AUTO_MERGE_SAFE_IDENTITY_TYPES:
+                continue  # not solid enough to auto-queue a merge on conflict
             om.enqueue_identity_conflict_merge(
                 conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform,
             )
@@ -1085,9 +1089,11 @@ def ingest_relay_event(
             (target_stage, stage_ts, ws_lead_id),
         )
     ws_payload = {
+        # subject/body already live in metadata (nested here as "event") --
+        # storing them again at the top level doubled payload_json size for
+        # no reason; workspace_lead_events is an outbox/idempotency table,
+        # not a content store (see collect_pending_events in crm_sync.py).
         "event": metadata,
-        "subject": subject,
-        "body_preview": body_preview,
         "direction": direction,
         "channel": channel,
         "campaign_platform_id": campaign_ctx.campaign_platform_id,

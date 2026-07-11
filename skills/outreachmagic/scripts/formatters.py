@@ -87,6 +87,52 @@ def format_lead_table(leads, markdown: bool = False):
     return "\n".join(lines)
 
 
+def format_crm_sync_preview_table(previews):
+    """Render crm-sync --dry-run preview rows (see preview_lead_sync)."""
+    if not previews:
+        return "No leads matched the sync filter."
+
+    headers = ["Lead", "Email", "Status", "Contact", "Deal"]
+    rows = []
+    for p in previews:
+        rows.append(
+            [
+                (p.get("name") or "—").strip() or "—",
+                (p.get("email") or "—").strip() or "—",
+                (p.get("status") or "—").strip() or "—",
+                p.get("contact_action") or "—",
+                p.get("deal_action") or "—",
+            ]
+        )
+
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(str(cell)))
+    lines = [
+        "  ".join(f"{h:<{widths[i]}}" for i, h in enumerate(headers)),
+        "  ".join("-" * widths[i] for i in range(len(headers))),
+    ]
+    for row in rows:
+        lines.append("  ".join(f"{str(cell):<{widths[i]}}" for i, cell in enumerate(row)))
+    return "\n".join(lines)
+
+
+def format_crm_sync_preview_summary(previews):
+    """One-line rollup of contact/deal actions from a crm-sync --dry-run preview."""
+    contacts = {"create": 0, "update": 0, "unchanged": 0}
+    deals = {"create": 0, "update": 0, "unchanged": 0, "no_mapping": 0}
+    for p in previews:
+        contacts[p.get("contact_action", "unchanged")] = contacts.get(p.get("contact_action", "unchanged"), 0) + 1
+        deals[p.get("deal_action", "unchanged")] = deals.get(p.get("deal_action", "unchanged"), 0) + 1
+    return (
+        f"{contacts.get('create', 0)} new contacts, {contacts.get('update', 0)} updates, "
+        f"{contacts.get('unchanged', 0)} unchanged | "
+        f"{deals.get('create', 0)} new deals, {deals.get('update', 0)} updates, "
+        f"{deals.get('unchanged', 0)} unchanged, {deals.get('no_mapping', 0)} no-mapping"
+    )
+
+
 def format_campaign_stats(stats, include_header=False):
     campaigns = stats.get("campaigns") or []
     no_campaign = stats.get("no_campaign_events", 0)

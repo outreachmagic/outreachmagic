@@ -141,6 +141,98 @@ def test_apply_agent_core_payload_restores_attribution():
     assert row["original_source_detail"] == "email-finder/2.0"
 
 
+def test_apply_agent_core_payload_registers_linkedin_and_secondary_email():
+    """Regression: a lead recreated by email on a fresh pull --full must get
+    its LinkedIn identity and secondary emails re-registered from the
+    lead_core_update snapshot, not just external_id/entity_key. Without
+    this, a lead known by two emails or a LinkedIn URL loses that identity
+    on a fresh pull, and the next event carrying it bootstraps a duplicate
+    lead instead of finding the recreated one."""
+    _fresh_db()
+    result = om.resolve_lead(email="li-gap@example.com", name="LI Gap")
+    lead_id = result["id"]
+    conn = om.get_conn()
+    apply_agent_lead_core_payload(
+        lead_id,
+        {
+            "linkedin": "https://www.linkedin.com/in/li-gap-test",
+            "secondary_emails": ["alt@example.com"],
+        },
+        org_id=DEFAULT_ORG_ID,
+        entity_key="li-gap@example.com",
+        conn=conn,
+    )
+    conn.commit()
+
+    lead_row = conn.execute("SELECT linkedin_url FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    assert lead_row["linkedin_url"]
+
+    li_identity = conn.execute(
+        "SELECT lead_id FROM lead_identities WHERE org_id = ? AND identity_type = 'linkedin_url' AND lead_id = ?",
+        (DEFAULT_ORG_ID, lead_id),
+    ).fetchone()
+    assert li_identity is not None
+
+    email_identity = conn.execute(
+        """SELECT lead_id FROM lead_identities
+           WHERE org_id = ? AND identity_type = 'email' AND identity_value_normalized = ?""",
+        (DEFAULT_ORG_ID, "alt@example.com"),
+    ).fetchone()
+    assert email_identity is not None and email_identity["lead_id"] == lead_id
+
+    lead_email_row = conn.execute(
+        "SELECT is_primary FROM lead_emails WHERE lead_id = ? AND email = ?",
+        (lead_id, "alt@example.com"),
+    ).fetchone()
+    conn.close()
+    assert lead_email_row is not None
+    assert lead_email_row["is_primary"] == 0
+
+
+def test_apply_agent_core_payload_linkedin_conflict_does_not_clobber_owner():
+    """A LinkedIn URL already owned by a different lead must not be stolen
+    -- the conflict is recorded (via upsert_all_identities), not clobbered."""
+    _fresh_db()
+    owner = om.resolve_lead(email="li-owner@example.com", name="Owner", linkedin_url="linkedin.com/in/shared-li")
+    owner_id = owner["id"]
+    other = om.resolve_lead(email="li-other@example.com", name="Other")
+    other_id = other["id"]
+
+    conn = om.get_conn()
+    apply_agent_lead_core_payload(
+        other_id,
+        {"linkedin": "https://www.linkedin.com/in/shared-li"},
+        org_id=DEFAULT_ORG_ID,
+        entity_key="li-other@example.com",
+        conn=conn,
+    )
+    conn.commit()
+
+    owner_row = conn.execute("SELECT linkedin_url FROM leads WHERE id = ?", (owner_id,)).fetchone()
+    other_row = conn.execute("SELECT linkedin_url FROM leads WHERE id = ?", (other_id,)).fetchone()
+    conn.close()
+    assert owner_row["linkedin_url"]
+    assert other_row["linkedin_url"] != owner_row["linkedin_url"]
+
+
+def test_build_lead_core_sync_payload_exports_secondary_emails_only():
+    """Export side: secondary_emails should contain only non-primary email
+    identities, not a duplicate of the primary email."""
+    _fresh_db()
+    result = om.resolve_lead(email="primary@example.com", name="Primary Lead")
+    lead_id = result["id"]
+    conn = om.get_conn()
+    from workspace_routing import upsert_identity_alias
+
+    upsert_identity_alias(conn, DEFAULT_ORG_ID, lead_id, "email", "primary@example.com", source="test")
+    upsert_identity_alias(conn, DEFAULT_ORG_ID, lead_id, "email", "secondary@example.com", source="test")
+    conn.commit()
+
+    payload = build_lead_core_sync_payload(conn, DEFAULT_ORG_ID, lead_id)
+    conn.close()
+    assert payload.get("secondary_emails") == ["secondary@example.com"]
+
+
 def test_reapplying_unchanged_location_does_not_bump_updated_at():
     """bug-pending-sync-self-bump.md Issue A: applying an identical location
     payload (a relay echo) must not touch updated_at, or the pending-sync

@@ -22,6 +22,7 @@ from workspace_routing import (
     lead_external_id_value,
     normalize_linkedin,
     parse_entity_key,
+    parse_linkedin_value,
     upsert_all_identities,
     upsert_workspace_lead,
 )
@@ -130,8 +131,17 @@ def _assemble_lead_core_sync_payload(
         payload["linkedin"] = row["linkedin_url"]
     if row.get("company_domain"):
         payload["company_domain"] = row["company_domain"]
+    primary_email_norm = (row["email"] or "").strip().lower()
+    secondary_emails = []
     for id_row in identity_rows:
+        if id_row["identity_type"] == "email":
+            val = id_row["identity_value_normalized"]
+            if val and val != primary_email_norm:
+                secondary_emails.append(val)
+            continue
         payload[id_row["identity_type"]] = id_row["identity_value_normalized"]
+    if secondary_emails:
+        payload["secondary_emails"] = secondary_emails
     if row["latest_sender"]:
         payload["latest_sender"] = row["latest_sender"]
     if row["latest_sender_platform"]:
@@ -266,7 +276,7 @@ def _load_lead_sync_prefetch(
         f"""SELECT lead_id, identity_type, identity_value_normalized
             FROM lead_identities
             WHERE org_id = ? AND lead_id IN ({placeholders})
-              AND identity_type IN ('linkedin_sales_nav_id', 'linkedin_member_id')""",
+              AND identity_type IN ('linkedin_sales_nav_id', 'linkedin_member_id', 'email')""",
         [org_id, *lead_ids],
     ).fetchall():
         identities[r["lead_id"]].append(r)
@@ -406,7 +416,7 @@ def build_lead_core_sync_payload(
         identity_rows = conn.execute(
             """SELECT identity_type, identity_value_normalized FROM lead_identities
                WHERE org_id = ? AND lead_id = ?
-                 AND identity_type IN ('linkedin_sales_nav_id', 'linkedin_member_id')""",
+                 AND identity_type IN ('linkedin_sales_nav_id', 'linkedin_member_id', 'email')""",
             (org_id, lead_id),
         ).fetchall()
         external_id = lead_external_id_value(conn, org_id, lead_id)
@@ -698,12 +708,25 @@ def apply_agent_lead_core_payload(
     identities: list[tuple[str, str]] = []
     if payload.get("external_id"):
         identities.append(("external_id", str(payload["external_id"])))
+    if payload.get("linkedin"):
+        for itype, val in parse_linkedin_value(str(payload["linkedin"])):
+            if not any(t == itype and v == val for t, v in identities):
+                identities.append((itype, val))
+    for addr in payload.get("secondary_emails") or []:
+        addr_norm = str(addr).strip().lower()
+        if addr_norm and not any(t == "email" and v == addr_norm for t, v in identities):
+            identities.append(("email", addr_norm))
     itype, val = parse_entity_key(entity_key or "")
     if itype and val and itype != "email":
         if not any(t == itype and v == val for t, v in identities):
             identities.append((itype, val))
     if identities:
         upsert_all_identities(conn, org_id, lead_id, identities, source="agent_sync")
+    for addr in payload.get("secondary_emails") or []:
+        conn.execute(
+            "INSERT OR IGNORE INTO lead_emails (lead_id, email, is_primary) VALUES (?, ?, 0)",
+            (lead_id, str(addr).strip().lower()),
+        )
 
     personalization = payload.get("personalization")
     if personalization:

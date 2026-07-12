@@ -1206,6 +1206,28 @@ def main():
     mr_reject_p.add_argument("--id", required=True)
     mr_reject_p.add_argument("--note", help="Optional reason for the rejection")
 
+    isa_p = sub.add_parser(
+        "import-sender-accounts",
+        help="Import a PlusVibe sender-account CSV export (warmup/health/deliverability data)",
+    )
+    isa_p.add_argument("--file", required=True, help="Path to the PlusVibe CSV export")
+    isa_p.add_argument("--workspace", help="Associate every row with this workspace slug "
+                                           "(default: infer per-row from CSV tags)")
+
+    sa_p = sub.add_parser("sender-accounts", help="List imported sender accounts")
+    sa_sub = sa_p.add_subparsers(dest="sender_accounts_action")
+    sa_list_p = sa_sub.add_parser("list", help="List sender accounts")
+    sa_list_p.add_argument("--workspace", help="Filter to sender accounts linked to this workspace")
+    sa_list_p.add_argument("--json", action="store_true")
+
+    si_p = sub.add_parser(
+        "sender-insights",
+        help="Sender accounts with computed reply/bounce rates alongside PlusVibe warmup/health data",
+    )
+    si_p.add_argument("--workspace", help="Filter to sender accounts linked to this workspace")
+    si_p.add_argument("--since", help="Only count events on/after this date (YYYY-MM-DD)")
+    si_p.add_argument("--json", action="store_true")
+
     hist_p.add_argument("--limit", type=int, default=50, help="Max events to show")
     hist_p.add_argument("--json", action="store_true")
 
@@ -3181,6 +3203,54 @@ def main():
             print(json.dumps(_pipeline.reject_merge_proposal(args.id, note=getattr(args, "note", None)), indent=2))
         else:
             print(json.dumps({"error": "merge-review subcommand required: list, approve, reject"}))
+    elif args.command == "import-sender-accounts":
+        print(json.dumps(_pipeline.import_sender_accounts(
+            args.file, workspace=getattr(args, "workspace", None),
+        ), indent=2))
+    elif args.command == "sender-accounts":
+        sa_action = getattr(args, "sender_accounts_action", None)
+        if sa_action == "list":
+            conn = _pipeline.get_conn()
+            try:
+                if getattr(args, "workspace", None):
+                    rows = conn.execute(
+                        """SELECT sa.* FROM sender_accounts sa
+                           INNER JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
+                           INNER JOIN workspaces w ON w.id = wsa.workspace_id
+                           WHERE w.slug = ?
+                           ORDER BY sa.email""",
+                        (args.workspace,),
+                    ).fetchall()
+                else:
+                    rows = conn.execute("SELECT * FROM sender_accounts ORDER BY email").fetchall()
+                accounts = [dict(r) for r in rows]
+            finally:
+                conn.close()
+            if getattr(args, "json", False):
+                print(json.dumps({"accounts": accounts, "count": len(accounts)}, indent=2))
+            else:
+                print(f"{len(accounts)} sender account(s):")
+                for a in accounts:
+                    print(f"  {a['email']} — health={a.get('overall_health_score')} "
+                          f"status={a.get('status')} warmup={a.get('warmup_status')}")
+        else:
+            print(json.dumps({"error": "sender-accounts subcommand required: list"}))
+    elif args.command == "sender-insights":
+        conn = _pipeline.get_conn()
+        try:
+            insights = _pipeline.sender_insights(
+                conn, workspace=getattr(args, "workspace", None), since=getattr(args, "since", None),
+            )
+        finally:
+            conn.close()
+        if getattr(args, "json", False):
+            print(json.dumps({"accounts": insights, "count": len(insights)}, indent=2))
+        else:
+            print(f"{len(insights)} sender account(s):")
+            for a in insights:
+                print(f"  {a['email']} — health={a.get('overall_health_score')} "
+                      f"reply_rate={a.get('reply_rate')} bounce_rate={a.get('bounce_rate')} "
+                      f"sent={a.get('sent_count')}")
     elif args.command == "batch-lead-lookup":
         try:
             items = _pipeline.load_json_array_from_cli(

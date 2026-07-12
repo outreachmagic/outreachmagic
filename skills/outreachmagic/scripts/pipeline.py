@@ -914,6 +914,24 @@ def merge_leads(
         industry = (keep["industry"] or "") or (other["industry"] or "") or None
         headcount = (keep["headcount"] or "") or (other["headcount"] or "") or None
         company_id = keep["company_id"] or other["company_id"]
+        linkedin_sales_nav_id = keep["linkedin_sales_nav_id"] or other["linkedin_sales_nav_id"]
+        headcount_numeric = keep["headcount_numeric"] or other["headcount_numeric"]
+        location_city = (keep["location_city"] or "") or (other["location_city"] or "") or None
+        location_state = (keep["location_state"] or "") or (other["location_state"] or "") or None
+        location_country = (keep["location_country"] or "") or (other["location_country"] or "") or None
+        linkedin_headline = (keep["linkedin_headline"] or "") or (other["linkedin_headline"] or "") or None
+        linkedin_bio = (keep["linkedin_bio"] or "") or (other["linkedin_bio"] or "") or None
+        notes = (keep["notes"] or "") or (other["notes"] or "") or None
+        email_verification_status = keep["email_verification_status"] or other["email_verification_status"]
+        email_verified_at = keep["email_verified_at"] or other["email_verified_at"]
+        latest_source = keep["latest_source"] or other["latest_source"]
+        latest_source_detail = (keep["latest_source_detail"] or "") or (other["latest_source_detail"] or "") or None
+        latest_source_platform = keep["latest_source_platform"] or other["latest_source_platform"]
+        latest_source_at = keep["latest_source_at"] or other["latest_source_at"]
+        last_contact_at = keep["last_contact_at"] or other["last_contact_at"]
+        next_action = (keep["next_action"] or "") or (other["next_action"] or "") or None
+        latest_sender = keep["latest_sender"] or other["latest_sender"]
+        latest_sender_platform = keep["latest_sender_platform"] or other["latest_sender_platform"]
         if company_id and not conn.execute(
             "SELECT 1 FROM companies WHERE id = ?", (company_id,)
         ).fetchone():
@@ -964,12 +982,37 @@ def merge_leads(
                title = COALESCE(NULLIF(trim(title), ''), ?),
                industry = COALESCE(NULLIF(trim(industry), ''), ?),
                headcount = COALESCE(NULLIF(trim(headcount), ''), ?),
+               linkedin_sales_nav_id = COALESCE(linkedin_sales_nav_id, ?),
+               headcount_numeric = COALESCE(headcount_numeric, ?),
+               location_city = COALESCE(NULLIF(trim(location_city), ''), ?),
+               location_state = COALESCE(NULLIF(trim(location_state), ''), ?),
+               location_country = COALESCE(NULLIF(trim(location_country), ''), ?),
+               linkedin_headline = COALESCE(NULLIF(trim(linkedin_headline), ''), ?),
+               linkedin_bio = COALESCE(NULLIF(trim(linkedin_bio), ''), ?),
+               notes = COALESCE(NULLIF(trim(notes), ''), ?),
+               email_verification_status = COALESCE(email_verification_status, ?),
+               email_verified_at = COALESCE(email_verified_at, ?),
+               latest_source = COALESCE(latest_source, ?),
+               latest_source_detail = COALESCE(NULLIF(trim(latest_source_detail), ''), ?),
+               latest_source_platform = COALESCE(latest_source_platform, ?),
+               latest_source_at = COALESCE(latest_source_at, ?),
+               last_contact_at = COALESCE(last_contact_at, ?),
+               next_action = COALESCE(NULLIF(trim(next_action), ''), ?),
+               latest_sender = COALESCE(latest_sender, ?),
+               latest_sender_platform = COALESCE(latest_sender_platform, ?),
                stage = ?,
                updated_at = datetime('now')
                WHERE id = ?""",
             (
                 email, domain, li_merged, company_id,
-                company, title, industry, headcount, new_stage, keep_id,
+                company, title, industry, headcount,
+                linkedin_sales_nav_id, headcount_numeric,
+                location_city, location_state, location_country,
+                linkedin_headline, linkedin_bio, notes,
+                email_verification_status, email_verified_at,
+                latest_source, latest_source_detail, latest_source_platform, latest_source_at,
+                last_contact_at, next_action, latest_sender, latest_sender_platform,
+                new_stage, keep_id,
             ),
         )
         # Merge just modified the survivor (secondary email, moved children, etc.),
@@ -2527,6 +2570,7 @@ from pipeline_workspace import (
     _push_pending_lead_snapshots,
     _push_pending_merge_deletes,
     _push_pending_quarantine_resolutions,
+    _push_pending_sender_account_updates,
     _relay_log,
     _relay_push_batches,
     add_campaign_map_cli,
@@ -2645,6 +2689,16 @@ from pipeline_personalize import (
     resolve_company_from_entity_key,
     resolve_company_id,
     resolve_personalization,
+)
+
+from pipeline_sender_accounts import (
+    apply_agent_sender_account_sync_payload,
+    build_sender_account_sync_payload,
+    compute_sender_stats,
+    import_sender_accounts,
+    resolve_sender_account_from_entity_key,
+    sender_account_entity_key,
+    sender_insights,
 )
 
 from pipeline_cli import _cmd_crm_sync, _cmd_sheets_campaign_stats, main

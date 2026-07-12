@@ -637,6 +637,49 @@ def migrate_db(conn=None):
         );
         CREATE INDEX IF NOT EXISTS idx_lpa_lookup ON lead_provider_attempts(lead_id, provider, status);
         CREATE INDEX IF NOT EXISTS idx_lpa_provider ON lead_provider_attempts(provider, status, attempted_at);
+        CREATE TABLE IF NOT EXISTS sender_accounts (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            org_id                  TEXT NOT NULL DEFAULT 'default',
+            email                   TEXT NOT NULL,
+            channel                 TEXT NOT NULL DEFAULT 'email',
+            external_id             TEXT,
+            provider                TEXT,
+            first_name              TEXT,
+            last_name               TEXT,
+            daily_limit             INTEGER,
+            warmup_status           TEXT,
+            warmup_enabled_date     TEXT,
+            status                  TEXT,
+            spf_status              TEXT,
+            dkim_status             TEXT,
+            dmarc_status            TEXT,
+            warmup_max_daily_limit  INTEGER,
+            overall_health_score    INTEGER,
+            google_health_score     INTEGER,
+            microsoft_health_score  INTEGER,
+            other_health_score      INTEGER,
+            ooo_rr                  REAL,
+            ooo_rr_14               REAL,
+            ooo_rr_30               REAL,
+            ooo_rr_90               REAL,
+            bounce_rate             REAL,
+            miss_warmup_rate        REAL,
+            tags_json               TEXT DEFAULT '[]',
+            source_created_at       TEXT,
+            created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (org_id, email)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sender_accounts_updated ON sender_accounts(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_sender_accounts_org_email ON sender_accounts(org_id, email);
+        CREATE TABLE IF NOT EXISTS workspace_sender_accounts (
+            id                  TEXT PRIMARY KEY,
+            workspace_id        TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            sender_account_id   INTEGER NOT NULL REFERENCES sender_accounts(id) ON DELETE CASCADE,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (workspace_id, sender_account_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_wsa_sender ON workspace_sender_accounts(sender_account_id);
     """)
     _repair_lead_provider_attempts_schema(conn)
     try:

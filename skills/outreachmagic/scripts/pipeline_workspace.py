@@ -32,6 +32,7 @@ from lead_sync import (
     entity_key_from_prefetch,
 )
 from pipeline_personalize import build_company_sync_payload, company_entity_key
+from pipeline_sender_accounts import build_sender_account_sync_payload, sender_account_entity_key
 from pipeline_sync import (
     _ARROW_PUSH,
     _format_push_done,
@@ -716,6 +717,7 @@ def sync_all(
         _push_pending_lead_snapshots,
         _push_pending_merge_deletes,
         _push_pending_quarantine_resolutions,
+        _push_pending_sender_account_updates,
     )
 
     _init_relay_sync_log()
@@ -892,7 +894,19 @@ def sync_all(
         if cos_pushed > 0:
             parts.append(f"Pushed {cos_pushed} company update{'s' if cos_pushed != 1 else ''} to relay.")
 
-        if lead_push.get("error") is None and company_push.get("error") is None:
+        sender_account_push = _push_pending_sender_account_updates(agent_key)
+        sa_pushed = int(sender_account_push.get("pushed", 0) or 0)
+        results["sender_account_updates_pushed"] = sa_pushed
+        if sender_account_push.get("error"):
+            results["sender_account_updates_error"] = sender_account_push["error"]
+        if sa_pushed > 0:
+            parts.append(f"Pushed {sa_pushed} sender account update{'s' if sa_pushed != 1 else ''} to relay.")
+
+        if (
+            lead_push.get("error") is None
+            and company_push.get("error") is None
+            and sender_account_push.get("error") is None
+        ):
             set_last_sync(datetime.now(timezone.utc).isoformat())
 
     results["message"] = " ".join(parts) or "Everything is already synced."
@@ -948,6 +962,7 @@ def preview_sync(
     )
     merge_preview = _push_pending_merge_deletes(tok, sample_limit=sample_size, dry_run=True)
     company_preview = _push_pending_company_updates(tok, sample_limit=sample_size, dry_run=True)
+    sender_account_preview = _push_pending_sender_account_updates(tok, sample_limit=sample_size, dry_run=True)
 
     return {
         "status": "dry_run",
@@ -958,6 +973,7 @@ def preview_sync(
             "leads_workspace_pending": status.get("workspace_leads_pending", 0),
             "merge_deletes_pending": merge_preview.get("total_pending", 0),
             "company_updates_pending": company_preview.get("total_pending", 0),
+            "sender_account_updates_pending": sender_account_preview.get("total_pending", 0),
         },
         "samples": {
             "event_log": events_export.get("entries", []),
@@ -965,6 +981,7 @@ def preview_sync(
             "lead_workspace_update": lead_preview.get("sample_ws_entries", []),
             "lead_core_delete": merge_preview.get("sample_entries", []),
             "company_update": company_preview.get("sample_entries", []),
+            "sender_account_update": sender_account_preview.get("sample_entries", []),
         },
     }
 
@@ -1590,6 +1607,76 @@ def _push_pending_company_updates(
         entries,
         client_id,
         stream_label=_SNAPSHOT_KIND_STREAM["company"],
+        bulk=bulk,
+        snapshot_bulk=True,
+    )
+    return push_result
+
+
+def _push_pending_sender_account_updates(
+    agent_key: str,
+    *,
+    sample_limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
+    from pipeline import _relay_push_batches
+
+    conn = get_conn()
+    last_sync = get_last_sync()
+    if last_sync:
+        total_pending = conn.execute(
+            "SELECT COUNT(*) AS n FROM sender_accounts WHERE updated_at > ?", (last_sync,)
+        ).fetchone()["n"]
+    else:
+        total_pending = conn.execute("SELECT COUNT(*) AS n FROM sender_accounts").fetchone()["n"]
+    limit_clause = " LIMIT ?" if sample_limit else ""
+    limit_param = (sample_limit,) if sample_limit else ()
+    if last_sync:
+        rows = conn.execute(
+            f"SELECT id, updated_at FROM sender_accounts WHERE updated_at > ?{limit_clause}",
+            (last_sync,) + limit_param,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT id, updated_at FROM sender_accounts{limit_clause}", limit_param,
+        ).fetchall()
+    if not rows:
+        conn.close()
+        return {"pushed": 0, "error": None, "throttled": False, "total_pending": total_pending, "sample_entries": []}
+
+    entries = []
+    for row in rows:
+        entity_key = sender_account_entity_key(conn, row["id"])
+        if not entity_key:
+            continue
+        payload = build_sender_account_sync_payload(conn, row["id"])
+        entries.append({
+            "action": "sender_account_update",
+            "entity_key": entity_key,
+            "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            "payload": payload,
+        })
+    conn.close()
+    if not entries:
+        return {"pushed": 0, "error": None, "throttled": False, "total_pending": total_pending, "sample_entries": []}
+
+    if dry_run:
+        return {
+            "pushed": 0,
+            "error": None,
+            "throttled": False,
+            "total_pending": total_pending,
+            "sample_entries": entries,
+        }
+
+    client_id = get_or_create_client_id()
+    bulk = len(entries) >= RELAY_BULK_THRESHOLD
+
+    push_result = _relay_push_batches(
+        agent_key,
+        entries,
+        client_id,
+        stream_label=_SNAPSHOT_KIND_STREAM["sender_account"],
         bulk=bulk,
         snapshot_bulk=True,
     )

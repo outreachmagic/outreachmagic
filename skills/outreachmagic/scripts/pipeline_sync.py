@@ -111,11 +111,13 @@ import connections_cloud
 import quarantine_resolutions as qres
 import routing_cloud
 # ── Module-level constants (originally from pipeline.py) ──────────────
-PULL_KINDS_ALL = frozenset({"events", "core", "workspace", "company"})
+PULL_KINDS_ALL = frozenset({"events", "core", "workspace", "company", "sender_account"})
 RELAY_PULL_HTTP_TIMEOUT = 60
 RELAY_PULL_HTTP_RETRIES = 2
 RELAY_URL = "https://api.outreachmagic.io"
-_SNAPSHOT_KIND_STREAM = {"core": "Lead", "workspace": "Workspace", "company": "Company"}
+_SNAPSHOT_KIND_STREAM = {
+    "core": "Lead", "workspace": "Workspace", "company": "Company", "sender_account": "SenderAccount",
+}
 _RELAY_STREAM_EVENT = "Event"
 _ARROW_PULL = "↓"
 _ARROW_PUSH = "↑"
@@ -601,7 +603,9 @@ def _pull_page_already_ingested(
 # (crm_entity_map, tags delete+reinsert, etc.) are already idempotent no-ops
 # when nothing changed -- so on a wiped/fresh DB, where the relay is the only
 # remaining source of this data, self-pushed snapshots must still be applied.
-SNAPSHOT_ACTIONS = frozenset({"company_update", "lead_core_update", "lead_workspace_update"})
+SNAPSHOT_ACTIONS = frozenset({
+    "company_update", "lead_core_update", "lead_workspace_update", "sender_account_update",
+})
 
 
 def ingest_agent_entry(
@@ -676,6 +680,21 @@ def ingest_agent_entry(
                     payload,
                     conn=conn,
                 )
+            if own_conn:
+                conn.commit()
+                conn.close()
+                conn = None
+        elif action == "sender_account_update":
+            from pipeline_sender_accounts import (
+                apply_agent_sender_account_sync_payload,
+                resolve_sender_account_from_entity_key,
+            )
+
+            sender_account_id = (
+                resolve_sender_account_from_entity_key(conn, entity_key) if entity_key else None
+            )
+            if sender_account_id:
+                apply_agent_sender_account_sync_payload(sender_account_id, payload, conn=conn)
             if own_conn:
                 conn.commit()
                 conn.close()
@@ -883,7 +902,9 @@ def ingest_agent_entry(
                 pass
         raise
 
-    if lead_id is not None or action in ("company_update", "lead_core_update", "lead_workspace_update"):
+    if lead_id is not None or action in (
+        "company_update", "lead_core_update", "lead_workspace_update", "sender_account_update",
+    ):
         _record_mark(dedupe_key, lead_id)
         relay_rid = event.get("relay_id")
         if relay_rid is not None:

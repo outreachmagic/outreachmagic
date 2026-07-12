@@ -530,6 +530,16 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
             (lead_id,),
         )
     event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    if sender:
+        from pipeline_sender_accounts import ensure_sender_account, link_sender_account_to_workspace
+
+        sa_channel = "linkedin" if channel == "linkedin" else "email"
+        sender_account_id = ensure_sender_account(conn, sender, channel=sa_channel)
+        if sender_account_id:
+            for ws_row in conn.execute(
+                "SELECT workspace_id FROM workspace_leads WHERE lead_id = ?", (lead_id,)
+            ).fetchall():
+                link_sender_account_to_workspace(conn, ws_row["workspace_id"], sender_account_id)
     if commit:
         conn.commit()
     if own_conn:

@@ -2571,6 +2571,7 @@ from pipeline_workspace import (
     _push_pending_merge_deletes,
     _push_pending_quarantine_resolutions,
     _push_pending_sender_account_updates,
+    _push_pending_sender_domain_updates,
     _relay_log,
     _relay_push_batches,
     add_campaign_map_cli,
@@ -2703,6 +2704,7 @@ from pipeline_sender_accounts import (
     sender_insights,
     set_sender_account_workspace_link,
     set_sender_domain_cost,
+    update_sender_account,
     workspace_sender_cost_report,
 )
 

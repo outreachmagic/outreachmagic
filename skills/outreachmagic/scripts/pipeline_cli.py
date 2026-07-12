@@ -1214,11 +1214,20 @@ def main():
     isa_p.add_argument("--workspace", help="Associate every row with this workspace slug "
                                            "(default: leave unlinked; link explicitly afterward)")
 
-    sa_p = sub.add_parser("sender-accounts", help="List/link imported sender accounts")
+    sa_p = sub.add_parser("sender-accounts", help="List/link/edit imported sender accounts")
     sa_sub = sa_p.add_subparsers(dest="sender_accounts_action")
     sa_list_p = sa_sub.add_parser("list", help="List sender accounts")
     sa_list_p.add_argument("--workspace", help="Filter to sender accounts linked to this workspace")
     sa_list_p.add_argument("--json", action="store_true")
+    sa_update_p = sa_sub.add_parser("update", help="Edit a sender account's own fields (not sync-owned metrics)")
+    sa_update_p.add_argument("--email", required=True, help="Sender account email")
+    sa_update_p.add_argument("--provider")
+    sa_update_p.add_argument("--first-name", dest="first_name")
+    sa_update_p.add_argument("--last-name", dest="last_name")
+    sa_update_p.add_argument("--daily-limit", dest="daily_limit", type=int)
+    sa_update_p.add_argument("--status")
+    sa_update_p.add_argument("--warmup-status", dest="warmup_status")
+    sa_update_p.add_argument("--channel", choices=("email", "linkedin"))
     sa_link_p = sa_sub.add_parser("link", help="Link a sender account to a workspace")
     sa_link_p.add_argument("--email", required=True, help="Sender account email")
     sa_link_p.add_argument("--workspace", required=True, help="Workspace slug")
@@ -3255,12 +3264,23 @@ def main():
                 for a in accounts:
                     print(f"  {a['email']} — health={a.get('overall_health_score')} "
                           f"status={a.get('status')} warmup={a.get('warmup_status')}")
+        elif sa_action == "update":
+            print(json.dumps(_pipeline.update_sender_account(
+                args.email,
+                provider=getattr(args, "provider", None),
+                first_name=getattr(args, "first_name", None),
+                last_name=getattr(args, "last_name", None),
+                daily_limit=getattr(args, "daily_limit", None),
+                status=getattr(args, "status", None),
+                warmup_status=getattr(args, "warmup_status", None),
+                channel=getattr(args, "channel", None),
+            ), indent=2))
         elif sa_action in ("link", "unlink"):
             print(json.dumps(_pipeline.set_sender_account_workspace_link(
                 args.email, args.workspace, linked=(sa_action == "link"),
             ), indent=2))
         else:
-            print(json.dumps({"error": "sender-accounts subcommand required: list, link, unlink"}))
+            print(json.dumps({"error": "sender-accounts subcommand required: list, update, link, unlink"}))
     elif args.command == "sender-domains":
         sd_action = getattr(args, "sender_domains_action", None)
         if sd_action == "list":

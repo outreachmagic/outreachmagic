@@ -172,6 +172,57 @@ def test_set_sender_account_workspace_link_unknown_email_or_workspace(tmp_path):
     assert result["status"] == "error"
 
 
+def test_update_sender_account_edits_only_provided_fields(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+
+    pm.init_db()
+    csv_path = str(_write_fixture_csv(tmp_path))
+    psa.import_sender_accounts(csv_path)
+
+    result = psa.update_sender_account("gabriel@acmemail.com", provider="azure", daily_limit=5)
+    assert result["status"] == "ok"
+    assert sorted(result["updated"]) == ["daily_limit", "provider"]
+
+    conn = get_conn()
+    row = dict(conn.execute(
+        "SELECT provider, daily_limit, first_name FROM sender_accounts WHERE email = 'gabriel@acmemail.com'"
+    ).fetchone())
+    conn.close()
+    assert row["provider"] == "azure"
+    assert row["daily_limit"] == 5
+    assert row["first_name"] == "Gabriel"  # untouched
+
+
+def test_update_sender_account_rejects_non_editable_field(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+
+    pm.init_db()
+    result = psa.update_sender_account("gabriel@acmemail.com", overall_health_score=100)
+    assert result["status"] == "error"
+    assert "overall_health_score" in result["error"]
+
+
+def test_update_sender_account_unknown_email(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+
+    pm.init_db()
+    result = psa.update_sender_account("nobody@nowhere.com", provider="azure")
+    assert result["status"] == "error"
+
+
+def test_update_sender_account_no_fields(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+
+    pm.init_db()
+    result = psa.update_sender_account("gabriel@acmemail.com")
+    assert result["status"] == "error"
+
+
 def test_entity_key_and_sync_payload_round_trip(tmp_path):
     """A payload built on one client must reproduce identical data on another."""
     import pipeline_migration as pm
@@ -327,6 +378,43 @@ def test_compute_sender_stats_reply_and_bounce_rate(tmp_path):
     assert stats["reply_rate"] == round(1 / 3, 4)
     assert stats["bounce_count"] == 1
     assert stats["bounce_rate"] == round(1 / 3, 4)
+
+
+def test_compute_sender_stats_since_shorthand_and_param_binding(tmp_path):
+    """Regression test: `since` params must line up with their placeholders
+    (previously the event_type IN(...) params and the since param were
+    concatenated in the wrong order, so any --since value silently forced
+    sent_count to 0), and shorthand like '7d'/'48h' must be understood
+    rather than compared as a raw string against an ISO timestamp."""
+    import pipeline as om
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+    from pipeline_tags import log_event
+
+    pm.init_db()
+    lead = om.resolve_lead(name="Recipient", email="recipient@example.com")
+    lead_id = int(lead["id"])
+    sender = "sender@ourcompany.com"
+
+    conn = get_conn()
+    log_event(lead_id, "email_sent", direction="outbound", sender=sender, conn=conn, commit=False)
+    log_event(lead_id, "email_sent", direction="outbound", sender=sender, conn=conn, commit=False)
+    log_event(lead_id, "email_reply", direction="inbound", sender=sender, conn=conn, commit=False)
+    conn.commit()
+
+    stats_7d = psa.compute_sender_stats(conn, sender, since="7d")
+    assert stats_7d["sent_count"] == 2
+    assert stats_7d["reply_count"] == 1
+
+    stats_48h = psa.compute_sender_stats(conn, sender, since="48h")
+    assert stats_48h["sent_count"] == 2
+
+    # An absolute since-date in the future must exclude everything.
+    stats_future = psa.compute_sender_stats(conn, sender, since="2099-01-01")
+    conn.close()
+    assert stats_future["sent_count"] == 0
+    assert stats_future["reply_count"] == 0
 
 
 def test_compute_sender_stats_no_events_returns_none_rates(tmp_path):
@@ -684,3 +772,59 @@ def test_reseller_cost_report_unknown_reseller(tmp_path):
     pm.init_db()
     report = psa.reseller_cost_report("nonexistent")
     assert report["status"] == "error"
+
+
+def test_sender_domain_entity_key_and_sync_payload_round_trip(tmp_path):
+    """A domain's cost/reseller set on one client must reproduce identical
+    data on another via the sender_domain_update sync action."""
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+
+    pm.init_db()
+    psa.set_sender_domain_cost("acmemail.com", reseller="inboxkit", domain_cost=7.0, currency="USD")
+
+    conn = get_conn()
+    entity_key = psa.sender_domain_entity_key("acmemail.com")
+    assert entity_key == "sender_domain:acmemail.com"
+
+    payload = psa.build_sender_domain_sync_payload(conn, "acmemail.com")
+    conn.close()
+    assert payload == {"reseller": "inboxkit", "domain_cost": 7.0, "currency": "USD"}
+
+    # Simulate a different client applying the pulled payload to a bare row
+    # it just created for this entity_key (mirrors ingest_agent_entry()'s
+    # resolve-then-apply flow for sender_domain_update).
+    conn2 = get_conn()
+    conn2.execute("DELETE FROM sender_domains")
+    conn2.commit()
+
+    domain2 = psa.resolve_sender_domain_from_entity_key(conn2, entity_key)
+    psa.apply_agent_sender_domain_sync_payload(domain2, payload, conn=conn2)
+    conn2.commit()
+
+    row = dict(conn2.execute("SELECT * FROM sender_domains WHERE domain = ?", (domain2,)).fetchone())
+    conn2.close()
+
+    assert row["domain"] == "acmemail.com"
+    assert row["reseller"] == "inboxkit"
+    assert row["domain_cost"] == 7.0
+    assert row["currency"] == "USD"
+
+
+def test_apply_sender_domain_sync_payload_only_updates_present_fields(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+
+    pm.init_db()
+    psa.set_sender_domain_cost("acmemail.com", reseller="inboxkit", domain_cost=7.0)
+
+    conn = get_conn()
+    psa.apply_agent_sender_domain_sync_payload("acmemail.com", {"domain_cost": 9.5}, conn=conn)
+    conn.commit()
+    row = dict(conn.execute("SELECT reseller, domain_cost FROM sender_domains WHERE domain = 'acmemail.com'").fetchone())
+    conn.close()
+
+    assert row["reseller"] == "inboxkit"
+    assert row["domain_cost"] == 9.5

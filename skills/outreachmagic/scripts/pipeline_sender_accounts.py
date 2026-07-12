@@ -19,6 +19,7 @@ from typing import Optional
 from campaign_stats import reply_event_sql_condition
 from db_conn import get_conn
 from pipeline_utils import email_domain, normalize_email
+from read_queries import _since_clause
 from workspace_routing import DEFAULT_ORG_ID, parse_linkedin_value
 
 # PlusVibe export columns we intentionally ignore -- SMTP/IMAP connection
@@ -223,6 +224,40 @@ def find_sender_account_id_by_email(conn: sqlite3.Connection, email: str, org_id
     return int(row["id"]) if row else None
 
 
+_SENDER_ACCOUNT_EDITABLE_FIELDS = (
+    "provider", "first_name", "last_name", "daily_limit", "status", "warmup_status", "channel",
+)
+
+
+def update_sender_account(email: str, *, org_id: str = DEFAULT_ORG_ID, **fields) -> dict:
+    """Manually edit a sender account's own fields (not sync/import-owned metrics).
+
+    Only accepts `_SENDER_ACCOUNT_EDITABLE_FIELDS` -- health scores, warmup
+    rates, and other PlusVibe-reported metrics stay CSV-import/sync-owned.
+    """
+    unknown = set(fields) - set(_SENDER_ACCOUNT_EDITABLE_FIELDS)
+    if unknown:
+        return {"status": "error", "error": f"not editable: {', '.join(sorted(unknown))}"}
+    updates = {k: v for k, v in fields.items() if v is not None}
+    if not updates:
+        return {"status": "error", "error": "no fields to update"}
+
+    conn = get_conn()
+    try:
+        sender_account_id = find_sender_account_id_by_email(conn, email, org_id=org_id)
+        if not sender_account_id:
+            return {"status": "error", "error": f"unknown sender account: {email}"}
+        set_clause = ", ".join(f"{c} = ?" for c in updates)
+        conn.execute(
+            f"UPDATE sender_accounts SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
+            list(updates.values()) + [sender_account_id],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "email": email, "updated": sorted(updates)}
+
+
 def set_sender_account_workspace_link(
     email: str, workspace: str, *, linked: bool = True, org_id: str = DEFAULT_ORG_ID,
 ) -> dict:
@@ -399,35 +434,32 @@ def _reconcile_workspace_links(conn: sqlite3.Connection, sender_account_id: int,
 def compute_sender_stats(
     conn: sqlite3.Connection, email: str, *, workspace: Optional[str] = None, since: Optional[str] = None
 ) -> dict:
-    """Reply/bounce rates for a sender, computed from local events/bounce_events."""
-    params: list = [email]
-    since_clause = ""
-    if since:
-        since_clause = " AND e.created_at >= ?"
-        params.append(since)
+    """Reply/bounce rates for a sender, computed from local events/bounce_events.
+
+    `since` accepts the same shorthand as the rest of the CLI (`48h`, `7d`,
+    `2w`, or an absolute `YYYY-MM-DD`), via read_queries._since_clause --
+    which also keeps every clause properly parameterized (params always
+    appended in the same order they appear in the SQL text).
+    """
+    since_clause, since_params = _since_clause(since, column="e.created_at")
 
     sent_placeholders = ", ".join("?" for _ in _SENT_EVENT_TYPES)
     sent_count = conn.execute(
         f"""SELECT COUNT(*) FROM events e
             WHERE e.sender = ? AND e.event_type IN ({sent_placeholders}){since_clause}""",
-        params + list(_SENT_EVENT_TYPES),
+        [email] + list(_SENT_EVENT_TYPES) + since_params,
     ).fetchone()[0]
 
-    reply_params = [email] + ([since] if since else [])
     reply_count = conn.execute(
         f"""SELECT COUNT(*) FROM events e
             WHERE e.sender = ? AND {reply_event_sql_condition()}{since_clause}""",
-        reply_params,
+        [email] + since_params,
     ).fetchone()[0]
 
-    bounce_params: list = [email]
-    bounce_since_clause = ""
-    if since:
-        bounce_since_clause = " AND first_seen_at >= ?"
-        bounce_params.append(since)
+    bounce_since_clause, bounce_since_params = _since_clause(since, column="first_seen_at")
     bounce_count = conn.execute(
         f"SELECT COUNT(*) FROM bounce_events WHERE sender_email = ?{bounce_since_clause}",
-        bounce_params,
+        [email] + bounce_since_params,
     ).fetchone()[0]
 
     return {
@@ -499,6 +531,56 @@ def set_sender_domain_cost(
     finally:
         conn.close()
     return {"status": "ok", "domain": domain}
+
+
+_SENDER_DOMAIN_SYNC_COLUMNS = ("reseller", "domain_cost", "currency")
+
+
+def sender_domain_entity_key(domain: str) -> str:
+    return f"sender_domain:{(domain or '').strip().lower()}"
+
+
+def resolve_sender_domain_from_entity_key(conn: sqlite3.Connection, entity_key: str) -> Optional[str]:
+    if not entity_key.startswith("sender_domain:"):
+        return None
+    domain = entity_key.split(":", 1)[1]
+    if not domain:
+        return None
+    row = conn.execute("SELECT domain FROM sender_domains WHERE domain = ?", (domain,)).fetchone()
+    if row:
+        return row["domain"]
+    conn.execute("INSERT INTO sender_domains (domain) VALUES (?)", (domain,))
+    return domain
+
+
+def build_sender_domain_sync_payload(conn: sqlite3.Connection, domain: str) -> dict:
+    row = conn.execute(
+        f"SELECT {', '.join(_SENDER_DOMAIN_SYNC_COLUMNS)} FROM sender_domains WHERE domain = ?",
+        (domain,),
+    ).fetchone()
+    if not row:
+        return {}
+    payload: dict = {}
+    for col in _SENDER_DOMAIN_SYNC_COLUMNS:
+        val = row[col]
+        if val is not None and val != "":
+            payload[col] = val
+    return payload
+
+
+def apply_agent_sender_domain_sync_payload(domain: str, payload: dict, *, conn=None) -> None:
+    own_conn = conn is None
+    conn = conn or get_conn()
+    columns = [c for c in _SENDER_DOMAIN_SYNC_COLUMNS if c in payload]
+    if columns:
+        set_clause = ", ".join(f"{c} = ?" for c in columns)
+        conn.execute(
+            f"UPDATE sender_domains SET {set_clause}, updated_at = datetime('now') WHERE domain = ?",
+            [payload.get(c) for c in columns] + [domain],
+        )
+    if own_conn:
+        conn.commit()
+        conn.close()
 
 
 def sender_domains_report() -> list[dict]:

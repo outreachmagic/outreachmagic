@@ -605,6 +605,7 @@ def _pull_page_already_ingested(
 # remaining source of this data, self-pushed snapshots must still be applied.
 SNAPSHOT_ACTIONS = frozenset({
     "company_update", "lead_core_update", "lead_workspace_update", "sender_account_update",
+    "sender_domain_update",
 })
 
 
@@ -695,6 +696,19 @@ def ingest_agent_entry(
             )
             if sender_account_id:
                 apply_agent_sender_account_sync_payload(sender_account_id, payload, conn=conn)
+            if own_conn:
+                conn.commit()
+                conn.close()
+                conn = None
+        elif action == "sender_domain_update":
+            from pipeline_sender_accounts import (
+                apply_agent_sender_domain_sync_payload,
+                resolve_sender_domain_from_entity_key,
+            )
+
+            domain = resolve_sender_domain_from_entity_key(conn, entity_key) if entity_key else None
+            if domain:
+                apply_agent_sender_domain_sync_payload(domain, payload, conn=conn)
             if own_conn:
                 conn.commit()
                 conn.close()
@@ -904,6 +918,7 @@ def ingest_agent_entry(
 
     if lead_id is not None or action in (
         "company_update", "lead_core_update", "lead_workspace_update", "sender_account_update",
+        "sender_domain_update",
     ):
         _record_mark(dedupe_key, lead_id)
         relay_rid = event.get("relay_id")

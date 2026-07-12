@@ -42,6 +42,71 @@ def init_db():
     return True
 
 
+_LEAD_PROVIDER_ATTEMPTS_REQUIRED_COLUMNS = frozenset({
+    "id", "lead_id", "provider", "domain", "attempted_at", "completed_at",
+    "status", "result_email", "result_validity", "batch_id", "metadata_json",
+})
+
+
+def _repair_lead_provider_attempts_schema(conn: sqlite3.Connection) -> None:
+    """Rebuild lead_provider_attempts if it exists but with the wrong columns.
+
+    CREATE TABLE IF NOT EXISTS is a no-op against a pre-existing table under
+    that name, regardless of its actual columns -- if something outside this
+    migration (e.g. a manual/raw SQL statement against the DB, which this
+    project's own rules prohibit) created a malformed version of this table
+    first, the CREATE TABLE IF NOT EXISTS above would silently leave it
+    broken. Plain ALTER TABLE ADD COLUMN can't fix this on its own: SQLite
+    doesn't allow adding a PRIMARY KEY/AUTOINCREMENT column or a UNIQUE
+    constraint after the fact, and a malformed table could have the wrong
+    PRIMARY KEY entirely (e.g. composite (lead_id, provider) instead of a
+    real autoincrement id) -- so this does a rename + recreate + best-effort
+    data copy instead.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(lead_provider_attempts)").fetchall()}
+    if not cols or _LEAD_PROVIDER_ATTEMPTS_REQUIRED_COLUMNS.issubset(cols):
+        return  # table doesn't exist yet, or already has the right columns
+    conn.execute("ALTER TABLE lead_provider_attempts RENAME TO lead_provider_attempts_malformed_backup")
+    conn.execute("""
+        CREATE TABLE lead_provider_attempts (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+            provider        TEXT NOT NULL,
+            domain          TEXT,
+            attempted_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            completed_at    TEXT,
+            status          TEXT NOT NULL,
+            result_email    TEXT,
+            result_validity TEXT,
+            batch_id        INTEGER REFERENCES provider_batch_jobs(id) ON DELETE SET NULL,
+            metadata_json   TEXT,
+            UNIQUE (lead_id, provider)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_lpa_lookup ON lead_provider_attempts(lead_id, provider, status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_lpa_provider ON lead_provider_attempts(provider, status, attempted_at)"
+    )
+    if {"lead_id", "provider"}.issubset(cols):
+        domain_expr = "domain" if "domain" in cols else "NULL"
+        attempted_at_expr = "COALESCE(attempted_at, datetime('now'))" if "attempted_at" in cols else "datetime('now')"
+        status_expr = "COALESCE(status, 'unknown')" if "status" in cols else "'unknown'"
+        result_email_expr = "result_email" if "result_email" in cols else "NULL"
+        result_validity_expr = "result_validity" if "result_validity" in cols else "NULL"
+        batch_id_expr = "batch_id" if "batch_id" in cols else "NULL"
+        metadata_json_expr = "metadata_json" if "metadata_json" in cols else "NULL"
+        conn.execute(f"""
+            INSERT OR IGNORE INTO lead_provider_attempts
+                (lead_id, provider, domain, attempted_at, status, result_email, result_validity, batch_id, metadata_json)
+            SELECT lead_id, provider, {domain_expr}, {attempted_at_expr}, {status_expr},
+                   {result_email_expr}, {result_validity_expr}, {batch_id_expr}, {metadata_json_expr}
+            FROM lead_provider_attempts_malformed_backup
+        """)
+    conn.execute("DROP TABLE lead_provider_attempts_malformed_backup")
+
+
 def migrate_db(conn=None):
     """Apply incremental schema changes and backfill derived data."""
     own_conn = conn is None
@@ -261,6 +326,10 @@ def migrate_db(conn=None):
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_lead_identities_type ON lead_identities(identity_type, lead_id)"
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_lead_identities_type_value_lower
+           ON lead_identities(org_id, identity_type, LOWER(identity_value_normalized))"""
     )
     try:
         conn.execute(
@@ -569,6 +638,7 @@ def migrate_db(conn=None):
         CREATE INDEX IF NOT EXISTS idx_lpa_lookup ON lead_provider_attempts(lead_id, provider, status);
         CREATE INDEX IF NOT EXISTS idx_lpa_provider ON lead_provider_attempts(provider, status, attempted_at);
     """)
+    _repair_lead_provider_attempts_schema(conn)
     try:
         conn.execute("ALTER TABLE crm_entity_map ADD COLUMN crm_note_id TEXT")
     except sqlite3.OperationalError:

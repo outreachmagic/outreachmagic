@@ -1107,11 +1107,25 @@ def find_lead_by_identity(
     identity_type: str,
     value_normalized: str,
 ) -> Optional[int]:
-    row = conn.execute(
-        """SELECT lead_id FROM lead_identities
-           WHERE org_id = ? AND identity_type = ? AND identity_value_normalized = ?""",
-        (org_id, identity_type, value_normalized),
-    ).fetchone()
+    if identity_type in ("linkedin_sales_nav_id", "external_id"):
+        # Sales Nav IDs are stored in their original case (a design choice --
+        # see normalize_linkedin_sales_nav_id()), so the same ID imported via
+        # two different paths can differ only in casing and silently fail to
+        # match on a plain '='. external_id is already lowercased at write
+        # time (normalize_external_id) so this is a defensive no-op for it,
+        # not a fix. idx_lead_identities_type_value_lower backs this so it
+        # still hits an index instead of a table scan.
+        row = conn.execute(
+            """SELECT lead_id FROM lead_identities
+               WHERE org_id = ? AND identity_type = ? AND LOWER(identity_value_normalized) = LOWER(?)""",
+            (org_id, identity_type, value_normalized),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """SELECT lead_id FROM lead_identities
+               WHERE org_id = ? AND identity_type = ? AND identity_value_normalized = ?""",
+            (org_id, identity_type, value_normalized),
+        ).fetchone()
     if row:
         return int(row["lead_id"])
     if identity_type == "email":

@@ -887,6 +887,19 @@ def merge_leads(
                     f"UPDATE {tbl} SET lead_id = ? WHERE lead_id = ?", (keep_id, merge_id)
                 )
 
+        # workspace_lead_tags has ON DELETE CASCADE on lead_id -- without an
+        # explicit transfer here, the merge lead's tags are silently lost the
+        # moment its row is deleted below, instead of moving to the survivor.
+        for tag_row in conn.execute(
+            "SELECT workspace_id, tag FROM workspace_lead_tags WHERE lead_id = ?", (merge_id,)
+        ).fetchall():
+            tag_id = f"wlt_{tag_row['workspace_id']}_{keep_id}_{hashlib.md5(tag_row['tag'].encode()).hexdigest()[:8]}"
+            conn.execute(
+                """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
+                   VALUES (?, ?, ?, ?)""",
+                (tag_id, tag_row["workspace_id"], keep_id, tag_row["tag"]),
+            )
+
         email = keep["email"] or other["email"]
         li_merged = (
             normalize_linkedin(keep["linkedin_url"])
@@ -901,6 +914,23 @@ def merge_leads(
         industry = (keep["industry"] or "") or (other["industry"] or "") or None
         headcount = (keep["headcount"] or "") or (other["headcount"] or "") or None
         company_id = keep["company_id"] or other["company_id"]
+        if company_id and not conn.execute(
+            "SELECT 1 FROM companies WHERE id = ?", (company_id,)
+        ).fetchone():
+            # Stale FK: company_id survived on the lead row after its
+            # companies row was deleted elsewhere (e.g. company dedup/
+            # cleanup). Writing it back here would trip the FK constraint
+            # (foreign_keys=ON on every connection) and abort the merge.
+            # Fall back to the other lead's company_id if that one's still
+            # valid, else fall through to link_lead_company() below, same as
+            # the "no company_id at all" case.
+            fallback_id = other["company_id"] if company_id == keep["company_id"] else keep["company_id"]
+            if fallback_id and conn.execute(
+                "SELECT 1 FROM companies WHERE id = ?", (fallback_id,)
+            ).fetchone():
+                company_id = fallback_id
+            else:
+                company_id = None
         merge_entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, merge_id)
         # Add the merged lead's email as an additional email if it differs from primary
         # (case/whitespace-normalized so "Alex@x.com" vs "alex@x.com" doesn't duplicate)
@@ -929,7 +959,7 @@ def merge_leads(
                email = COALESCE(email, ?),
                email_domain = COALESCE(email_domain, ?),
                linkedin_url = COALESCE(linkedin_url, ?),
-               company_id = COALESCE(company_id, ?),
+               company_id = ?,
                company = COALESCE(NULLIF(trim(company), ''), ?),
                title = COALESCE(NULLIF(trim(title), ''), ?),
                industry = COALESCE(NULLIF(trim(industry), ''), ?),
@@ -972,6 +1002,92 @@ def merge_leads(
         "events_moved": events_moved,
         "reason": reason,
     }
+
+
+def _merge_job_row_to_dict(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    if d.get("audit_json"):
+        try:
+            d["audit"] = json.loads(d["audit_json"])
+        except (json.JSONDecodeError, TypeError):
+            d["audit"] = None
+    return d
+
+
+def list_merge_proposals(
+    *,
+    status: Optional[str] = "pending",
+    reason: Optional[str] = None,
+    limit: int = 50,
+) -> dict:
+    """List queued merge proposals (email-find conflicts, identity conflicts) for review."""
+    conn = get_conn()
+    try:
+        clauses, params = [], []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if reason:
+            clauses.append("reason = ?")
+            params.append(reason)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM lead_merge_jobs {where} ORDER BY created_at DESC LIMIT ?", params,
+        ).fetchall()
+        proposals = [_merge_job_row_to_dict(r) for r in rows]
+        return {"status": "ok", "count": len(proposals), "proposals": proposals}
+    finally:
+        conn.close()
+
+
+def approve_merge_proposal(job_id: str) -> dict:
+    """Execute a queued merge proposal and mark it approved."""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT * FROM lead_merge_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return {"status": "error", "error": f"merge job not found: {job_id}"}
+        if row["status"] != "pending":
+            return {"status": "error", "error": f"job {job_id} is not pending (status={row['status']})"}
+        result = merge_leads(
+            int(row["keep_lead_id"]), int(row["merge_lead_id"]),
+            reason=f"approved:{row['reason']}", conn=conn,
+        )
+        if result.get("status") == "merged":
+            conn.execute(
+                "UPDATE lead_merge_jobs SET status = 'approved' WHERE id = ?", (job_id,),
+            )
+            conn.commit()
+        return {"status": "ok", "job_id": job_id, "merge_result": result}
+    finally:
+        conn.close()
+
+
+def reject_merge_proposal(job_id: str, *, note: Optional[str] = None) -> dict:
+    """Dismiss a queued merge proposal without merging."""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT * FROM lead_merge_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return {"status": "error", "error": f"merge job not found: {job_id}"}
+        if row["status"] != "pending":
+            return {"status": "error", "error": f"job {job_id} is not pending (status={row['status']})"}
+        audit = {}
+        try:
+            audit = json.loads(row["audit_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            pass
+        if note:
+            audit["rejection_note"] = note
+        conn.execute(
+            "UPDATE lead_merge_jobs SET status = 'rejected', audit_json = ? WHERE id = ?",
+            (json.dumps(audit), job_id),
+        )
+        conn.commit()
+        return {"status": "ok", "job_id": job_id, "rejected": True}
+    finally:
+        conn.close()
 
 
 def resolve_lead(
@@ -1748,6 +1864,59 @@ def _conflicting_email_owner(
     return int(owner)
 
 
+def _enqueue_email_find_conflict_merge_proposal(
+    conn: sqlite3.Connection,
+    *,
+    lead_id: int,
+    other_lead_id: int,
+    found_email: str,
+    provider: Optional[str] = None,
+) -> None:
+    """Queue a reviewable merge proposal instead of silently dropping the found email.
+
+    Provider-found emails are probabilistic guesses -- auto-merging on a
+    match risks silently combining two different people's outreach history
+    (e.g. a shared/catch-all address, or a wrong guess that happens to match
+    a real employee). This queues the comparison data a reviewer needs
+    (`pipeline.py merge-review list`) instead of either auto-merging or
+    leaving the conflict as a bare id with no context (the prior behavior).
+    """
+    keep_id, merge_id = _pick_merge_keep_id(conn, other_lead_id, lead_id)
+    job_id = "merge_" + hashlib.sha256(
+        f"email_find_conflict:{keep_id}:{merge_id}:{found_email}".encode()
+    ).hexdigest()[:24]
+
+    def _lead_summary(lid: int) -> dict:
+        row = conn.execute(
+            "SELECT name, email, company, title, created_at FROM leads WHERE id = ?", (lid,)
+        ).fetchone()
+        event_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM events WHERE lead_id = ?", (lid,)
+        ).fetchone()["n"]
+        return {
+            "lead_id": lid,
+            "name": row["name"] if row else None,
+            "email": row["email"] if row else None,
+            "company": row["company"] if row else None,
+            "title": row["title"] if row else None,
+            "created_at": row["created_at"] if row else None,
+            "event_count": int(event_count),
+        }
+
+    audit = {
+        "found_email": found_email,
+        "provider": provider,
+        "keep": _lead_summary(keep_id),
+        "merge": _lead_summary(merge_id),
+    }
+    conn.execute(
+        """INSERT OR IGNORE INTO lead_merge_jobs (
+               id, org_id, keep_lead_id, merge_lead_id, status, reason, audit_json
+           ) VALUES (?, ?, ?, ?, 'pending', 'email_find_conflict', ?)""",
+        (job_id, DEFAULT_ORG_ID, keep_id, merge_id, json.dumps(audit)),
+    )
+
+
 def _apply_email_find_email_sets(
     *,
     overwrite: bool,
@@ -1862,6 +2031,11 @@ def apply_email_find_results(
                         overwrite=overwrite,
                         email_norm=email_norm,
                         domain_from_email=email_domain(email_norm),
+                    )
+                else:
+                    _enqueue_email_find_conflict_merge_proposal(
+                        ws_conn, lead_id=lid, other_lead_id=email_conflict_id,
+                        found_email=email_norm, provider=row_source,
                     )
 
             meta_sets: list[str] = []

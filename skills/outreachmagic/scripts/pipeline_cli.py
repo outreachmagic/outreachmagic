@@ -1190,6 +1190,22 @@ def main():
     merge_p.add_argument("--merge", type=int, help="Lead ID to merge into --keep and delete")
     merge_p.add_argument("--email", help="Keep lead matched by email (with --linkedin)")
     merge_p.add_argument("--linkedin", help="Merge lead matched by LinkedIn into email lead")
+
+    mr_p = sub.add_parser(
+        "merge-review",
+        help="Review proposed lead merges (email-find conflicts, identity conflicts) before executing",
+    )
+    mr_sub = mr_p.add_subparsers(dest="merge_review_action")
+    mr_list_p = mr_sub.add_parser("list", help="List merge proposals")
+    mr_list_p.add_argument("--status", default="pending", help="Filter by status (default: pending)")
+    mr_list_p.add_argument("--reason", help="Filter by reason (e.g. email_find_conflict, identity_conflict)")
+    mr_list_p.add_argument("--limit", type=int, default=50)
+    mr_approve_p = mr_sub.add_parser("approve", help="Execute a proposed merge")
+    mr_approve_p.add_argument("--id", required=True, help="Merge job id from 'merge-review list'")
+    mr_reject_p = mr_sub.add_parser("reject", help="Dismiss a proposed merge without merging")
+    mr_reject_p.add_argument("--id", required=True)
+    mr_reject_p.add_argument("--note", help="Optional reason for the rejection")
+
     hist_p.add_argument("--limit", type=int, default=50, help="Max events to show")
     hist_p.add_argument("--json", action="store_true")
 
@@ -3151,6 +3167,20 @@ def main():
             print(json.dumps({"error": "Provide --keep and --merge, or --email and --linkedin"}))
             sys.exit(1)
         print(json.dumps(result, indent=2))
+    elif args.command == "merge-review":
+        mr_action = getattr(args, "merge_review_action", None)
+        if mr_action == "list":
+            print(json.dumps(_pipeline.list_merge_proposals(
+                status=getattr(args, "status", "pending"),
+                reason=getattr(args, "reason", None),
+                limit=getattr(args, "limit", 50),
+            ), indent=2))
+        elif mr_action == "approve":
+            print(json.dumps(_pipeline.approve_merge_proposal(args.id), indent=2))
+        elif mr_action == "reject":
+            print(json.dumps(_pipeline.reject_merge_proposal(args.id, note=getattr(args, "note", None)), indent=2))
+        else:
+            print(json.dumps({"error": "merge-review subcommand required: list, approve, reject"}))
     elif args.command == "batch-lead-lookup":
         try:
             items = _pipeline.load_json_array_from_cli(

@@ -114,6 +114,32 @@ class TestNormalizeLinkedin(unittest.TestCase):
             norm.normalize_linkedin("https://linkedin.com/in/janedoe").startswith("https://")
         )
 
+    def test_no_protocol_does_not_double_path(self):
+        # Sales Navigator exports linkedin.com/in/<slug> with no protocol --
+        # must not become linkedin.com/in/linkedin.com/in/<slug>.
+        self.assertEqual(
+            norm.normalize_linkedin("linkedin.com/in/-acastillo-"),
+            "https://linkedin.com/in/-acastillo-",
+        )
+        self.assertEqual(
+            norm.normalize_linkedin("www.linkedin.com/in/janedoe"),
+            "https://www.linkedin.com/in/janedoe",
+        )
+
+    def test_bare_in_path(self):
+        self.assertEqual(
+            norm.normalize_linkedin("/in/-acastillo-"),
+            "https://linkedin.com/in/-acastillo-",
+        )
+        self.assertEqual(
+            norm.normalize_linkedin("in/-acastillo-"),
+            "https://linkedin.com/in/-acastillo-",
+        )
+
+    def test_empty(self):
+        self.assertEqual(norm.normalize_linkedin(""), "")
+        self.assertEqual(norm.normalize_linkedin(None), "")
+
 
 class TestTrykittFind(unittest.TestCase):
     @patch.dict(

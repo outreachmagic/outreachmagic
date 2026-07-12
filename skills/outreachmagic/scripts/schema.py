@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS lead_identities (
 CREATE INDEX IF NOT EXISTS idx_lead_identities_lead ON lead_identities(org_id, lead_id);
 CREATE INDEX IF NOT EXISTS idx_lead_identities_lead_type ON lead_identities(lead_id, identity_type);
 CREATE INDEX IF NOT EXISTS idx_lead_identities_type ON lead_identities(identity_type, lead_id);
+CREATE INDEX IF NOT EXISTS idx_lead_identities_type_value_lower ON lead_identities(org_id, identity_type, LOWER(identity_value_normalized));
 
 CREATE TABLE IF NOT EXISTS workspace_leads (
     id                       TEXT PRIMARY KEY,

@@ -13,13 +13,23 @@ _DOMAIN_RE = re.compile(
     re.I,
 )
 _LINKEDIN_RE = re.compile(r"^https?://", re.I)
+_LINKEDIN_DOMAIN_RE = re.compile(r"^(?:https?://)?(?:www\.)?linkedin\.com/", re.I)
 
 
 def normalize_linkedin(url: str) -> str:
     u = (url or "").strip()
-    if u and not _LINKEDIN_RE.match(u):
-        u = f"https://linkedin.com/in/{u.strip('/')}"
-    return u
+    if not u:
+        return u
+    if _LINKEDIN_RE.match(u):
+        return u
+    # Already has a linkedin.com/ path (Sales Navigator exports omit the
+    # protocol) -- just add https, don't blind-prepend linkedin.com/in/ or
+    # the result double-paths: linkedin.com/in/linkedin.com/in/handle.
+    if _LINKEDIN_DOMAIN_RE.match(u):
+        return f"https://{u.lstrip('/')}"
+    if u.startswith("/in/") or u.startswith("in/"):
+        return f"https://linkedin.com/{u.lstrip('/')}"
+    return f"https://linkedin.com/in/{u.strip('/')}"
 
 
 def row_fields(row: dict[str, Any]) -> tuple[str, str, str, str, Optional[int]]:

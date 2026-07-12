@@ -9,6 +9,7 @@ import sys
 from typing import Any, Callable, Optional
 
 from constants import COMPANY_DOMAIN_SQL, PIPELINE_STAGES, require_professional_domain_clause
+from pipeline_utils import normalize_tag as _normalize_tag
 from workspace_routing import resolve_workspace_identity
 
 LEAD_SENTIMENT_VALUES = ("positive", "negative", "autoreply", "invalid", "neutral")
@@ -46,9 +47,6 @@ FIELD_DISPLAY_NAMES: dict[str, str] = {
     "personalized_company_name": "Personalized Company Name",
 }
 
-
-def _normalize_tag(tag: str) -> str:
-    return re.sub(r"\s+", "_", (tag or "").strip().lower())
 
 DETAIL_LEVELS = ("basic", "standard", "full", "custom")
 

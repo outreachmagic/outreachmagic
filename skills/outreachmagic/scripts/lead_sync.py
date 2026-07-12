@@ -120,6 +120,7 @@ def _assemble_lead_core_sync_payload(
     identity_rows: list,
     external_id: Optional[str],
     personalization_rows: list,
+    provider_attempt_rows: Optional[list] = None,
 ) -> dict:
     """Org-wide lead profile for relay core snapshot."""
     payload: dict = {}
@@ -191,6 +192,19 @@ def _assemble_lead_core_sync_payload(
             payload["personalization_dates"] = dates
         if at:
             payload["personalization_at"] = at
+    if provider_attempt_rows:
+        payload["provider_attempts"] = [
+            {
+                "provider": r["provider"],
+                "domain": r["domain"],
+                "attempted_at": r["attempted_at"],
+                "completed_at": r["completed_at"],
+                "status": r["status"],
+                "result_email": r["result_email"],
+                "result_validity": r["result_validity"],
+            }
+            for r in provider_attempt_rows
+        ]
     return payload
 
 
@@ -351,6 +365,16 @@ def _load_lead_sync_prefetch(
     ).fetchall():
         personalization[r["lead_id"]].append(r)
 
+    provider_attempts: dict[int, list] = {lid: [] for lid in lead_ids}
+    for r in conn.execute(
+        f"""SELECT lead_id, provider, domain, attempted_at, completed_at, status,
+                   result_email, result_validity
+            FROM lead_provider_attempts
+            WHERE lead_id IN ({placeholders})""",
+        lead_ids,
+    ).fetchall():
+        provider_attempts[r["lead_id"]].append(r)
+
     return {
         "leads": leads,
         "identities": identities,
@@ -358,6 +382,7 @@ def _load_lead_sync_prefetch(
         "workspace_slugs": workspace_slugs,
         "memberships": memberships,
         "personalization": personalization,
+        "provider_attempts": provider_attempts,
     }
 
 
@@ -414,6 +439,7 @@ def build_lead_core_sync_payload(
         identity_rows = prefetch["identities"].get(lead_id) or []
         external_id = prefetch["external_ids"].get(lead_id)
         personalization_rows = prefetch["personalization"].get(lead_id) or []
+        provider_attempt_rows = prefetch.get("provider_attempts", {}).get(lead_id) or []
     else:
         identity_rows = conn.execute(
             """SELECT identity_type, identity_value_normalized FROM lead_identities
@@ -426,6 +452,12 @@ def build_lead_core_sync_payload(
             "SELECT field_name, field_value, field_date, processed_at FROM lead_personalization WHERE lead_id = ?",
             (lead_id,),
         ).fetchall()
+        provider_attempt_rows = conn.execute(
+            """SELECT provider, domain, attempted_at, completed_at, status,
+                      result_email, result_validity
+               FROM lead_provider_attempts WHERE lead_id = ?""",
+            (lead_id,),
+        ).fetchall()
     row_dict = dict(row)
     original_lev, latest_lev = _lev_sources_for_lead(conn, lead_id)
     if original_lev:
@@ -434,6 +466,7 @@ def build_lead_core_sync_payload(
         row_dict["latest_email_verification_source"] = latest_lev
     return _assemble_lead_core_sync_payload(
         row_dict,
+        provider_attempt_rows=provider_attempt_rows,
         identity_rows=identity_rows,
         external_id=external_id,
         personalization_rows=personalization_rows,
@@ -746,6 +779,12 @@ def apply_agent_lead_core_payload(
             "UPDATE leads SET notes = ?, updated_at = datetime('now') WHERE id = ?",
             (payload["notes"], lead_id),
         )
+
+    provider_attempts = payload.get("provider_attempts")
+    if provider_attempts:
+        from pipeline_provider_attempts import apply_provider_attempts_payload
+
+        apply_provider_attempts_payload(conn, lead_id, provider_attempts)
 
     apply_attribution_from_sync_payload(conn, lead_id, payload)
 

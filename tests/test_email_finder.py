@@ -71,7 +71,10 @@ class TestBuildImportProfile(unittest.TestCase):
             find_result={"email": "j@acme.com", "validity": "valid"},
             normalize_linkedin_fn=norm.normalize_linkedin,
         )
-        self.assertEqual(profile["tags"], ["trykitt_attempted"])
+        self.assertEqual(
+            profile["_provider_attempts"],
+            [{"provider": "trykitt", "status": "found", "result_email": "j@acme.com", "result_validity": "valid"}],
+        )
         self.assertEqual(profile["notes"], "trykitt verify: valid")
 
     def test_miss_tags(self):
@@ -83,7 +86,7 @@ class TestBuildImportProfile(unittest.TestCase):
             find_result={"status": "not_found", "provider": "trykitt"},
             normalize_linkedin_fn=norm.normalize_linkedin,
         )
-        self.assertEqual(profile["tags"], ["trykitt_attempted"])
+        self.assertEqual(profile["_provider_attempts"], [{"provider": "trykitt", "status": "not_found"}])
         self.assertNotIn("email", profile)
 
     def test_icypeas_found_tags_and_notes(self):
@@ -95,7 +98,10 @@ class TestBuildImportProfile(unittest.TestCase):
             find_result={"email": "j@acme.com", "validity": "ultra_sure", "provider": "icypeas"},
             normalize_linkedin_fn=norm.normalize_linkedin,
         )
-        self.assertEqual(profile["tags"], ["icypeas_attempted"])
+        self.assertEqual(
+            profile["_provider_attempts"],
+            [{"provider": "icypeas", "status": "found", "result_email": "j@acme.com", "result_validity": "ultra_sure"}],
+        )
         self.assertEqual(profile["notes"], "icypeas certainty: ultra_sure")
 
 
@@ -440,7 +446,9 @@ class TestCheckpointImport(unittest.TestCase):
         self.assertEqual(len(profiles), 1)
         self.assertEqual(profiles[0]["id"], 42)
         self.assertEqual(profiles[0]["email"], "jane@acme.com")
-        self.assertIn("trykitt_attempted", profiles[0]["tags"])
+        self.assertEqual(
+            [a["provider"] for a in profiles[0]["_provider_attempts"]], ["trykitt"],
+        )
 
     def test_load_profiles_from_checkpoint_json(self):
         from batch_runner import load_profiles_for_om_import
@@ -585,9 +593,12 @@ class TestCompanionCommonPipelinePayload(unittest.TestCase):
 
 
 class TestTagOnMiss(unittest.TestCase):
+    @patch.object(lemail.cc, "run_provider_attempt_bulk")
     @patch.object(lemail.cc, "run_import_profiles")
-    def test_tag_trykitt_attempted_on_miss(self, mock_import):
-        mock_import.return_value = {"results": [{"lead_id": 42}]}
+    def test_tag_trykitt_attempted_on_miss(self, mock_import, mock_bulk):
+        # import_profiles()'s real result shape uses "id", not "lead_id".
+        mock_import.return_value = {"results": [{"id": 42, "status": "matched"}]}
+        mock_bulk.return_value = {"status": "recorded", "changed": 1}
         om = Path("/tmp/om")
         out = lemail.tag_provider_attempt(
             om,
@@ -600,7 +611,12 @@ class TestTagOnMiss(unittest.TestCase):
         self.assertTrue(out["tagged"])
         self.assertEqual(mock_import.call_args.kwargs.get("source"), "trykitt")
         profiles = mock_import.call_args[0][1]
-        self.assertEqual(profiles[0]["tags"], ["trykitt_attempted"])
+        self.assertNotIn("tags", profiles[0])
+        self.assertNotIn("_provider_attempts", profiles[0])
+        mock_bulk.assert_called_once_with(
+            om, [42], "trykitt", status="not_found", skill_dir=lemail._find_skill_dir(),
+        )
+        self.assertEqual(out["provider_attempt"], {"status": "recorded", "changed": 1})
 
 
 class TestImportProfileCollection(unittest.TestCase):
@@ -615,7 +631,9 @@ class TestImportProfileCollection(unittest.TestCase):
             norm.normalize_linkedin,
         )
         self.assertEqual(len(profiles), 1)
-        self.assertIn("trykitt_attempted", profiles[0]["tags"])
+        self.assertEqual(
+            [a["provider"] for a in profiles[0]["_provider_attempts"]], ["trykitt"],
+        )
 
     def test_resolve_profiles_falls_back_to_checkpoint(self):
         from batch_runner import resolve_profiles_for_import
@@ -748,8 +766,10 @@ class TestResumeImport(unittest.TestCase):
         profiles = mock_save.call_args[0][1]
         self.assertEqual(len(profiles), 2)
         self.assertEqual(profiles[0]["email"], "a@acme.com")
-        self.assertIn("trykitt_attempted", profiles[1]["tags"])
-        self.assertNotIn("email_found", profiles[1]["tags"])
+        self.assertEqual(
+            [a["provider"] for a in profiles[1]["_provider_attempts"]], ["trykitt"],
+        )
+        self.assertEqual(profiles[1]["_provider_attempts"][0]["status"], "not_found")
 
 
 class TestImportSummaryOutput(unittest.TestCase):

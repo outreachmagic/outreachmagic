@@ -321,10 +321,10 @@ class TestBatchCheck(unittest.TestCase):
 
 
 class TestStampSerperAttemptedLeads(unittest.TestCase):
-    @patch.object(cc, "run_tag_bulk")
+    @patch.object(cc, "run_provider_attempt_bulk")
     def test_excludes_already_tagged(self, mock_bulk):
         om = Path("/tmp/om")
-        mock_bulk.return_value = {"status": "added", "changed": 1}
+        mock_bulk.return_value = {"status": "recorded", "changed": 1}
         enrich.stamp_serper_attempted_leads(
             om,
             "ws1",
@@ -332,7 +332,8 @@ class TestStampSerperAttemptedLeads(unittest.TestCase):
             known_tags_by_lead={1: [enrich.SERPER_ATTEMPTED_TAG], 2: []},
         )
         mock_bulk.assert_called_once()
-        self.assertEqual(mock_bulk.call_args[0][2], [2])
+        self.assertEqual(mock_bulk.call_args[0][1], [2])
+        self.assertEqual(mock_bulk.call_args[0][2], "serper")
 
 
 class TestSerperSearch(unittest.TestCase):

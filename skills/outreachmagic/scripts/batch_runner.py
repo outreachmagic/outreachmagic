@@ -125,30 +125,41 @@ def build_import_profile(
     external_id: Optional[str] = None,
 ) -> dict[str, Any]:
     email = find_result.get("email")
+    validity = str(find_result.get("validity") or "")
     attempts = find_result.get("provider_attempts") if isinstance(find_result.get("provider_attempts"), list) else []
-    attempted_tags: list[str] = []
+    # lead_provider_attempts.status records the raw outcome (including
+    # "error") so a future run can tell "checked, not found" (don't retry)
+    # apart from "errored" (safe to retry) -- unlike the old tag system,
+    # which only ever recorded found/not_found and silently dropped errors.
+    provider_attempts: list[dict[str, Any]] = []
     if attempts:
         for attempt in attempts:
-            if not should_tag_provider_attempt(attempt if isinstance(attempt, dict) else {}):
+            if not isinstance(attempt, dict) or attempt.get("attempted") is False:
                 continue
-            p = str((attempt or {}).get("provider") or "")
-            tag = f"{p}_attempted"
-            if tag not in attempted_tags and p in ("trykitt", "icypeas"):
-                attempted_tags.append(tag)
-    else:
+            p = str(attempt.get("provider") or "")
+            if p not in ("trykitt", "icypeas"):
+                continue
+            entry: dict[str, Any] = {"provider": p, "status": str(attempt.get("status") or "unknown")}
+            if email and p == str(find_result.get("provider") or ""):
+                entry["result_email"] = email
+                entry["result_validity"] = validity
+            provider_attempts.append(entry)
+    elif email or find_result.get("status") is not None:
         p = str(find_result.get("provider") or ("trykitt" if email else ""))
-        if email and p in ("trykitt", "icypeas"):
-            attempted_tags.append(f"{p}_attempted")
-        elif p in ("trykitt", "icypeas") and should_tag_provider_attempt(
-            {"provider": p, "status": find_result.get("status")}
-        ):
-            attempted_tags.append(f"{p}_attempted")
+        if p in ("trykitt", "icypeas"):
+            status = str(find_result.get("status") or ("found" if email else "unknown"))
+            entry = {"provider": p, "status": status}
+            if email:
+                entry["result_email"] = email
+                entry["result_validity"] = validity
+            provider_attempts.append(entry)
     profile: dict[str, Any] = {
         "name": full_name,
         "company": company or domain,
         "company_domain": domain,
-        "tags": attempted_tags,
     }
+    if provider_attempts:
+        profile["_provider_attempts"] = provider_attempts
     if lead_id is not None:
         profile["id"] = lead_id
     if external_id:
@@ -157,10 +168,8 @@ def build_import_profile(
         profile["linkedin"] = normalize_linkedin_fn(linkedin)
     if email:
         profile["email"] = email
-        profile["tags"] = attempted_tags
     provider = str(find_result.get("provider") or "trykitt")
     profile["list_source"] = provider
-    validity = str(find_result.get("validity") or "")
     profile["notes"] = provider_note_text(provider, validity, found=bool(email))
     if email:
         profile["_verify_provider"] = provider
@@ -513,9 +522,16 @@ def skip_reason_from_lookup(
     email = (lookup.get("email") or "").strip()
     if email:
         return "has_email"
-    tags = set(lookup.get("tags") or [])
+    # Org-wide (lead_provider_attempts), not workspace-scoped tags -- a lead
+    # already attempted in a different workspace skips here too. Only
+    # found/not_found blocks retry; a prior "error" attempt is retry-eligible.
+    attempts = lookup.get("provider_attempts") or []
+    attempted_by_provider = {
+        str(a.get("provider")): str(a.get("status"))
+        for a in attempts if isinstance(a, dict)
+    }
     for p in provider_names:
-        if f"{p}_attempted" in tags:
+        if attempted_by_provider.get(p) in ("found", "not_found"):
             return f"{p}_attempted"
     return None
 
@@ -758,8 +774,15 @@ def run_batch(
 
     to_process: list[tuple[int, dict[str, Any]]] = []
     pre_skipped: dict[int, dict[str, Any]] = {}
-    skipped_email = skipped_tagged = skipped_resume = 0
+    skipped_email = skipped_tagged = skipped_resume = skipped_duplicate = 0
     skipped_names: list[str] = []
+    # skip_reason_from_lookup() only sees state from BEFORE this run started
+    # (one static bulk_dedup_map() snapshot) -- it can't see attempts made by
+    # earlier rows in this same run, so an exact duplicate lead appearing
+    # twice in the input would otherwise pass the skip-check both times and
+    # get submitted (and charged) twice. Track keys seen so far in this run
+    # and skip repeats outright, before any provider call happens.
+    seen_this_batch: set[str] = set()
     for i, row in enumerate(people):
         name, domain, _c, _li, _lid = row_fields(row)
         if not name or not domain:
@@ -776,6 +799,17 @@ def run_batch(
                 "skip_reason": "invalid_domain",
             }
             continue
+        dup_key = lead_resume_key(row, index=i)
+        if dup_key in seen_this_batch:
+            skipped_duplicate += 1
+            pre_skipped[i] = {
+                "batch_status": "skipped",
+                "status": "skipped",
+                "skip_reason": "duplicate_in_batch",
+                "name": name,
+            }
+            continue
+        seen_this_batch.add(dup_key)
         reason = skip_reason_from_lookup(lookup_by_index.get(i), provider_names)
         if reason:
             if reason == "has_email":
@@ -864,6 +898,7 @@ def run_batch(
             "skipped_email": skipped_email,
             "skipped_tagged": skipped_tagged,
             "skipped_resume": skipped_resume,
+            "skipped_duplicate": skipped_duplicate,
         }
 
     ok, issues, ok_msgs = run_health_check(
@@ -884,7 +919,7 @@ def run_batch(
         if not opts.yes:
             return {"error": "health check failed", "issues": issues}
 
-    skipped_total = skipped_email + skipped_tagged + skipped_resume
+    skipped_total = skipped_email + skipped_tagged + skipped_resume + skipped_duplicate
     print_preflight_summary(
         total=len(people),
         to_process=len(to_process),
@@ -913,10 +948,11 @@ def run_batch(
         "api_calls": {p: 0 for p in provider_names},
         "verify": {"valid": 0, "catch_all": 0, "invalid": 0, "unknown": 0},
         "waterfall": {p: {"calls": 0, "found": 0, "not_found": 0, "errors": 0} for p in provider_names},
-        "skipped": skipped_email + skipped_tagged + skipped_resume,
+        "skipped": skipped_email + skipped_tagged + skipped_resume + skipped_duplicate,
         "skipped_email": skipped_email,
         "skipped_tagged": skipped_tagged,
         "skipped_resume": skipped_resume,
+        "skipped_duplicate": skipped_duplicate,
         "skipped_fresh_om": 0,
         "dedup_lookup_failed": dedup_lookup_failed,
     }

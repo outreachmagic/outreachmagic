@@ -616,7 +616,15 @@ def leads_needing_verification(
             """
         tag_filter = ""
         if skip_mv_attempted_tag:
+            # Org-wide lead_provider_attempts (not workspace-scoped) is the
+            # primary check; the old workspace_lead_tags 'mv_attempted' check
+            # stays as a fallback until the one-time backfill migrates
+            # existing tags, so leads tagged under the old system don't look
+            # unattempted and get resubmitted.
             tag_filter = """
+                 AND l.id NOT IN (
+                     SELECT lead_id FROM lead_provider_attempts WHERE provider = 'millionverifier'
+                 )
                  AND l.id NOT IN (
                      SELECT lead_id FROM workspace_lead_tags
                      WHERE workspace_id = ? AND tag = 'mv_attempted'

@@ -552,6 +552,22 @@ def migrate_db(conn=None):
         );
         CREATE INDEX IF NOT EXISTS idx_provider_batch_jobs_hash ON provider_batch_jobs(provider, item_set_hash);
         CREATE INDEX IF NOT EXISTS idx_provider_batch_jobs_job_id ON provider_batch_jobs(provider, job_id);
+        CREATE TABLE IF NOT EXISTS lead_provider_attempts (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+            provider        TEXT NOT NULL,
+            domain          TEXT,
+            attempted_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            completed_at    TEXT,
+            status          TEXT NOT NULL,
+            result_email    TEXT,
+            result_validity TEXT,
+            batch_id        INTEGER REFERENCES provider_batch_jobs(id) ON DELETE SET NULL,
+            metadata_json   TEXT,
+            UNIQUE (lead_id, provider)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lpa_lookup ON lead_provider_attempts(lead_id, provider, status);
+        CREATE INDEX IF NOT EXISTS idx_lpa_provider ON lead_provider_attempts(provider, status, attempted_at);
     """)
     try:
         conn.execute("ALTER TABLE crm_entity_map ADD COLUMN crm_note_id TEXT")

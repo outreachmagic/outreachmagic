@@ -531,6 +531,19 @@ def main():
     bj_list_p.add_argument("--provider")
     bj_list_p.add_argument("--workspace")
 
+    pa_p = sub.add_parser(
+        "provider-attempt",
+        help="Org-wide per-lead provider attempt tracking (trykitt, icypeas, serper, "
+             "millionverifier, scrubby) -- no --workspace, follows the lead everywhere",
+    )
+    pa_sub = pa_p.add_subparsers(dest="provider_attempt_action")
+    pa_bulk_p = pa_sub.add_parser("bulk", help="Stamp the same provider+status across multiple leads")
+    pa_bulk_p.add_argument("--lead-ids", required=True, help="Comma-separated lead IDs")
+    pa_bulk_p.add_argument("--provider", required=True)
+    pa_bulk_p.add_argument("--status", default="unknown")
+    pa_list_p = pa_sub.add_parser("list", help="List provider attempts for one lead")
+    pa_list_p.add_argument("--lead-id", type=int, required=True)
+
     ver_p = sub.add_parser("verify-email", help="Record email verification result")
     ver_p.add_argument("--lead-id", type=int, help="Lead ID (single mode)")
     ver_p.add_argument("--status", help="Verification status (valid, invalid, catch-all, unknown, risky, etc.)")
@@ -2433,6 +2446,18 @@ def main():
             print(json.dumps({"jobs": jobs, "count": len(jobs)}))
         else:
             print(json.dumps({"error": "batch-job subcommand required: record, find-pending, mark-status, list"}))
+    elif args.command == "provider-attempt":
+        pa_action = getattr(args, "provider_attempt_action", None)
+        if pa_action == "bulk":
+            lead_ids = [int(x.strip()) for x in args.lead_ids.split(",") if x.strip()]
+            print(json.dumps(_pipeline.record_provider_attempts_bulk(
+                lead_ids, args.provider, status=args.status,
+            )))
+        elif pa_action == "list":
+            attempts = _pipeline.list_provider_attempts(args.lead_id)
+            print(json.dumps({"lead_id": args.lead_id, "attempts": attempts, "count": len(attempts)}))
+        else:
+            print(json.dumps({"error": "provider-attempt subcommand required: bulk, list"}))
     elif args.command == "verify-email":
         if getattr(args, "batch", False):
             try:

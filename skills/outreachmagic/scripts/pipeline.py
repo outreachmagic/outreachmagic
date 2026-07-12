@@ -780,10 +780,18 @@ def batch_lead_lookup(
             ).fetchall()
             for tr in tag_rows:
                 tags_by_lead.setdefault(int(tr["lead_id"]), []).append(str(tr["tag"]))
+        # Org-wide (not workspace-scoped) -- a lead attempted by a provider in
+        # any workspace should skip re-attempt everywhere, unlike tags above.
+        attempts_by_lead: dict[int, list] = {}
+        if lead_ids:
+            from pipeline_provider_attempts import get_provider_attempts_map
+
+            attempts_by_lead = get_provider_attempts_map(conn, lead_ids)
         for entry in results:
             lid = entry.get("lead_id")
             if lid:
                 entry["tags"] = tags_by_lead.get(int(lid), [])
+                entry["provider_attempts"] = attempts_by_lead.get(int(lid), [])
         return {
             "status": "ok",
             "workspace": workspace,
@@ -1821,6 +1829,7 @@ def apply_email_find_results(
     now_ts = datetime.now(timezone.utc).isoformat()
     ws_tag_pending: list[tuple[int, list[str]]] = []
     verify_pending: list[dict] = []
+    provider_attempt_pending: list[dict] = []
 
     try:
         for i, raw in enumerate(rows):
@@ -1961,6 +1970,11 @@ def apply_email_find_results(
                     "source_detail": source_detail or "email-finder/batch",
                 })
 
+            for attempt in raw.get("_provider_attempts") or []:
+                if not isinstance(attempt, dict) or not attempt.get("provider"):
+                    continue
+                provider_attempt_pending.append({"lead_id": lid, **attempt})
+
         for lead_id, tags in ws_tag_pending:
             upsert_workspace_lead(
                 ws_conn, DEFAULT_ORG_ID, workspace_id, lead_id,
@@ -1989,6 +2003,20 @@ def apply_email_find_results(
                 summary["recorded"] += 1
             else:
                 summary["errors"].append(out)
+
+        if provider_attempt_pending:
+            from pipeline_provider_attempts import record_provider_attempt
+
+            for item in provider_attempt_pending:
+                record_provider_attempt(
+                    ws_conn,
+                    int(item["lead_id"]),
+                    str(item["provider"]),
+                    status=str(item.get("status") or "unknown"),
+                    result_email=item.get("result_email"),
+                    result_validity=item.get("result_validity"),
+                )
+            summary["provider_attempts_recorded"] = len(provider_attempt_pending)
 
         ws_conn.commit()
     finally:
@@ -2299,6 +2327,10 @@ def import_profiles(
 
 from pipeline_batch_jobs import (
     record_batch_job, find_pending_batch_job, mark_batch_job_status, list_batch_jobs,
+)
+
+from pipeline_provider_attempts import (
+    record_provider_attempts_bulk, list_provider_attempts,
 )
 
 from pipeline_tags import (

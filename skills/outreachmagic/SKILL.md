@@ -16,26 +16,6 @@ required_environment_variables:
       Required for all cloud operations (login, pull, sync, connect-platform).
       Starts with om_agent_
     required_for: Authentication with Outreach Magic portal and relay
-  - name: SERPER_API_KEY
-    prompt: Serper.dev API key
-    help: Get a key at https://serper.dev
-    required_for: Person research via enrich.py (optional)
-  - name: TRYKITT_API_KEY
-    prompt: trykitt.ai API key
-    help: Get a free key at https://trykitt.ai
-    required_for: Email finding via trykitt (optional)
-  - name: ICYPEAS_API_KEY
-    prompt: Icypeas API key
-    help: Get your key at https://app.icypeas.com
-    required_for: Email finding fallback via Icypeas (optional)
-  - name: MILLIONVERIFIER_API_KEY
-    prompt: MillionVerifier API key
-    help: https://app.millionverifier.com
-    required_for: Email verification (optional)
-  - name: SCRUBBY_API_KEY
-    prompt: Scrubby API key
-    help: https://api.scrubby.io
-    required_for: Deep email verification (optional)
 required_credential_files:
   - path: skills/outreachmagic/config/outreachmagic_config.json
     description: Outreach Magic agent key and config (created by pipeline.py init / login)

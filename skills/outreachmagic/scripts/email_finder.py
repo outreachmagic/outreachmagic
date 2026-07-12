@@ -309,6 +309,14 @@ def tag_provider_attempt(
     workspace: str = "",
     provider: str = "trykitt",
 ) -> dict[str, Any]:
+    """Import (or match) a lead with no found email, then record the miss.
+
+    Unlike build_import_profile()'s _provider_attempts (consumed by
+    apply-email-find-results, which needs a known lead_id up front), this
+    path goes through import-profiles -- the lead_id isn't known until AFTER
+    import resolves it, so the provider-attempt write happens as a separate
+    client-side bulk call once the resolved lead_id(s) come back.
+    """
     profile = build_import_profile(
         full_name=full_name,
         company=company,
@@ -317,9 +325,13 @@ def tag_provider_attempt(
         find_result={"provider": provider, "status": "not_found"},
         normalize_linkedin_fn=normalize_linkedin,
     )
+    clean_profile = {
+        k: v for k, v in profile.items()
+        if not str(k).startswith("_verify") and k != "_provider_attempts"
+    }
     imported = batch_import_results(
         om_dir,
-        [{k: v for k, v in profile.items() if not str(k).startswith("_verify")}],
+        [clean_profile],
         workspace=workspace,
         source=provider,
         source_detail=f"email-finder/{provider}-miss",
@@ -327,6 +339,17 @@ def tag_provider_attempt(
     out: dict[str, Any] = {"tagged": True, "import": imported.get("import", {})}
     if not workspace:
         out["warning"] = "tags require --workspace on import-profiles"
+    lead_ids = [
+        int(r["id"]) for r in (imported.get("import", {}).get("results") or [])
+        if isinstance(r, dict) and r.get("id")
+    ]
+    if lead_ids:
+        try:
+            out["provider_attempt"] = cc.run_provider_attempt_bulk(
+                om_dir, lead_ids, provider, status="not_found", skill_dir=_find_skill_dir(),
+            )
+        except RuntimeError as exc:
+            out["provider_attempt"] = {"status": "error", "error": str(exc)}
     return out
 
 
@@ -599,11 +622,11 @@ def _tag_mv_attempted(
     if not om_dir or not workspace or not lead_ids:
         return {"status": "skipped", "tagged": 0}
     try:
-        return cc.run_tag_bulk(
+        return cc.run_provider_attempt_bulk(
             om_dir,
-            workspace,
             list(dict.fromkeys(lead_ids)),
-            [cc.MV_ATTEMPTED_TAG],
+            "millionverifier",
+            status="unknown",
             skill_dir=_find_skill_dir(),
         )
     except RuntimeError as exc:
@@ -1218,12 +1241,8 @@ def _tag_scrubby_deep_attempted(
     if not om_dir or not workspace or not lead_ids:
         return {"status": "skipped", "tagged": 0}
     try:
-        return cc.run_tag_bulk(
-            om_dir,
-            workspace,
-            lead_ids,
-            [cc.SCRUBBY_DEEP_ATTEMPTED_TAG],
-            skill_dir=_find_skill_dir(),
+        return cc.run_provider_attempt_bulk(
+            om_dir, lead_ids, "scrubby", status="unknown", skill_dir=_find_skill_dir(),
         )
     except RuntimeError:
         return {"status": "skipped", "tagged": 0}

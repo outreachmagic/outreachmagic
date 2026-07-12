@@ -646,7 +646,23 @@ def _run_subprocess_json(
     if proc.returncode != 0:
         err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
         raise RuntimeError(err)
-    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+    if not proc.stdout.strip():
+        return {}
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as e:
+        # Raw JSONDecodeError text alone ("Expecting value: line 1 column 1
+        # (char 0)") gives no way to tell what the subprocess actually
+        # printed -- include a snippet of both streams so a failure here is
+        # diagnosable from the error message alone, not just reproducible by
+        # re-running the exact same command by hand.
+        cmd_name = cmd[2] if len(cmd) > 2 else "pipeline"
+        stdout_snip = proc.stdout[:500]
+        stderr_snip = proc.stderr.strip()[:500]
+        detail = f"stdout={stdout_snip!r}"
+        if stderr_snip:
+            detail += f" stderr={stderr_snip!r}"
+        raise RuntimeError(f"{cmd_name} returned non-JSON output ({e}): {detail}") from e
 
 
 def _merge_pipeline_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1260,6 +1276,53 @@ def run_tag_bulk(
         "changed": changed,
         "leads": len(lead_ids),
         "tags": tags,
+        "chunks": len(summaries),
+    }
+
+
+def run_provider_attempt_bulk(
+    om_dir: Path,
+    lead_ids: list[int],
+    provider: str,
+    *,
+    status: str = "unknown",
+    timeout: int = 120,
+    skill_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Stamp a provider attempt across many leads via pipeline.py provider-attempt bulk.
+
+    Org-wide (no --workspace) -- an attempt recorded here is visible from any
+    workspace lookup, unlike the old run_tag_bulk()-based `{provider}_attempted`
+    tags this replaces.
+    """
+    if not lead_ids or not provider:
+        return {"status": "noop", "changed": 0, "leads": 0}
+    summaries: list[dict[str, Any]] = []
+    for i in range(0, len(lead_ids), TAG_BULK_CHUNK_SIZE):
+        chunk = lead_ids[i : i + TAG_BULK_CHUNK_SIZE]
+        cmd = [
+            sys.executable,
+            str(get_pipeline_path(om_dir)),
+            "provider-attempt",
+            "bulk",
+            "--lead-ids",
+            ",".join(str(lid) for lid in chunk),
+            "--provider",
+            provider,
+            "--status",
+            status,
+        ]
+        summaries.append(
+            _run_subprocess_json(cmd, temp_path=None, timeout=timeout, skill_dir=skill_dir)
+        )
+    if len(summaries) == 1:
+        return summaries[0]
+    changed = sum(int(s.get("changed") or 0) for s in summaries)
+    return {
+        "status": summaries[-1].get("status", "recorded"),
+        "changed": changed,
+        "leads": len(lead_ids),
+        "provider": provider,
         "chunks": len(summaries),
     }
 

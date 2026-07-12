@@ -268,13 +268,27 @@ def append_serper_attempted(tags: Optional[list[str]]) -> list[str]:
 
 
 def skip_reason_from_tags(
-    tags: Optional[list[str]], linkedin_url: Optional[str], company: Optional[str] = None,
+    tags: Optional[list[str]],
+    linkedin_url: Optional[str],
+    company: Optional[str] = None,
+    provider_attempts: Optional[list[dict]] = None,
 ) -> str:
     """Return skip reason when Serper is not needed, else empty string."""
     if is_non_company_name(company):
         return "non_company_name"
     if linkedin_url and str(linkedin_url).strip():
         return "has_linkedin"
+    for a in provider_attempts or []:
+        if (
+            isinstance(a, dict)
+            and str(a.get("provider")) == "serper"
+            and str(a.get("status")) in ("found", "not_found")
+        ):
+            return "skipped_serper_attempted"
+    # Old tag, checked as a fallback until the one-time backfill migrates
+    # existing serper_attempted tags into lead_provider_attempts -- without
+    # this, leads tagged under the old system would look unattempted and get
+    # re-researched (wasting the exact credits this system exists to save).
     if SERPER_ATTEMPTED_TAG in (tags or []):
         return "skipped_serper_attempted"
     return ""
@@ -309,8 +323,15 @@ def stamp_serper_attempted_leads(
     *,
     exclude_already_tagged: bool = True,
     known_tags_by_lead: Optional[dict[int, list[str]]] = None,
+    status: str = "not_found",
 ) -> dict[str, Any]:
-    """Bulk-stamp serper_attempted via pipeline tag bulk (0 Serper credits)."""
+    """Bulk-stamp a Serper attempt via pipeline provider-attempt bulk (0 Serper credits).
+
+    Org-wide (lead_provider_attempts), not workspace-scoped -- `workspace` is
+    still required to gate this being called at all (matches the caller's
+    existing persist_tags-and-workspace check), but the write itself follows
+    the lead into every workspace, unlike the old {run_tag_bulk} write.
+    """
     if not workspace or not lead_ids:
         return {"status": "noop", "changed": 0, "leads": 0}
     ids = []
@@ -325,11 +346,11 @@ def stamp_serper_attempted_leads(
         ids.append(lid_int)
     if not ids:
         return {"status": "noop", "changed": 0, "leads": 0}
-    return cc.run_tag_bulk(
+    return cc.run_provider_attempt_bulk(
         om_dir,
-        workspace,
         ids,
-        [SERPER_ATTEMPTED_TAG],
+        "serper",
+        status=status,
         skill_dir=_find_skill_dir(),
     )
 
@@ -374,6 +395,7 @@ def _single_lead_lookup(
         "email": entry.get("email"),
         "linkedin_url": entry.get("linkedin_url"),
         "tags": entry.get("tags") or [],
+        "provider_attempts": entry.get("provider_attempts") or [],
     }
 
 
@@ -392,6 +414,7 @@ def _apply_lead_match(
     result["email"] = lead.get("email")
     result["linkedin_url"] = lead.get("linkedin_url")
     result["tags"] = list(lead.get("tags") or [])
+    result["provider_attempts"] = list(lead.get("provider_attempts") or [])
     if raw:
         result["raw"] = raw
 
@@ -476,7 +499,7 @@ def check_lead_exists(
         )
         if lead:
             _apply_lead_match(result, lead, input_company=company, force=False)
-            skip = skip_reason_from_tags(result.get("tags"), result.get("linkedin_url"), result.get("company"))
+            skip = skip_reason_from_tags(result.get("tags"), result.get("linkedin_url"), result.get("company"), result.get("provider_attempts"))
             if skip:
                 result["skip_reason"] = skip
             if skip_tagged and skip == "skipped_serper_attempted":
@@ -498,7 +521,7 @@ def check_lead_exists(
                 force=False,
                 raw=json.dumps({"lead": lead}),
             )
-            skip = skip_reason_from_tags(result.get("tags"), result.get("linkedin_url"), result.get("company"))
+            skip = skip_reason_from_tags(result.get("tags"), result.get("linkedin_url"), result.get("company"), result.get("provider_attempts"))
             if skip:
                 result["skip_reason"] = skip
             if skip_tagged and skip == "skipped_serper_attempted":

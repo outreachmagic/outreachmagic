@@ -22,10 +22,10 @@ _CSV_HEADER = (
     "microsoft_hscore,other_hscore,ooo_rr,ooo_rr_14,ooo_rr_30,ooo_rr_90,bounce_r,miss_warmup_r,tags"
 )
 _CSV_ROW = (
-    "69a7a45f466b7294895bb770,Gabriel,Price,MICROSOFT365,2,ACTIVE,gabriel@rentpopcam.com,"
+    "69a7a45f466b7294895bb770,Gabriel,Price,MICROSOFT365,2,ACTIVE,gabriel@acmemail.com,"
     "Wed Mar 04 2026 03:17:51 GMT+0000 (Coordinated Universal Time),ACTIVE,PASS,PASS,PASS,"
     "Sat Mar 07 2026 07:17:33 GMT+0000 (Coordinated Universal Time),,,,,,,5,joyous-excited,"
-    "100,100,100,100,10,10,9.76,8.51,-1,0,provider_inboxkit-azure;capacity_high;popcam_all;popcam_segment_a"
+    "100,100,100,100,10,10,9.76,8.51,-1,0,provider_inboxkit-azure;capacity_high;acme_all;acme_segment_a"
 )
 
 
@@ -41,13 +41,13 @@ def test_parse_sender_accounts_csv_ignores_smtp_imap_and_splits_tags(tmp_path):
     rows = psa.parse_sender_accounts_csv(str(_write_fixture_csv(tmp_path)))
     assert len(rows) == 1
     row = rows[0]
-    assert row["email"] == "gabriel@rentpopcam.com"
+    assert row["email"] == "gabriel@acmemail.com"
     assert row["external_id"] == "69a7a45f466b7294895bb770"
     assert row["overall_health_score"] == 100
     assert row["bounce_rate"] == -1.0
     assert row["source_created_at"] == "2026-03-04T03:17:51+00:00"
     assert json.loads(row["tags_json"]) == [
-        "provider_inboxkit-azure", "capacity_high", "popcam_all", "popcam_segment_a",
+        "provider_inboxkit-azure", "capacity_high", "acme_all", "acme_segment_a",
     ]
     for smtp_col in ("smtp_username", "smtp_host", "imap_host", "username"):
         assert smtp_col not in row
@@ -83,36 +83,37 @@ def test_import_sender_accounts_is_idempotent_on_reimport(tmp_path):
     assert count == 1
 
 
-def test_import_sender_accounts_infers_workspace_from_tags(tmp_path):
+def test_import_sender_accounts_no_workspace_leaves_unlinked(tmp_path):
+    """Tag-based workspace inference was removed -- tags in the CSV export
+    (e.g. 'acme_all') are never parsed for workspace linking. Linking is
+    always explicit, either via --workspace at import time or afterward via
+    `sender-accounts link`."""
     import pipeline_migration as pm
     import pipeline_sender_accounts as psa
     from db_conn import get_conn
     from pipeline_workspace import create_workspace
 
     pm.init_db()
-    create_workspace("Popcam", slug="popcam")
+    create_workspace("Acme", slug="acme")
     csv_path = str(_write_fixture_csv(tmp_path))
 
     result = psa.import_sender_accounts(csv_path)
-    assert result["workspace_links"] == 1
+    assert result["workspace_links"] == 0
 
     conn = get_conn()
-    links = conn.execute(
-        """SELECT w.slug FROM workspace_sender_accounts wsa
-           INNER JOIN workspaces w ON w.id = wsa.workspace_id"""
-    ).fetchall()
+    links = conn.execute("SELECT * FROM workspace_sender_accounts").fetchall()
     conn.close()
-    assert [r["slug"] for r in links] == ["popcam"]
+    assert links == []
 
 
-def test_import_sender_accounts_explicit_workspace_overrides_tag_inference(tmp_path):
+def test_import_sender_accounts_explicit_workspace_links(tmp_path):
     import pipeline_migration as pm
     import pipeline_sender_accounts as psa
     from db_conn import get_conn
     from pipeline_workspace import create_workspace
 
     pm.init_db()
-    create_workspace("Popcam", slug="popcam")
+    create_workspace("Acme", slug="acme")
     create_workspace("Other Client", slug="other-client")
     csv_path = str(_write_fixture_csv(tmp_path))
 
@@ -128,6 +129,49 @@ def test_import_sender_accounts_explicit_workspace_overrides_tag_inference(tmp_p
     assert [r["slug"] for r in links] == ["other-client"]
 
 
+def test_set_sender_account_workspace_link_link_and_unlink(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+    from pipeline_workspace import create_workspace
+
+    pm.init_db()
+    create_workspace("Acme", slug="acme")
+    csv_path = str(_write_fixture_csv(tmp_path))
+    psa.import_sender_accounts(csv_path)
+
+    result = psa.set_sender_account_workspace_link("gabriel@acmemail.com", "acme", linked=True)
+    assert result["status"] == "ok"
+
+    conn = get_conn()
+    links = conn.execute(
+        """SELECT w.slug FROM workspace_sender_accounts wsa
+           INNER JOIN workspaces w ON w.id = wsa.workspace_id"""
+    ).fetchall()
+    assert [r["slug"] for r in links] == ["acme"]
+
+    result = psa.set_sender_account_workspace_link("gabriel@acmemail.com", "acme", linked=False)
+    assert result["status"] == "ok"
+    links = conn.execute("SELECT * FROM workspace_sender_accounts").fetchall()
+    conn.close()
+    assert links == []
+
+
+def test_set_sender_account_workspace_link_unknown_email_or_workspace(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from pipeline_workspace import create_workspace
+
+    pm.init_db()
+    create_workspace("Acme", slug="acme")
+
+    result = psa.set_sender_account_workspace_link("nobody@nowhere.com", "acme")
+    assert result["status"] == "error"
+
+    result = psa.set_sender_account_workspace_link("gabriel@acmemail.com", "unknown-workspace")
+    assert result["status"] == "error"
+
+
 def test_entity_key_and_sync_payload_round_trip(tmp_path):
     """A payload built on one client must reproduce identical data on another."""
     import pipeline_migration as pm
@@ -140,11 +184,11 @@ def test_entity_key_and_sync_payload_round_trip(tmp_path):
 
     conn = get_conn()
     sa_id = conn.execute(
-        "SELECT id FROM sender_accounts WHERE email = 'gabriel@rentpopcam.com'"
+        "SELECT id FROM sender_accounts WHERE email = 'gabriel@acmemail.com'"
     ).fetchone()["id"]
 
     entity_key = psa.sender_account_entity_key(conn, sa_id)
-    assert entity_key == "sender_account:gabriel@rentpopcam.com"
+    assert entity_key == "sender_account:gabriel@acmemail.com"
 
     payload = psa.build_sender_account_sync_payload(conn, sa_id)
     conn.close()
@@ -164,13 +208,89 @@ def test_entity_key_and_sync_payload_round_trip(tmp_path):
     row = dict(conn2.execute("SELECT * FROM sender_accounts WHERE id = ?", (sa_id2,)).fetchone())
     conn2.close()
 
-    assert row["email"] == "gabriel@rentpopcam.com"
+    assert row["email"] == "gabriel@acmemail.com"
     assert row["overall_health_score"] == 100
     assert row["bounce_rate"] == -1.0
     assert row["provider"] == "MICROSOFT365"
     assert json.loads(row["tags_json"]) == [
-        "provider_inboxkit-azure", "capacity_high", "popcam_all", "popcam_segment_a",
+        "provider_inboxkit-azure", "capacity_high", "acme_all", "acme_segment_a",
     ]
+
+
+def test_sync_payload_includes_workspace_slugs(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+    from pipeline_workspace import create_workspace
+
+    pm.init_db()
+    create_workspace("Acme", slug="acme")
+    csv_path = str(_write_fixture_csv(tmp_path))
+    psa.import_sender_accounts(csv_path, workspace="acme")
+
+    conn = get_conn()
+    sa_id = psa.find_sender_account_id_by_email(conn, "gabriel@acmemail.com")
+    payload = psa.build_sender_account_sync_payload(conn, sa_id)
+    conn.close()
+
+    assert payload["workspace_slugs"] == ["acme"]
+
+
+def test_apply_sync_payload_reconciles_workspace_links_full_set(tmp_path):
+    """Pull applies the incoming workspace_slugs as the full current state --
+    links present locally but absent from the incoming set get removed,
+    links present in the incoming set but missing locally get added."""
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+    from pipeline_workspace import create_workspace
+
+    pm.init_db()
+    ws_acme = create_workspace("Acme", slug="acme")
+    ws_other = create_workspace("Other Client", slug="other-client")
+    csv_path = str(_write_fixture_csv(tmp_path))
+    psa.import_sender_accounts(csv_path, workspace="acme")
+
+    conn = get_conn()
+    sa_id = psa.find_sender_account_id_by_email(conn, "gabriel@acmemail.com")
+
+    # Incoming payload says this account is now linked to other-client only.
+    psa.apply_agent_sender_account_sync_payload(
+        sa_id, {"workspace_slugs": ["other-client"]}, conn=conn,
+    )
+    conn.commit()
+
+    links = {
+        r["workspace_id"] for r in conn.execute(
+            "SELECT workspace_id FROM workspace_sender_accounts WHERE sender_account_id = ?", (sa_id,),
+        ).fetchall()
+    }
+    conn.close()
+    assert links == {ws_other["id"]}
+    assert ws_acme["id"] not in links
+
+
+def test_apply_sync_payload_skips_unknown_workspace_slug(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+
+    pm.init_db()
+    csv_path = str(_write_fixture_csv(tmp_path))
+    psa.import_sender_accounts(csv_path)
+
+    conn = get_conn()
+    sa_id = psa.find_sender_account_id_by_email(conn, "gabriel@acmemail.com")
+    # Should not raise even though "not-yet-synced" isn't a local workspace.
+    psa.apply_agent_sender_account_sync_payload(
+        sa_id, {"workspace_slugs": ["not-yet-synced"]}, conn=conn,
+    )
+    conn.commit()
+    links = conn.execute(
+        "SELECT * FROM workspace_sender_accounts WHERE sender_account_id = ?", (sa_id,),
+    ).fetchall()
+    conn.close()
+    assert links == []
 
 
 def test_compute_sender_stats_reply_and_bounce_rate(tmp_path):
@@ -225,6 +345,82 @@ def test_compute_sender_stats_no_events_returns_none_rates(tmp_path):
     }
 
 
+def test_ensure_sender_account_classifies_linkedin_profile_url(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+
+    pm.init_db()
+    conn = get_conn()
+    sa_id = psa.ensure_sender_account(conn, "https://linkedin.com/in/bill_smith", channel="linkedin")
+    conn.commit()
+    row = dict(conn.execute(
+        "SELECT email, linkedin_url, linkedin_sales_nav_id, email_domain FROM sender_accounts WHERE id = ?",
+        (sa_id,),
+    ).fetchone())
+    conn.close()
+    assert row["linkedin_url"] == "linkedin.com/in/bill_smith"
+    assert row["linkedin_sales_nav_id"] is None
+    assert row["email_domain"] is None
+
+
+def test_ensure_sender_account_classifies_sales_nav_url(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+
+    pm.init_db()
+    conn = get_conn()
+    sa_id = psa.ensure_sender_account(
+        conn,
+        "https://www.linkedin.com/sales/lead/ACwAAESGK48Bob7WfQ1v_tXsyB6LCbqVCD5dvUg,NAME_SEARCH,4S2R",
+        channel="linkedin",
+    )
+    conn.commit()
+    row = dict(conn.execute(
+        "SELECT linkedin_url, linkedin_sales_nav_id FROM sender_accounts WHERE id = ?", (sa_id,),
+    ).fetchone())
+    conn.close()
+    assert row["linkedin_url"] is None
+    assert row["linkedin_sales_nav_id"] == "ACwAAESGK48Bob7WfQ1v_tXsyB6LCbqVCD5dvUg"
+
+
+def test_ensure_sender_account_linkedin_channel_with_email_identifier(tmp_path):
+    """A LinkedIn seat can be identified by its login email in some sources --
+    email_domain should still populate even though channel is 'linkedin'."""
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+
+    pm.init_db()
+    conn = get_conn()
+    sa_id = psa.ensure_sender_account(conn, "rep-seat@ourcompany.com", channel="linkedin")
+    conn.commit()
+    row = dict(conn.execute(
+        "SELECT email_domain, linkedin_url FROM sender_accounts WHERE id = ?", (sa_id,),
+    ).fetchone())
+    conn.close()
+    assert row["email_domain"] == "ourcompany.com"
+    assert row["linkedin_url"] is None
+
+
+def test_import_sender_accounts_sets_email_domain(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+
+    pm.init_db()
+    csv_path = str(_write_fixture_csv(tmp_path))
+    psa.import_sender_accounts(csv_path)
+
+    conn = get_conn()
+    domain = conn.execute(
+        "SELECT email_domain FROM sender_accounts WHERE email = 'gabriel@acmemail.com'"
+    ).fetchone()["email_domain"]
+    conn.close()
+    assert domain == "acmemail.com"
+
+
 def test_sender_insights_combines_stored_metrics_with_computed_stats(tmp_path):
     import pipeline as om
     import pipeline_migration as pm
@@ -240,7 +436,7 @@ def test_sender_insights_combines_stored_metrics_with_computed_stats(tmp_path):
     conn = get_conn()
     log_event(
         int(lead["id"]), "email_sent", direction="outbound",
-        sender="gabriel@rentpopcam.com", conn=conn, commit=False,
+        sender="gabriel@acmemail.com", conn=conn, commit=False,
     )
     conn.commit()
 
@@ -249,7 +445,7 @@ def test_sender_insights_combines_stored_metrics_with_computed_stats(tmp_path):
 
     assert len(insights) == 1
     item = insights[0]
-    assert item["email"] == "gabriel@rentpopcam.com"
+    assert item["email"] == "gabriel@acmemail.com"
     assert item["overall_health_score"] == 100
     assert item["sent_count"] == 1
 
@@ -294,7 +490,7 @@ def test_log_event_links_auto_created_sender_account_to_lead_workspace(tmp_path)
     from workspace_routing import upsert_workspace_lead
 
     pm.init_db()
-    ws = create_workspace("Popcam", slug="popcam")
+    ws = create_workspace("Acme", slug="acme")
     lead = om.resolve_lead(name="Recipient", email="recipient@example.com")
     lead_id = int(lead["id"])
 
@@ -315,7 +511,7 @@ def test_log_event_links_auto_created_sender_account_to_lead_workspace(tmp_path)
     ).fetchall()
     conn.close()
 
-    assert [r["slug"] for r in links] == ["popcam"]
+    assert [r["slug"] for r in links] == ["acme"]
 
 
 def test_csv_import_then_event_does_not_duplicate_or_clobber_rich_data(tmp_path):
@@ -333,17 +529,158 @@ def test_csv_import_then_event_does_not_duplicate_or_clobber_rich_data(tmp_path)
     conn = get_conn()
     log_event(
         int(lead["id"]), "email_sent", direction="outbound", channel="email",
-        sender="gabriel@rentpopcam.com", conn=conn, commit=True,
+        sender="gabriel@acmemail.com", conn=conn, commit=True,
     )
 
     count = conn.execute(
-        "SELECT COUNT(*) FROM sender_accounts WHERE email = 'gabriel@rentpopcam.com'"
+        "SELECT COUNT(*) FROM sender_accounts WHERE email = 'gabriel@acmemail.com'"
     ).fetchone()[0]
     row = dict(conn.execute(
-        "SELECT overall_health_score, bounce_rate FROM sender_accounts WHERE email = 'gabriel@rentpopcam.com'"
+        "SELECT overall_health_score, bounce_rate FROM sender_accounts WHERE email = 'gabriel@acmemail.com'"
     ).fetchone())
     conn.close()
 
     assert count == 1
     assert row["overall_health_score"] == 100
     assert row["bounce_rate"] == -1.0
+
+
+def _import_two_accounts_on_domain(tmp_path, domain="acmemail.com"):
+    """Two sender accounts on the same domain, for domain-level cost tests."""
+    import pipeline_sender_accounts as psa
+
+    header = _CSV_HEADER
+    row_a = _CSV_ROW.replace("gabriel@acmemail.com", f"gabriel@{domain}")
+    row_b = (
+        row_a.replace("69a7a45f466b7294895bb770", "other-id")
+        .replace(f"gabriel@{domain}", f"samuel@{domain}")
+    )
+    path = tmp_path / "two_accounts.csv"
+    path.write_text(header + "\n" + row_a + "\n" + row_b + "\n", encoding="utf-8")
+    return psa.import_sender_accounts(str(path))
+
+
+def test_sender_domains_report_computes_live_count_and_cost_per_account(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+
+    pm.init_db()
+    _import_two_accounts_on_domain(tmp_path)
+    psa.set_sender_domain_cost("acmemail.com", reseller="inboxkit", domain_cost=7.0)
+
+    report = psa.sender_domains_report()
+    assert len(report) == 1
+    domain = report[0]
+    assert domain["domain"] == "acmemail.com"
+    assert domain["sender_count"] == 2
+    assert domain["reseller"] == "inboxkit"
+    assert domain["domain_cost"] == 7.0
+    assert domain["cost_per_account"] == 3.5
+
+
+def test_sender_domains_report_reflects_live_count_as_accounts_change(tmp_path):
+    """Sender count is computed live, not stored -- adding a third account
+    on the same domain must change the reported count/cost-per-account
+    without any manual update to sender_domains."""
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+
+    pm.init_db()
+    _import_two_accounts_on_domain(tmp_path)
+    psa.set_sender_domain_cost("acmemail.com", domain_cost=7.0)
+
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO sender_accounts (org_id, email, channel, email_domain) VALUES ('default', ?, 'email', ?)",
+        ("third@acmemail.com", "acmemail.com"),
+    )
+    conn.commit()
+    conn.close()
+
+    domain = psa.sender_domains_report()[0]
+    assert domain["sender_count"] == 3
+    assert round(domain["cost_per_account"], 4) == round(7.0 / 3, 4)
+
+
+def test_workspace_sender_cost_report(tmp_path):
+    import pipeline as om
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+    from pipeline_workspace import create_workspace
+    from workspace_routing import upsert_workspace_lead
+
+    pm.init_db()
+    ws = create_workspace("Acme", slug="acme")
+    _import_two_accounts_on_domain(tmp_path)
+    psa.set_sender_domain_cost("acmemail.com", reseller="inboxkit", domain_cost=7.0)
+
+    conn = get_conn()
+    for email in ("gabriel@acmemail.com", "samuel@acmemail.com"):
+        sa_id = psa.find_sender_account_id_by_email(conn, email)
+        psa.link_sender_account_to_workspace(conn, ws["id"], sa_id)
+    conn.commit()
+
+    lead1 = om.resolve_lead(name="Lead One", email="lead1@example.com")
+    lead2 = om.resolve_lead(name="Lead Two", email="lead2@example.com")
+    upsert_workspace_lead(
+        conn, org_id="default", workspace_id=ws["id"], lead_id=int(lead1["id"]),
+        current_status_sentiment="positive",
+    )
+    upsert_workspace_lead(
+        conn, org_id="default", workspace_id=ws["id"], lead_id=int(lead2["id"]),
+        current_status_sentiment="neutral",
+    )
+    conn.commit()
+    conn.close()
+
+    report = psa.workspace_sender_cost_report("acme")
+    assert report["status"] == "ok"
+    assert report["sender_account_count"] == 2
+    assert report["total_cost"] == 7.0
+    assert report["positive_sentiment_leads"] == 1
+    assert report["cost_per_positive"] == 7.0
+
+
+def test_reseller_cost_report_across_domains(tmp_path):
+    import pipeline as om
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+    from pipeline_workspace import create_workspace
+    from workspace_routing import upsert_workspace_lead
+
+    pm.init_db()
+    ws = create_workspace("Acme", slug="acme")
+    _import_two_accounts_on_domain(tmp_path, domain="acmemail.com")
+    psa.set_sender_domain_cost("acmemail.com", reseller="inboxkit", domain_cost=7.0)
+    psa.set_sender_domain_cost("otherdomain.com", reseller="inboxkit", domain_cost=10.0)
+
+    conn = get_conn()
+    sa_id = psa.find_sender_account_id_by_email(conn, "gabriel@acmemail.com")
+    psa.link_sender_account_to_workspace(conn, ws["id"], sa_id)
+    conn.commit()
+    lead = om.resolve_lead(name="Lead One", email="lead1@example.com")
+    upsert_workspace_lead(
+        conn, org_id="default", workspace_id=ws["id"], lead_id=int(lead["id"]),
+        current_status_sentiment="positive",
+    )
+    conn.commit()
+    conn.close()
+
+    report = psa.reseller_cost_report("inboxkit")
+    assert report["status"] == "ok"
+    assert set(report["domains"]) == {"acmemail.com", "otherdomain.com"}
+    assert report["total_cost"] == 17.0
+    assert report["workspaces_served"] == ["acme"]
+    assert report["positive_sentiment_leads"] == 1
+
+
+def test_reseller_cost_report_unknown_reseller(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+
+    pm.init_db()
+    report = psa.reseller_cost_report("nonexistent")
+    assert report["status"] == "error"

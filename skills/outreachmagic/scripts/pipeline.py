@@ -2696,9 +2696,14 @@ from pipeline_sender_accounts import (
     build_sender_account_sync_payload,
     compute_sender_stats,
     import_sender_accounts,
+    reseller_cost_report,
     resolve_sender_account_from_entity_key,
     sender_account_entity_key,
+    sender_domains_report,
     sender_insights,
+    set_sender_account_workspace_link,
+    set_sender_domain_cost,
+    workspace_sender_cost_report,
 )
 
 from pipeline_cli import _cmd_crm_sync, _cmd_sheets_campaign_stats, main

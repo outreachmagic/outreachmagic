@@ -70,6 +70,8 @@ Logos live in `brand/` and are served via `raw.githubusercontent.com/outreachmag
 
 This repo is public. All source code is visible. Secrets live in environment variables and `skills/outreachmagic/config/` (gitignored). Org profile publishes to `outreachmagic/.github`.
 
+**Never reference real client/customer names, their domains, or identifying business details anywhere in this repo** — code, tests, fixtures, comments, commit messages, docs. This includes names picked up from other conversation context (e.g. an Obsidian vault, another private repo, a pasted log/payload) — a real client name or domain in a sample payload is not fair game for a test fixture here just because it showed up in chat. Use obviously generic placeholders instead (e.g. `Acme` / `acme` / `acmemail.com`), consistently, the same way `example.com` / `Jane Doe` are used elsewhere in this codebase's tests. If you're about to paste in a real CSV export, webhook payload, or DB row as a test fixture, sanitize every identifying field first (names, emails, domains, workspace slugs, tags).
+
 ## Tests before tag
 
 ```bash

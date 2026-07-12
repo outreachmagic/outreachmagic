@@ -18,8 +18,8 @@ from typing import Optional
 
 from campaign_stats import reply_event_sql_condition
 from db_conn import get_conn
-from pipeline_utils import normalize_email
-from workspace_routing import DEFAULT_ORG_ID
+from pipeline_utils import email_domain, normalize_email
+from workspace_routing import DEFAULT_ORG_ID, parse_linkedin_value
 
 # PlusVibe export columns we intentionally ignore -- SMTP/IMAP connection
 # config, not deliverability data, and we don't use those.
@@ -119,29 +119,6 @@ def parse_sender_accounts_csv(path: str) -> list[dict]:
     return rows
 
 
-def infer_workspace_slugs_from_tags(tags: list[str], known_slugs: Optional[set] = None) -> list[str]:
-    """Match PlusVibe tags against known workspace slugs.
-
-    Convention observed in exports: '{slug}_all' / '{slug}_segment_*' tags
-    identify which workspace a mailbox belongs to. Unmatched tags are
-    ignored, not an error.
-
-    known_slugs lets callers holding an open write connection pass an
-    already-fetched slug set instead of triggering a second get_conn() call
-    per row (which deadlocks against the caller's open transaction).
-    """
-    if known_slugs is None:
-        from pipeline_workspace import list_workspaces
-
-        known_slugs = {w["slug"] for w in list_workspaces()}
-    matched = set()
-    for tag in tags:
-        for slug in known_slugs:
-            if tag == slug or tag.startswith(f"{slug}_"):
-                matched.add(slug)
-    return sorted(matched)
-
-
 def upsert_sender_account(
     conn: sqlite3.Connection, row: dict, org_id: str = DEFAULT_ORG_ID, channel: str = "email",
 ) -> int:
@@ -157,14 +134,39 @@ def upsert_sender_account(
             f"UPDATE sender_accounts SET {set_clause}, channel = ?, updated_at = datetime('now') WHERE id = ?",
             [row.get(c) for c in columns] + [channel, existing["id"]],
         )
-        return int(existing["id"])
-    insert_cols = ["org_id", "email", "channel"] + columns
-    placeholders = ", ".join("?" for _ in insert_cols)
-    cur = conn.execute(
-        f"INSERT INTO sender_accounts ({', '.join(insert_cols)}) VALUES ({placeholders})",
-        [org_id, email, channel] + [row.get(c) for c in columns],
+        sender_account_id = int(existing["id"])
+    else:
+        insert_cols = ["org_id", "email", "channel"] + columns
+        placeholders = ", ".join("?" for _ in insert_cols)
+        cur = conn.execute(
+            f"INSERT INTO sender_accounts ({', '.join(insert_cols)}) VALUES ({placeholders})",
+            [org_id, email, channel] + [row.get(c) for c in columns],
+        )
+        sender_account_id = int(cur.lastrowid)
+    _classify_and_store_identifier(conn, sender_account_id, email)
+    return sender_account_id
+
+
+def _classify_and_store_identifier(conn: sqlite3.Connection, sender_account_id: int, identifier: str) -> None:
+    """Fill in linkedin_url / linkedin_sales_nav_id / email_domain from a raw
+    identifier -- `identifier` may be a public LinkedIn profile URL, a Sales
+    Navigator URL/token, or a real email (a LinkedIn seat can be identified by
+    its login email in some sources). Never overwrites an already-set value.
+    """
+    parsed = dict(parse_linkedin_value(identifier))
+    linkedin_url = parsed.get("linkedin_url")
+    sales_nav_id = parsed.get("linkedin_sales_nav_id")
+    domain = email_domain(identifier) if "@" in identifier else None
+    if not (linkedin_url or sales_nav_id or domain):
+        return
+    conn.execute(
+        """UPDATE sender_accounts
+           SET linkedin_url = COALESCE(linkedin_url, ?),
+               linkedin_sales_nav_id = COALESCE(linkedin_sales_nav_id, ?),
+               email_domain = COALESCE(email_domain, ?)
+           WHERE id = ?""",
+        (linkedin_url, sales_nav_id, domain, sender_account_id),
     )
-    return int(cur.lastrowid)
 
 
 def ensure_sender_account(
@@ -187,20 +189,63 @@ def ensure_sender_account(
     row = conn.execute(
         "SELECT id FROM sender_accounts WHERE org_id = ? AND email = ?", (org_id, identifier)
     ).fetchone()
-    return int(row["id"]) if row else None
+    if not row:
+        return None
+    sender_account_id = int(row["id"])
+    _classify_and_store_identifier(conn, sender_account_id, identifier)
+    return sender_account_id
 
 
 def link_sender_account_to_workspace(conn: sqlite3.Connection, workspace_id: str, sender_account_id: int) -> None:
     _link_workspace(conn, workspace_id, sender_account_id)
 
 
-def _link_workspace(conn: sqlite3.Connection, workspace_id: str, sender_account_id: int) -> None:
-    link_id = f"wsa_{workspace_id}_{sender_account_id}"
+def unlink_sender_account_from_workspace(conn: sqlite3.Connection, workspace_id: str, sender_account_id: int) -> None:
     conn.execute(
-        """INSERT OR IGNORE INTO workspace_sender_accounts (id, workspace_id, sender_account_id)
-           VALUES (?, ?, ?)""",
-        (link_id, workspace_id, sender_account_id),
+        "DELETE FROM workspace_sender_accounts WHERE workspace_id = ? AND sender_account_id = ?",
+        (workspace_id, sender_account_id),
     )
+
+
+def _link_workspace(conn: sqlite3.Connection, workspace_id: str, sender_account_id: int) -> None:
+    conn.execute(
+        """INSERT OR IGNORE INTO workspace_sender_accounts (workspace_id, sender_account_id)
+           VALUES (?, ?)""",
+        (workspace_id, sender_account_id),
+    )
+
+
+def find_sender_account_id_by_email(conn: sqlite3.Connection, email: str, org_id: str = DEFAULT_ORG_ID) -> Optional[int]:
+    row = conn.execute(
+        "SELECT id FROM sender_accounts WHERE org_id = ? AND email = ?",
+        (org_id, (email or "").strip().lower()),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def set_sender_account_workspace_link(
+    email: str, workspace: str, *, linked: bool = True, org_id: str = DEFAULT_ORG_ID,
+) -> dict:
+    from pipeline_workspace import list_workspaces
+
+    slug_to_id = {w["slug"]: w["id"] for w in list_workspaces()}
+    ws_id = slug_to_id.get(workspace)
+    if not ws_id:
+        return {"status": "error", "error": f"unknown workspace: {workspace}"}
+
+    conn = get_conn()
+    try:
+        sender_account_id = find_sender_account_id_by_email(conn, email, org_id=org_id)
+        if not sender_account_id:
+            return {"status": "error", "error": f"unknown sender account: {email}"}
+        if linked:
+            _link_workspace(conn, ws_id, sender_account_id)
+        else:
+            unlink_sender_account_from_workspace(conn, ws_id, sender_account_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "email": email, "workspace": workspace, "linked": linked}
 
 
 def import_sender_accounts(file_path: str, workspace: Optional[str] = None, org_id: str = DEFAULT_ORG_ID) -> dict:
@@ -233,13 +278,6 @@ def import_sender_accounts(file_path: str, workspace: Optional[str] = None, org_
             if explicit_ws_id:
                 _link_workspace(conn, explicit_ws_id, sender_account_id)
                 workspace_links += 1
-            else:
-                tags = json.loads(row.get("tags_json") or "[]")
-                for slug in infer_workspace_slugs_from_tags(tags, known_slugs=set(slug_to_id)):
-                    ws_id = slug_to_id.get(slug)
-                    if ws_id:
-                        _link_workspace(conn, ws_id, sender_account_id)
-                        workspace_links += 1
         conn.commit()
     finally:
         conn.close()
@@ -278,7 +316,20 @@ def resolve_sender_account_from_entity_key(
     return int(cur.lastrowid)
 
 
-_SYNC_PAYLOAD_COLUMNS = sorted(set(_CSV_TO_COLUMN.values()) | {"tags_json"})
+_SYNC_PAYLOAD_COLUMNS = sorted(
+    set(_CSV_TO_COLUMN.values()) | {"tags_json", "linkedin_url", "linkedin_sales_nav_id"}
+)
+
+
+def _sender_account_workspace_slugs(conn: sqlite3.Connection, sender_account_id: int) -> list[str]:
+    rows = conn.execute(
+        """SELECT w.slug FROM workspace_sender_accounts wsa
+           INNER JOIN workspaces w ON w.id = wsa.workspace_id
+           WHERE wsa.sender_account_id = ?
+           ORDER BY w.slug""",
+        (sender_account_id,),
+    ).fetchall()
+    return [r["slug"] for r in rows]
 
 
 def build_sender_account_sync_payload(conn: sqlite3.Connection, sender_account_id: int) -> dict:
@@ -293,6 +344,10 @@ def build_sender_account_sync_payload(conn: sqlite3.Connection, sender_account_i
         val = row[col]
         if val is not None and val != "":
             payload[col] = val
+    # Always present, even empty -- this is a full snapshot of current
+    # workspace membership, not a delta, so an empty list is itself
+    # meaningful (every link was removed) and must reconcile on pull.
+    payload["workspace_slugs"] = _sender_account_workspace_slugs(conn, sender_account_id)
     return payload
 
 
@@ -306,9 +361,39 @@ def apply_agent_sender_account_sync_payload(sender_account_id: int, payload: dic
             f"UPDATE sender_accounts SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
             [payload.get(c) for c in columns] + [sender_account_id],
         )
+    if payload.get("email"):
+        _classify_and_store_identifier(conn, sender_account_id, payload["email"])
+    if "workspace_slugs" in payload:
+        _reconcile_workspace_links(conn, sender_account_id, payload["workspace_slugs"])
     if own_conn:
         conn.commit()
         conn.close()
+
+
+def _reconcile_workspace_links(conn: sqlite3.Connection, sender_account_id: int, workspace_slugs: list[str]) -> None:
+    """Make local workspace_sender_accounts links match the incoming full set.
+
+    Unknown slugs (a workspace not yet synced to this DB) are skipped, not
+    errored -- they'll reconcile correctly on a later pull once that
+    workspace exists locally. Queries `workspaces` directly on the caller's
+    connection rather than list_workspaces(), which opens its own
+    connection and would deadlock against an open write transaction here.
+    """
+    slug_to_id = {
+        r["slug"]: r["id"] for r in conn.execute("SELECT id, slug FROM workspaces").fetchall()
+    }
+    incoming_ids = {slug_to_id[s] for s in workspace_slugs if s in slug_to_id}
+
+    current_rows = conn.execute(
+        "SELECT workspace_id FROM workspace_sender_accounts WHERE sender_account_id = ?",
+        (sender_account_id,),
+    ).fetchall()
+    current_ids = {r["workspace_id"] for r in current_rows}
+
+    for ws_id in current_ids - incoming_ids:
+        unlink_sender_account_from_workspace(conn, ws_id, sender_account_id)
+    for ws_id in incoming_ids - current_ids:
+        _link_workspace(conn, ws_id, sender_account_id)
 
 
 def compute_sender_stats(
@@ -374,3 +459,176 @@ def sender_insights(conn: sqlite3.Connection, workspace: Optional[str] = None, s
         item.update(compute_sender_stats(conn, row["email"], since=since))
         results.append(item)
     return results
+
+
+def set_sender_domain_cost(
+    domain: str, *, reseller: Optional[str] = None, domain_cost: Optional[float] = None,
+    currency: Optional[str] = None,
+) -> dict:
+    """Set/update the flat cost + reseller for a domain's sender accounts.
+
+    domain_cost is a single hand-computed number covering every mailbox on
+    that domain (e.g. $3.50/mailbox x 2 mailboxes = $7), not a per-account
+    rate -- there's no billing-model split here, just one number per domain.
+    """
+    domain = (domain or "").strip().lower()
+    if not domain:
+        return {"status": "error", "error": "domain is required"}
+    conn = get_conn()
+    try:
+        existing = conn.execute("SELECT domain FROM sender_domains WHERE domain = ?", (domain,)).fetchone()
+        if existing:
+            sets = ["updated_at = datetime('now')"]
+            params: list = []
+            if reseller is not None:
+                sets.append("reseller = ?")
+                params.append(reseller)
+            if domain_cost is not None:
+                sets.append("domain_cost = ?")
+                params.append(domain_cost)
+            if currency is not None:
+                sets.append("currency = ?")
+                params.append(currency)
+            conn.execute(f"UPDATE sender_domains SET {', '.join(sets)} WHERE domain = ?", params + [domain])
+        else:
+            conn.execute(
+                "INSERT INTO sender_domains (domain, reseller, domain_cost, currency) VALUES (?, ?, ?, ?)",
+                (domain, reseller, domain_cost, currency or "USD"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "domain": domain}
+
+
+def sender_domains_report() -> list[dict]:
+    """Per-domain sender count (live, never stored) alongside hand-entered cost/reseller."""
+    conn = get_conn()
+    try:
+        rows = conn.execute("""
+            SELECT
+                sa.email_domain AS domain,
+                sd.reseller AS reseller,
+                sd.domain_cost AS domain_cost,
+                COALESCE(sd.currency, 'USD') AS currency,
+                COUNT(sa.id) AS sender_count
+            FROM sender_accounts sa
+            LEFT JOIN sender_domains sd ON sd.domain = sa.email_domain
+            WHERE sa.email_domain IS NOT NULL
+            GROUP BY sa.email_domain
+            ORDER BY sa.email_domain
+        """).fetchall()
+    finally:
+        conn.close()
+    results = []
+    for row in rows:
+        item = dict(row)
+        item["cost_per_account"] = (
+            round(item["domain_cost"] / item["sender_count"], 4)
+            if item["domain_cost"] is not None and item["sender_count"]
+            else None
+        )
+        results.append(item)
+    return results
+
+
+def workspace_sender_cost_report(workspace: str) -> dict:
+    """Total sender-account cost for a workspace + cost per positive-sentiment lead.
+
+    Each domain's flat cost is split evenly across every sender account
+    currently on that domain (live count); an account linked to more than
+    one workspace counts its full share toward each workspace it serves.
+    """
+    conn = get_conn()
+    try:
+        ws = conn.execute("SELECT id FROM workspaces WHERE slug = ?", (workspace,)).fetchone()
+        if not ws:
+            return {"status": "error", "error": f"unknown workspace: {workspace}"}
+        ws_id = ws["id"]
+
+        rows = conn.execute("""
+            SELECT sa.id, sd.domain_cost,
+                   (SELECT COUNT(*) FROM sender_accounts sa2
+                    WHERE sa2.email_domain = sa.email_domain) AS domain_sender_count
+            FROM sender_accounts sa
+            INNER JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
+            LEFT JOIN sender_domains sd ON sd.domain = sa.email_domain
+            WHERE wsa.workspace_id = ?
+        """, (ws_id,)).fetchall()
+
+        total_cost = 0.0
+        priced_accounts = 0
+        for r in rows:
+            if r["domain_cost"] is not None and r["domain_sender_count"]:
+                total_cost += r["domain_cost"] / r["domain_sender_count"]
+                priced_accounts += 1
+
+        positive_count = conn.execute(
+            """SELECT COUNT(*) FROM workspace_leads
+               WHERE workspace_id = ? AND lower(current_status_sentiment) = 'positive'""",
+            (ws_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    return {
+        "status": "ok",
+        "workspace": workspace,
+        "sender_account_count": len(rows),
+        "priced_sender_account_count": priced_accounts,
+        "total_cost": round(total_cost, 2),
+        "positive_sentiment_leads": positive_count,
+        "cost_per_positive": round(total_cost / positive_count, 2) if positive_count else None,
+    }
+
+
+def reseller_cost_report(reseller: str) -> dict:
+    """Total cost across a reseller's domains + cost per positive-sentiment lead
+    across every workspace those domains' sender accounts serve.
+
+    Approximate when a workspace mixes accounts from multiple resellers --
+    that workspace's positive-lead count gets attributed in full to each
+    reseller it uses, matching the same "count in full per workspace" choice
+    used for per-workspace cost.
+    """
+    conn = get_conn()
+    try:
+        domains = conn.execute(
+            "SELECT domain, domain_cost FROM sender_domains WHERE reseller = ?", (reseller,)
+        ).fetchall()
+        if not domains:
+            return {"status": "error", "error": f"no domains found for reseller: {reseller}"}
+        domain_list = [d["domain"] for d in domains]
+        total_cost = sum(d["domain_cost"] or 0 for d in domains)
+
+        placeholders = ", ".join("?" for _ in domain_list)
+        ws_rows = conn.execute(
+            f"""SELECT DISTINCT w.id, w.slug
+                FROM sender_accounts sa
+                INNER JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
+                INNER JOIN workspaces w ON w.id = wsa.workspace_id
+                WHERE sa.email_domain IN ({placeholders})""",
+            domain_list,
+        ).fetchall()
+
+        positive_count = 0
+        if ws_rows:
+            ws_ids = [w["id"] for w in ws_rows]
+            ws_placeholders = ", ".join("?" for _ in ws_ids)
+            positive_count = conn.execute(
+                f"""SELECT COUNT(*) FROM workspace_leads
+                    WHERE workspace_id IN ({ws_placeholders}) AND lower(current_status_sentiment) = 'positive'""",
+                ws_ids,
+            ).fetchone()[0]
+    finally:
+        conn.close()
+
+    return {
+        "status": "ok",
+        "reseller": reseller,
+        "domains": domain_list,
+        "total_cost": round(total_cost, 2),
+        "workspaces_served": sorted(w["slug"] for w in ws_rows),
+        "positive_sentiment_leads": positive_count,
+        "cost_per_positive": round(total_cost / positive_count, 2) if positive_count else None,
+    }

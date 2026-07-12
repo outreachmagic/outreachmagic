@@ -199,11 +199,12 @@ def normalize_linkedin_sales_nav_id(value: str) -> Optional[str]:
 
 
 def extract_sales_nav_id_from_linkedin_url(value: str) -> Optional[str]:
-    """Pull Sales Navigator member token from linkedin.com/in/<slug> when slug is ACwAA..."""
+    """Pull Sales Navigator member token from a linkedin.com/in/<slug>,
+    linkedin.com/sales/lead/<token>,... or linkedin.com/sales/people/<token>,... URL."""
     raw = (value or "").strip()
     if not raw:
         return None
-    m = re.search(r"linkedin\.com/in/([^/?#]+)", raw, re.IGNORECASE)
+    m = re.search(r"linkedin\.com/(?:in|sales/(?:lead|people))/([^/?#,]+)", raw, re.IGNORECASE)
     if not m:
         return None
     return normalize_linkedin_sales_nav_id(m.group(1))
@@ -271,7 +272,7 @@ def parse_linkedin_value(raw: str) -> list[tuple[str, str]]:
     if "fs_salesprofile" in lower or re.match(r"^AC(?:w|o)AA", text, re.IGNORECASE):
         sales_nav = normalize_linkedin_sales_nav_id(text)
         add("linkedin_sales_nav_id", sales_nav)
-    if "linkedin.com/in/" in lower:
+    if "linkedin.com/in/" in lower or "linkedin.com/sales/lead/" in lower or "linkedin.com/sales/people/" in lower:
         sales_nav = sales_nav or extract_sales_nav_id_from_linkedin_url(text)
         add("linkedin_sales_nav_id", sales_nav)
     public = normalize_linkedin(text)

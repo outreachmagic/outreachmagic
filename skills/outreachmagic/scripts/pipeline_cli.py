@@ -1212,13 +1212,35 @@ def main():
     )
     isa_p.add_argument("--file", required=True, help="Path to the PlusVibe CSV export")
     isa_p.add_argument("--workspace", help="Associate every row with this workspace slug "
-                                           "(default: infer per-row from CSV tags)")
+                                           "(default: leave unlinked; link explicitly afterward)")
 
-    sa_p = sub.add_parser("sender-accounts", help="List imported sender accounts")
+    sa_p = sub.add_parser("sender-accounts", help="List/link imported sender accounts")
     sa_sub = sa_p.add_subparsers(dest="sender_accounts_action")
     sa_list_p = sa_sub.add_parser("list", help="List sender accounts")
     sa_list_p.add_argument("--workspace", help="Filter to sender accounts linked to this workspace")
     sa_list_p.add_argument("--json", action="store_true")
+    sa_link_p = sa_sub.add_parser("link", help="Link a sender account to a workspace")
+    sa_link_p.add_argument("--email", required=True, help="Sender account email")
+    sa_link_p.add_argument("--workspace", required=True, help="Workspace slug")
+    sa_unlink_p = sa_sub.add_parser("unlink", help="Unlink a sender account from a workspace")
+    sa_unlink_p.add_argument("--email", required=True, help="Sender account email")
+    sa_unlink_p.add_argument("--workspace", required=True, help="Workspace slug")
+
+    sd_p = sub.add_parser("sender-domains", help="Per-domain sender counts, cost, and reseller tracking")
+    sd_sub = sd_p.add_subparsers(dest="sender_domains_action")
+    sd_list_p = sd_sub.add_parser("list", help="List domains with live sender counts and cost")
+    sd_list_p.add_argument("--json", action="store_true")
+    sd_set_p = sd_sub.add_parser("set", help="Set/update a domain's flat cost and/or reseller")
+    sd_set_p.add_argument("--domain", required=True, help="e.g. acmemail.com")
+    sd_set_p.add_argument("--reseller", help="Vendor who resells/manages mailboxes on this domain")
+    sd_set_p.add_argument("--cost", type=float, help="Flat total cost for every mailbox on this domain")
+    sd_set_p.add_argument("--currency", help="Default: USD")
+    sd_cost_p = sd_sub.add_parser(
+        "cost", help="Total sender-account cost and cost-per-positive-reply for a workspace or reseller",
+    )
+    sd_cost_p.add_argument("--workspace", help="Workspace slug")
+    sd_cost_p.add_argument("--reseller", help="Reseller name")
+    sd_cost_p.add_argument("--json", action="store_true")
 
     si_p = sub.add_parser(
         "sender-insights",
@@ -3233,8 +3255,40 @@ def main():
                 for a in accounts:
                     print(f"  {a['email']} — health={a.get('overall_health_score')} "
                           f"status={a.get('status')} warmup={a.get('warmup_status')}")
+        elif sa_action in ("link", "unlink"):
+            print(json.dumps(_pipeline.set_sender_account_workspace_link(
+                args.email, args.workspace, linked=(sa_action == "link"),
+            ), indent=2))
         else:
-            print(json.dumps({"error": "sender-accounts subcommand required: list"}))
+            print(json.dumps({"error": "sender-accounts subcommand required: list, link, unlink"}))
+    elif args.command == "sender-domains":
+        sd_action = getattr(args, "sender_domains_action", None)
+        if sd_action == "list":
+            domains = _pipeline.sender_domains_report()
+            if getattr(args, "json", False):
+                print(json.dumps({"domains": domains, "count": len(domains)}, indent=2))
+            else:
+                print(f"{len(domains)} domain(s):")
+                for d in domains:
+                    cost = f"${d['domain_cost']:.2f}" if d["domain_cost"] is not None else "—"
+                    per = f"${d['cost_per_account']:.2f}/account" if d["cost_per_account"] is not None else ""
+                    print(f"  {d['domain']} — {d['sender_count']} sender(s), "
+                          f"reseller={d.get('reseller') or '—'}, cost={cost} {per}")
+        elif sd_action == "set":
+            print(json.dumps(_pipeline.set_sender_domain_cost(
+                args.domain, reseller=getattr(args, "reseller", None),
+                domain_cost=getattr(args, "cost", None), currency=getattr(args, "currency", None),
+            ), indent=2))
+        elif sd_action == "cost":
+            if getattr(args, "workspace", None):
+                result = _pipeline.workspace_sender_cost_report(args.workspace)
+            elif getattr(args, "reseller", None):
+                result = _pipeline.reseller_cost_report(args.reseller)
+            else:
+                result = {"status": "error", "error": "pass --workspace or --reseller"}
+            print(json.dumps(result, indent=2))
+        else:
+            print(json.dumps({"error": "sender-domains subcommand required: list, set, cost"}))
     elif args.command == "sender-insights":
         conn = _pipeline.get_conn()
         try:

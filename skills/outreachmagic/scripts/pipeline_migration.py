@@ -673,11 +673,10 @@ def migrate_db(conn=None):
         CREATE INDEX IF NOT EXISTS idx_sender_accounts_updated ON sender_accounts(updated_at);
         CREATE INDEX IF NOT EXISTS idx_sender_accounts_org_email ON sender_accounts(org_id, email);
         CREATE TABLE IF NOT EXISTS workspace_sender_accounts (
-            id                  TEXT PRIMARY KEY,
             workspace_id        TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
             sender_account_id   INTEGER NOT NULL REFERENCES sender_accounts(id) ON DELETE CASCADE,
             created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE (workspace_id, sender_account_id)
+            PRIMARY KEY (workspace_id, sender_account_id)
         );
         CREATE INDEX IF NOT EXISTS idx_wsa_sender ON workspace_sender_accounts(sender_account_id);
     """)
@@ -690,6 +689,36 @@ def migrate_db(conn=None):
         conn.execute("ALTER TABLE crm_workspace_config ADD COLUMN contact_owner_id TEXT")
     except sqlite3.OperationalError:
         pass
+    for _col, _type in (
+        ("linkedin_url", "TEXT"),
+        ("linkedin_sales_nav_id", "TEXT"),
+        ("email_domain", "TEXT"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE sender_accounts ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_sender_accounts_linkedin_url_unique
+           ON sender_accounts(org_id, linkedin_url) WHERE linkedin_url IS NOT NULL"""
+    )
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_sender_accounts_sales_nav_id_unique
+           ON sender_accounts(org_id, linkedin_sales_nav_id) WHERE linkedin_sales_nav_id IS NOT NULL"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sender_accounts_email_domain ON sender_accounts(email_domain)"
+    )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sender_domains (
+            domain          TEXT PRIMARY KEY,
+            reseller        TEXT,
+            domain_cost     REAL,
+            currency        TEXT NOT NULL DEFAULT 'USD',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+    """)
 
     # Self-heal pre-existing lead_emails duplicates (case/whitespace variants
     # of a lead's own primary email, or repeated inserts of the same email)

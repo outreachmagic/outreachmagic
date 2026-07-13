@@ -1260,7 +1260,16 @@ def resolve_lead(
         for itype, val in identities:
             if itype not in STRONG_IDENTITY_TYPES:
                 continue
-            found = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
+            # by_email/by_li above already ran this exact lookup (same
+            # normalized value: both derive from normalize_email()/
+            # parse_linkedin_value() on the same source field) -- reuse
+            # instead of re-querying leads.email / leads.linkedin_url.
+            if itype == "email":
+                found = by_email
+            elif itype == "linkedin_url":
+                found = by_li
+            else:
+                found = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
             if found:
                 if lead_id is None:
                     lead_id = found

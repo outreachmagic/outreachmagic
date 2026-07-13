@@ -691,6 +691,95 @@ def test_sender_domains_report_reflects_live_count_as_accounts_change(tmp_path):
     assert round(domain["cost_per_account"], 4) == round(7.0 / 3, 4)
 
 
+def test_sender_domains_report_includes_zero_account_domains(tmp_path):
+    """A domain registered ahead of any sender accounts (owned but not yet
+    in use) must still show up in the report, with sender_count=0 --
+    previously invisible since the query started FROM sender_accounts."""
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+
+    pm.init_db()
+    psa.set_sender_domain_cost("futuredomain.com", reseller="inboxkit", notes="reserved for Q3")
+
+    report = psa.sender_domains_report()
+    assert len(report) == 1
+    domain = report[0]
+    assert domain["domain"] == "futuredomain.com"
+    assert domain["sender_count"] == 0
+    assert domain["reseller"] == "inboxkit"
+    assert domain["notes"] == "reserved for Q3"
+    assert domain["cost_per_account"] is None  # no accounts to divide by
+
+
+def test_sender_domains_report_includes_domains_from_both_sides(tmp_path):
+    """Union covers domains only known via sender_accounts (not yet cost-tracked)
+    and domains only known via sender_domains (no accounts yet)."""
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+
+    pm.init_db()
+    _import_two_accounts_on_domain(tmp_path)  # acmemail.com, no cost set
+    psa.set_sender_domain_cost("futuredomain.com", reseller="inboxkit")  # no accounts
+
+    domains = {d["domain"]: d for d in psa.sender_domains_report()}
+    assert set(domains) == {"acmemail.com", "futuredomain.com"}
+    assert domains["acmemail.com"]["sender_count"] == 2
+    assert domains["acmemail.com"]["reseller"] is None
+    assert domains["futuredomain.com"]["sender_count"] == 0
+
+
+def test_sender_domain_notes_set_and_overwrite(tmp_path):
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+
+    pm.init_db()
+    psa.set_sender_domain_cost("acmemail.com", notes="blacklisted in Azure")
+    report = psa.sender_domains_report()
+    assert report[0]["notes"] == "blacklisted in Azure"
+
+    psa.set_sender_domain_cost("acmemail.com", notes="delisted, back to normal")
+    report = psa.sender_domains_report()
+    assert report[0]["notes"] == "delisted, back to normal"
+
+
+def test_workspace_sender_cost_report_all_time_vs_windowed_differ_for_older_domain(tmp_path):
+    """A domain tracked for ~3 months should show all_time cost roughly 3x
+    the per-month (windowed, months=1) figure, since domain_cost is a
+    monthly rate and all_time projects it across elapsed months."""
+    import pipeline as om
+    import pipeline_migration as pm
+    import pipeline_sender_accounts as psa
+    from db_conn import get_conn
+    from pipeline_workspace import create_workspace
+    from workspace_routing import upsert_workspace_lead
+
+    pm.init_db()
+    ws = create_workspace("Acme", slug="acme")
+    _import_two_accounts_on_domain(tmp_path, domain="acmemail.com")
+    psa.set_sender_domain_cost("acmemail.com", domain_cost=10.0)
+
+    conn = get_conn()
+    conn.execute(
+        "UPDATE sender_domains SET created_at = datetime('now', '-91 days') WHERE domain = 'acmemail.com'"
+    )
+    sa_id = psa.find_sender_account_id_by_email(conn, "gabriel@acmemail.com")
+    psa.link_sender_account_to_workspace(conn, ws["id"], sa_id)
+    conn.commit()
+    lead = om.resolve_lead(name="Lead One", email="lead1@example.com")
+    upsert_workspace_lead(
+        conn, org_id="default", workspace_id=ws["id"], lead_id=int(lead["id"]),
+        current_status_sentiment="positive",
+    )
+    conn.commit()
+    conn.close()
+
+    report = psa.workspace_sender_cost_report("acme")
+    # monthly share = 10.0 / 2 accounts = 5.0; ~91 days elapsed = 3 months
+    assert report["windowed"]["total_cost"] == 5.0
+    assert report["all_time"]["total_cost"] == 15.0
+    assert report["all_time"]["total_cost"] > report["windowed"]["total_cost"]
+
+
 def test_workspace_sender_cost_report(tmp_path):
     import pipeline as om
     import pipeline_migration as pm
@@ -726,9 +815,18 @@ def test_workspace_sender_cost_report(tmp_path):
     report = psa.workspace_sender_cost_report("acme")
     assert report["status"] == "ok"
     assert report["sender_account_count"] == 2
-    assert report["total_cost"] == 7.0
-    assert report["positive_sentiment_leads"] == 1
-    assert report["cost_per_positive"] == 7.0
+    # Domain was just created, so "all time" (elapsed <1mo, floored to 1)
+    # and "windowed" (default months=1) match exactly here.
+    for key in ("all_time", "windowed"):
+        assert report[key]["total_cost"] == 7.0
+        assert report[key]["positive_sentiment_leads"] == 1
+        assert report[key]["cost_per_positive"] == 7.0
+    assert report["windowed"]["months"] == 1
+
+    report_3mo = psa.workspace_sender_cost_report("acme", months=3)
+    assert report_3mo["windowed"]["months"] == 3
+    assert report_3mo["windowed"]["total_cost"] == 21.0
+    assert report_3mo["windowed"]["positive_sentiment_leads"] == 1
 
 
 def test_reseller_cost_report_across_domains(tmp_path):
@@ -760,9 +858,14 @@ def test_reseller_cost_report_across_domains(tmp_path):
     report = psa.reseller_cost_report("inboxkit")
     assert report["status"] == "ok"
     assert set(report["domains"]) == {"acmemail.com", "otherdomain.com"}
-    assert report["total_cost"] == 17.0
     assert report["workspaces_served"] == ["acme"]
-    assert report["positive_sentiment_leads"] == 1
+    for key in ("all_time", "windowed"):
+        assert report[key]["total_cost"] == 17.0
+        assert report[key]["positive_sentiment_leads"] == 1
+    assert report["windowed"]["months"] == 1
+
+    report_3mo = psa.reseller_cost_report("inboxkit", months=3)
+    assert report_3mo["windowed"]["total_cost"] == 51.0
 
 
 def test_reseller_cost_report_unknown_reseller(tmp_path):

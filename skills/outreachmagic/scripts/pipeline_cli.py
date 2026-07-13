@@ -1239,16 +1239,26 @@ def main():
     sd_sub = sd_p.add_subparsers(dest="sender_domains_action")
     sd_list_p = sd_sub.add_parser("list", help="List domains with live sender counts and cost")
     sd_list_p.add_argument("--json", action="store_true")
-    sd_set_p = sd_sub.add_parser("set", help="Set/update a domain's flat cost and/or reseller")
+    sd_set_p = sd_sub.add_parser(
+        "set",
+        help="Set/update a domain's flat cost, reseller, and/or notes -- also how you "
+             "register a domain you own before any sender accounts exist on it",
+    )
     sd_set_p.add_argument("--domain", required=True, help="e.g. acmemail.com")
     sd_set_p.add_argument("--reseller", help="Vendor who resells/manages mailboxes on this domain")
     sd_set_p.add_argument("--cost", type=float, help="Flat total cost for every mailbox on this domain")
     sd_set_p.add_argument("--currency", help="Default: USD")
+    sd_set_p.add_argument("--notes", help='Freeform note, e.g. "blacklisted in Azure" -- overwrites any previous note')
     sd_cost_p = sd_sub.add_parser(
         "cost", help="Total sender-account cost and cost-per-positive-reply for a workspace or reseller",
     )
     sd_cost_p.add_argument("--workspace", help="Workspace slug")
     sd_cost_p.add_argument("--reseller", help="Reseller name")
+    sd_cost_p.add_argument(
+        "--months", type=int,
+        help="Window size for the 'windowed' figure, e.g. 3 = cost x 3 months vs. positive "
+             "leads from the last 3 months (default: 1, i.e. per-month). 'all_time' is always included too.",
+    )
     sd_cost_p.add_argument("--json", action="store_true")
 
     si_p = sub.add_parser(
@@ -3292,18 +3302,21 @@ def main():
                 for d in domains:
                     cost = f"${d['domain_cost']:.2f}" if d["domain_cost"] is not None else "—"
                     per = f"${d['cost_per_account']:.2f}/account" if d["cost_per_account"] is not None else ""
+                    note = f" — note: {d['notes']}" if d.get("notes") else ""
                     print(f"  {d['domain']} — {d['sender_count']} sender(s), "
-                          f"reseller={d.get('reseller') or '—'}, cost={cost} {per}")
+                          f"reseller={d.get('reseller') or '—'}, cost={cost} {per}{note}")
         elif sd_action == "set":
             print(json.dumps(_pipeline.set_sender_domain_cost(
                 args.domain, reseller=getattr(args, "reseller", None),
                 domain_cost=getattr(args, "cost", None), currency=getattr(args, "currency", None),
+                notes=getattr(args, "notes", None),
             ), indent=2))
         elif sd_action == "cost":
+            months = getattr(args, "months", None)
             if getattr(args, "workspace", None):
-                result = _pipeline.workspace_sender_cost_report(args.workspace)
+                result = _pipeline.workspace_sender_cost_report(args.workspace, months=months)
             elif getattr(args, "reseller", None):
-                result = _pipeline.reseller_cost_report(args.reseller)
+                result = _pipeline.reseller_cost_report(args.reseller, months=months)
             else:
                 result = {"status": "error", "error": "pass --workspace or --reseller"}
             print(json.dumps(result, indent=2))

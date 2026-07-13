@@ -495,13 +495,19 @@ def sender_insights(conn: sqlite3.Connection, workspace: Optional[str] = None, s
 
 def set_sender_domain_cost(
     domain: str, *, reseller: Optional[str] = None, domain_cost: Optional[float] = None,
-    currency: Optional[str] = None,
+    currency: Optional[str] = None, notes: Optional[str] = None,
 ) -> dict:
-    """Set/update the flat cost + reseller for a domain's sender accounts.
+    """Set/update the flat cost, reseller, and/or notes for a domain.
 
     domain_cost is a single hand-computed number covering every mailbox on
     that domain (e.g. $3.50/mailbox x 2 mailboxes = $7), not a per-account
     rate -- there's no billing-model split here, just one number per domain.
+
+    Registers the domain even with every field left unset (bare
+    `--domain X`) -- this is how you track a domain you already own but
+    haven't set any sender accounts up on yet. `notes` is a single
+    freeform field (e.g. "blacklisted in Azure") -- setting it again
+    overwrites the previous note, it isn't a history log.
     """
     domain = (domain or "").strip().lower()
     if not domain:
@@ -521,11 +527,14 @@ def set_sender_domain_cost(
             if currency is not None:
                 sets.append("currency = ?")
                 params.append(currency)
+            if notes is not None:
+                sets.append("notes = ?")
+                params.append(notes)
             conn.execute(f"UPDATE sender_domains SET {', '.join(sets)} WHERE domain = ?", params + [domain])
         else:
             conn.execute(
-                "INSERT INTO sender_domains (domain, reseller, domain_cost, currency) VALUES (?, ?, ?, ?)",
-                (domain, reseller, domain_cost, currency or "USD"),
+                "INSERT INTO sender_domains (domain, reseller, domain_cost, currency, notes) VALUES (?, ?, ?, ?, ?)",
+                (domain, reseller, domain_cost, currency or "USD", notes),
             )
         conn.commit()
     finally:
@@ -533,7 +542,7 @@ def set_sender_domain_cost(
     return {"status": "ok", "domain": domain}
 
 
-_SENDER_DOMAIN_SYNC_COLUMNS = ("reseller", "domain_cost", "currency")
+_SENDER_DOMAIN_SYNC_COLUMNS = ("reseller", "domain_cost", "currency", "notes")
 
 
 def sender_domain_entity_key(domain: str) -> str:
@@ -584,21 +593,31 @@ def apply_agent_sender_domain_sync_payload(domain: str, payload: dict, *, conn=N
 
 
 def sender_domains_report() -> list[dict]:
-    """Per-domain sender count (live, never stored) alongside hand-entered cost/reseller."""
+    """Per-domain sender count (live, never stored) alongside hand-entered cost/reseller/notes.
+
+    Covers the union of domains registered in sender_domains (including
+    ones with zero accounts -- e.g. a domain you own but haven't set any
+    mailboxes up on yet) and domains only known via sender_accounts (not
+    yet cost-tracked) -- either side alone would silently drop the other.
+    """
     conn = get_conn()
     try:
         rows = conn.execute("""
+            WITH all_domains AS (
+                SELECT domain FROM sender_domains
+                UNION
+                SELECT DISTINCT email_domain AS domain FROM sender_accounts WHERE email_domain IS NOT NULL
+            )
             SELECT
-                sa.email_domain AS domain,
+                d.domain AS domain,
                 sd.reseller AS reseller,
                 sd.domain_cost AS domain_cost,
                 COALESCE(sd.currency, 'USD') AS currency,
-                COUNT(sa.id) AS sender_count
-            FROM sender_accounts sa
-            LEFT JOIN sender_domains sd ON sd.domain = sa.email_domain
-            WHERE sa.email_domain IS NOT NULL
-            GROUP BY sa.email_domain
-            ORDER BY sa.email_domain
+                sd.notes AS notes,
+                (SELECT COUNT(*) FROM sender_accounts sa WHERE sa.email_domain = d.domain) AS sender_count
+            FROM all_domains d
+            LEFT JOIN sender_domains sd ON sd.domain = d.domain
+            ORDER BY d.domain
         """).fetchall()
     finally:
         conn.close()
@@ -614,12 +633,82 @@ def sender_domains_report() -> list[dict]:
     return results
 
 
-def workspace_sender_cost_report(workspace: str) -> dict:
-    """Total sender-account cost for a workspace + cost per positive-sentiment lead.
+def _months_elapsed(since_iso: Optional[str]) -> int:
+    """Whole months between an ISO timestamp and now, minimum 1.
 
-    Each domain's flat cost is split evenly across every sender account
-    currently on that domain (live count); an account linked to more than
-    one workspace counts its full share toward each workspace it serves.
+    Used to project an "all time" total from a monthly recurring
+    domain_cost. Approximate -- anchored to when the cost was first
+    recorded (sender_domains.created_at), not necessarily true billing
+    start, since we have no other signal for that locally.
+    """
+    if not since_iso:
+        return 1
+    try:
+        since_dt = datetime.fromisoformat(str(since_iso).replace("Z", "+00:00"))
+    except ValueError:
+        return 1
+    now = datetime.now(since_dt.tzinfo) if since_dt.tzinfo else datetime.now()
+    days = (now - since_dt).total_seconds() / 86400
+    return max(1, round(days / 30.4375))
+
+
+def _positive_lead_count_sql(months: Optional[int]) -> tuple[str, list]:
+    """WHERE-clause fragment + params for a positive-sentiment lead count.
+
+    months=None -> lifetime (no time filter). months=N -> only leads
+    touched (workspace_leads.updated_at) in the trailing N months --
+    this is what makes a windowed cost_per_positive an apples-to-apples
+    rate rather than a stale lifetime count divided by a fresh cost.
+    """
+    if months is None:
+        return "", []
+    return " AND updated_at >= datetime('now', ?)", [f"-{months} months"]
+
+
+def _domain_cost_rows_for_workspace(conn: sqlite3.Connection, ws_id: str) -> list:
+    return conn.execute("""
+        SELECT sa.id, sd.domain_cost, sd.created_at AS domain_created_at,
+               (SELECT COUNT(*) FROM sender_accounts sa2
+                WHERE sa2.email_domain = sa.email_domain) AS domain_sender_count
+        FROM sender_accounts sa
+        INNER JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
+        LEFT JOIN sender_domains sd ON sd.domain = sa.email_domain
+        WHERE wsa.workspace_id = ?
+    """, (ws_id,)).fetchall()
+
+
+def _cost_window(rows: list, *, months: Optional[int]) -> dict:
+    """Sum each priced account's monthly share x its window multiplier.
+
+    months=None -> "all time": each domain's own elapsed-months-since-tracked
+    (so domains tracked for different lengths of time don't get treated the
+    same). months=N -> every domain multiplied by the same N.
+    """
+    total_cost = 0.0
+    priced_accounts = 0
+    for r in rows:
+        if r["domain_cost"] is not None and r["domain_sender_count"]:
+            monthly_share = r["domain_cost"] / r["domain_sender_count"]
+            window = months if months is not None else _months_elapsed(r["domain_created_at"])
+            total_cost += monthly_share * window
+            priced_accounts += 1
+    return {"total_cost": round(total_cost, 2), "priced_accounts": priced_accounts}
+
+
+def workspace_sender_cost_report(workspace: str, *, months: Optional[int] = None) -> dict:
+    """Sender-account cost for a workspace + cost per positive-sentiment lead,
+    reported both all-time and per-month (or over a custom N-month window).
+
+    domain_cost is treated as a recurring MONTHLY rate, split evenly across
+    every sender account currently on that domain (live count); an account
+    linked to more than one workspace counts its full share toward each
+    workspace it serves.
+
+    `all_time` multiplies each domain's rate by however long that domain's
+    cost has been tracked, and counts positive leads lifetime. `windowed`
+    (months=1 by default, i.e. "per month") multiplies the rate by
+    `months` and counts positive leads only from the trailing `months`
+    months, so cost and results are always compared over the same period.
     """
     conn = get_conn()
     try:
@@ -627,29 +716,30 @@ def workspace_sender_cost_report(workspace: str) -> dict:
         if not ws:
             return {"status": "error", "error": f"unknown workspace: {workspace}"}
         ws_id = ws["id"]
+        rows = _domain_cost_rows_for_workspace(conn, ws_id)
 
-        rows = conn.execute("""
-            SELECT sa.id, sd.domain_cost,
-                   (SELECT COUNT(*) FROM sender_accounts sa2
-                    WHERE sa2.email_domain = sa.email_domain) AS domain_sender_count
-            FROM sender_accounts sa
-            INNER JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
-            LEFT JOIN sender_domains sd ON sd.domain = sa.email_domain
-            WHERE wsa.workspace_id = ?
-        """, (ws_id,)).fetchall()
-
-        total_cost = 0.0
+        window_months = months if months is not None else 1
         priced_accounts = 0
-        for r in rows:
-            if r["domain_cost"] is not None and r["domain_sender_count"]:
-                total_cost += r["domain_cost"] / r["domain_sender_count"]
-                priced_accounts += 1
-
-        positive_count = conn.execute(
-            """SELECT COUNT(*) FROM workspace_leads
-               WHERE workspace_id = ? AND lower(current_status_sentiment) = 'positive'""",
-            (ws_id,),
-        ).fetchone()[0]
+        results = {}
+        for label, m in (("all_time", None), ("windowed", window_months)):
+            cost = _cost_window(rows, months=m)
+            priced_accounts = cost["priced_accounts"]
+            clause, params = _positive_lead_count_sql(m)
+            positive_count = conn.execute(
+                f"""SELECT COUNT(*) FROM workspace_leads
+                    WHERE workspace_id = ? AND lower(current_status_sentiment) = 'positive'{clause}""",
+                [ws_id] + params,
+            ).fetchone()[0]
+            entry = {
+                "total_cost": cost["total_cost"],
+                "positive_sentiment_leads": positive_count,
+                "cost_per_positive": (
+                    round(cost["total_cost"] / positive_count, 2) if positive_count else None
+                ),
+            }
+            if label == "windowed":
+                entry["months"] = window_months
+            results[label] = entry
     finally:
         conn.close()
 
@@ -658,15 +748,13 @@ def workspace_sender_cost_report(workspace: str) -> dict:
         "workspace": workspace,
         "sender_account_count": len(rows),
         "priced_sender_account_count": priced_accounts,
-        "total_cost": round(total_cost, 2),
-        "positive_sentiment_leads": positive_count,
-        "cost_per_positive": round(total_cost / positive_count, 2) if positive_count else None,
+        **results,
     }
 
 
-def reseller_cost_report(reseller: str) -> dict:
-    """Total cost across a reseller's domains + cost per positive-sentiment lead
-    across every workspace those domains' sender accounts serve.
+def reseller_cost_report(reseller: str, *, months: Optional[int] = None) -> dict:
+    """Cost across a reseller's domains + cost per positive-sentiment lead,
+    reported both all-time and per-month (or over a custom N-month window).
 
     Approximate when a workspace mixes accounts from multiple resellers --
     that workspace's positive-lead count gets attributed in full to each
@@ -676,12 +764,11 @@ def reseller_cost_report(reseller: str) -> dict:
     conn = get_conn()
     try:
         domains = conn.execute(
-            "SELECT domain, domain_cost FROM sender_domains WHERE reseller = ?", (reseller,)
+            "SELECT domain, domain_cost, created_at FROM sender_domains WHERE reseller = ?", (reseller,)
         ).fetchall()
         if not domains:
             return {"status": "error", "error": f"no domains found for reseller: {reseller}"}
         domain_list = [d["domain"] for d in domains]
-        total_cost = sum(d["domain_cost"] or 0 for d in domains)
 
         placeholders = ", ".join("?" for _ in domain_list)
         ws_rows = conn.execute(
@@ -692,16 +779,35 @@ def reseller_cost_report(reseller: str) -> dict:
                 WHERE sa.email_domain IN ({placeholders})""",
             domain_list,
         ).fetchall()
+        ws_ids = [w["id"] for w in ws_rows]
 
-        positive_count = 0
-        if ws_rows:
-            ws_ids = [w["id"] for w in ws_rows]
-            ws_placeholders = ", ".join("?" for _ in ws_ids)
-            positive_count = conn.execute(
-                f"""SELECT COUNT(*) FROM workspace_leads
-                    WHERE workspace_id IN ({ws_placeholders}) AND lower(current_status_sentiment) = 'positive'""",
-                ws_ids,
-            ).fetchone()[0]
+        window_months = months if months is not None else 1
+        results = {}
+        for label, m in (("all_time", None), ("windowed", window_months)):
+            if m is None:
+                total_cost = sum((d["domain_cost"] or 0) * _months_elapsed(d["created_at"]) for d in domains)
+            else:
+                total_cost = sum((d["domain_cost"] or 0) * m for d in domains)
+            positive_count = 0
+            if ws_ids:
+                clause, params = _positive_lead_count_sql(m)
+                ws_placeholders = ", ".join("?" for _ in ws_ids)
+                positive_count = conn.execute(
+                    f"""SELECT COUNT(*) FROM workspace_leads
+                        WHERE workspace_id IN ({ws_placeholders})
+                          AND lower(current_status_sentiment) = 'positive'{clause}""",
+                    ws_ids + params,
+                ).fetchone()[0]
+            entry = {
+                "total_cost": round(total_cost, 2),
+                "positive_sentiment_leads": positive_count,
+                "cost_per_positive": (
+                    round(total_cost / positive_count, 2) if positive_count else None
+                ),
+            }
+            if label == "windowed":
+                entry["months"] = window_months
+            results[label] = entry
     finally:
         conn.close()
 
@@ -709,8 +815,6 @@ def reseller_cost_report(reseller: str) -> dict:
         "status": "ok",
         "reseller": reseller,
         "domains": domain_list,
-        "total_cost": round(total_cost, 2),
         "workspaces_served": sorted(w["slug"] for w in ws_rows),
-        "positive_sentiment_leads": positive_count,
-        "cost_per_positive": round(total_cost / positive_count, 2) if positive_count else None,
+        **results,
     }

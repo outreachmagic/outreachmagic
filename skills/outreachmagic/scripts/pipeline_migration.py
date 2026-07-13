@@ -715,10 +715,15 @@ def migrate_db(conn=None):
             reseller        TEXT,
             domain_cost     REAL,
             currency        TEXT NOT NULL DEFAULT 'USD',
+            notes           TEXT,
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
         );
     """)
+    try:
+        conn.execute("ALTER TABLE sender_domains ADD COLUMN notes TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Self-heal pre-existing lead_emails duplicates (case/whitespace variants
     # of a lead's own primary email, or repeated inserts of the same email)

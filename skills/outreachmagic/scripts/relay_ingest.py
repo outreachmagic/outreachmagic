@@ -729,6 +729,7 @@ def ingest_relay_event(
             ws_slug_map=ws_slug_map,
             defer_activity_refresh=defer_activity_refresh,
             activity_refresh_pairs=activity_refresh_pairs,
+            phase_timer=phase_timer,
         )
 
     dedupe_key = relay_dedupe_key(event)

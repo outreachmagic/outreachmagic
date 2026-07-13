@@ -628,6 +628,7 @@ def ingest_agent_entry(
     ws_slug_map: Optional[dict[str, str]] = None,
     defer_activity_refresh: bool = False,
     activity_refresh_pairs: Optional[set[tuple[int, str]]] = None,
+    phase_timer: Optional[dict[str, float]] = None,
 ) -> Optional[int]:
     """Replay an agent-originated mutation from another client during pull."""
     from pipeline import (
@@ -730,26 +731,29 @@ def ingest_agent_entry(
                 conn.close()
                 conn = None
         elif action == "lead_core_update":
-            lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
-            if not lead_id:
-                if own_conn:
-                    conn.close()
-                    conn = None
-                result = resolve_lead_from_agent_sync(
-                    entity_key, payload, conn=None if own_conn else pull_conn,
-                )
-                if result.get("status") == "error":
-                    _record_mark(dedupe_key, None)
-                    return None
-                lead_id = result.get("id")
-                if not own_conn:
-                    conn = pull_conn
+            with _phase("agent_lead_core_resolve", phase_timer):
+                lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
+                if not lead_id:
+                    if own_conn:
+                        conn.close()
+                        conn = None
+                    result = resolve_lead_from_agent_sync(
+                        entity_key, payload, conn=None if own_conn else pull_conn,
+                    )
+                    if result.get("status") == "error":
+                        _record_mark(dedupe_key, None)
+                        return None
+                    lead_id = result.get("id")
+                    if not own_conn:
+                        conn = pull_conn
             if lead_id:
-                apply_agent_lead_core_payload(
-                    lead_id, payload, org_id=org_id, entity_key=entity_key, conn=conn,
-                )
+                with _phase("agent_lead_core_apply", phase_timer):
+                    apply_agent_lead_core_payload(
+                        lead_id, payload, org_id=org_id, entity_key=entity_key, conn=conn,
+                    )
             if own_conn and conn is not None:
-                conn.commit()
+                with _phase("commit", phase_timer):
+                    conn.commit()
                 conn.close()
                 conn = None
         elif action == "lead_workspace_update":
@@ -768,26 +772,29 @@ def ingest_agent_entry(
                     conn = None
                 _record_mark(dedupe_key, None)
                 return None
-            lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
-            if not lead_id:
-                if own_conn:
-                    conn.close()
-                    conn = None
-                result = resolve_lead_from_agent_sync(
-                    entity_key, {}, conn=None if own_conn else pull_conn,
-                )
-                if result.get("status") == "error":
-                    _record_mark(dedupe_key, None)
-                    return None
-                lead_id = result.get("id")
-                if not own_conn:
-                    conn = pull_conn
+            with _phase("agent_lead_ws_resolve", phase_timer):
+                lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
+                if not lead_id:
+                    if own_conn:
+                        conn.close()
+                        conn = None
+                    result = resolve_lead_from_agent_sync(
+                        entity_key, {}, conn=None if own_conn else pull_conn,
+                    )
+                    if result.get("status") == "error":
+                        _record_mark(dedupe_key, None)
+                        return None
+                    lead_id = result.get("id")
+                    if not own_conn:
+                        conn = pull_conn
             if lead_id:
-                apply_agent_lead_workspace_payload(
-                    lead_id, payload, org_id=org_id, workspace_id=workspace_id, conn=conn,
-                )
+                with _phase("agent_lead_ws_apply", phase_timer):
+                    apply_agent_lead_workspace_payload(
+                        lead_id, payload, org_id=org_id, workspace_id=workspace_id, conn=conn,
+                    )
             if own_conn and conn is not None:
-                conn.commit()
+                with _phase("commit", phase_timer):
+                    conn.commit()
                 conn.close()
                 conn = None
         else:
@@ -830,25 +837,26 @@ def ingest_agent_entry(
                         conn = None
                     _record_mark(dedupe_key, None)
                     return None
-                lead_id = find_lead_by_identifier(conn, entity_key)
-                if not lead_id and entity_key:
-                    bootstrap_payload = _agent_sync_payload_from_entity_key(
-                        entity_key, payload,
-                    )
-                    if own_conn:
-                        conn.close()
-                        conn = None
-                    result = resolve_lead_from_agent_sync(
-                        entity_key,
-                        bootstrap_payload,
-                        conn=None if own_conn else pull_conn,
-                    )
-                    if result.get("status") == "error":
-                        _record_mark(dedupe_key, None)
-                        return None
-                    lead_id = result.get("id")
-                    if not own_conn:
-                        conn = pull_conn
+                with _phase("agent_event_resolve", phase_timer):
+                    lead_id = find_lead_by_identifier(conn, entity_key)
+                    if not lead_id and entity_key:
+                        bootstrap_payload = _agent_sync_payload_from_entity_key(
+                            entity_key, payload,
+                        )
+                        if own_conn:
+                            conn.close()
+                            conn = None
+                        result = resolve_lead_from_agent_sync(
+                            entity_key,
+                            bootstrap_payload,
+                            conn=None if own_conn else pull_conn,
+                        )
+                        if result.get("status") == "error":
+                            _record_mark(dedupe_key, None)
+                            return None
+                        lead_id = result.get("id")
+                        if not own_conn:
+                            conn = pull_conn
                 if own_conn and conn is not None:
                     conn.close()
                     conn = None
@@ -866,52 +874,54 @@ def ingest_agent_entry(
                     sender = payload.get("sender")
                     log_conn = conn if not own_conn else None
                     local_type = payload.get("event_type", "email_sent")
-                    log_event(
-                        lead_id,
-                        event_type=local_type,
-                        direction=payload.get("direction", "outbound"),
-                        channel=payload.get("channel", "email"),
-                        subject=payload.get("subject"),
-                        body_preview=payload.get("body_preview"),
-                        metadata=event_meta,
-                        campaign=campaign,
-                        event_at=event_at,
-                        sender=sender,
-                        conn=log_conn,
-                        commit=log_conn is None,
-                        refresh_activity=log_conn is None and not defer_activity_refresh,
-                    )
+                    with _phase("agent_event_log", phase_timer):
+                        log_event(
+                            lead_id,
+                            event_type=local_type,
+                            direction=payload.get("direction", "outbound"),
+                            channel=payload.get("channel", "email"),
+                            subject=payload.get("subject"),
+                            body_preview=payload.get("body_preview"),
+                            metadata=event_meta,
+                            campaign=campaign,
+                            event_at=event_at,
+                            sender=sender,
+                            conn=log_conn,
+                            commit=log_conn is None,
+                            refresh_activity=log_conn is None and not defer_activity_refresh,
+                        )
                     ws_conn = log_conn
                     ws_own = ws_conn is None
                     if ws_own:
                         ws_conn = get_conn()
                     try:
-                        ws_lead_id = upsert_workspace_lead(
-                            ws_conn, org_id, workspace_id, lead_id,
-                        )
-                        ws_payload = {
-                            "event": event_meta,
-                            "subject": payload.get("subject"),
-                            "body_preview": payload.get("body_preview"),
-                            "direction": payload.get("direction", "outbound"),
-                            "channel": payload.get("channel", "email"),
-                            "campaign_name": campaign,
-                        }
-                        append_workspace_event(
-                            ws_conn,
-                            org_id,
-                            workspace_id,
-                            lead_id,
-                            ws_lead_id,
-                            event_type=local_type,
-                            event_at=event_at or utc_now_for_storage(),
-                            source_platform="agent",
-                            idempotency_key=f"ws:{dedupe_key}",
-                            payload=ws_payload,
-                            external_event_id=str(relay_rid or ""),
-                        )
-                        if ws_own:
-                            ws_conn.commit()
+                        with _phase("agent_event_workspace", phase_timer):
+                            ws_lead_id = upsert_workspace_lead(
+                                ws_conn, org_id, workspace_id, lead_id,
+                            )
+                            ws_payload = {
+                                "event": event_meta,
+                                "subject": payload.get("subject"),
+                                "body_preview": payload.get("body_preview"),
+                                "direction": payload.get("direction", "outbound"),
+                                "channel": payload.get("channel", "email"),
+                                "campaign_name": campaign,
+                            }
+                            append_workspace_event(
+                                ws_conn,
+                                org_id,
+                                workspace_id,
+                                lead_id,
+                                ws_lead_id,
+                                event_type=local_type,
+                                event_at=event_at or utc_now_for_storage(),
+                                source_platform="agent",
+                                idempotency_key=f"ws:{dedupe_key}",
+                                payload=ws_payload,
+                                external_event_id=str(relay_rid or ""),
+                            )
+                            if ws_own:
+                                ws_conn.commit()
                     finally:
                         if ws_own:
                             ws_conn.close()

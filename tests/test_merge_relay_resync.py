@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import pipeline as om  # noqa: E402
+import pipeline as om
+from relay_ingest import relay_dedupe_hash  # noqa: E402
 from pipeline_update import set_last_sync, get_last_sync  # noqa: E402
 from relay_ingest import relay_bump_explained_clause, unsynced_lead_clause  # noqa: E402
 
@@ -44,12 +45,12 @@ def test_merge_survivor_pending_resync_despite_stale_relay_ingested_entry():
     # that happens in production when a pull and a dedup merge land in the
     # same wall-clock second.
     conn.execute(
-        "INSERT INTO relay_ingested (dedupe_key, lead_id, ingested_at) VALUES (?, ?, ?)",
-        ("relay:keep-test", keep_id, "2099-01-01 00:00:00"),
+        "INSERT INTO relay_ingested (dedupe_hash, lead_id, ingested_at) VALUES (?, ?, ?)",
+        (relay_dedupe_hash("relay:keep-test"), keep_id, "2099-01-01 00:00:00"),
     )
     conn.execute(
-        "INSERT INTO relay_ingested (dedupe_key, lead_id, ingested_at) VALUES (?, ?, ?)",
-        ("relay:merge-test", merge_id, "2099-01-01 00:00:00"),
+        "INSERT INTO relay_ingested (dedupe_hash, lead_id, ingested_at) VALUES (?, ?, ?)",
+        (relay_dedupe_hash("relay:merge-test"), merge_id, "2099-01-01 00:00:00"),
     )
     conn.commit()
     conn.close()

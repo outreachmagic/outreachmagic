@@ -596,6 +596,20 @@ def map_connection_event_type(envelope_event_type: str) -> str:
     return et
 
 
+def normalize_local_event_type(event_type: str) -> str:
+    """Canonical local event_type for a type name that is already local.
+
+    The webhook path normalizes aliases through resolve_event(). The agent-replay
+    path does not -- it takes event_type straight off the pushed payload, which is
+    how 'email_bounced' ended up in the events table alongside 'email_bounce',
+    splitting bounce counts across two names for the same thing. Unknown types pass
+    through untouched.
+    """
+    key = (event_type or "").strip()
+    entry = _GENERIC_EMAIL_MAP.get(key.lower())
+    return entry[0] if entry else key
+
+
 def resolve_event(platform: str, vendor_type: str, raw: Optional[dict] = None) -> ResolvedEvent:
     """Resolve vendor event_type to canonical local type, direction, and stage."""
     plat = (platform or "").strip().lower()

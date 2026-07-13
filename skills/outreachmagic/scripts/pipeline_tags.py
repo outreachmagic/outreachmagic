@@ -502,14 +502,22 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
     if campaign_name and str(campaign_name).strip():
         campaign_id = ensure_campaign(conn, str(campaign_name).strip(), lead_id)
     created = event_at or None
+    relay_id = meta.get("relay_id")
+    # ON CONFLICT against idx_events_relay_unique. relay_ingested is the primary
+    # dedupe, but it's a *separate* ledger: if it is ever lost or reset while
+    # events survives (a restore, a rebuild), the next pull silently re-ingests
+    # everything and doubles the table -- which is exactly what happened, to the
+    # tune of 17,363 duplicated relay events. The constraint makes that
+    # impossible; landing on it just means we already have the row.
     if created:
-        conn.execute(
+        cur = conn.execute(
             """INSERT INTO events (
                    lead_id, event_type, direction, channel, subject, body_preview,
                    metadata_json, campaign_id, sender, relay_id, created_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(relay_id) WHERE relay_id IS NOT NULL DO NOTHING""",
             (lead_id, event_type, direction, channel, subject, preview,
-             json.dumps(meta), campaign_id, sender, meta.get("relay_id"), created),
+             json.dumps(meta), campaign_id, sender, relay_id, created),
         )
         conn.execute(
             """UPDATE leads SET updated_at = ?, last_contact_at = ?
@@ -517,25 +525,38 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
             (created, created, lead_id, created),
         )
     else:
-        conn.execute(
+        cur = conn.execute(
             """INSERT INTO events (
                    lead_id, event_type, direction, channel, subject, body_preview,
                    metadata_json, campaign_id, sender, relay_id
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(relay_id) WHERE relay_id IS NOT NULL DO NOTHING""",
             (lead_id, event_type, direction, channel, subject, preview,
-             json.dumps(meta), campaign_id, sender, meta.get("relay_id")),
+             json.dumps(meta), campaign_id, sender, relay_id),
         )
         conn.execute(
             "UPDATE leads SET updated_at = datetime('now'), last_contact_at = datetime('now') WHERE id = ?",
             (lead_id,),
         )
-    event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    if cur.rowcount == 0 and relay_id is not None:
+        # Already had this relay event; reuse its row rather than reporting a new one.
+        row = conn.execute("SELECT id FROM events WHERE relay_id = ?", (relay_id,)).fetchone()
+        event_id = row["id"] if row else None
+    else:
+        event_id = cur.lastrowid
     if sender:
-        from pipeline_sender_accounts import ensure_sender_account, link_sender_account_to_workspace
+        from pipeline_sender_accounts import (
+            ensure_sender_account,
+            link_sender_account_to_workspace,
+            touch_sender_account_activity,
+        )
 
         sa_channel = "linkedin" if channel == "linkedin" else "email"
         sender_account_id = ensure_sender_account(conn, sender, channel=sa_channel)
         if sender_account_id:
+            touch_sender_account_activity(
+                conn, sender_account_id, direction=direction, event_at=created,
+            )
             for ws_row in conn.execute(
                 "SELECT workspace_id FROM workspace_leads WHERE lead_id = ?", (lead_id,)
             ).fetchall():

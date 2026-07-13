@@ -172,6 +172,7 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
         from relay_ingest import (
             ingest_relay_event,  # noqa: PLC0415
             mark_relay_ingested_many,
+            relay_dedupe_hash,
             relay_dedupe_key,
         )
 
@@ -195,7 +196,10 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
                     (existing_id, existing_id),
                 )
             for dedupe_key in dedupe_keys:
-                conn.execute("DELETE FROM relay_ingested WHERE dedupe_key = ?", (dedupe_key,))
+                conn.execute(
+                    "DELETE FROM relay_ingested WHERE dedupe_hash = ?",
+                    (relay_dedupe_hash(dedupe_key),),
+                )
             for ws_key in ws_keys:
                 conn.execute(
                     "DELETE FROM workspace_lead_events WHERE org_id = ? AND idempotency_key = ?",

@@ -1252,14 +1252,10 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
         on_batch_pushed=_on_batch_pushed,
     )
     if marked_event_ids:
+        from relay_ingest import mark_event_pushed_many
+
         conn = get_conn()
-        now_ts = datetime.now(timezone.utc).isoformat()
-        for i in range(0, len(marked_event_ids), 100):
-            for eid in marked_event_ids[i : i + 100]:
-                conn.execute(
-                    "INSERT OR IGNORE INTO relay_ingested (dedupe_key, ingested_at) VALUES (?, ?)",
-                    (f"event:{eid}", now_ts),
-                )
+        mark_event_pushed_many(conn, marked_event_ids)
         conn.commit()
         conn.close()
     result["events_marked_pushed"] = len(marked_event_ids)

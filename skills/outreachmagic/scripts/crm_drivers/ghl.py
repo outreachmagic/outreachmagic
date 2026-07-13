@@ -472,25 +472,22 @@ class GhlDriver:
             event_type = event.get("event_type", "")
             event_rowid = event.get("rowid")
 
-            payload_raw = event.get("payload_json") or "{}"
-            if isinstance(payload_raw, str):
-                try:
-                    payload = json.loads(payload_raw)
-                except (json.JSONDecodeError, TypeError):
-                    payload = {}
-            else:
-                payload = payload_raw
-            for k, v in payload.items():
-                if k not in event:
-                    event[k] = v
-
-            # Extract nested fields from payload.event (sender, body)
-            inner_event = payload.get("event") or {}
-            if isinstance(inner_event, dict):
-                for key in ("sender", "body"):
-                    val = inner_event.get(key)
-                    if val and not event.get(key):
-                        event[key] = val
+            # Content comes from the joined `events` row (see
+            # collect_pending_events). metadata_json is the same blob that used to
+            # be copied into workspace_lead_events.payload_json -- read it from the
+            # one place it lives now.
+            meta_raw = event.get("metadata_json") or "{}"
+            try:
+                meta = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            event.setdefault("event", meta)
+            for key in ("sender", "body"):
+                val = meta.get(key)
+                if val and not event.get(key):
+                    event[key] = val
 
             try:
                 if event_type in ("email_sent", "email_reply", "reply"):

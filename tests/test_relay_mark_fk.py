@@ -38,12 +38,19 @@ def test_mark_relay_ingested_many_after_merge_in_transaction():
             commit=True,
         )
         rows = conn.execute(
-            "SELECT dedupe_key, lead_id FROM relay_ingested ORDER BY dedupe_key",
+            "SELECT dedupe_hash, lead_id FROM relay_ingested",
         ).fetchall()
     finally:
         conn.close()
 
-    by_key = {row["dedupe_key"]: row["lead_id"] for row in rows}
+    # relay_ingested stores a hash of the key, not the key itself.
+    from relay_ingest import relay_dedupe_hash
+
+    by_hash = {row["dedupe_hash"]: row["lead_id"] for row in rows}
+    by_key = {
+        key: by_hash.get(relay_dedupe_hash(key))
+        for key in ("relay:keep-test", "relay:merge-test")
+    }
     assert by_key["relay:keep-test"] == keep_id
     assert by_key["relay:merge-test"] == keep_id
 

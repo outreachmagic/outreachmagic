@@ -13,7 +13,7 @@ import csv
 import json
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from campaign_stats import reply_event_sql_condition
@@ -123,7 +123,7 @@ def parse_sender_accounts_csv(path: str) -> list[dict]:
 def upsert_sender_account(
     conn: sqlite3.Connection, row: dict, org_id: str = DEFAULT_ORG_ID, channel: str = "email",
 ) -> int:
-    email = row["email"]
+    email = normalize_sender_identity(row["email"])
     columns = [c for c in _CSV_TO_COLUMN.values() if c in row] + (["tags_json"] if "tags_json" in row else [])
     columns = sorted(set(columns))
     existing = conn.execute(
@@ -170,6 +170,27 @@ def _classify_and_store_identifier(conn: sqlite3.Connection, sender_account_id: 
     )
 
 
+def normalize_sender_identity(identifier: Optional[str]) -> str:
+    """Canonical form of the sender_accounts.email identity key.
+
+    `email` is the identity column, not necessarily an address -- a LinkedIn seat
+    has no email, so its profile URL goes here -- and (org_id, email) is the unique
+    key on the table.
+
+    Three code paths used to normalize it three different ways: the relay entity_key
+    lowercased it, ensure_sender_account only stripped it, and
+    find_sender_account_id_by_email forced lowercase. So a sender arriving with any
+    uppercase created a *second* row, which the third path could then never find.
+    One rule, applied on every read and write.
+    """
+    return (identifier or "").strip().lower()
+
+
+def infer_sender_channel(identifier: str) -> str:
+    """Guess a seat's channel from its identity, for paths that aren't told one."""
+    return "email" if "@" in (identifier or "") else "linkedin"
+
+
 def ensure_sender_account(
     conn: sqlite3.Connection, identifier: str, channel: str = "email", org_id: str = DEFAULT_ORG_ID,
 ) -> Optional[int]:
@@ -180,21 +201,79 @@ def ensure_sender_account(
     before (this is the primary creation path for Prosp/LinkedIn accounts,
     which have no CSV export).
     """
-    identifier = (identifier or "").strip()
-    if not identifier:
+    raw = (identifier or "").strip()
+    key = normalize_sender_identity(raw)
+    if not key:
         return None
     conn.execute(
         "INSERT OR IGNORE INTO sender_accounts (org_id, email, channel) VALUES (?, ?, ?)",
-        (org_id, identifier, channel),
+        (org_id, key, channel),
     )
     row = conn.execute(
-        "SELECT id FROM sender_accounts WHERE org_id = ? AND email = ?", (org_id, identifier)
+        "SELECT id FROM sender_accounts WHERE org_id = ? AND email = ?", (org_id, key)
     ).fetchone()
     if not row:
         return None
     sender_account_id = int(row["id"])
-    _classify_and_store_identifier(conn, sender_account_id, identifier)
+    # Classify from the raw identifier, not the lowercased key: Sales Navigator
+    # tokens (ACwAA...) are case-sensitive.
+    _classify_and_store_identifier(conn, sender_account_id, raw)
     return sender_account_id
+
+
+def touch_sender_account_activity(
+    conn: sqlite3.Connection,
+    sender_account_id: int,
+    *,
+    direction: str,
+    event_at: Optional[str] = None,
+) -> None:
+    """Advance a sender's last outbound/inbound timestamp for one event.
+
+    events.sender is always one of our own mailboxes, on inbound as well as
+    outbound -- an inbound reply records the seat that *received* it -- so
+    direction alone decides which column moves.
+
+    Only ever moves forward. A pull replays history in relay order, not
+    chronological order, so a plain assignment would let an old event overwrite a
+    newer timestamp; MAX() makes the write order irrelevant.
+    """
+    col = "last_inbound_at" if direction == "inbound" else "last_outbound_at"
+    ts = event_at or datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        f"""UPDATE sender_accounts
+               SET {col} = MAX(COALESCE({col}, ''), ?),
+                   updated_at = datetime('now')
+             WHERE id = ? AND COALESCE({col}, '') < ?""",
+        (ts, sender_account_id, ts),
+    )
+
+
+def sender_domain_activity(
+    conn: sqlite3.Connection,
+    org_id: str = DEFAULT_ORG_ID,
+) -> list[dict]:
+    """Per-domain send/reply activity, rolled up from the sender accounts on it.
+
+    Deliberately a rollup rather than columns on sender_domains: the domain's
+    activity *is* its senders' activity, and a second copy would be one more thing
+    to keep in step. idx_sender_accounts_email_domain makes the GROUP BY cheap.
+
+    LinkedIn seats have a NULL email_domain (they have no domain) and are excluded.
+    """
+    rows = conn.execute(
+        """SELECT email_domain AS domain,
+                  COUNT(*) AS senders,
+                  MAX(last_outbound_at) AS last_outbound_at,
+                  MAX(last_inbound_at)  AS last_inbound_at,
+                  SUM(CASE WHEN last_outbound_at IS NOT NULL THEN 1 ELSE 0 END) AS senders_active
+             FROM sender_accounts
+            WHERE org_id = ? AND email_domain IS NOT NULL AND email_domain != ''
+            GROUP BY email_domain
+            ORDER BY MAX(last_outbound_at) DESC NULLS LAST""",
+        (org_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def link_sender_account_to_workspace(conn: sqlite3.Connection, workspace_id: str, sender_account_id: int) -> None:
@@ -219,7 +298,7 @@ def _link_workspace(conn: sqlite3.Connection, workspace_id: str, sender_account_
 def find_sender_account_id_by_email(conn: sqlite3.Connection, email: str, org_id: str = DEFAULT_ORG_ID) -> Optional[int]:
     row = conn.execute(
         "SELECT id FROM sender_accounts WHERE org_id = ? AND email = ?",
-        (org_id, (email or "").strip().lower()),
+        (org_id, normalize_sender_identity(email)),
     ).fetchone()
     return int(row["id"]) if row else None
 
@@ -329,7 +408,7 @@ def sender_account_entity_key(conn: sqlite3.Connection, sender_account_id: int) 
     row = conn.execute("SELECT email FROM sender_accounts WHERE id = ?", (sender_account_id,)).fetchone()
     if not row or not row["email"]:
         return None
-    return f"sender_account:{row['email'].strip().lower()}"
+    return f"sender_account:{normalize_sender_identity(row['email'])}"
 
 
 def resolve_sender_account_from_entity_key(
@@ -337,7 +416,7 @@ def resolve_sender_account_from_entity_key(
 ) -> Optional[int]:
     if not entity_key.startswith("sender_account:"):
         return None
-    email = entity_key.split(":", 1)[1]
+    email = normalize_sender_identity(entity_key.split(":", 1)[1])
     if not email:
         return None
     row = conn.execute(
@@ -345,8 +424,12 @@ def resolve_sender_account_from_entity_key(
     ).fetchone()
     if row:
         return int(row["id"])
+    # The entity_key carries no channel, and the column defaults to 'email' -- which
+    # would label a relay-created LinkedIn seat as an email one. Infer it from the
+    # identity instead (a LinkedIn seat's identity is a profile URL, not an address).
     cur = conn.execute(
-        "INSERT INTO sender_accounts (org_id, email) VALUES (?, ?)", (org_id, email)
+        "INSERT INTO sender_accounts (org_id, email, channel) VALUES (?, ?, ?)",
+        (org_id, email, infer_sender_channel(email)),
     )
     return int(cur.lastrowid)
 

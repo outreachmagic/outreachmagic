@@ -190,7 +190,7 @@ class TimestampSyncTests(unittest.TestCase):
         self.assertEqual(result.get("events_marked_pushed"), 0)
         conn = om.get_conn()
         row = conn.execute(
-            "SELECT 1 FROM relay_ingested WHERE dedupe_key = ?", (f"event:{eid}",)
+            "SELECT 1 FROM event_push_log WHERE event_id = ?", (eid,)
         ).fetchone()
         conn.close()
         self.assertIsNone(row)

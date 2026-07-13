@@ -107,7 +107,12 @@ from lead_sync import (
     resolve_lead_from_agent_sync,
 )
 from normalize import normalize_linkedin
-from platform_registry import platform_map_json, PLATFORM_LABELS, PLATFORM_SETUP_HINTS
+from platform_registry import (
+    platform_map_json,
+    normalize_local_event_type,
+    PLATFORM_LABELS,
+    PLATFORM_SETUP_HINTS,
+)
 import connections_cloud
 import quarantine_resolutions as qres
 import routing_cloud
@@ -881,9 +886,14 @@ def ingest_agent_entry(
                         event_meta["campaign"] = str(campaign).strip()
                     sender = payload.get("sender")
                     log_conn = conn if not own_conn else None
-                    local_type = payload.get("event_type", "email_sent")
+                    # Normalize aliases the same way the webhook path does --
+                    # otherwise a client pushing "email_bounced" lands a second
+                    # spelling of "email_bounce" in events.event_type.
+                    local_type = normalize_local_event_type(
+                        payload.get("event_type", "email_sent")
+                    )
                     with _phase("agent_event_log", phase_timer):
-                        log_event(
+                        logged_event_id = log_event(
                             lead_id,
                             event_type=local_type,
                             direction=payload.get("direction", "outbound"),
@@ -904,29 +914,20 @@ def ingest_agent_entry(
                         ws_conn = get_conn()
                     try:
                         with _phase("agent_event_workspace", phase_timer):
-                            ws_lead_id = upsert_workspace_lead(
+                            upsert_workspace_lead(
                                 ws_conn, org_id, workspace_id, lead_id,
                             )
-                            ws_payload = {
-                                "event": event_meta,
-                                "subject": payload.get("subject"),
-                                "body_preview": payload.get("body_preview"),
-                                "direction": payload.get("direction", "outbound"),
-                                "channel": payload.get("channel", "email"),
-                                "campaign_name": campaign,
-                            }
+                            # No payload -- log_event above wrote the content to
+                            # `events` and logged_event_id points at it.
                             append_workspace_event(
                                 ws_conn,
                                 org_id,
                                 workspace_id,
                                 lead_id,
-                                ws_lead_id,
+                                event_id=logged_event_id,
                                 event_type=local_type,
                                 event_at=event_at or utc_now_for_storage(),
-                                source_platform="agent",
                                 idempotency_key=f"ws:{dedupe_key}",
-                                payload=ws_payload,
-                                external_event_id=str(relay_rid or ""),
                             )
                             if ws_own:
                                 ws_conn.commit()

@@ -632,10 +632,10 @@ def upsert_all_identities(
     # insert count comes up short (i.e. something was already there).
     cur = conn.executemany(
         """INSERT OR IGNORE INTO lead_identities (
-               id, org_id, lead_id, identity_type, identity_value_normalized,
+               org_id, lead_id, identity_type, identity_value_normalized,
                source, is_verified, created_at
            ) VALUES (
-               lower(hex(randomblob(16))), ?, ?, ?, ?, ?, 0, datetime('now')
+               ?, ?, ?, ?, ?, 0, datetime('now')
            )""",
         [(org_id, lead_id, t, v, source) for t, v in rows],
     )
@@ -1273,10 +1273,10 @@ def upsert_identity_alias(
         )
     conn.execute(
         """INSERT OR IGNORE INTO lead_identities (
-               id, org_id, lead_id, identity_type, identity_value_normalized,
+               org_id, lead_id, identity_type, identity_value_normalized,
                source, is_verified, created_at
            ) VALUES (
-               lower(hex(randomblob(16))), ?, ?, ?, ?, ?, 0, datetime('now')
+               ?, ?, ?, ?, ?, 0, datetime('now')
            )""",
         (org_id, lead_id, identity_type, value_normalized, source),
     )
@@ -1414,39 +1414,33 @@ def append_workspace_event(
     org_id: str,
     workspace_id: str,
     lead_id: int,
-    workspace_lead_id: str,
+    workspace_lead_id: str = "",
     *,
     event_type: str,
     event_at: str,
-    source_platform: str,
     idempotency_key: str,
-    payload: dict,
-    external_event_id: Optional[str] = None,
-) -> Optional[str]:
-    event_id = f"wse_{hashlib.sha256(idempotency_key.encode()).hexdigest()[:32]}"
+    event_id: Optional[int] = None,
+) -> Optional[int]:
+    """Index an event into a workspace: inbound dedupe + the CRM age filter/cursor.
+
+    `event_id` points at the `events` row that holds the content. This table stores
+    no payload of its own -- it used to keep a full copy of events.metadata_json,
+    body and all, that nothing ever read. Join `events` when you need content.
+
+    `workspace_lead_id` is accepted and ignored (the column it fed was never read).
+
+    Returns the new rowid, or None when the event was already recorded.
+    """
     cur = conn.execute(
         """INSERT OR IGNORE INTO workspace_lead_events (
-               id, org_id, workspace_id, lead_id, workspace_lead_id,
-               event_type, event_at, source_platform, external_event_id,
-               idempotency_key, payload_json, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-        (
-            event_id,
-            org_id,
-            workspace_id,
-            lead_id,
-            workspace_lead_id,
-            event_type,
-            event_at,
-            source_platform,
-            external_event_id,
-            idempotency_key,
-            json.dumps(payload),
-        ),
+               org_id, workspace_id, lead_id, event_id, event_type, event_at,
+               idempotency_key, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+        (org_id, workspace_id, lead_id, event_id, event_type, event_at, idempotency_key),
     )
     if cur.rowcount == 0:
         return None
-    return event_id
+    return int(cur.lastrowid)
 
 
 def upsert_linkedin_status(

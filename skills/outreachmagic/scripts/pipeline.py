@@ -915,6 +915,12 @@ def merge_leads(
             "SELECT COUNT(*) FROM events WHERE lead_id = ?", (merge_id,)
         ).fetchone()[0]
         conn.execute("UPDATE events SET lead_id = ? WHERE lead_id = ?", (keep_id, merge_id))
+        # Follow events, or the merged lead's rows get cascade-deleted with it and
+        # the CRM activity filter stops seeing history the events table still has.
+        conn.execute(
+            "UPDATE workspace_lead_events SET lead_id = ? WHERE lead_id = ?",
+            (keep_id, merge_id),
+        )
 
         for row in conn.execute(
             "SELECT campaign_id FROM campaign_leads WHERE lead_id = ?", (merge_id,)
@@ -940,10 +946,8 @@ def merge_leads(
                         (row["workspace_id"], keep_id),
                     ).fetchone()
                     if existing:
-                        conn.execute(
-                            "UPDATE workspace_lead_events SET workspace_lead_id = ? WHERE workspace_lead_id = ?",
-                            (existing["id"], row["id"]),
-                        )
+                        # workspace_lead_events no longer carries a workspace_lead_id;
+                        # its lead_id is remapped with the other event tables below.
                         conn.execute("DELETE FROM workspace_leads WHERE id = ?", (row["id"],))
                     else:
                         conn.execute(

@@ -107,6 +107,34 @@ def _repair_lead_provider_attempts_schema(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE lead_provider_attempts_malformed_backup")
 
 
+def _backfill_sender_account_activity(conn: sqlite3.Connection) -> None:
+    """Seed last_outbound_at / last_inbound_at from existing event history.
+
+    One pass over events, once -- log_event maintains the columns from then on.
+    Guarded by a migration flag because migrate_db runs on every init_db and this
+    scans the whole events table.
+    """
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'sender_activity_backfill'"
+    ).fetchone():
+        return
+    conn.execute("""
+        WITH agg AS (
+            SELECT lower(sender) AS s,
+                   MAX(CASE WHEN direction = 'outbound' THEN created_at END) AS ob,
+                   MAX(CASE WHEN direction = 'inbound'  THEN created_at END) AS ib
+              FROM events
+             WHERE sender IS NOT NULL AND trim(sender) != ''
+             GROUP BY lower(sender)
+        )
+        UPDATE sender_accounts SET
+            last_outbound_at = (SELECT ob FROM agg WHERE agg.s = lower(sender_accounts.email)),
+            last_inbound_at  = (SELECT ib FROM agg WHERE agg.s = lower(sender_accounts.email))
+         WHERE lower(email) IN (SELECT s FROM agg)
+    """)
+    conn.execute("INSERT INTO migration_flags (name) VALUES ('sender_activity_backfill')")
+
+
 def migrate_db(conn=None):
     """Apply incremental schema changes and backfill derived data."""
     own_conn = conn is None
@@ -153,7 +181,7 @@ def migrate_db(conn=None):
             UNIQUE (org_id, slug)
         );
         CREATE TABLE IF NOT EXISTS lead_identities (
-            id TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             org_id TEXT NOT NULL,
             lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
             identity_type TEXT NOT NULL,
@@ -179,18 +207,17 @@ def migrate_db(conn=None):
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE (workspace_id, lead_id)
         );
+        -- Must stay in step with schema.py: no payload_json here, content lives
+        -- in `events` and is reached via event_id.
         CREATE TABLE IF NOT EXISTS workspace_lead_events (
-            id TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             org_id TEXT NOT NULL,
             workspace_id TEXT NOT NULL,
             lead_id INTEGER NOT NULL,
-            workspace_lead_id TEXT,
+            event_id INTEGER,
             event_type TEXT NOT NULL,
             event_at TEXT NOT NULL,
-            source_platform TEXT NOT NULL,
-            external_event_id TEXT,
             idempotency_key TEXT NOT NULL,
-            payload_json TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE (org_id, idempotency_key)
         );
@@ -699,11 +726,23 @@ def migrate_db(conn=None):
         ("linkedin_url", "TEXT"),
         ("linkedin_sales_nav_id", "TEXT"),
         ("email_domain", "TEXT"),
+        # Last time this sender sent, and last time anything came back to it.
+        # Maintained by log_event; see touch_sender_account_activity.
+        ("last_outbound_at", "TEXT"),
+        ("last_inbound_at", "TEXT"),
     ):
         try:
             conn.execute(f"ALTER TABLE sender_accounts ADD COLUMN {_col} {_type}")
         except sqlite3.OperationalError:
             pass
+    # Domain-level activity is a rollup over these, not a second copy of them --
+    # see sender_domain_activity(). idx_sender_accounts_email_domain (below) makes
+    # the GROUP BY cheap, so sender_domains stays free of duplicated state.
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_sender_accounts_activity
+           ON sender_accounts(last_outbound_at, last_inbound_at)"""
+    )
+    _backfill_sender_account_activity(conn)
     conn.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_sender_accounts_linkedin_url_unique
            ON sender_accounts(org_id, linkedin_url) WHERE linkedin_url IS NOT NULL"""
@@ -860,22 +899,22 @@ def backfill_workspace_routing(conn: sqlite3.Connection):
         if lead["email"]:
             conn.execute(
                 """INSERT OR IGNORE INTO lead_identities (
-                       id, org_id, lead_id, identity_type, identity_value_normalized,
+                       org_id, lead_id, identity_type, identity_value_normalized,
                        source, is_verified, created_at
                    ) VALUES (
-                       ?, ?, ?, 'email', ?, 'backfill', 1, datetime('now')
+                       ?, ?, 'email', ?, 'backfill', 1, datetime('now')
                    )""",
-                (f"id_email_{lid}", DEFAULT_ORG_ID, lid, lead["email"]),
+                (DEFAULT_ORG_ID, lid, lead["email"]),
             )
         if lead["linkedin_url"]:
             conn.execute(
                 """INSERT OR IGNORE INTO lead_identities (
-                       id, org_id, lead_id, identity_type, identity_value_normalized,
+                       org_id, lead_id, identity_type, identity_value_normalized,
                        source, is_verified, created_at
                    ) VALUES (
-                       ?, ?, ?, 'linkedin_url', ?, 'backfill', 1, datetime('now')
+                       ?, ?, 'linkedin_url', ?, 'backfill', 1, datetime('now')
                    )""",
-                (f"id_li_{lid}", DEFAULT_ORG_ID, lid, lead["linkedin_url"]),
+                (DEFAULT_ORG_ID, lid, lead["linkedin_url"]),
             )
 
     if config.mode == WORKSPACE_ROUTING_MULTI:

@@ -121,7 +121,7 @@ class AgentSyncTimestampTests(unittest.TestCase):
             event_at="2026-04-01T12:00:00Z",
         )
         conn = om.get_conn()
-        conn.execute("DELETE FROM relay_ingested WHERE dedupe_key LIKE 'event:%'")
+        conn.execute("DELETE FROM event_push_log")
         conn.commit()
         conn.close()
 

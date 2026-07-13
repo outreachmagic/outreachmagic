@@ -533,8 +533,8 @@ def _skip_duplicate_event(
         pending_marks.append((dedupe_key, None))
     elif pull_conn is not None:
         pull_conn.execute(
-            "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
-            (dedupe_key, None),
+            "INSERT OR IGNORE INTO relay_ingested (dedupe_hash, lead_id) VALUES (?, ?)",
+            (relay_dedupe_hash(dedupe_key), None),
         )
     else:
         # mark_relay_ingested() opens its own connection. If the caller has
@@ -553,22 +553,50 @@ def _skip_duplicate_event(
         )
 
 
+def relay_dedupe_hash(dedupe_key: str) -> bytes:
+    """Map a relay dedupe key to the 16-byte digest stored in relay_ingested.
+
+    The keys run long (the agent ones average 129 bytes) and there are ~800k of
+    them, so storing the text cost ~146 MB across the table and its PK index. They
+    are only ever tested for exact equality and are always built here in Python,
+    so nothing needs the original string back. 128 bits leaves collision risk
+    negligible at this scale.
+    """
+    return hashlib.blake2b(dedupe_key.encode("utf-8"), digest_size=16).digest()
+
+
 def relay_already_ingested(dedupe_key: str) -> bool:
     conn = get_conn()
-    row = conn.execute("SELECT 1 FROM relay_ingested WHERE dedupe_key = ?", (dedupe_key,)).fetchone()
+    row = conn.execute(
+        "SELECT 1 FROM relay_ingested WHERE dedupe_hash = ?",
+        (relay_dedupe_hash(dedupe_key),),
+    ).fetchone()
     conn.close()
     return row is not None
+
+
+def mark_event_pushed_many(
+    conn: sqlite3.Connection,
+    event_ids: list[int],
+) -> None:
+    """Record that these events have been pushed to the relay."""
+    if not event_ids:
+        return
+    conn.executemany(
+        "INSERT OR IGNORE INTO event_push_log (event_id) VALUES (?)",
+        [(int(eid),) for eid in event_ids],
+    )
 
 
 def unsynced_event_clause(event_alias: str = "e") -> str:
     """SQL fragment: true when an events row hasn't been pushed to (or pulled from) relay yet.
 
-    Excludes events whose dedupe key is already in relay_ingested, and events
-    sourced from relay/agent_sync in the first place (those are never "local-only").
-    Uses NOT EXISTS against relay_ingested.dedupe_key (its PK), so it's index-backed.
+    Excludes events already recorded in event_push_log, and events sourced from
+    relay/agent_sync in the first place (those are never "local-only"). The
+    anti-join is on an integer primary key, so it's index-backed.
     """
     return f"""NOT EXISTS (
-        SELECT 1 FROM relay_ingested r WHERE r.dedupe_key = 'event:' || {event_alias}.id
+        SELECT 1 FROM event_push_log p WHERE p.event_id = {event_alias}.id
     )
     AND {event_alias}.metadata_json NOT LIKE '%"source": "relay"%'
     AND {event_alias}.metadata_json NOT LIKE '%"source":"relay"%'
@@ -613,23 +641,29 @@ def prefetch_relay_ingested(
     dedupe_keys: list[str],
     conn: Optional[sqlite3.Connection] = None,
 ) -> set[str]:
-    """Return which dedupe keys already exist (batched IN lookup for pull pages)."""
+    """Return which dedupe keys already exist (batched IN lookup for pull pages).
+
+    Takes and returns the original keys -- the hashing is an internal detail of
+    the table, so callers keep comparing against the keys they built.
+    """
     if not dedupe_keys:
         return set()
     unique = list(dict.fromkeys(dedupe_keys))
+    by_hash = {relay_dedupe_hash(key): key for key in unique}
+    hashes = list(by_hash)
     found: set[str] = set()
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
     try:
-        for i in range(0, len(unique), RELAY_INGESTED_PREFETCH_CHUNK):
-            chunk = unique[i : i + RELAY_INGESTED_PREFETCH_CHUNK]
+        for i in range(0, len(hashes), RELAY_INGESTED_PREFETCH_CHUNK):
+            chunk = hashes[i : i + RELAY_INGESTED_PREFETCH_CHUNK]
             placeholders = ",".join("?" for _ in chunk)
             rows = conn.execute(
-                f"SELECT dedupe_key FROM relay_ingested WHERE dedupe_key IN ({placeholders})",
+                f"SELECT dedupe_hash FROM relay_ingested WHERE dedupe_hash IN ({placeholders})",
                 chunk,
             ).fetchall()
-            found.update(row[0] for row in rows)
+            found.update(by_hash[row[0]] for row in rows)
     finally:
         if own_conn and conn is not None:
             conn.close()
@@ -687,8 +721,8 @@ def mark_relay_ingested(dedupe_key: str, lead_id: Optional[int]) -> None:
     conn = get_conn()
     safe_lead_id = _coerce_relay_mark_lead_id(conn, lead_id)
     conn.execute(
-        "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
-        (dedupe_key, safe_lead_id),
+        "INSERT OR IGNORE INTO relay_ingested (dedupe_hash, lead_id) VALUES (?, ?)",
+        (relay_dedupe_hash(dedupe_key), safe_lead_id),
     )
     conn.commit()
     conn.close()
@@ -715,11 +749,11 @@ def mark_relay_ingested_many(
         conn = get_conn()
     try:
         safe_rows = [
-            (key, _coerce_relay_mark_lead_id(conn, lead_id))
+            (relay_dedupe_hash(key), _coerce_relay_mark_lead_id(conn, lead_id))
             for key, lead_id in unique
         ]
         conn.executemany(
-            "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO relay_ingested (dedupe_hash, lead_id) VALUES (?, ?)",
             safe_rows,
         )
         if commit:
@@ -924,8 +958,8 @@ def ingest_relay_event(
             pending_marks.append((dedupe_key, None))
         elif pull_conn is not None:
             pull_conn.execute(
-                "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
-                (dedupe_key, None),
+                "INSERT OR IGNORE INTO relay_ingested (dedupe_hash, lead_id) VALUES (?, ?)",
+                (relay_dedupe_hash(dedupe_key), None),
             )
         else:
             mark_relay_ingested(dedupe_key, None)
@@ -1234,29 +1268,17 @@ def ingest_relay_event(
                 "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
                 (target_stage, stage_ts, ws_lead_id),
             )
-        ws_payload = {
-            # subject/body already live in metadata (nested here as "event") --
-            # storing them again at the top level doubled payload_json size for
-            # no reason; workspace_lead_events is an outbox/idempotency table,
-            # not a content store (see collect_pending_events in crm_sync.py).
-            "event": metadata,
-            "direction": direction,
-            "channel": channel,
-            "campaign_platform_id": campaign_ctx.campaign_platform_id,
-            "campaign_name": campaign_ctx.campaign_name_raw,
-        }
+        # No payload: the content was just written to events by log_event above,
+        # and event_id points at it. See append_workspace_event.
         om.append_workspace_event(
             conn,
             DEFAULT_ORG_ID,
             workspace_id,
             lead_id,
-            ws_lead_id,
+            event_id=event_id,
             event_type=local_type,
             event_at=event_at or om.utc_now_for_storage(),
-            source_platform=platform,
             idempotency_key=ws_idempotency,
-            payload=ws_payload,
-            external_event_id=str(event.get("relay_id") or ""),
         )
 
         status_label = metadata.get("lead_status_raw")

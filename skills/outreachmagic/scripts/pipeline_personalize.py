@@ -69,25 +69,46 @@ def resolve_company_from_entity_key(conn: sqlite3.Connection, entity_key: str) -
     return None
 
 
-def _lead_source_hash(lead_id: int, field_name: str) -> Optional[str]:
+def _lead_source_hash(
+    lead_id: int, field_name: str, conn: Optional[sqlite3.Connection] = None,
+) -> Optional[str]:
+    """Hash of the leads column a personalization field was derived from.
+
+    Pass `conn` when calling this in a loop. It used to open and close its own
+    connection every time, which personalize-status did once per row -- ~110k
+    connections on a real database.
+    """
     col = _LEAD_SOURCE_FIELDS.get(field_name)
     if not col:
         return None
-    conn = get_conn()
-    row = conn.execute(f"SELECT {col} FROM leads WHERE id = ?", (lead_id,)).fetchone()
-    conn.close()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        row = conn.execute(f"SELECT {col} FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    finally:
+        if own_conn:
+            conn.close()
     if not row or not row[col]:
         return None
     return hashlib.md5(str(row[col]).encode()).hexdigest()[:8]
 
 
-def _company_source_hash(company_id: int, field_name: str) -> Optional[str]:
+def _company_source_hash(
+    company_id: int, field_name: str, conn: Optional[sqlite3.Connection] = None,
+) -> Optional[str]:
+    """As _lead_source_hash, for companies. Pass `conn` when looping."""
     col = _COMPANY_SOURCE_FIELDS.get(field_name)
     if not col:
         return None
-    conn = get_conn()
-    row = conn.execute(f"SELECT {col} FROM companies WHERE id = ?", (company_id,)).fetchone()
-    conn.close()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        row = conn.execute(f"SELECT {col} FROM companies WHERE id = ?", (company_id,)).fetchone()
+    finally:
+        if own_conn:
+            conn.close()
     if not row or not row[col]:
         return None
     return hashlib.md5(str(row[col]).encode()).hexdigest()[:8]
@@ -323,7 +344,7 @@ def personalize_status() -> dict:
     for row in conn.execute(
         "SELECT lead_id, field_name, source_hash FROM lead_personalization WHERE source_hash IS NOT NULL"
     ).fetchall():
-        if _lead_source_hash(row["lead_id"], row["field_name"]) != row["source_hash"]:
+        if _lead_source_hash(row["lead_id"], row["field_name"], conn) != row["source_hash"]:
             stale += 1
     conn.close()
     return {"total_leads": total, "personalized": with_lead, "pending": total - with_lead, "stale": stale}
@@ -337,7 +358,7 @@ def company_personalize_status() -> dict:
     for row in conn.execute(
         "SELECT company_id, field_name, source_hash FROM company_personalization WHERE source_hash IS NOT NULL"
     ).fetchall():
-        if _company_source_hash(row["company_id"], row["field_name"]) != row["source_hash"]:
+        if _company_source_hash(row["company_id"], row["field_name"], conn) != row["source_hash"]:
             stale += 1
     conn.close()
     return {"total_companies": total, "personalized": with_co, "pending": total - with_co, "stale": stale}

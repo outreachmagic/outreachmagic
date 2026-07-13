@@ -42,7 +42,7 @@ class RelayEventExportTests(unittest.TestCase):
             campaign="acme | test campaign",
         )
         conn = om.get_conn()
-        conn.execute("DELETE FROM relay_ingested WHERE dedupe_key LIKE 'event:%'")
+        conn.execute("DELETE FROM event_push_log")
         conn.commit()
         conn.close()
 

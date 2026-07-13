@@ -171,11 +171,15 @@ def test_ingest_does_not_call_ensure_default_org_workspace_per_event(monkeypatch
     assert calls == []
 
 
-def test_workspace_lead_events_payload_does_not_duplicate_subject_and_body():
-    """Regression: subject/body used to be stored both at the top level of
-    payload_json AND nested under payload_json["event"] (== events.metadata_json),
-    doubling row size for no reason -- workspace_lead_events is an outbox/
-    idempotency table, not a content store."""
+def test_workspace_lead_events_stores_no_event_content():
+    """workspace_lead_events indexes events into a workspace; it stores none of
+    their content.
+
+    It used to keep a payload_json copy of the whole of events.metadata_json --
+    body included -- which nothing read and which cost 91 MB on a 783 MB database.
+    It now carries an event_id instead. The content must be reachable through that
+    FK, and must exist nowhere else.
+    """
     event = {
         "relay_id": 500,
         "platform": "plusvibe",
@@ -194,15 +198,23 @@ def test_workspace_lead_events_payload_does_not_duplicate_subject_and_body():
     assert lead_id is not None
 
     conn = om.get_conn()
+    cols = {c[1] for c in conn.execute("PRAGMA table_info(workspace_lead_events)")}
+    assert "payload_json" not in cols
+    assert not cols & {"subject", "body", "body_preview", "metadata_json"}
+
     row = conn.execute(
-        "SELECT payload_json FROM workspace_lead_events WHERE lead_id = ?", (lead_id,),
+        """SELECT wle.event_id, e.subject, e.metadata_json
+             FROM workspace_lead_events wle
+             JOIN events e ON e.id = wle.event_id
+            WHERE wle.lead_id = ?""",
+        (lead_id,),
     ).fetchone()
     conn.close()
-    payload = json.loads(row["payload_json"])
-    assert "subject" not in payload
-    assert "body_preview" not in payload
-    assert payload["event"]["subject"] == "Re: hello there"
-    assert payload["event"]["body"] == "Sure, let's talk"
+
+    # The FK resolves, and the body is intact on the one row that owns it.
+    assert row is not None and row["event_id"]
+    assert row["subject"] == "Re: hello there"
+    assert json.loads(row["metadata_json"])["body"] == "Sure, let's talk"
 
 
 def test_auto_merge_safe_identity_types_membership():

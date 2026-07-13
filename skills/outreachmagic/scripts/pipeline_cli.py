@@ -2725,7 +2725,8 @@ def main():
         conn.close()
 
         metadata = json.loads(args.metadata) if getattr(args, "metadata", None) else None
-        _pipeline.log_event(lead_id=args.lead_id, event_type=args.event_type, direction=args.direction,
+        logged_event_id = _pipeline.log_event(
+                  lead_id=args.lead_id, event_type=args.event_type, direction=args.direction,
                   channel=args.channel, subject=args.subject, body_preview=args.body,
                   metadata=metadata)
 
@@ -2742,18 +2743,18 @@ def main():
                 "meeting_booked": "scheduled",
             }
             initial_status = status_defaults.get(args.event_type, "prospecting")
-            ws_lead_id = _pipeline.upsert_workspace_lead(
+            _pipeline.upsert_workspace_lead(
                 conn, _pipeline.DEFAULT_ORG_ID, ws_row["id"], args.lead_id,
                 status=initial_status)
             idem_key = f"agent_cli_{args.lead_id}_{args.event_type}_{datetime.now(timezone.utc).isoformat()}"
+            # The subject/body/channel written just above by log_event are the
+            # record; this row only indexes it into the workspace.
             _pipeline.append_workspace_event(
-                conn, _pipeline.DEFAULT_ORG_ID, ws_row["id"], args.lead_id, ws_lead_id,
+                conn, _pipeline.DEFAULT_ORG_ID, ws_row["id"], args.lead_id,
+                event_id=logged_event_id,
                 event_type=args.event_type,
                 event_at=_pipeline.utc_now_for_storage(),
-                source_platform="agent",
-                idempotency_key=idem_key,
-                payload={"subject": args.subject, "direction": args.direction,
-                         "channel": args.channel, "body_preview": args.body})
+                idempotency_key=idem_key)
             conn.commit()
             conn.close()
             result["workspace"] = ws_row["slug"]

@@ -79,8 +79,8 @@ def counts(conn: sqlite3.Connection) -> dict:
           (SELECT COUNT(*) FROM leads WHERE updated_at > ?) AS core_pending,
           (SELECT COUNT(*) FROM workspace_leads WHERE updated_at > ?) AS ws_pending,
           (SELECT COUNT(*) FROM events e
-             WHERE 'event:' || CAST(e.id AS TEXT) NOT IN (
-               SELECT dedupe_key FROM relay_ingested WHERE dedupe_key LIKE 'event:%'
+             WHERE NOT EXISTS (
+               SELECT 1 FROM event_push_log p WHERE p.event_id = e.id
              )
              AND e.metadata_json NOT LIKE '%"source": "relay"%'
              AND e.metadata_json NOT LIKE '%"source":"relay"%'

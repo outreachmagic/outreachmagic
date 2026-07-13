@@ -464,10 +464,9 @@ def _insert_ws_event(conn, *, workspace_id, lead_id, event_type, event_at, idx=0
     """Minimal workspace_lead_events row for max_age filter tests."""
     conn.execute(
         """INSERT INTO workspace_lead_events
-           (id, org_id, workspace_id, lead_id, event_type, event_at, source_platform, idempotency_key)
-           VALUES (?, ?, ?, ?, ?, ?, 'test', ?)""",
+           (org_id, workspace_id, lead_id, event_type, event_at, idempotency_key)
+           VALUES (?, ?, ?, ?, ?, ?)""",
         (
-            f"wle_test_{workspace_id}_{lead_id}_{idx}",
             DEFAULT_ORG_ID, workspace_id, lead_id, event_type, event_at,
             f"idem_{workspace_id}_{lead_id}_{idx}",
         ),
@@ -3244,11 +3243,9 @@ def _setup_phase_5_event_data(conn):
     for ev_id, ws_id, lid, etype, e_at, ikey, payload in events_data:
         conn.execute(
             """INSERT OR IGNORE INTO workspace_lead_events
-               (id, org_id, workspace_id, lead_id, event_type, event_at,
-                source_platform, idempotency_key, payload_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (ev_id, DEFAULT_ORG_ID, ws_id, lid, etype, e_at,
-             "email", ikey, payload),
+               (org_id, workspace_id, lead_id, event_type, event_at, idempotency_key)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (DEFAULT_ORG_ID, ws_id, lid, etype, e_at, ikey),
         )
 
     conn.commit()
@@ -3264,9 +3261,12 @@ def _setup_phase_5_event_data(conn):
     )
     conn.commit()
 
-    # Return the event_ids for lead 1 (sorted by event_at)
+    # Return the event_ids for lead 1 (sorted by event_at). `id` is now an
+    # INTEGER PRIMARY KEY, so it *is* the rowid -- alias it to keep the cursor
+    # naming that collect_pending_events returns.
     return conn.execute(
-        "SELECT rowid, event_type FROM workspace_lead_events WHERE workspace_id = ? AND lead_id = ? ORDER BY event_at ASC",
+        "SELECT id AS rowid, event_type FROM workspace_lead_events "
+        "WHERE workspace_id = ? AND lead_id = ? ORDER BY event_at ASC",
         (WS1_ID, 1),
     ).fetchall()
 
@@ -3328,11 +3328,10 @@ def test_event_collection_limit():
         for i in range(8):
             conn.execute(
                 """INSERT OR IGNORE INTO workspace_lead_events
-                   (id, org_id, workspace_id, lead_id, event_type, event_at,
-                    source_platform, idempotency_key, payload_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (f"ev-limit-{i}", DEFAULT_ORG_ID, WS1_ID, 1, "email_sent",
-                 f"2026-06-0{i+1}T10:00:00Z", "email", f"ikey-limit-{i}", '{}'),
+                   (org_id, workspace_id, lead_id, event_type, event_at, idempotency_key)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (DEFAULT_ORG_ID, WS1_ID, 1, "email_sent",
+                 f"2026-06-0{i+1}T10:00:00Z", f"ikey-limit-{i}"),
             )
         conn.commit()
 
@@ -3464,11 +3463,9 @@ def _setup_phase_5_sync_data(conn):
     for ev_id, ws_id, lid, etype, e_at, ikey, payload in events_data:
         conn.execute(
             """INSERT OR IGNORE INTO workspace_lead_events
-               (id, org_id, workspace_id, lead_id, event_type, event_at,
-                source_platform, idempotency_key, payload_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (ev_id, DEFAULT_ORG_ID, ws_id, lid, etype, e_at,
-             "email", ikey, payload),
+               (org_id, workspace_id, lead_id, event_type, event_at, idempotency_key)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (DEFAULT_ORG_ID, ws_id, lid, etype, e_at, ikey),
         )
     conn.commit()
 
@@ -3548,11 +3545,10 @@ def test_event_cursor_incremental():
         # Add 1 new event
         conn.execute(
             """INSERT OR IGNORE INTO workspace_lead_events
-               (id, org_id, workspace_id, lead_id, event_type, event_at,
-                source_platform, idempotency_key, payload_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ("ev-incremental", DEFAULT_ORG_ID, WS1_ID, 1, "meeting_booked",
-             "2026-06-02T10:00:00Z", "email", "ikey-incremental", '{}'),
+               (org_id, workspace_id, lead_id, event_type, event_at, idempotency_key)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (DEFAULT_ORG_ID, WS1_ID, 1, "meeting_booked",
+             "2026-06-02T10:00:00Z", "ikey-incremental"),
         )
         conn.commit()
 

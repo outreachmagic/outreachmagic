@@ -125,6 +125,14 @@ def end_bulk_pull_session(conn: sqlite3.Connection) -> None:
                     file=sys.stderr,
                     flush=True,
                 )
+        # Refresh index statistics. Without them SQLite guesses, and it guesses
+        # badly here: the identity-promote lookup (WHERE org_id AND lead_id AND
+        # identity_type) was picking an index that only constrains
+        # (org_id, identity_type) and scanning every linkedin_url row in the table
+        # -- 84k of them -- instead of narrowing by lead_id. PRAGMA optimize only
+        # re-analyzes what has actually changed, so it's a few seconds on the first
+        # run after a big pull and near-free afterwards.
+        conn.execute("PRAGMA optimize")
     except sqlite3.OperationalError as exc:
         if "disk I/O error" in str(exc).lower() or "i/o error" in str(exc).lower():
             print(

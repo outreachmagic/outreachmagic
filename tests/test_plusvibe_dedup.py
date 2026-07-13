@@ -67,20 +67,23 @@ def _insert_event(
            VALUES (?, ?, 'inbound', 'email', ?, ?, ?)""",
         (lead_id, event_type, body[:200] if body else "", metadata, created_at),
     )
+    from relay_ingest import relay_dedupe_hash
+
     conn.execute(
-        "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
-        ("relay_test_seed", None),
+        "INSERT OR IGNORE INTO relay_ingested (dedupe_hash, lead_id) VALUES (?, ?)",
+        (relay_dedupe_hash("relay_test_seed"), None),
     )
     conn.commit()
 
 
 def _mark_relay_ingested_raw(key, lead_id=None):
     from db_conn import get_conn
+    from relay_ingest import relay_dedupe_hash
 
     c = get_conn()
     c.execute(
-        "INSERT OR IGNORE INTO relay_ingested (dedupe_key, lead_id) VALUES (?, ?)",
-        (key, lead_id),
+        "INSERT OR IGNORE INTO relay_ingested (dedupe_hash, lead_id) VALUES (?, ?)",
+        (relay_dedupe_hash(key), lead_id),
     )
     c.commit()
     c.close()

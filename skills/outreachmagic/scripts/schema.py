@@ -88,7 +88,14 @@ CREATE INDEX IF NOT EXISTS idx_events_lead ON events(lead_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_lead_created ON events(lead_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id);
-CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
+-- One relay event, one row. relay_ingested is the primary dedupe, but it lives in
+-- a separate table: lose or reset it while events survives and the next pull
+-- re-ingests the lot. This is the guard that makes that impossible. Locally-logged
+-- events have a NULL relay_id and are exempt.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_relay_unique ON events(relay_id) WHERE relay_id IS NOT NULL;
+-- No plain index on leads(email): the partial unique index below already serves
+-- every `WHERE email = ?` lookup (verified with EXPLAIN QUERY PLAN -- it's chosen
+-- as a covering index), and a second copy of the same column is pure write cost.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_unique ON leads(email) WHERE email IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_linkedin_unique ON leads(linkedin_url) WHERE linkedin_url IS NOT NULL;
 -- idx_leads_sales_nav_id_unique intentionally NOT here: linkedin_sales_nav_id
@@ -110,12 +117,32 @@ CREATE TABLE IF NOT EXISTS lead_merges (
     merged_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Inbound dedupe ledger: "have we already ingested this relay event?"
+--
+-- Stores a 16-byte hash of the dedupe key, not the key itself. The keys are long
+-- (the agent ones average 129 bytes: agent:{client_id}:{entity_key}:{action}:{ts})
+-- and there are ~800k of them, so the raw text cost ~146 MB across the table and
+-- its primary-key B-tree. They are only ever compared for exact equality, and are
+-- always built in Python, so nothing needs the original string back --
+-- relay_dedupe_hash() in relay_ingest.py is the one place that maps key -> hash.
+--
+-- Push markers deliberately do NOT live here; see event_push_log.
 CREATE TABLE IF NOT EXISTS relay_ingested (
-    dedupe_key      TEXT PRIMARY KEY,
+    dedupe_hash     BLOB PRIMARY KEY,
     lead_id         INTEGER REFERENCES leads(id) ON DELETE SET NULL,
     ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_relay_ingested_lead_id ON relay_ingested(lead_id);
+
+-- Outbound push state: "has this event been pushed to the relay?"
+--
+-- This used to be an 'event:{id}' text key inside relay_ingested, which meant the
+-- push query had to build the key in SQL ('event:' || e.id) and probe an 800k-row
+-- text B-tree. It is push state, not dedupe state, and an integer FK says so.
+CREATE TABLE IF NOT EXISTS event_push_log (
+    event_id        INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+    pushed_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- Org + workspace routing (org-wide lead, workspace-scoped status/events)
 CREATE TABLE IF NOT EXISTS organizations (
@@ -137,8 +164,12 @@ CREATE TABLE IF NOT EXISTS workspaces (
     UNIQUE (org_id, slug)
 );
 
+-- `id` is a surrogate nothing references -- every read is by
+-- (org_id, identity_type, identity_value_normalized) or by lead_id. It used to be
+-- a random 32-char hex string, which bought nothing and cost ~26 MB across the row
+-- data and its primary-key index on 343k rows.
 CREATE TABLE IF NOT EXISTS lead_identities (
-    id                      TEXT PRIMARY KEY,
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     org_id                  TEXT NOT NULL,
     lead_id                 INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
     identity_type           TEXT NOT NULL,
@@ -180,18 +211,23 @@ CREATE INDEX IF NOT EXISTS idx_workspace_leads_activity ON workspace_leads(works
 -- had no usable index and fell back to a full table scan of workspace_leads.
 CREATE INDEX IF NOT EXISTS idx_workspace_leads_lead_id ON workspace_leads(lead_id);
 
+-- The workspace-scoped index over `events`: inbound dedupe, plus the CRM
+-- "has this lead been active lately" filter and its push cursor.
+--
+-- Deliberately NOT a content store. This table used to carry a payload_json copy
+-- of events.metadata_json (`{"event": <metadata>}`) -- the same blob, body and
+-- all -- which nothing read and which cost 91 MB on a 783 MB database. It now
+-- carries an 8-byte event_id instead, so anything that wants content joins
+-- `events`, where it lives exactly once.
 CREATE TABLE IF NOT EXISTS workspace_lead_events (
-    id                  TEXT PRIMARY KEY,
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     org_id              TEXT NOT NULL,
     workspace_id        TEXT NOT NULL,
     lead_id             INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-    workspace_lead_id   TEXT REFERENCES workspace_leads(id) ON DELETE SET NULL,
+    event_id            INTEGER REFERENCES events(id) ON DELETE CASCADE,
     event_type          TEXT NOT NULL,
     event_at            TEXT NOT NULL,
-    source_platform     TEXT NOT NULL,
-    external_event_id   TEXT,
     idempotency_key     TEXT NOT NULL,
-    payload_json        TEXT NOT NULL DEFAULT '{}',
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (org_id, idempotency_key)
 );

@@ -288,15 +288,19 @@ def format_event_for_crm(event: dict) -> dict:
 def collect_pending_events(conn, workspace_id: str, lead_id: int,
                            last_event_id: int | None = None) -> list[dict]:
     """Collect unsynced events for a lead."""
+    # Content (subject/body/sender/metadata) lives in `events`, joined via
+    # event_id. workspace_lead_events carries no payload of its own.
+    select = """SELECT wle.rowid AS rowid, wle.event_type, wle.event_at,
+                       e.direction, e.channel, e.subject, e.body_preview,
+                       e.sender, e.metadata_json
+                  FROM workspace_lead_events wle
+                  LEFT JOIN events e ON e.id = wle.event_id
+                 WHERE wle.workspace_id = ? AND wle.lead_id = ?"""
     if last_event_id is not None:
         return [
             dict(r)
             for r in conn.execute(
-                """SELECT rowid, * FROM workspace_lead_events
-                   WHERE workspace_id = ? AND lead_id = ?
-                     AND rowid > ?
-                   ORDER BY rowid ASC
-                   LIMIT 500""",
+                select + " AND wle.rowid > ? ORDER BY wle.rowid ASC LIMIT 500",
                 (workspace_id, lead_id, last_event_id),
             ).fetchall()
         ]
@@ -304,10 +308,7 @@ def collect_pending_events(conn, workspace_id: str, lead_id: int,
         return [
             dict(r)
             for r in conn.execute(
-                """SELECT rowid, * FROM workspace_lead_events
-                   WHERE workspace_id = ? AND lead_id = ?
-                   ORDER BY rowid ASC
-                   LIMIT 500""",
+                select + " ORDER BY wle.rowid ASC LIMIT 500",
                 (workspace_id, lead_id),
             ).fetchall()
         ]

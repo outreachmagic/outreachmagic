@@ -377,6 +377,12 @@ __version__ = _read_version_file(Path(__file__).resolve().parent / "VERSION")
 
 
 
+_COMPANY_SELECT = (
+    "SELECT id, name, domain, industry, headcount, headcount_numeric, "
+    "hq_city, hq_state, hq_country FROM companies "
+)
+
+
 def ensure_company(
     conn: sqlite3.Connection,
     name: Optional[str] = None,
@@ -392,12 +398,14 @@ def ensure_company(
 ) -> Optional[int]:
     """Find or create company row; match business domain first, then exact name.
 
-    company_cache (optional): dict shared across a batch (e.g. one pull page)
-    mapping ("d", domain) / ("n", lower(name)) -> company_id. Callers that
-    resolve the same lead's company twice per row (resolve phase + apply
-    phase) or share a company across many rows in the same page turn those
-    repeat SELECTs into dict lookups. Populated as a side effect; omit for
-    one-off calls outside a batch.
+    company_cache (optional): dict shared across a batch (e.g. one pull) mapping
+    ("d", domain) / ("n", lower(name)) -> the company row as a dict. Callers that
+    resolve the same lead's company twice per row (resolve phase + apply phase)
+    or share a company across many rows turn those repeat SELECTs into dict
+    lookups. Caching the whole row rather than just the id is what lets
+    _update_company_fields tell a no-op write from a real one without going back
+    to the database. Populated as a side effect; omit for one-off calls outside
+    a batch.
     """
     domain = (domain or "").strip().lower() or None
     if domain and domain in SHARED_EMAIL_DOMAINS:
@@ -413,87 +421,84 @@ def ensure_company(
     if not name and not domain:
         return None
 
-    domain_key = ("d", domain) if domain else None
-    name_key = ("n", name.lower()) if name else None
-
-    def _remember(cid: int) -> None:
+    def _remember(rec: dict) -> None:
         if company_cache is None:
             return
-        if domain_key:
-            company_cache[domain_key] = cid
-        if name_key:
-            company_cache[name_key] = cid
+        if domain:
+            company_cache[("d", domain)] = rec
+        if name:
+            company_cache[("n", name.lower())] = rec
+        # Also key by the row's own identity, so a later call that arrives with
+        # only the other half (domain-only, or name-only) still hits.
+        if rec.get("domain"):
+            company_cache[("d", rec["domain"])] = rec
+        if rec.get("name"):
+            company_cache[("n", rec["name"].lower())] = rec
 
+    rec: Optional[dict] = None
     if company_cache is not None:
-        # Only a domain_key hit is safe to trust blindly -- same normalized
-        # domain string, so no new domain write is needed and there's no
-        # uniqueness risk. A name_key hit is only safe to skip-verify when
-        # there's no domain to write; if domain is present, the row this
-        # name maps to might be a *different* company than the one that
-        # legitimately owns this domain (e.g. created outside this cache by
-        # the company-snapshot phase), so it must still go through the real
-        # domain SELECT below before we ever write to that column.
-        cid = company_cache.get(domain_key) if domain_key else None
-        if cid is not None:
-            _update_company_fields(conn, cid, name, industry, headcount,
-                                   hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
-                                   authoritative=authoritative)
-            _remember(cid)
-            return cid
-        if not domain and name_key is not None:
-            cid = company_cache.get(name_key)
-            if cid is not None:
-                _update_company_fields(conn, cid, None, industry, headcount,
-                                       hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
-                                       authoritative=authoritative)
-                _remember(cid)
-                return cid
+        if domain:
+            rec = company_cache.get(("d", domain))
+        if rec is None and name:
+            cand = company_cache.get(("n", name.lower()))
+            # A name hit is only trustworthy when there's no domain to write, or
+            # when the cached row already owns exactly this domain. Otherwise the
+            # row this name maps to might be a *different* company than the one
+            # that legitimately owns this domain (e.g. created outside this cache
+            # by the company-snapshot phase), so it has to go through the real
+            # domain SELECT below before we ever touch that column.
+            if cand is not None and (not domain or cand.get("domain") == domain):
+                rec = cand
 
-    if domain:
-        row = conn.execute("SELECT id FROM companies WHERE domain = ?", (domain,)).fetchone()
+    if rec is None and domain:
+        row = conn.execute(_COMPANY_SELECT + "WHERE domain = ?", (domain,)).fetchone()
         if row:
-            cid = row["id"]
-            _update_company_fields(conn, cid, name, industry, headcount,
-                                   hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
-                                   authoritative=authoritative)
-            _remember(cid)
-            return cid
-    if name:
-        cid = company_cache.get(name_key) if company_cache is not None else None
-        if cid is None:
-            row = conn.execute(
-                "SELECT id FROM companies WHERE lower(name) = lower(?)", (name,)
-            ).fetchone()
-            cid = row["id"] if row else None
-        if cid is not None:
+            rec = dict(row)
+    if rec is None and name:
+        row = conn.execute(
+            _COMPANY_SELECT + "WHERE lower(name) = lower(?)", (name,)
+        ).fetchone()
+        if row:
+            rec = dict(row)
             # domain is confirmed free by the SELECT above (or None), so this
             # write can't collide with a different company's domain.
-            if domain:
+            if domain and not rec.get("domain"):
                 conn.execute(
-                    """UPDATE companies SET domain = COALESCE(domain, ?),
-                       updated_at = datetime('now') WHERE id = ?""",
-                    (domain, cid),
+                    "UPDATE companies SET domain = ?, updated_at = datetime('now') WHERE id = ?",
+                    (domain, rec["id"]),
                 )
-            _update_company_fields(conn, cid, None, industry, headcount,
-                                   hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
-                                   authoritative=authoritative)
-            _remember(cid)
-            return cid
-    display_name = name or (domain or "Unknown")
-    cid = conn.execute(
-        """INSERT INTO companies (name, domain, industry, headcount, headcount_numeric,
-                                  hq_city, hq_state, hq_country)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (display_name, domain, industry, headcount, parse_headcount_numeric(headcount),
-         hq_city, hq_state, hq_country),
-    ).lastrowid
-    _remember(cid)
-    return cid
+                rec["domain"] = domain
+
+    if rec is None:
+        display_name = name or (domain or "Unknown")
+        hc_num = parse_headcount_numeric(headcount)
+        cid = conn.execute(
+            """INSERT INTO companies (name, domain, industry, headcount, headcount_numeric,
+                                      hq_city, hq_state, hq_country)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (display_name, domain, industry, headcount, hc_num,
+             hq_city, hq_state, hq_country),
+        ).lastrowid
+        rec = {
+            "id": cid, "name": display_name, "domain": domain, "industry": industry,
+            "headcount": headcount, "headcount_numeric": hc_num,
+            "hq_city": hq_city, "hq_state": hq_state, "hq_country": hq_country,
+        }
+        _remember(rec)
+        return cid
+
+    _update_company_fields(
+        conn, rec, name, industry, headcount,
+        hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
+        authoritative=authoritative,
+    )
+    _remember(rec)
+    return rec["id"]
 
 
 def _update_company_fields(
     conn: sqlite3.Connection,
-    company_id: int,
+    rec: dict,
     name: Optional[str],
     industry: Optional[str],
     headcount: Optional[str],
@@ -503,42 +508,49 @@ def _update_company_fields(
     *,
     authoritative: bool = False,
 ):
-    sets, params = [], []
-    if name:
-        sets.append("name = CASE WHEN trim(name) = '' THEN ? ELSE name END")
-        params.append(name)
-    if industry:
+    """Fill/refresh company columns, skipping the write entirely when nothing changes.
+
+    `rec` is the company row (mutated in place so a shared company_cache stays
+    accurate). Bailing out on a no-op matters for more than the saved write:
+    companies.updated_at drives the timestamp-based relay push, so bumping it on
+    an unchanged row makes the next push re-send the row for no reason.
+    """
+    changes: dict = {}
+    # Matches the old `name = CASE WHEN trim(name) = '' THEN ? ELSE name END`:
+    # an empty-string name gets filled, a NULL one is left alone.
+    current_name = rec.get("name")
+    if name and current_name is not None and not current_name.strip():
+        changes["name"] = name
+    for col, val in (
+        ("industry", industry),
+        ("headcount", headcount),
+        ("hq_city", hq_city),
+        ("hq_state", hq_state),
+        ("hq_country", hq_country),
+    ):
+        if not val:
+            continue
         if authoritative:
-            sets.append("industry = ?")
-        else:
-            sets.append("industry = COALESCE(industry, ?)")
-        params.append(industry)
+            if rec.get(col) != val:
+                changes[col] = val
+        elif rec.get(col) is None:
+            changes[col] = val
     if headcount:
-        if authoritative:
-            sets.append("headcount = ?")
-        else:
-            sets.append("headcount = COALESCE(headcount, ?)")
-        params.append(headcount)
         hc_num = parse_headcount_numeric(headcount)
         if hc_num is not None:
             if authoritative:
-                sets.append("headcount_numeric = ?")
-            else:
-                sets.append("headcount_numeric = COALESCE(headcount_numeric, ?)")
-            params.append(hc_num)
-    if hq_city:
-        sets.append(f"hq_city = {'?' if authoritative else 'COALESCE(hq_city, ?)'}")
-        params.append(hq_city)
-    if hq_state:
-        sets.append(f"hq_state = {'?' if authoritative else 'COALESCE(hq_state, ?)'}")
-        params.append(hq_state)
-    if hq_country:
-        sets.append(f"hq_country = {'?' if authoritative else 'COALESCE(hq_country, ?)'}")
-        params.append(hq_country)
-    if sets:
-        sets.append("updated_at = datetime('now')")
-        params.append(company_id)
-        conn.execute(f"UPDATE companies SET {', '.join(sets)} WHERE id = ?", params)
+                if rec.get("headcount_numeric") != hc_num:
+                    changes["headcount_numeric"] = hc_num
+            elif rec.get("headcount_numeric") is None:
+                changes["headcount_numeric"] = hc_num
+    if not changes:
+        return
+    sets = ", ".join(f"{col} = ?" for col in changes)
+    conn.execute(
+        f"UPDATE companies SET {sets}, updated_at = datetime('now') WHERE id = ?",
+        (*changes.values(), rec["id"]),
+    )
+    rec.update(changes)
 
 
 def backfill_companies_from_leads(conn: sqlite3.Connection):
@@ -1456,21 +1468,54 @@ def resolve_lead(
     linkedin_url_conflicts.extend(promote_conflicts)
 
     name_for_enrich = enrich_name if enrich_name is not None else name
-    filled = enrich_lead(
-        lead_id, name=name_for_enrich, title=title, industry=industry,
-        company=company, headcount=headcount, overwrite=overwrite,
-        conn=conn,
-    )
-    if email_norm:
-        ensure_lead_domain(lead_id, email_norm, conn=conn, commit=False)
-    link_lead_company(conn, lead_id, company=company, email=email_norm,
-                      industry=industry, headcount=headcount,
-                      company_cache=company_cache)
-    if domain_explicit:
-        ensure_company(conn, name=company, domain=domain_explicit,
-                       industry=industry, headcount=headcount,
-                       hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
-                       company_cache=company_cache)
+    # The INSERT above already wrote every column this tail would touch, from the
+    # very same arguments -- so on a row we just created, enrich_lead,
+    # ensure_lead_domain and the domain_explicit ensure_company are all
+    # guaranteed no-op rewrites. Skipping them saves ~8 statements per new lead,
+    # which is most of the cost of a fresh-database backfill.
+    #
+    # Only safe under the arguments the relay sync actually uses: overwrite=True
+    # makes enrich_lead's writes unconditional (and therefore identical to the
+    # INSERT's), and a separate enrich_name would mean it writes a *different*
+    # name than the one we just inserted.
+    if created and overwrite and enrich_name is None:
+        filled = [
+            col for col, val in (
+                ("name", name), ("title", title), ("industry", industry),
+                ("company", company), ("headcount", headcount),
+            )
+            if val
+        ]
+        # link_lead_company is the one call that isn't purely redundant: it
+        # resolves the company from the *email* domain, which can differ from
+        # the effective domain the INSERT used when company_domain overrode it.
+        # Only then can it legitimately land on a different company row.
+        if domain_from_email != effective_domain:
+            relinked = ensure_company(
+                conn, name=company, domain=domain_from_email,
+                industry=industry, headcount=headcount,
+                company_cache=company_cache,
+            )
+            if relinked and relinked != company_id:
+                conn.execute(
+                    "UPDATE leads SET company_id = ? WHERE id = ?", (relinked, lead_id),
+                )
+    else:
+        filled = enrich_lead(
+            lead_id, name=name_for_enrich, title=title, industry=industry,
+            company=company, headcount=headcount, overwrite=overwrite,
+            conn=conn,
+        )
+        if email_norm:
+            ensure_lead_domain(lead_id, email_norm, conn=conn, commit=False)
+        link_lead_company(conn, lead_id, company=company, email=email_norm,
+                          industry=industry, headcount=headcount,
+                          company_cache=company_cache)
+        if domain_explicit:
+            ensure_company(conn, name=company, domain=domain_explicit,
+                           industry=industry, headcount=headcount,
+                           hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
+                           company_cache=company_cache)
     if own_conn:
         conn.commit()
         conn.close()
@@ -1486,6 +1531,10 @@ def resolve_lead(
         "match_confidence": match_confidence_for_type(method),
         "identity_conflicts": id_conflicts,
         "linkedin_url_conflicts": linkedin_url_conflicts,
+        # The identity set we just registered. Callers that hand us a payload and
+        # then apply the same payload (the relay lead_core path) use this to skip
+        # a second, identical upsert_all_identities pass.
+        "identities": identities,
     }
 
 
@@ -1670,6 +1719,38 @@ def enrich_lead(
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
+
+    if overwrite:
+        # Every provided field is written regardless of what's already there, so
+        # the pre-SELECT below only ever served as an existence check -- and the
+        # UPDATE's rowcount answers that for free. This is the path the whole
+        # relay sync takes, so it's worth not paying for the read.
+        updates, params, filled = [], [], []
+        for col, val in (
+            ("name", name), ("title", title), ("industry", industry),
+            ("company", company), ("headcount", headcount),
+        ):
+            if not val:
+                continue
+            updates.append(f"{col} = ?")
+            params.append(val)
+            filled.append(col)
+        if not updates:
+            if own_conn:
+                conn.close()
+            return []
+        updates.append("updated_at = datetime('now')")
+        cur = conn.execute(
+            f"UPDATE leads SET {', '.join(updates)} WHERE id = ?", (*params, lead_id)
+        )
+        if cur.rowcount == 0:
+            filled = []
+        elif own_conn:
+            conn.commit()
+        if own_conn:
+            conn.close()
+        return filled
+
     row = conn.execute(
         "SELECT name, email, title, industry, company, headcount FROM leads WHERE id = ?",
         (lead_id,),

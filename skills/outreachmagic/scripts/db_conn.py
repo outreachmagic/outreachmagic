@@ -75,14 +75,25 @@ def apply_bulk_pull_pragmas(conn: sqlite3.Connection) -> None:
     sync_row = conn.execute("PRAGMA synchronous").fetchone()
     cache_row = conn.execute("PRAGMA cache_size").fetchone()
     temp_row = conn.execute("PRAGMA temp_store").fetchone()
+    fk_row = conn.execute("PRAGMA foreign_keys").fetchone()
     _BULK_PULL_PRAGMA_SAVES[cid] = (
         sync_row[0] if sync_row else 2,
         cache_row[0] if cache_row else -2000,
         temp_row[0] if temp_row else 0,
+        fk_row[0] if fk_row else 1,
     )
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA cache_size=-64000")
     conn.execute("PRAGMA temp_store=MEMORY")
+    # Every INSERT into leads/lead_identities/lead_emails/events/workspace_leads
+    # otherwise pays a parent-key lookup per row. The pull is a single writer
+    # over relay-authored rows whose parents we create ourselves in the same
+    # page, so the checks only ever confirm what we just wrote. Restored (and
+    # verified via foreign_key_check) by end_bulk_pull_session.
+    #
+    # No-op inside a transaction -- callers must apply this on a fresh
+    # connection before any DML, which is what the pull path does.
+    conn.execute("PRAGMA foreign_keys=OFF")
 
 
 def end_bulk_pull_session(conn: sqlite3.Connection) -> None:
@@ -97,11 +108,23 @@ def end_bulk_pull_session(conn: sqlite3.Connection) -> None:
             conn.rollback()
         except sqlite3.Error:
             pass
-    sync_val, cache_val, temp_val = saved
+    sync_val, cache_val, temp_val, fk_val = saved
     try:
         conn.execute(f"PRAGMA synchronous={sync_val}")
         conn.execute(f"PRAGMA cache_size={cache_val}")
         conn.execute(f"PRAGMA temp_store={temp_val}")
+        conn.execute(f"PRAGMA foreign_keys={'ON' if fk_val else 'OFF'}")
+        if fk_val:
+            # FK enforcement was off for the duration of the pull; confirm the
+            # page writes didn't leave orphans behind now that it's back on.
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                print(
+                    f"[outreachmagic] Warning: {len(violations)} foreign-key violation(s) "
+                    "after pull. Ask Outreach Magic to check database health.",
+                    file=sys.stderr,
+                    flush=True,
+                )
     except sqlite3.OperationalError as exc:
         if "disk I/O error" in str(exc).lower() or "i/o error" in str(exc).lower():
             print(

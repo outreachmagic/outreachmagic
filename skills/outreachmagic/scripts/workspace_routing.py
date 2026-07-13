@@ -621,31 +621,62 @@ def upsert_all_identities(
     """Register all identities; return (identity conflicts, linkedin_url conflicts)."""
     conflicts: list[dict] = []
     linkedin_conflicts: list[dict] = []
-    for itype, val in identities:
-        if itype in NON_PERSISTED_IDENTITY_TYPES:
-            continue
-        try:
-            upsert_identity_alias(
-                conn, org_id, lead_id, itype, val, source=source,
-                promote_linkedin=False,
+    rows = [(t, v) for t, v in identities if t not in NON_PERSISTED_IDENTITY_TYPES]
+    if not rows:
+        return conflicts, linkedin_conflicts
+
+    # The UNIQUE (org_id, identity_type, identity_value_normalized) constraint
+    # already decides this, so a per-identity pre-SELECT is redundant: a row
+    # that exists is ignored whether it belongs to this lead or another. Insert
+    # the whole set in one batch, and only pay for ownership lookups when the
+    # insert count comes up short (i.e. something was already there).
+    cur = conn.executemany(
+        """INSERT OR IGNORE INTO lead_identities (
+               id, org_id, lead_id, identity_type, identity_value_normalized,
+               source, is_verified, created_at
+           ) VALUES (
+               lower(hex(randomblob(16))), ?, ?, ?, ?, ?, 0, datetime('now')
+           )""",
+        [(org_id, lead_id, t, v, source) for t, v in rows],
+    )
+    inserted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+    if inserted < len(rows):
+        pairs = ", ".join("(?, ?)" for _ in rows)
+        params: list = [org_id]
+        for t, v in rows:
+            params.extend((t, v))
+        owners = {
+            (r["identity_type"], r["identity_value_normalized"]): int(r["lead_id"])
+            for r in conn.execute(
+                f"""SELECT identity_type, identity_value_normalized, lead_id
+                    FROM lead_identities
+                    WHERE org_id = ?
+                      AND (identity_type, identity_value_normalized) IN (VALUES {pairs})""",
+                params,
             )
-        except ValueError:
-            existing = conn.execute(
-                """SELECT lead_id FROM lead_identities
-                   WHERE org_id = ? AND identity_type = ? AND identity_value_normalized = ?""",
-                (org_id, itype, val),
-            ).fetchone()
-            conflicts.append({
-                "identity_type": itype,
-                "value": val,
-                "existing_lead_id": int(existing["lead_id"]) if existing else None,
-            })
-    prom = promote_linkedin_url_from_identities(conn, org_id, lead_id)
-    if prom:
-        linkedin_conflicts.append(prom)
-    sn_prom = promote_linkedin_sales_nav_id_from_identities(conn, org_id, lead_id)
-    if sn_prom:
-        linkedin_conflicts.append(sn_prom)
+        }
+        for t, v in rows:
+            owner = owners.get((t, v))
+            if owner is not None and owner != lead_id:
+                conflicts.append({
+                    "identity_type": t,
+                    "value": v,
+                    "existing_lead_id": owner,
+                })
+
+    # Both promotes are pure no-ops unless this batch actually carries the
+    # identity type they read -- any promotion from a pre-existing identity row
+    # already happened on the call that inserted it. Skipping them here drops
+    # 4-6 SELECTs per event for the (common) payload with no LinkedIn data.
+    itypes = {t for t, _ in rows}
+    if "linkedin_url" in itypes:
+        prom = promote_linkedin_url_from_identities(conn, org_id, lead_id)
+        if prom:
+            linkedin_conflicts.append(prom)
+    if "linkedin_sales_nav_id" in itypes:
+        sn_prom = promote_linkedin_sales_nav_id_from_identities(conn, org_id, lead_id)
+        if sn_prom:
+            linkedin_conflicts.append(sn_prom)
     return conflicts, linkedin_conflicts
 
 

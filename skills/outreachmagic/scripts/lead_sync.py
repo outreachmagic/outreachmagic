@@ -594,17 +594,16 @@ def _lev_sources_for_lead(conn: sqlite3.Connection, lead_id: int) -> tuple[Optio
     return original, latest
 
 
-def apply_attribution_from_sync_payload(
-    conn: sqlite3.Connection,
-    lead_id: int,
+def _attribution_sets(
     payload: dict,
-) -> None:
-    """Restore source attribution from relay lead_core snapshot."""
-    row = conn.execute(
-        "SELECT original_source, original_source_detail FROM leads WHERE id = ?",
-        (lead_id,),
-    ).fetchone()
-    current_source = (row["original_source"] or "").strip() if row else ""
+    current_original_source: Optional[str],
+) -> tuple[list[str], list]:
+    """SET clauses restoring source attribution from a relay lead_core snapshot.
+
+    Split out from apply_attribution_from_sync_payload so the caller can fold
+    these into a larger single UPDATE on `leads` instead of issuing another one.
+    """
+    current_source = (current_original_source or "").strip()
     payload_source = (payload.get("original_source") or "").strip()
     upgrade_original = bool(payload_source) and current_source in _WEAK_ATTRIBUTION_SOURCES
 
@@ -633,6 +632,20 @@ def apply_attribution_from_sync_payload(
         if val is not None and str(val).strip():
             sets.append(f"{col} = ?")
             params.append(val)
+    return sets, params
+
+
+def apply_attribution_from_sync_payload(
+    conn: sqlite3.Connection,
+    lead_id: int,
+    payload: dict,
+) -> None:
+    """Restore source attribution from relay lead_core snapshot."""
+    row = conn.execute(
+        "SELECT original_source FROM leads WHERE id = ?",
+        (lead_id,),
+    ).fetchone()
+    sets, params = _attribution_sets(payload, row["original_source"] if row else None)
     if not sets:
         return
     sets.append("updated_at = datetime('now')")
@@ -641,6 +654,42 @@ def apply_attribution_from_sync_payload(
         f"UPDATE leads SET {', '.join(sets)} WHERE id = ?",
         params,
     )
+
+
+def agent_sync_extra_identities(
+    entity_key: Optional[str],
+    payload: dict,
+) -> list[tuple[str, str]]:
+    """Identities a lead_core payload carries beyond what its profile implies.
+
+    build_import_identities() (which resolve_lead runs on the profile) already
+    derives email / linkedin_url / external_id. These are the extras only the
+    relay snapshot knows: an explicit sales-nav id, secondary emails, and the
+    entity key itself. Shared by the resolve and apply halves of the lead_core
+    path so both agree on one identity set and only one of them has to write it.
+    """
+    out: list[tuple[str, str]] = []
+
+    def _add(itype: str, val: Optional[str]) -> None:
+        if val and not any(t == itype and v == val for t, v in out):
+            out.append((itype, val))
+
+    if payload.get("external_id"):
+        _add("external_id", str(payload["external_id"]))
+    if payload.get("linkedin"):
+        for itype, val in parse_linkedin_value(str(payload["linkedin"])):
+            _add(itype, val)
+    if payload.get("linkedin_sales_nav_id"):
+        _add(
+            "linkedin_sales_nav_id",
+            normalize_linkedin_sales_nav_id(str(payload["linkedin_sales_nav_id"])),
+        )
+    for addr in payload.get("secondary_emails") or []:
+        _add("email", str(addr).strip().lower())
+    itype, val = parse_entity_key(entity_key or "")
+    if itype and val and itype != "email":
+        _add(itype, val)
+    return out
 
 
 def resolve_lead_from_agent_sync(
@@ -663,13 +712,6 @@ def resolve_lead_from_agent_sync(
         extra["import_name"] = str(payload["import_name"])
     if payload.get("company_domain"):
         extra["company_domain"] = str(payload["company_domain"])
-    profile = {
-        k: payload[k]
-        for k in ("email", "name", "company", "title", "industry", "headcount")
-        if payload.get(k)
-    }
-    if payload.get("linkedin"):
-        profile["linkedin"] = payload["linkedin"]
     source, source_detail, source_platform = _attribution_from_sync_payload(payload)
     return resolve_lead(
         email=payload.get("email"),
@@ -707,67 +749,111 @@ def apply_agent_lead_core_payload(
     entity_key: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
     company_cache: Optional[dict] = None,
+    resolved: Optional[dict] = None,
 ) -> None:
-    """Apply org-wide lead profile from relay lead_core_update."""
+    """Apply org-wide lead profile from relay lead_core_update.
+
+    resolved: the resolve_lead() result, when this same payload just created or
+    matched the lead. Its identity set was already registered there, so we only
+    upsert whatever it didn't cover (normally nothing).
+
+    Every column this writes to `leads` goes out as a single UPDATE. It used to
+    be up to five -- enrich_lead, locations, company link, notes, attribution --
+    each rewriting the same 8-index row and bumping updated_at.
+    """
     from bounces import verify_email
-    from pipeline import (
-        enrich_lead,
-        link_lead_company,
-        _apply_personalization_payload,
-    )
+    from pipeline import ensure_company, _apply_personalization_payload
+    from pipeline_utils import email_domain
 
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
 
-    update_fields = {
-        k: v for k, v in payload.items()
-        if k in ("name", "title", "industry", "company", "headcount") and v is not None
-    }
-    if update_fields:
-        enrich_lead(
-            lead_id, overwrite=True, conn=conn, **update_fields,
-        )
+    # One read of the two columns the writes below actually depend on, in place
+    # of the separate SELECTs enrich_lead / link_lead_company / attribution each
+    # used to issue.
+    row = conn.execute(
+        "SELECT original_source, email_domain FROM leads WHERE id = ?", (lead_id,),
+    ).fetchone()
 
-    loc_sets, loc_params = [], []
-    for col in ("location_city", "location_state", "location_country", "linkedin_headline", "linkedin_bio"):
+    sets: list[str] = []
+    params: list = []
+    # Only some of these columns used to travel with an updated_at bump, and the
+    # distinction is load-bearing: leads.updated_at drives the timestamp-based
+    # relay push, so a bump here sends the lead straight back to the relay it
+    # just came from. Locations and the company link were deliberately "quiet"
+    # writes; the profile, notes and attribution ones were not.
+    bump_updated_at = False
+
+    def _set(col: str, val) -> None:
+        sets.append(f"{col} = ?")
+        params.append(val)
+
+    # Profile fields; was enrich_lead(overwrite=True), whose writes are
+    # unconditional for every truthy value.
+    for col in ("name", "title", "industry", "company", "headcount"):
         if payload.get(col):
-            loc_sets.append(f"{col} = ?")
-            loc_params.append(payload[col])
-    if loc_sets:
-        loc_params.append(lead_id)
-        conn.execute(
-            f"UPDATE leads SET {', '.join(loc_sets)} WHERE id = ?",
-            loc_params,
-        )
+            _set(col, payload[col])
+            bump_updated_at = True
 
-    link_lead_company(conn, lead_id, email=payload.get("email"), company_cache=company_cache)
+    for col in (
+        "location_city", "location_state", "location_country",
+        "linkedin_headline", "linkedin_bio",
+    ):
+        if payload.get(col):
+            _set(col, payload[col])
 
-    identities: list[tuple[str, str]] = []
-    if payload.get("external_id"):
-        identities.append(("external_id", str(payload["external_id"])))
-    if payload.get("linkedin"):
-        for itype, val in parse_linkedin_value(str(payload["linkedin"])):
-            if not any(t == itype and v == val for t, v in identities):
-                identities.append((itype, val))
-    if payload.get("linkedin_sales_nav_id"):
-        sn_norm = normalize_linkedin_sales_nav_id(str(payload["linkedin_sales_nav_id"]))
-        if sn_norm and not any(t == "linkedin_sales_nav_id" and v == sn_norm for t, v in identities):
-            identities.append(("linkedin_sales_nav_id", sn_norm))
-    for addr in payload.get("secondary_emails") or []:
-        addr_norm = str(addr).strip().lower()
-        if addr_norm and not any(t == "email" and v == addr_norm for t, v in identities):
-            identities.append(("email", addr_norm))
-    itype, val = parse_entity_key(entity_key or "")
-    if itype and val and itype != "email":
-        if not any(t == itype and v == val for t, v in identities):
-            identities.append((itype, val))
+    if payload.get("notes"):
+        _set("notes", payload["notes"])
+        bump_updated_at = True
+
+    # Company link; was link_lead_company(company=None), i.e. company_id only,
+    # resolved from the email domain.
+    email = payload.get("email")
+    if email:
+        domain = email_domain(email)
+    else:
+        domain = ((row["email_domain"] or "").strip().lower() or None) if row else None
+    company_id = ensure_company(conn, domain=domain, company_cache=company_cache)
+    if company_id:
+        _set("company_id", company_id)
+
+    attr_sets, attr_params = _attribution_sets(
+        payload, row["original_source"] if row else None,
+    )
+    if attr_sets:
+        sets.extend(attr_sets)
+        params.extend(attr_params)
+        bump_updated_at = True
+
+    if sets:
+        if bump_updated_at:
+            sets.append("updated_at = datetime('now')")
+        params.append(lead_id)
+        conn.execute(f"UPDATE leads SET {', '.join(sets)} WHERE id = ?", params)
+
+    # resolve_lead already registered the identities it derived from the profile
+    # (email, linkedin_url, ...) under the payload's own source platform. Anything
+    # it covered would only come back as an ignored INSERT here, so drop it: what
+    # remains is the genuinely new extras, still written under "agent_sync" exactly
+    # as before. Skipping the overlap also skips the LinkedIn promote pass, which
+    # resolve_lead has already run.
+    identities = agent_sync_extra_identities(entity_key, payload)
+    if resolved is not None:
+        already = {(t, v) for t, v in (resolved.get("identities") or [])}
+        identities = [pair for pair in identities if pair not in already]
     if identities:
         upsert_all_identities(conn, org_id, lead_id, identities, source="agent_sync")
-    for addr in payload.get("secondary_emails") or []:
-        conn.execute(
+
+    secondary = [
+        (lead_id, str(addr).strip().lower())
+        for addr in payload.get("secondary_emails") or []
+        if str(addr).strip()
+    ]
+    if secondary:
+        conn.executemany(
             "INSERT OR IGNORE INTO lead_emails (lead_id, email, is_primary) VALUES (?, ?, 0)",
-            (lead_id, str(addr).strip().lower()),
+            secondary,
         )
 
     personalization = payload.get("personalization")
@@ -777,19 +863,11 @@ def apply_agent_lead_core_payload(
             conn=conn,
         )
 
-    if payload.get("notes"):
-        conn.execute(
-            "UPDATE leads SET notes = ?, updated_at = datetime('now') WHERE id = ?",
-            (payload["notes"], lead_id),
-        )
-
     provider_attempts = payload.get("provider_attempts")
     if provider_attempts:
         from pipeline_provider_attempts import apply_provider_attempts_payload
 
         apply_provider_attempts_payload(conn, lead_id, provider_attempts)
-
-    apply_attribution_from_sync_payload(conn, lead_id, payload)
 
     if own_conn:
         conn.commit()

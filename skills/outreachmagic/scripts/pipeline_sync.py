@@ -732,6 +732,7 @@ def ingest_agent_entry(
                 conn.close()
                 conn = None
         elif action == "lead_core_update":
+            resolved = None
             with _phase("agent_lead_core_resolve", phase_timer):
                 lead_id = find_lead_by_identifier(conn, entity_key) if entity_key else None
                 if not lead_id:
@@ -746,13 +747,16 @@ def ingest_agent_entry(
                         _record_mark(dedupe_key, None)
                         return None
                     lead_id = result.get("id")
+                    # Hand the resolve result to apply so it doesn't re-register
+                    # the identity set resolve_lead just wrote from this payload.
+                    resolved = result
                     if not own_conn:
                         conn = pull_conn
             if lead_id:
                 with _phase("agent_lead_core_apply", phase_timer):
                     apply_agent_lead_core_payload(
                         lead_id, payload, org_id=org_id, entity_key=entity_key, conn=conn,
-                        company_cache=company_cache,
+                        company_cache=company_cache, resolved=resolved,
                     )
             if own_conn and conn is not None:
                 with _phase("commit", phase_timer):
@@ -1421,6 +1425,7 @@ def _ingest_relay_page(
     routing_config: Optional[OrgRoutingConfig] = None,
     ws_slug_map: Optional[dict[str, str]] = None,
     routing_cache: Optional[CampaignRoutingCache] = None,
+    company_cache: Optional[dict] = None,
 ) -> dict:
     from pipeline import prefetch_relay_ingested, prefetch_ws_idempotency_keys
 
@@ -1470,12 +1475,15 @@ def _ingest_relay_page(
     )
     activity_refresh_pairs: set[tuple[int, str]] = set()
     phase_timer: dict[str, float] = {}
-    # Page-scoped: company lookups are re-run per row (resolve phase + apply
-    # phase both call ensure_company) and often repeat across rows sharing a
-    # company/domain. One cache per page turns those repeat SELECTs into dict
-    # lookups; discarded at the end of the page since companies can be
-    # created mid-page and must stay visible to later rows within it anyway.
-    company_cache: dict = {}
+    # Company lookups repeat constantly -- the resolve and apply phases both call
+    # ensure_company for the same row, and rows sharing a company/domain are
+    # common. The caller passes a cache scoped to the whole pull so a company
+    # resolved on page 1 isn't re-SELECTed on each of the next 166 pages; we only
+    # fall back to a page-local one when ingesting a page standalone. Safe to
+    # hold across pages because the pull is the sole writer and ensure_company
+    # keeps the cached row in sync with what it writes.
+    if company_cache is None:
+        company_cache = {}
     ingest_kw = {
         "debug_sentiment": debug_sentiment,
         "quiet": quiet,
@@ -1750,6 +1758,18 @@ def sync_from_relay_org(
     pull_routing_config: Optional[OrgRoutingConfig] = None
     pull_ws_slug_map: dict[str, str] = {}
     pull_routing_cache: Optional[CampaignRoutingCache] = None
+    # Shared by every page of this pull -- see _ingest_relay_page.
+    pull_company_cache: dict = {}
+
+    # Page N+1's download overlaps page N's ingest. Whether another page follows
+    # -- and what cursor it starts from -- is decided entirely by the current
+    # page's response, never by the ingest, so the next fetch can be in flight
+    # while we spend ~10s writing this one. Strictly sequential fetch-then-ingest
+    # left the network idle for the whole of every ingest.
+    prefetch: Optional[concurrent.futures.Future] = None
+    prefetch_pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="om-pull-prefetch",
+    )
 
     pull_phases = _relay_pull_phases(full, do_events, kinds)
     event_pull_started_at: Optional[float] = None
@@ -1765,14 +1785,18 @@ def sync_from_relay_org(
                 while True:
                     event_pages += 1
                     request_limit = event_pull_limit
-                    result = pull_events_org(
-                        agent_key,
-                        after_id=page_after_id or None,
-                        include_pending=event_pages == 1,
-                        include_queue_resolutions=event_pages == 1,
-                        limit=request_limit,
-                        timeout=pull_timeout,
-                    )
+                    if prefetch is not None:
+                        result = prefetch.result()
+                        prefetch = None
+                    else:
+                        result = pull_events_org(
+                            agent_key,
+                            after_id=page_after_id or None,
+                            include_pending=event_pages == 1,
+                            include_queue_resolutions=event_pages == 1,
+                            limit=request_limit,
+                            timeout=pull_timeout,
+                        )
                     if result.get("error"):
                         raise RuntimeError(result.get("message", "pull failed"))
 
@@ -1834,6 +1858,34 @@ def sync_from_relay_org(
                             flush=True,
                         )
 
+                    # Decided by `result` alone, so it's safe to settle here --
+                    # before the ingest -- and use it to start the next fetch.
+                    next_after_id = int(result.get("max_id") or page_after_id)
+                    cursor_is_stalled = (
+                        len(events) >= request_limit and next_after_id <= page_after_id
+                    )
+                    has_more = result.get("has_more_events")
+                    effective_limit = int(result.get("pull_limit") or request_limit)
+                    if (
+                        has_more is False
+                        and len(events) >= effective_limit
+                        and effective_limit < request_limit
+                    ):
+                        # Old clients may request 5k; worker caps events at RELAY_PULL_EVENT_MAX.
+                        has_more = True
+                    is_last_page = len(events) < effective_limit or has_more is False
+
+                    if not cursor_is_stalled and not is_last_page:
+                        prefetch = prefetch_pool.submit(
+                            pull_events_org,
+                            agent_key,
+                            after_id=next_after_id or None,
+                            include_pending=False,
+                            include_queue_resolutions=False,
+                            limit=request_limit,
+                            timeout=pull_timeout,
+                        )
+
                     pull_session, pull_routing_config, pull_ws_slug_map, pull_routing_cache = (
                         _begin_pull_ingest_session(
                             pull_session,
@@ -1854,6 +1906,7 @@ def sync_from_relay_org(
                         routing_config=pull_routing_config,
                         ws_slug_map=pull_ws_slug_map,
                         routing_cache=pull_routing_cache,
+                        company_cache=pull_company_cache,
                     )
                     ingest_elapsed = time.monotonic() - ingest_started
                     if not quiet:
@@ -1873,23 +1926,13 @@ def sync_from_relay_org(
                     assigned_resolved += batch.get("assigned_resolved", 0)
                     newest_relay_id_seen = max(newest_relay_id_seen, batch["newest_relay_id_seen"])
 
-                    next_after_id = int(result.get("max_id") or page_after_id)
-                    if len(events) >= request_limit and next_after_id <= page_after_id:
+                    if cursor_is_stalled:
                         cursor_stalled = True
                         break
                     page_after_id = next_after_id
                     if page_after_id:
                         set_last_max_id(page_after_id)
-                    has_more = result.get("has_more_events")
-                    effective_limit = int(result.get("pull_limit") or request_limit)
-                    if (
-                        has_more is False
-                        and len(events) >= effective_limit
-                        and effective_limit < request_limit
-                    ):
-                        # Old clients may request 5k; worker caps events at RELAY_PULL_EVENT_MAX.
-                        has_more = True
-                    if len(events) < effective_limit or has_more is False:
+                    if is_last_page:
                         break
 
             elif _pull_phase == "snapshots":
@@ -2002,6 +2045,7 @@ def sync_from_relay_org(
                             routing_config=pull_routing_config,
                             ws_slug_map=pull_ws_slug_map,
                             routing_cache=pull_routing_cache,
+                            company_cache=pull_company_cache,
                         )
                         ingest_elapsed = time.monotonic() - ingest_started
                         imported += batch["imported"]
@@ -2049,6 +2093,11 @@ def sync_from_relay_org(
                         if not snap_result.get("has_more_snapshots"):
                             break
     finally:
+        # Drop any page we prefetched but never got to (early break, or an
+        # exception mid-ingest) rather than blocking on its download.
+        if prefetch is not None:
+            prefetch.cancel()
+        prefetch_pool.shutdown(wait=False, cancel_futures=True)
         if pull_session is not None:
             end_bulk_pull_session(pull_session)
             pull_session.close()

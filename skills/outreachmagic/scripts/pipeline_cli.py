@@ -375,6 +375,21 @@ def main():
     lead_table_p.add_argument("--markdown", action="store_true", help="Render as markdown table")
     lead_table_p.add_argument("--json", action="store_true")
 
+    # --- relay round-trip troubleshooting -----------------------------------
+    for _name, _help in (
+        ("sync-preview", "Show the exact payload that WOULD be pushed for a lead (sends nothing)"),
+        ("sync-diff", "Compare a lead's local payload against what the relay actually stores"),
+        ("sync-audit", "Timeline of every payload pushed/pulled for a lead, with errors"),
+    ):
+        _p = sub.add_parser(_name, help=_help)
+        _g = _p.add_mutually_exclusive_group(required=True)
+        _g.add_argument("--lead-id", type=int, help="Lead id")
+        _g.add_argument("--email", help="Look the lead up by email instead")
+        _p.add_argument("--json", action="store_true")
+        if _name == "sync-audit":
+            _p.add_argument("--last", type=int, default=20, help="Rows to show (default 20)")
+            _p.add_argument("--errors", action="store_true", help="Only rows that errored")
+
     stats_p = sub.add_parser("stats", help="Pipeline statistics")
     stats_p.add_argument("--pull", action="store_true", help="Pull latest events before showing")
     stats_p.add_argument(
@@ -2362,6 +2377,20 @@ def main():
         else:
             _pipeline.print_freshness_stderr(_pipeline.get_last_pull())
             print(rq.format_daily_digest(digest))
+    elif args.command in ("sync-preview", "sync-diff", "sync-audit"):
+        import sync_debug
+        if args.command == "sync-preview":
+            return sync_debug.cmd_preview(
+                lead_id=args.lead_id, email=args.email, as_json=args.json,
+            )
+        if args.command == "sync-diff":
+            return sync_debug.cmd_diff(
+                lead_id=args.lead_id, email=args.email, as_json=args.json,
+            )
+        return sync_debug.cmd_audit(
+            lead_id=args.lead_id, email=args.email,
+            limit=args.last, errors_only=args.errors, as_json=args.json,
+        )
     elif args.command == "stats":
         total_events = _pipeline.get_conn().execute("SELECT COUNT(*) FROM events").fetchone()[0]
         _pipeline.print_freshness_stderr(_pipeline.get_last_pull(), total_events=total_events)

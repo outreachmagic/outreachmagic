@@ -814,6 +814,15 @@ def migrate_db(conn=None):
     except sqlite3.OperationalError:
         pass
 
+    # Wire audit trail: every payload that crosses the relay boundary, logged
+    # before the HTTP call. See sync_audit.py.
+    from sync_audit import SCHEMA_SQL as SYNC_AUDIT_SCHEMA, DEFAULT_RETENTION_DAYS
+    conn.executescript(SYNC_AUDIT_SCHEMA)
+    conn.execute(
+        "DELETE FROM sync_audit WHERE created_at < datetime('now', ?)",
+        (f"-{DEFAULT_RETENTION_DAYS} days",),
+    )
+
     conn.commit()
     if own_conn:
         conn.close()

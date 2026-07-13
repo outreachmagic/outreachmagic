@@ -1039,6 +1039,17 @@ def _relay_log(msg: str) -> None:
             pass
 
 
+def _audit_result(audit_ids, *, http_status=None, error=None) -> None:
+    """Attach a push outcome to its pre-flight audit rows. Never raises."""
+    if not audit_ids:
+        return
+    try:
+        from sync_audit import record_push_result
+        record_push_result(audit_ids, http_status=http_status, error=error)
+    except Exception:
+        pass  # auditing must never break a sync
+
+
 def _relay_push_batches(
     agent_key: str,
     entries: list[dict],
@@ -1077,6 +1088,16 @@ def _relay_push_batches(
         batch_mark = mark_ids[i : i + batch_size] if mark_ids else None
         body = json.dumps({"client_id": client_id, "entries": batch}).encode()
         body_kb = len(body) / 1024
+        # Log what we are about to send BEFORE sending it. A push that fails, is
+        # dropped, or silently no-ops then still leaves a trace -- which is the
+        # exact failure mode that makes "why didn't this sync?" unanswerable today.
+        try:
+            from sync_audit import record_push
+            audit_ids = record_push(
+                batch, batch_label=f"{stream_label} {batch_num}/{total_batches}"
+            )
+        except Exception:
+            audit_ids = []  # auditing must never break a sync
         _relay_log(
             f"{_ARROW_PUSH} {_stream_pad(stream_label)}: "
             f"sending {_page_label(batch_num, total_batches)} "
@@ -1100,6 +1121,7 @@ def _relay_push_batches(
                     count = int(result.get("pushed", 0) or 0)
                     total_pushed += count
                     last_error = None
+                    _audit_result(audit_ids, http_status=resp.status)
                     written = int(result.get("snapshot_upserts", 0) or 0)
                     unchanged = int(result.get("snapshot_skipped_unchanged", 0) or 0)
                     elapsed = time.monotonic() - batch_t0
@@ -1184,6 +1206,7 @@ def _relay_push_batches(
                 last_error = f"relay push failed: {exc}"
                 break
         if last_error:
+            _audit_result(audit_ids, error=last_error)
             break
 
     recommendation: Optional[str] = None

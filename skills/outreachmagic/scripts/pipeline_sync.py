@@ -283,6 +283,23 @@ def find_lead_by_identifier(conn: sqlite3.Connection, entity_key: str) -> Option
     key = entity_key.strip()
     if "@" in key:
         return find_lead_by_email(conn, key.lower())
+
+    # Explicit "type:value" keys must be tried FIRST. The LinkedIn branch below
+    # sniffs for the substring "linkedin", which the prefix of a
+    # "linkedin_sales_nav_id:ACwAA..." key contains -- so those keys were
+    # hijacked into the URL branch, where normalize_linkedin() mangled the whole
+    # prefixed string into "linkedin_sales_nav_id:acwaa..." and matched nothing.
+    # They never reached parse_entity_key(), which resolves them correctly.
+    #
+    # The lead is then treated as missing and the snapshot apply path calls
+    # resolve_lead_from_agent_sync(entity_key, {}) with an EMPTY payload, which
+    # creates a name="Unknown" lead with no identity -- the junk-lead factory.
+    itype, val = parse_entity_key(key)
+    if itype and val:
+        found = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
+        if found:
+            return found
+
     if (
         "linkedin" in key.lower()
         or key.startswith("http")
@@ -290,15 +307,12 @@ def find_lead_by_identifier(conn: sqlite3.Connection, entity_key: str) -> Option
         or key.startswith("ACoAA")
         or key.lower().startswith("urn:li:")
     ):
-        for itype, val in parse_linkedin_value(key):
-            found = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
+        for li_type, li_val in parse_linkedin_value(key):
+            found = find_lead_by_identity(conn, DEFAULT_ORG_ID, li_type, li_val)
             if found:
                 return found
         norm = normalize_linkedin(key)
         return find_lead_by_linkedin(conn, norm) if norm else None
-    itype, val = parse_entity_key(key)
-    if itype and val:
-        return find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, val)
     return None
 
 
@@ -1433,6 +1447,14 @@ def _ingest_relay_page(
     company_cache: Optional[dict] = None,
 ) -> dict:
     from pipeline import prefetch_relay_ingested, prefetch_ws_idempotency_keys
+
+    # Record what the relay actually handed us, so `sync-diff` can compare the
+    # inbound snapshot against what we would send back out.
+    try:
+        from sync_audit import record_pull
+        record_pull(events, conn=pull_conn)
+    except Exception:
+        pass  # auditing must never break a pull
 
     imported = skipped = skipped_duplicates = skipped_filtered = skipped_errors = 0
     skipped_resolved = assigned_resolved = 0

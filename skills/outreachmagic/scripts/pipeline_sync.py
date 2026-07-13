@@ -117,13 +117,17 @@ import connections_cloud
 import quarantine_resolutions as qres
 import routing_cloud
 # ── Module-level constants (originally from pipeline.py) ──────────────
-PULL_KINDS_ALL = frozenset({"events", "core", "workspace", "company", "sender_account"})
+PULL_KINDS_ALL = frozenset({"events", "core", "workspace", "company", "sender_account", "sender_domain"})
 RELAY_PULL_HTTP_TIMEOUT = 60
 RELAY_PULL_HTTP_RETRIES = 2
 RELAY_URL = "https://api.outreachmagic.io"
 _SNAPSHOT_KIND_STREAM = {
-    "core": "Lead", "workspace": "Workspace", "company": "Company", "sender_account": "SenderAccount",
+    "core": "Lead", "workspace": "Workspace", "company": "Company",
+    "sender_account": "SenderAccount", "sender_domain": "SenderDomain",
 }
+# Snapshot kinds pulled via the per-kind snapshot_after_id/snapshot_kind cursor
+# mechanism (as opposed to the plain events cursor).
+_SNAPSHOT_PULL_KINDS = ("company", "core", "workspace", "sender_account", "sender_domain")
 _RELAY_STREAM_EVENT = "Event"
 _ARROW_PULL = "↓"
 _ARROW_PUSH = "↑"
@@ -1659,7 +1663,7 @@ def _relay_pull_phases(full: bool, do_events: bool, kinds: frozenset) -> tuple[s
     Full rebuild pulls snapshots before events so agent event_log replay can attach
     to leads that only exist after lead_core / lead_workspace snapshots ingest.
     """
-    has_snapshots = bool(kinds & {"company", "core", "workspace"})
+    has_snapshots = bool(kinds & set(_SNAPSHOT_PULL_KINDS))
     if full and do_events and has_snapshots:
         return ("snapshots", "events")
     phases: list[str] = []
@@ -1694,7 +1698,7 @@ def sync_from_relay_org(
     if skip_snapshots:
         kinds = frozenset(k for k in kinds if k == "events")
     do_events = "events" in kinds
-    do_snapshots = bool(kinds & {"company", "core", "workspace"})
+    do_snapshots = bool(kinds & set(_SNAPSHOT_PULL_KINDS))
     needs_routing_sync = do_events or (full and do_snapshots)
     if not skip_routing_sync and needs_routing_sync:
         try:
@@ -1713,7 +1717,7 @@ def sync_from_relay_org(
     if not quiet:
         if do_events:
             print("Contacting relay to pull new events...", flush=True)
-        elif kinds & {"company", "core", "workspace"}:
+        elif kinds & set(_SNAPSHOT_PULL_KINDS):
             print(f"Contacting relay to pull snapshots ({', '.join(sorted(kinds))})...", flush=True)
 
     imported = skipped = 0
@@ -1729,7 +1733,7 @@ def sync_from_relay_org(
     initial_after_id = page_after_id
     snapshot_cursors = {
         kind: 0 if full else get_snapshot_cursor(kind)
-        for kind in ("core", "workspace", "company")
+        for kind in _SNAPSHOT_PULL_KINDS
     }
     snapshot_cursors_start = dict(snapshot_cursors)
 
@@ -1750,14 +1754,14 @@ def sync_from_relay_org(
     if not quiet and do_events:
         snap_hint = (
             f", snapshots up to {snap_pull_limit}/page"
-            if kinds & {"core", "workspace"}
+            if kinds & set(_SNAPSHOT_PULL_KINDS)
             else ""
         )
         print(
             f"Pulling from relay (events: {event_pull_limit}/page{snap_hint})...",
             flush=True,
         )
-    elif not quiet and kinds & {"core", "workspace"}:
+    elif not quiet and kinds & set(_SNAPSHOT_PULL_KINDS):
         print("Pulling from relay (snapshots only)...", flush=True)
 
     pull_session: Optional[sqlite3.Connection] = None
@@ -1942,7 +1946,7 @@ def sync_from_relay_org(
                         break
 
             elif _pull_phase == "snapshots":
-                for snap_kind in ("company", "core", "workspace"):
+                for snap_kind in _SNAPSHOT_PULL_KINDS:
                     if snap_kind not in kinds:
                         continue
                     kind_pages = 0

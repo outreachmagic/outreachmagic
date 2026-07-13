@@ -741,7 +741,7 @@ def main():
     pull_p.add_argument(
         "--kind",
         metavar="KINDS",
-        help="Comma-separated streams: events,core,workspace (default: all)",
+        help="Comma-separated streams: events,core,workspace,company,sender_account,sender_domain (default: all)",
     )
     pull_p.add_argument(
         "--skip-snapshots",

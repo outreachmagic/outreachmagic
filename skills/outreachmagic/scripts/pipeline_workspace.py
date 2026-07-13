@@ -1757,7 +1757,7 @@ def _push_pending_sender_domain_updates(
         agent_key,
         entries,
         client_id,
-        stream_label="SenderDomain",
+        stream_label=_SNAPSHOT_KIND_STREAM["sender_domain"],
         bulk=bulk,
         snapshot_bulk=True,
     )

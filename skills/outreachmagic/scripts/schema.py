@@ -175,6 +175,10 @@ CREATE TABLE IF NOT EXISTS workspace_leads (
 CREATE INDEX IF NOT EXISTS idx_workspace_leads_status ON workspace_leads(workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_workspace_leads_owner ON workspace_leads(workspace_id, owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_leads_activity ON workspace_leads(workspace_id, last_activity_at);
+-- All four indexes above lead with workspace_id; every lead_id-only lookup
+-- (relay ingest's stage-downgrade guard, merge_leads, activity_sync, etc.)
+-- had no usable index and fell back to a full table scan of workspace_leads.
+CREATE INDEX IF NOT EXISTS idx_workspace_leads_lead_id ON workspace_leads(lead_id);
 
 CREATE TABLE IF NOT EXISTS workspace_lead_events (
     id                  TEXT PRIMARY KEY,

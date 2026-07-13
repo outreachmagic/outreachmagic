@@ -365,6 +365,12 @@ def migrate_db(conn=None):
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_companies_name_lower ON companies(lower(name))"
     )
+    # workspace_leads' other indexes all lead with workspace_id; lead_id-only
+    # lookups (relay pull's stage-downgrade guard, merge_leads, activity_sync)
+    # were falling back to a full table scan that grows with total lead count.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workspace_leads_lead_id ON workspace_leads(lead_id)"
+    )
     from pipeline import backfill_campaigns_from_events, backfill_plusvibe_status_metadata
 
     backfill_campaigns_from_events(conn)

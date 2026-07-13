@@ -7,6 +7,7 @@ import json
 import sqlite3
 import sys
 import time
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -46,6 +47,66 @@ from relay_extractors import (
     name_from_email,
 )
 from workspace_routing import DEFAULT_ORG_ID, extract_campaign_context
+
+
+# --- --debug-sentiment tally -------------------------------------------------
+# This used to print a line per event. On a full pull that's ~120k lines: slow
+# enough to matter (it's inside the measured ingest), and dense enough that the
+# mapping gaps it exists to surface scroll away -- or get truncated mid-write --
+# before anyone can read them. Accumulate instead, and let the pull print one
+# summary at the end. The line that actually matters is the unmapped count: a
+# status label that produced no sentiment is the bug this flag is for.
+_SENTIMENT_MAPPED: Counter = Counter()
+_SENTIMENT_UNMAPPED: Counter = Counter()
+_SENTIMENT_DUPES = 0
+
+
+def reset_sentiment_debug() -> None:
+    global _SENTIMENT_DUPES
+    _SENTIMENT_MAPPED.clear()
+    _SENTIMENT_UNMAPPED.clear()
+    _SENTIMENT_DUPES = 0
+
+
+def record_sentiment_debug(
+    event_type: str,
+    raw_label: str,
+    raw_sentiment: str,
+    normalized_label: str,
+    normalized_sentiment: str,
+) -> None:
+    if normalized_sentiment:
+        _SENTIMENT_MAPPED[(normalized_label or "-", normalized_sentiment)] += 1
+    else:
+        # Carried a status signal but came out the far side with no sentiment.
+        _SENTIMENT_UNMAPPED[(event_type, raw_label or raw_sentiment or "-")] += 1
+
+
+def record_sentiment_debug_duplicate() -> None:
+    global _SENTIMENT_DUPES
+    _SENTIMENT_DUPES += 1
+
+
+def format_sentiment_debug_summary() -> str:
+    total = sum(_SENTIMENT_MAPPED.values())
+    unmapped = sum(_SENTIMENT_UNMAPPED.values())
+    lines = [f"[sentiment] {total + unmapped:,} status events seen"]
+    width = max((len(lbl) for lbl, _ in _SENTIMENT_MAPPED), default=0)
+    for (label, sentiment), count in sorted(
+        _SENTIMENT_MAPPED.items(), key=lambda kv: (-kv[1], kv[0])
+    ):
+        lines.append(f"[sentiment]   {label:<{width}} -> {sentiment:<10} {count:>8,}")
+    if _SENTIMENT_DUPES:
+        lines.append(f"[sentiment] {_SENTIMENT_DUPES:,} skipped as duplicates")
+    if unmapped:
+        lines.append(f"[sentiment] UNMAPPED: {unmapped:,} event(s) produced no sentiment")
+        for (event_type, label), count in sorted(
+            _SENTIMENT_UNMAPPED.items(), key=lambda kv: (-kv[1], kv[0])
+        ):
+            lines.append(f"[sentiment]   {event_type} label={label} {count:>8,}")
+    else:
+        lines.append("[sentiment] unmapped: 0")
+    return "\n".join(lines)
 
 
 def normalize_lead_status_display(label: str) -> str:
@@ -755,11 +816,7 @@ def ingest_relay_event(
     )
     if ws_dup or relay_dup:
         if debug_sentiment and relay_dup and event.get("platform") in PLUSVIBE_PLATFORMS:
-            print(
-                "[debug:sentiment] skipped duplicate "
-                f"event_type={event.get('event_type','unknown')} "
-                f"relay_id={event.get('relay_id') or '-'} dedupe_key={dedupe_key}"
-            )
+            record_sentiment_debug_duplicate()
         if own_conn:
             conn.close()
         return None
@@ -1065,18 +1122,15 @@ def ingest_relay_event(
     if debug_sentiment and platform in PLUSVIBE_PLATFORMS:
         raw_label_str = (payload.get("label") or "").strip().lower()
         raw_sentiment_str = (payload.get("sentiment") or "").strip().lower()
-        signal_label = (signals.get("label") or "").strip().lower()
-        signal_sentiment = (signals.get("sentiment") or "").strip().lower()
         normalized_label = metadata.get("lead_status_raw", "")
         normalized_sentiment = metadata.get("lead_status_sentiment", "")
         if normalized_label or normalized_sentiment or envelope_event_type.startswith("lead_marked_as_"):
-            print(
-                "[debug:sentiment] "
-                f"event_type={envelope_event_type} "
-                f"raw_label={raw_label_str or '-'} raw_sentiment={raw_sentiment_str or '-'} "
-                f"signal_label={signal_label or '-'} signal_sentiment={signal_sentiment or '-'} "
-                f"normalized_label={normalized_label or '-'} "
-                f"normalized_sentiment={normalized_sentiment or '-'}"
+            record_sentiment_debug(
+                envelope_event_type,
+                raw_label_str,
+                raw_sentiment_str,
+                normalized_label,
+                normalized_sentiment,
             )
 
     if (

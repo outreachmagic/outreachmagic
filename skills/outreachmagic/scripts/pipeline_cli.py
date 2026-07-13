@@ -726,7 +726,7 @@ def main():
     pull_p.add_argument(
         "--debug-sentiment",
         action="store_true",
-        help="Print raw vs normalized sentiment mapping during ingest",
+        help="Print a label -> sentiment mapping summary (and any unmapped labels) after the pull",
     )
     pull_p.add_argument(
         "--skip-routing-sync",

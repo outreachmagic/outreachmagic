@@ -1684,6 +1684,11 @@ def sync_from_relay_org(
     """Import relay events for the org. Cursors: last_max_id (events), snapshot cursors (core/workspace/company)."""
     from pipeline import pull_events_org, _ingest_relay_page, _snapshot_pending_count, RELAY_PULL_EVENT_MAX
 
+    if debug_sentiment:
+        from relay_ingest import reset_sentiment_debug
+
+        reset_sentiment_debug()
+
     kinds = pull_kinds or PULL_KINDS_ALL
     if skip_snapshots:
         kinds = frozenset(k for k in kinds if k == "events")
@@ -2152,6 +2157,10 @@ def sync_from_relay_org(
                 "cursor_advanced": cursor_advanced,
             }),
         })
+    if debug_sentiment:
+        from relay_ingest import format_sentiment_debug_summary
+
+        print(format_sentiment_debug_summary(), flush=True)
     if not quiet:
         from pipeline import print_quarantine_guidance
 

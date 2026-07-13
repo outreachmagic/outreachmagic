@@ -24,7 +24,11 @@ from workspace_routing import (  # noqa: E402
     DEFAULT_ORG_ID,
     WORKSPACE_ROUTING_MULTI,
     WORKSPACE_ROUTING_SINGLE,
+    assign_campaign_map,
     build_import_identities,
+    deactivate_campaign_map,
+    deactivate_shadowed_backfill_rules,
+    detect_shadow_conflicts,
     build_import_key_fingerprint,
     extract_campaign_context,
     find_lead_by_identity,
@@ -826,6 +830,173 @@ def test_campaign_stats_normalizes_linkedin_sent_and_reply_counts():
     assert row.get("linkedin_messages_sent") == 1
     assert row.get("linkedin_message_replies") == 1
     assert "normalized:" in (row.get("event_summary") or "")
+
+
+def _map_source(conn, map_id):
+    row = conn.execute(
+        "SELECT map_source FROM campaign_workspace_map WHERE id = ?", (map_id,)
+    ).fetchone()
+    return row["map_source"] if row else None
+
+
+def test_backfill_rows_marked_single_mode_backfill():
+    _reset_db()
+    from pipeline_migration import backfill_workspace_routing
+
+    conn = om.get_conn()
+    conn.execute("INSERT INTO campaigns (name) VALUES ('acme summer')")
+    conn.commit()
+    backfill_workspace_routing(conn)
+    conn.commit()
+    row = conn.execute(
+        """SELECT id, map_source FROM campaign_workspace_map
+           WHERE match_strategy = 'name_exact' AND campaign_name_normalized = 'acme summer'"""
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row["map_source"] == "single_mode_backfill"
+
+
+def test_add_campaign_map_cli_rows_marked_manual():
+    _reset_db()
+    om.create_workspace("Widget Co", slug="widgetco")
+    result = om.add_campaign_map_cli(
+        "*", "widgetco", campaign_name="acme summer", match_strategy="name_exact"
+    )
+    conn = om.get_conn()
+    assert _map_source(conn, result["map_id"]) == "manual"
+    conn.close()
+
+
+def test_deactivate_shadowed_backfill_deactivates_backfill_but_not_manual():
+    _reset_db()
+    from pipeline_migration import backfill_workspace_routing
+
+    conn = om.get_conn()
+    ws_a = om.ensure_default_org_workspace(conn)
+    # A backfilled name_exact row (stale single-mode debris).
+    conn.execute("INSERT INTO campaigns (name) VALUES ('acme summer')")
+    conn.commit()
+    backfill_workspace_routing(conn)
+    conn.commit()
+    # A deliberate manual name_exact override for a different name.
+    manual_id = assign_campaign_map(
+        conn, DEFAULT_ORG_ID, source_platform="*", workspace_id=ws_a,
+        campaign_name="acme winter", match_strategy="name_exact",
+    )
+    conn.commit()
+    deactivated = deactivate_shadowed_backfill_rules(
+        conn, DEFAULT_ORG_ID, source_platform="*", match_strategy="rule_contains", pattern="acme",
+    )
+    conn.commit()
+    names = {d["campaign_name"] for d in deactivated}
+    assert "acme summer" in names  # backfill row deactivated
+    assert "acme winter" not in names  # manual row untouched
+    assert _map_source(conn, manual_id) == "manual"
+    manual_active = conn.execute(
+        "SELECT is_active FROM campaign_workspace_map WHERE id = ?", (manual_id,)
+    ).fetchone()["is_active"]
+    conn.close()
+    assert manual_active == 1
+
+
+def test_backfill_run_twice_never_resurrects_deactivated_row():
+    _reset_db()
+    from pipeline_migration import backfill_workspace_routing
+
+    conn = om.get_conn()
+    conn.execute("INSERT INTO campaigns (name) VALUES ('acme summer')")
+    conn.commit()
+    backfill_workspace_routing(conn)
+    conn.commit()
+    row = conn.execute(
+        """SELECT id FROM campaign_workspace_map
+           WHERE match_strategy = 'name_exact' AND campaign_name_normalized = 'acme summer'"""
+    ).fetchone()
+    map_id = row["id"]
+    conn.execute("UPDATE campaign_workspace_map SET is_active = 0 WHERE id = ?", (map_id,))
+    conn.commit()
+    # A second backfill run must not flip is_active back to 1.
+    backfill_workspace_routing(conn)
+    conn.commit()
+    is_active = conn.execute(
+        "SELECT is_active FROM campaign_workspace_map WHERE id = ?", (map_id,)
+    ).fetchone()["is_active"]
+    conn.close()
+    assert is_active == 0
+
+
+def test_reported_bug_manual_name_exact_shadows_rule_then_deactivate_fixes():
+    _reset_db()
+    conn = om.get_conn()
+    ws_a = om.create_workspace("Alpha", slug="alpha")
+    ws_b = om.create_workspace("Beta", slug="beta")
+    ws_a_id = ws_a["id"] if isinstance(ws_a, dict) else ws_a
+    ws_b_id = ws_b["id"] if isinstance(ws_b, dict) else ws_b
+    # Pre-existing-style manual name_exact -> workspace A (reads as 'manual',
+    # as every row does once the column ships).
+    name_exact_id = assign_campaign_map(
+        conn, DEFAULT_ORG_ID, source_platform="*", workspace_id=ws_a_id,
+        campaign_name="acme summer outreach", match_strategy="name_exact",
+    )
+    # Broader rule_contains -> workspace B for a matching substring.
+    assign_campaign_map(
+        conn, DEFAULT_ORG_ID, source_platform="*", workspace_id=ws_b_id,
+        campaign_name="acme", match_strategy="rule_contains",
+    )
+    conn.commit()
+    ctx = extract_campaign_context(
+        "smartlead", {"campaign_name": "acme summer outreach"}, {},
+    )
+    # Before fix: name_exact wins -> workspace A.
+    before = resolve_workspace(conn, DEFAULT_ORG_ID, ctx)
+    assert before.workspace_id == ws_a_id
+    conflicts = detect_shadow_conflicts(conn, DEFAULT_ORG_ID)
+    assert any(c["name_exact_map_id"] == name_exact_id for c in conflicts)
+    # Deactivate the stale name_exact row.
+    result = deactivate_campaign_map(conn, DEFAULT_ORG_ID, name_exact_id)
+    conn.commit()
+    assert result["status"] == "deactivated"
+    after = resolve_workspace(conn, DEFAULT_ORG_ID, ctx)
+    conn.close()
+    assert after.workspace_id == ws_b_id
+
+
+def test_migrate_db_ordering_no_operationalerror_on_legacy_map_table():
+    _reset_db()
+    from pipeline_migration import migrate_db
+
+    conn = om.get_conn()
+    # Simulate a pre-existing DB whose campaign_workspace_map lacks map_source.
+    conn.execute("DROP TABLE campaign_workspace_map")
+    conn.execute(
+        """CREATE TABLE campaign_workspace_map (
+               id TEXT PRIMARY KEY,
+               org_id TEXT NOT NULL,
+               source_platform TEXT NOT NULL,
+               campaign_platform_id TEXT,
+               campaign_name_normalized TEXT,
+               workspace_id TEXT NOT NULL,
+               match_strategy TEXT NOT NULL DEFAULT 'id_exact',
+               priority INTEGER NOT NULL DEFAULT 100,
+               is_active INTEGER NOT NULL DEFAULT 1,
+               cloud_synced INTEGER NOT NULL DEFAULT 0,
+               created_at TEXT NOT NULL DEFAULT (datetime('now')),
+               updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+           )"""
+    )
+    conn.execute("INSERT INTO campaigns (name) VALUES ('acme legacy')")
+    conn.commit()
+    # Must not raise sqlite3.OperationalError (map_source ALTER runs before backfill).
+    migrate_db(conn)
+    conn.commit()
+    row = conn.execute(
+        """SELECT map_source FROM campaign_workspace_map
+           WHERE match_strategy = 'name_exact' AND campaign_name_normalized = 'acme legacy'"""
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row["map_source"] == "single_mode_backfill"
 
 
 if __name__ == "__main__":

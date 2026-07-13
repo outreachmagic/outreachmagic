@@ -16,6 +16,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
+import blacklist_monitor
 from campaign_stats import reply_event_sql_condition
 from db_conn import get_conn
 from pipeline_utils import email_domain, normalize_email
@@ -579,6 +580,7 @@ def sender_insights(conn: sqlite3.Connection, workspace: Optional[str] = None, s
 def set_sender_domain_cost(
     domain: str, *, reseller: Optional[str] = None, domain_cost: Optional[float] = None,
     currency: Optional[str] = None, notes: Optional[str] = None,
+    sending_ip: Optional[str] = None,
 ) -> dict:
     """Set/update the flat cost, reseller, and/or notes for a domain.
 
@@ -613,11 +615,14 @@ def set_sender_domain_cost(
             if notes is not None:
                 sets.append("notes = ?")
                 params.append(notes)
+            if sending_ip is not None:
+                sets.append("sending_ip = ?")
+                params.append(sending_ip)
             conn.execute(f"UPDATE sender_domains SET {', '.join(sets)} WHERE domain = ?", params + [domain])
         else:
             conn.execute(
-                "INSERT INTO sender_domains (domain, reseller, domain_cost, currency, notes) VALUES (?, ?, ?, ?, ?)",
-                (domain, reseller, domain_cost, currency or "USD", notes),
+                "INSERT INTO sender_domains (domain, reseller, domain_cost, currency, notes, sending_ip) VALUES (?, ?, ?, ?, ?, ?)",
+                (domain, reseller, domain_cost, currency or "USD", notes, sending_ip),
             )
         conn.commit()
     finally:
@@ -625,7 +630,160 @@ def set_sender_domain_cost(
     return {"status": "ok", "domain": domain}
 
 
-_SENDER_DOMAIN_SYNC_COLUMNS = ("reseller", "domain_cost", "currency", "notes")
+def get_sender_domains_for_scan(domain: Optional[str] = None) -> list[dict]:
+    """Return {domain, sending_ip, dnsbl_status} for one or all registered domains.
+
+    Covers the union of domains in sender_domains and domains only known via
+    sender_accounts (same pattern as sender_domains_report), so a domain with
+    mailboxes but no cost row is still scannable.
+    """
+    conn = get_conn()
+    try:
+        if domain:
+            target = (domain or "").strip().lower()
+            rows = conn.execute(
+                """SELECT d.domain AS domain, sd.sending_ip AS sending_ip, sd.dnsbl_status AS dnsbl_status
+                   FROM (
+                       SELECT ? AS domain
+                   ) d
+                   LEFT JOIN sender_domains sd ON sd.domain = d.domain""",
+                (target,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """WITH all_domains AS (
+                       SELECT domain FROM sender_domains
+                       UNION
+                       SELECT DISTINCT email_domain AS domain FROM sender_accounts WHERE email_domain IS NOT NULL
+                   )
+                   SELECT d.domain AS domain, sd.sending_ip AS sending_ip, sd.dnsbl_status AS dnsbl_status
+                   FROM all_domains d
+                   LEFT JOIN sender_domains sd ON sd.domain = d.domain
+                   ORDER BY d.domain""",
+            ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_sender_domain_blacklist_status(domain: str, dnsbl_block: dict) -> dict:
+    """Write only the dnsbl_status column for a domain (own column, no read-merge with notes)."""
+    domain = (domain or "").strip().lower()
+    if not domain:
+        return {"status": "error", "error": "domain is required"}
+    payload = json.dumps(dnsbl_block)
+    conn = get_conn()
+    try:
+        conn.execute("INSERT OR IGNORE INTO sender_domains (domain) VALUES (?)", (domain,))
+        conn.execute(
+            "UPDATE sender_domains SET dnsbl_status = ?, updated_at = datetime('now') WHERE domain = ?",
+            (payload, domain),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "domain": domain}
+
+
+def run_blacklist_check(domain: Optional[str] = None, tier: str = "all") -> dict:
+    """Scan one or all registered domains against DNSBLs, persist results, flag newly-listed.
+
+    Reads each domain's prior dnsbl_status before overwriting so a clean->listed
+    (all_clean true->false) transition can be reported as newly-listed.
+    """
+    tiers = blacklist_monitor.select_tiers(tier)
+    domains = get_sender_domains_for_scan(domain)
+    results = []
+    newly_listed = []
+    any_listed = False
+    for d in domains:
+        prior_all_clean = None
+        raw_prior = d.get("dnsbl_status")
+        if raw_prior:
+            try:
+                prior_all_clean = json.loads(raw_prior).get("all_clean")
+            except (ValueError, TypeError):
+                prior_all_clean = None
+        block = blacklist_monitor.scan_domain(d["domain"], d.get("sending_ip"), tiers)
+        update_sender_domain_blacklist_status(d["domain"], block)
+        if not block["all_clean"]:
+            any_listed = True
+            # Only a genuine clean->listed flip is "newly listed"; a first-ever
+            # scan or a still-listed domain is not a transition.
+            if prior_all_clean is True:
+                newly_listed.append(d["domain"])
+        results.append(
+            {
+                "domain": d["domain"],
+                "sending_ip": d.get("sending_ip"),
+                "all_clean": block["all_clean"],
+                "summary": block["summary"],
+            }
+        )
+    return {
+        "status": "ok",
+        "tier": tier,
+        "domains_checked": len(results),
+        "any_listed": any_listed,
+        "newly_listed": newly_listed,
+        "results": results,
+    }
+
+
+def blacklist_status_report(domain: Optional[str] = None, stale_hours: Optional[int] = None) -> dict:
+    """Read stored dnsbl_status without rescanning: clean/listed/unchecked/stale counts."""
+    domains = get_sender_domains_for_scan(domain)
+    now = datetime.now(timezone.utc)
+    clean = listed = unchecked = stale = 0
+    items = []
+    for d in domains:
+        raw = d.get("dnsbl_status")
+        block = None
+        if raw:
+            try:
+                block = json.loads(raw)
+            except (ValueError, TypeError):
+                block = None
+        if not block:
+            unchecked += 1
+            items.append({"domain": d["domain"], "state": "unchecked", "checked_at": None})
+            continue
+        all_clean = block.get("all_clean")
+        checked_at = block.get("checked_at")
+        is_stale = False
+        if stale_hours and checked_at:
+            try:
+                ts = datetime.fromisoformat(checked_at)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if (now - ts).total_seconds() > stale_hours * 3600:
+                    is_stale = True
+                    stale += 1
+            except ValueError:
+                pass
+        if all_clean:
+            clean += 1
+            state = "clean"
+        else:
+            listed += 1
+            state = "listed"
+        items.append(
+            {
+                "domain": d["domain"],
+                "state": state,
+                "checked_at": checked_at,
+                "stale": is_stale,
+                "summary": block.get("summary"),
+            }
+        )
+    return {
+        "status": "ok",
+        "counts": {"clean": clean, "listed": listed, "unchecked": unchecked, "stale": stale},
+        "domains": items,
+    }
+
+
+_SENDER_DOMAIN_SYNC_COLUMNS = ("reseller", "domain_cost", "currency", "notes", "sending_ip", "dnsbl_status")
 
 
 def sender_domain_entity_key(domain: str) -> str:

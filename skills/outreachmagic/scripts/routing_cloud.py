@@ -107,7 +107,7 @@ def apply_routing_bundle_to_sqlite(
     bundle: dict[str, Any],
     *,
     org_id: str,
-) -> None:
+) -> dict[str, Any]:
     # Defer FK checks so workspace-id migrations (child update → parent update)
     # don't fail mid-transaction; constraints are enforced at commit time.
     conn.execute("PRAGMA defer_foreign_keys = ON")
@@ -174,11 +174,17 @@ def apply_routing_bundle_to_sqlite(
         conn.execute("DELETE FROM workspaces WHERE org_id = ? AND cloud_synced = 1", (org_id,))
 
     cloud_map_ids: list[str] = []
+    incoming_pattern_rules: list[tuple[str, str, str]] = []
     for item in bundle.get("campaignMaps") or []:
         if not item.get("campaignPlatformId") and not item.get("campaignNameNormalized"):
             continue
         map_id = item["id"]
         cloud_map_ids.append(map_id)
+        strategy = item.get("matchStrategy") or "id_exact"
+        if strategy in ("rule_contains", "rule_prefix", "rule_regex") and item.get("campaignNameNormalized"):
+            incoming_pattern_rules.append(
+                (item["sourcePlatform"], strategy, item["campaignNameNormalized"])
+            )
         # Remove any existing row that would conflict on the partial unique index
         # (same org/platform/campaign_platform_id but different id)
         if item.get("campaignPlatformId"):
@@ -225,6 +231,20 @@ def apply_routing_bundle_to_sqlite(
     else:
         conn.execute("DELETE FROM campaign_workspace_map WHERE org_id = ? AND cloud_synced = 1", (org_id,))
 
+    from workspace_routing import deactivate_shadowed_backfill_rules
+
+    deactivated_shadowed_rules: list[dict] = []
+    for source_platform, strategy, pattern in incoming_pattern_rules:
+        deactivated_shadowed_rules.extend(
+            deactivate_shadowed_backfill_rules(
+                conn, org_id,
+                source_platform=source_platform,
+                match_strategy=strategy,
+                pattern=pattern,
+            )
+        )
+    return {"deactivated_shadowed_rules": deactivated_shadowed_rules}
+
 
 def sync_routing_from_cloud(
     conn: sqlite3.Connection,
@@ -237,7 +257,7 @@ def sync_routing_from_cloud(
     quiet: bool = False,
 ) -> Optional[dict[str, Any]]:
     bundle = fetch_routing_bundle(api_base, token)
-    apply_routing_bundle_to_sqlite(conn, bundle, org_id=org_id)
+    apply_result = apply_routing_bundle_to_sqlite(conn, bundle, org_id=org_id)
 
     # Also sync CRM workspace configs from the portal config endpoint.
     # This ensures that CRM platform keys, stage mappings, and other
@@ -265,6 +285,12 @@ def sync_routing_from_cloud(
             f"Routing config synced (v{bundle.get('version')}, "
             f"{ws_count} workspaces, {map_count} campaign maps, mode={bundle.get('mode')})."
         )
+        shadowed = (apply_result or {}).get("deactivated_shadowed_rules") or []
+        if shadowed:
+            print(
+                f"Deactivated {len(shadowed)} shadowed single-mode-backfill rule(s) "
+                "now covered by a routing rule."
+            )
     return bundle
 
 

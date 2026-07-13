@@ -156,6 +156,24 @@ pipeline.py email-finding-candidates --workspace acme --tag nace --no-email --re
 pipeline.py email-finding-candidates --workspace acme --file outreachmagic/batches/find-batch.json
 ```
 
+## Campaign routing maps (multi-workspace)
+
+Rules map campaigns to workspaces. A stale `name_exact` row (e.g. left by the
+one-time single→multi backfill) can silently shadow a broader `rule_contains`
+rule added later, because `name_exact` is checked first. Fix an affected DB in
+three steps:
+
+```bash
+pipeline.py campaign-map conflicts                 # 1. see what's shadowed
+pipeline.py campaign-map deactivate --id MAP_ID    # 2. clear the stale name_exact row
+pipeline.py campaign-map reconcile --dry-run       # 3a. preview moving already-ingested data
+pipeline.py campaign-map reconcile                 # 3b. move it for real
+```
+
+- **`conflicts`** — lists active `name_exact` rows shadowed by a broader active rule pointing at a different workspace.
+- **`deactivate`** — soft-deactivates one map row by id (`is_active = 0`, kept for history).
+- **`reconcile`** — re-applies current rules to already-ingested `workspace_leads`/`workspace_lead_events`. `--platform` is best-effort (via `leads.latest_source_platform`); events with no derivable campaign are reported as `skipped_no_campaign`. Run only after clearing shadowing rows, or resolution stays stale.
+
 ## Quarantine (multi-workspace)
 
 Unmapped webhook events land in `unmapped_campaign_queue`. Resolve locally, then `sync`.

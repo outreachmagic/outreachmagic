@@ -1249,6 +1249,21 @@ def main():
     sd_set_p.add_argument("--cost", type=float, help="Flat total cost for every mailbox on this domain")
     sd_set_p.add_argument("--currency", help="Default: USD")
     sd_set_p.add_argument("--notes", help='Freeform note, e.g. "blacklisted in Azure" -- overwrites any previous note')
+    sd_set_p.add_argument("--ip", help="User-registered static sending IP (enables IP-based DNSBL checks)")
+    sd_blcheck_p = sd_sub.add_parser(
+        "blacklist-check",
+        help="Scan sender domains against DNSBLs; exits 1 if any domain is listed",
+    )
+    sd_blcheck_p.add_argument("--domain", help="Check one domain (default: all registered)")
+    sd_blcheck_p.add_argument("--tier", choices=("tier1", "tier2", "all"), default="all")
+    sd_blcheck_p.add_argument("--json", action="store_true")
+    sd_blstatus_p = sd_sub.add_parser(
+        "blacklist-status",
+        help="Show stored DNSBL status without re-scanning",
+    )
+    sd_blstatus_p.add_argument("--domain", help="One domain (default: all)")
+    sd_blstatus_p.add_argument("--stale-hours", type=int, help="Flag statuses older than N hours as stale")
+    sd_blstatus_p.add_argument("--json", action="store_true")
     sd_cost_p = sd_sub.add_parser(
         "cost", help="Total sender-account cost and cost-per-positive-reply for a workspace or reseller",
     )
@@ -1357,6 +1372,27 @@ def main():
         choices=("id_exact", "name_exact", "rule_contains", "rule_prefix", "rule_regex"),
     )
     cmap_add.add_argument("--priority", type=int, default=100)
+    cmap_conflicts = cmap_sub.add_parser(
+        "conflicts",
+        help="List active name_exact rows shadowed by a broader rule pointing at a different workspace",
+    )
+    cmap_conflicts.add_argument("--platform", help="Filter to a source platform (best-effort)")
+    cmap_conflicts.add_argument("--json", action="store_true")
+    cmap_deact = cmap_sub.add_parser(
+        "deactivate", help="Soft-deactivate one campaign map row by id (explicit, auditable)",
+    )
+    cmap_deact.add_argument("--id", required=True, help="campaign_workspace_map id")
+    cmap_recon = cmap_sub.add_parser(
+        "reconcile",
+        help="Re-apply current routing rules to already-ingested leads/events. "
+             "Fix an affected DB in three steps: campaign-map conflicts -> "
+             "campaign-map deactivate --id X -> campaign-map reconcile.",
+    )
+    cmap_recon.add_argument("--dry-run", action="store_true", help="Preview moves without mutating")
+    cmap_recon.add_argument("--platform", help="Best-effort filter via leads.latest_source_platform")
+    cmap_recon.add_argument("--workspace", help="Only move rows currently in this workspace slug")
+    cmap_recon.add_argument("--limit", type=int, default=0, help="Max mismatched campaign groups to act on (0 = all)")
+    cmap_recon.add_argument("--json", action="store_true")
 
     q_p = sub.add_parser("quarantine", help="Unmapped campaign queue")
     q_sub = q_p.add_subparsers(dest="quarantine_cmd")
@@ -3310,8 +3346,45 @@ def main():
             print(json.dumps(_pipeline.set_sender_domain_cost(
                 args.domain, reseller=getattr(args, "reseller", None),
                 domain_cost=getattr(args, "cost", None), currency=getattr(args, "currency", None),
-                notes=getattr(args, "notes", None),
+                notes=getattr(args, "notes", None), sending_ip=getattr(args, "ip", None),
             ), indent=2))
+        elif sd_action == "blacklist-check":
+            result = _pipeline.run_blacklist_check(
+                domain=getattr(args, "domain", None), tier=getattr(args, "tier", "all"),
+            )
+            if result.get("newly_listed"):
+                print(
+                    f"[blacklist] NEWLY LISTED: {', '.join(result['newly_listed'])}",
+                    file=sys.stderr,
+                )
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2))
+            else:
+                print(f"Checked {result['domains_checked']} domain(s), tier={result['tier']}:")
+                for r in result["results"]:
+                    s = r["summary"]
+                    state = "CLEAN" if r["all_clean"] else "LISTED"
+                    print(
+                        f"  {r['domain']} — {state} "
+                        f"(clean={s['clean']}, listed={s['listed']}, errors={s['errors']})"
+                    )
+            if result.get("any_listed"):
+                sys.exit(1)
+        elif sd_action == "blacklist-status":
+            result = _pipeline.blacklist_status_report(
+                domain=getattr(args, "domain", None), stale_hours=getattr(args, "stale_hours", None),
+            )
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2))
+            else:
+                c = result["counts"]
+                print(
+                    f"clean={c['clean']}, listed={c['listed']}, "
+                    f"unchecked={c['unchecked']}, stale={c['stale']}"
+                )
+                for d in result["domains"]:
+                    print(f"  {d['domain']} — {d['state']}"
+                          + (" (stale)" if d.get("stale") else ""))
         elif sd_action == "cost":
             months = getattr(args, "months", None)
             if getattr(args, "workspace", None):
@@ -3322,7 +3395,7 @@ def main():
                 result = {"status": "error", "error": "pass --workspace or --reseller"}
             print(json.dumps(result, indent=2))
         else:
-            print(json.dumps({"error": "sender-domains subcommand required: list, set, cost"}))
+            print(json.dumps({"error": "sender-domains subcommand required: list, set, cost, blacklist-check, blacklist-status"}))
     elif args.command == "sender-insights":
         conn = _pipeline.get_conn()
         try:
@@ -3451,6 +3524,35 @@ def main():
                 ),
                 indent=2,
             ))
+        elif args.campaign_map_cmd == "conflicts":
+            result = _pipeline.campaign_map_conflicts_cli(platform=getattr(args, "platform", None))
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2))
+            else:
+                conflicts = result["conflicts"]
+                if not conflicts:
+                    print("No shadow conflicts found.")
+                else:
+                    print(f"{len(conflicts)} shadow conflict(s):")
+                    for c in conflicts:
+                        print(
+                            f"  name_exact '{c['campaign_name']}' -> "
+                            f"{c.get('name_exact_workspace_slug') or c['name_exact_workspace_id']} "
+                            f"(map id {c['name_exact_map_id']}) is shadowed by rule "
+                            f"'{c['shadowing_rule_pattern']}' -> "
+                            f"{c.get('shadowing_rule_workspace_slug') or c['shadowing_rule_workspace_id']}"
+                        )
+                    print("Clear a stale row with: campaign-map deactivate --id <name_exact map id>")
+        elif args.campaign_map_cmd == "deactivate":
+            print(json.dumps(_pipeline.deactivate_campaign_map_cli(args.id), indent=2))
+        elif args.campaign_map_cmd == "reconcile":
+            result = _pipeline.reconcile_campaign_routing_cli(
+                platform=getattr(args, "platform", None),
+                workspace_slug=getattr(args, "workspace", None),
+                dry_run=getattr(args, "dry_run", False),
+                limit=getattr(args, "limit", 0),
+            )
+            print(json.dumps(result, indent=2))
         else:
             print(json.dumps(_pipeline.list_campaign_maps(), indent=2))
     elif args.command == "quarantine":

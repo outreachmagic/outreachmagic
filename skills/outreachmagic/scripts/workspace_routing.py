@@ -859,6 +859,22 @@ def format_unmapped_campaign_message(ctx: CampaignContext) -> str:
     )
 
 
+def _campaign_name_matches_rule(match_strategy: str, pattern: str, name_normalized: str) -> bool:
+    """Whether a pattern rule (rule_contains/rule_prefix/rule_regex) matches a normalized campaign name."""
+    if not pattern or not name_normalized:
+        return False
+    if match_strategy == "rule_contains":
+        return pattern in name_normalized
+    if match_strategy == "rule_prefix":
+        return name_normalized.startswith(pattern)
+    if match_strategy == "rule_regex":
+        try:
+            return bool(re.search(pattern, name_normalized))
+        except re.error:
+            return False
+    return False
+
+
 @dataclass
 class CampaignRoutingCache:
     """In-memory campaign maps for one pull session (avoids per-event SQL)."""
@@ -936,16 +952,8 @@ class CampaignRoutingCache:
             for sp, strat, pattern, result in self._rules:
                 if sp not in platforms:
                     continue
-                if strat == "rule_contains" and pattern in name_for_rules:
+                if _campaign_name_matches_rule(strat, pattern, name_for_rules):
                     return result
-                if strat == "rule_prefix" and name_for_rules.startswith(pattern):
-                    return result
-                if strat == "rule_regex":
-                    try:
-                        if re.search(pattern, name_for_rules):
-                            return result
-                    except re.error:
-                        continue
         return None
 
 
@@ -1000,30 +1008,12 @@ def resolve_workspace(
         ).fetchall()
         for rule in rules:
             pattern = rule["campaign_name_normalized"] or ""
-            if not pattern:
-                continue
-            if rule["match_strategy"] == "rule_contains" and pattern in name_for_rules:
+            if _campaign_name_matches_rule(rule["match_strategy"], pattern, name_for_rules):
                 return RoutingResult(
                     workspace_id=rule["workspace_id"],
                     match_strategy=rule["match_strategy"],
                     map_id=rule["id"],
                 )
-            if rule["match_strategy"] == "rule_prefix" and name_for_rules.startswith(pattern):
-                return RoutingResult(
-                    workspace_id=rule["workspace_id"],
-                    match_strategy=rule["match_strategy"],
-                    map_id=rule["id"],
-                )
-            if rule["match_strategy"] == "rule_regex":
-                try:
-                    if re.search(pattern, name_for_rules):
-                        return RoutingResult(
-                            workspace_id=rule["workspace_id"],
-                            match_strategy=rule["match_strategy"],
-                            map_id=rule["id"],
-                        )
-                except re.error:
-                    continue
 
     return None
 
@@ -1508,6 +1498,7 @@ def assign_campaign_map(
     campaign_name: Optional[str] = None,
     match_strategy: str = "id_exact",
     priority: int = 100,
+    map_source: str = "manual",
 ) -> str:
     if not campaign_platform_id and not campaign_name:
         raise ValueError("At least one of campaign_platform_id or campaign_name is required for a mapping rule")
@@ -1517,9 +1508,9 @@ def assign_campaign_map(
     conn.execute(
         """INSERT OR REPLACE INTO campaign_workspace_map (
                id, org_id, source_platform, campaign_platform_id, campaign_name_normalized,
-               workspace_id, match_strategy, priority, is_active, created_at, updated_at
+               workspace_id, match_strategy, priority, is_active, map_source, created_at, updated_at
            ) VALUES (
-               ?, ?, ?, ?, ?, ?, ?, ?, 1,
+               ?, ?, ?, ?, ?, ?, ?, ?, 1, ?,
                COALESCE((SELECT created_at FROM campaign_workspace_map WHERE id = ?),
                         datetime('now')),
                datetime('now')
@@ -1533,8 +1524,332 @@ def assign_campaign_map(
             workspace_id,
             match_strategy,
             priority,
+            map_source,
             map_id,
         ),
     )
     return map_id
+
+
+def deactivate_shadowed_backfill_rules(
+    conn: sqlite3.Connection,
+    org_id: str,
+    *,
+    source_platform: str,
+    match_strategy: str,
+    pattern: str,
+) -> list[dict]:
+    """Deactivate single_mode_backfill name_exact rows that a newly-arrived pattern rule now covers.
+
+    Prevention only: manual/cloud-synced name_exact rows are never touched, and
+    rows that predate the map_source column all read as 'manual', so this cannot
+    repair a database that already has the shadowing bug -- use detect_shadow_conflicts.
+    """
+    normalized = normalize_campaign_name(pattern) or (pattern or "").strip().lower()
+    if not normalized:
+        return []
+    rows = conn.execute(
+        """SELECT id, campaign_name_normalized, workspace_id FROM campaign_workspace_map
+           WHERE org_id = ? AND source_platform IN (?, '*') AND is_active = 1
+             AND match_strategy = 'name_exact'
+             AND map_source = 'single_mode_backfill'""",
+        (org_id, source_platform),
+    ).fetchall()
+    deactivated: list[dict] = []
+    for row in rows:
+        name_norm = row["campaign_name_normalized"] or ""
+        if _campaign_name_matches_rule(match_strategy, normalized, name_norm):
+            conn.execute(
+                "UPDATE campaign_workspace_map SET is_active = 0, updated_at = datetime('now') WHERE id = ?",
+                (row["id"],),
+            )
+            deactivated.append(
+                {
+                    "map_id": row["id"],
+                    "campaign_name": name_norm,
+                    "workspace_id": row["workspace_id"],
+                }
+            )
+    return deactivated
+
+
+def detect_shadow_conflicts(
+    conn: sqlite3.Connection,
+    org_id: str,
+    *,
+    source_platform: Optional[str] = None,
+) -> list[dict]:
+    """Active name_exact rows shadowed by a broader active pattern rule that targets a different workspace.
+
+    Content-based, so it works regardless of map_source or when a row was
+    created -- this is the repair path for databases that already have stale
+    name_exact rows from the single-mode backfill.
+    """
+    name_rows = conn.execute(
+        """SELECT id, campaign_name_normalized, workspace_id, source_platform
+           FROM campaign_workspace_map
+           WHERE org_id = ? AND is_active = 1 AND match_strategy = 'name_exact'
+             AND campaign_name_normalized IS NOT NULL""",
+        (org_id,),
+    ).fetchall()
+    rule_rows = conn.execute(
+        """SELECT id, campaign_name_normalized, workspace_id, source_platform, match_strategy, priority
+           FROM campaign_workspace_map
+           WHERE org_id = ? AND is_active = 1
+             AND match_strategy IN ('rule_contains', 'rule_prefix', 'rule_regex')
+           ORDER BY priority ASC""",
+        (org_id,),
+    ).fetchall()
+    conflicts: list[dict] = []
+    for name_row in name_rows:
+        name_norm = name_row["campaign_name_normalized"] or ""
+        if source_platform is not None and name_row["source_platform"] not in (source_platform, "*"):
+            continue
+        for rule in rule_rows:
+            # A '*' rule matches any platform; a platform-specific rule only
+            # shadows a name_exact row on the same platform or a '*' one.
+            if rule["source_platform"] != "*" and name_row["source_platform"] not in (rule["source_platform"], "*"):
+                continue
+            pattern = rule["campaign_name_normalized"] or ""
+            if not _campaign_name_matches_rule(rule["match_strategy"], pattern, name_norm):
+                continue
+            if rule["workspace_id"] == name_row["workspace_id"]:
+                continue
+            conflicts.append(
+                {
+                    "name_exact_map_id": name_row["id"],
+                    "campaign_name": name_norm,
+                    "name_exact_workspace_id": name_row["workspace_id"],
+                    "shadowing_rule_map_id": rule["id"],
+                    "shadowing_rule_pattern": pattern,
+                    "shadowing_rule_workspace_id": rule["workspace_id"],
+                }
+            )
+            break
+    return conflicts
+
+
+def deactivate_campaign_map(conn: sqlite3.Connection, org_id: str, map_id: str) -> dict:
+    """Soft-deactivate a single campaign_workspace_map row by id (explicit, auditable, never bulk)."""
+    row = conn.execute(
+        "SELECT id, is_active FROM campaign_workspace_map WHERE org_id = ? AND id = ?",
+        (org_id, map_id),
+    ).fetchone()
+    if not row:
+        return {"status": "error", "error": f"campaign map not found: {map_id}"}
+    if not row["is_active"]:
+        return {"status": "noop", "map_id": map_id, "detail": "already inactive"}
+    conn.execute(
+        "UPDATE campaign_workspace_map SET is_active = 0, updated_at = datetime('now') WHERE id = ?",
+        (map_id,),
+    )
+    return {"status": "deactivated", "map_id": map_id}
+
+
+def _move_workspace_lead_row(
+    conn: sqlite3.Connection,
+    org_id: str,
+    lead_id: int,
+    old_workspace_id: str,
+    target_workspace_id: str,
+) -> None:
+    """Relocate a lead's workspace_leads row + tags + linkedin-status from one workspace to another.
+
+    Follows the merge_leads() cross-workspace pattern: delete-if-destination-exists,
+    else UPDATE workspace_id; INSERT OR IGNORE + DELETE for the join tables.
+    """
+    if old_workspace_id == target_workspace_id:
+        return
+    old_row = conn.execute(
+        "SELECT id, status FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
+        (old_workspace_id, lead_id),
+    ).fetchone()
+    if not old_row:
+        upsert_workspace_lead(conn, org_id, target_workspace_id, lead_id)
+        return
+    existing = conn.execute(
+        "SELECT id FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
+        (target_workspace_id, lead_id),
+    ).fetchone()
+    if existing:
+        conn.execute("DELETE FROM workspace_leads WHERE id = ?", (old_row["id"],))
+    else:
+        conn.execute(
+            "UPDATE workspace_leads SET workspace_id = ?, updated_at = datetime('now') WHERE id = ?",
+            (target_workspace_id, old_row["id"]),
+        )
+    for tag_row in conn.execute(
+        "SELECT tag FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ?",
+        (old_workspace_id, lead_id),
+    ).fetchall():
+        tag_id = f"wlt_{target_workspace_id}_{lead_id}_{hashlib.md5(tag_row['tag'].encode()).hexdigest()[:8]}"
+        conn.execute(
+            """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
+               VALUES (?, ?, ?, ?)""",
+            (tag_id, target_workspace_id, lead_id, tag_row["tag"]),
+        )
+    conn.execute(
+        "DELETE FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ?",
+        (old_workspace_id, lead_id),
+    )
+    for li in conn.execute(
+        """SELECT sender_profile, is_connected, is_request_pending, connected_at, request_sent_at
+           FROM workspace_lead_linkedin_status WHERE workspace_id = ? AND lead_id = ?""",
+        (old_workspace_id, lead_id),
+    ).fetchall():
+        li_id = f"lis_{target_workspace_id}_{lead_id}_{(li['sender_profile'] or '')[:20]}"
+        conn.execute(
+            """INSERT OR IGNORE INTO workspace_lead_linkedin_status
+               (id, workspace_id, lead_id, sender_profile, is_connected, is_request_pending,
+                connected_at, request_sent_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (
+                li_id, target_workspace_id, lead_id, li["sender_profile"],
+                li["is_connected"], li["is_request_pending"], li["connected_at"], li["request_sent_at"],
+            ),
+        )
+    conn.execute(
+        "DELETE FROM workspace_lead_linkedin_status WHERE workspace_id = ? AND lead_id = ?",
+        (old_workspace_id, lead_id),
+    )
+
+
+def reconcile_workspace_routing(
+    conn: sqlite3.Connection,
+    org_id: str,
+    *,
+    platform_filter: Optional[str] = None,
+    from_workspace_id: Optional[str] = None,
+    dry_run: bool = True,
+    limit: int = 0,
+) -> dict:
+    """Re-apply current routing rules to already-ingested workspace_lead_events.
+
+    Grouping is per campaign_name (source_platform is not persisted per event, so
+    platform_filter is best-effort against leads.latest_source_platform). Only rows
+    tied to campaigns whose resolution now differs from where they currently sit are
+    moved. Events with no derivable campaign name are counted in skipped_no_campaign.
+
+    Run this only after any stale name_exact row shadowing a broader rule has been
+    cleared (see detect_shadow_conflicts / deactivate_campaign_map) -- resolution
+    keeps returning the shadowing workspace until then.
+    """
+    rows = conn.execute(
+        """SELECT wle.id AS wle_id, wle.workspace_id AS ws, wle.lead_id AS lead_id,
+                  c.name AS campaign_name, l.latest_source_platform AS platform
+           FROM workspace_lead_events wle
+           LEFT JOIN events e ON e.id = wle.event_id
+           LEFT JOIN campaigns c ON c.id = e.campaign_id
+           LEFT JOIN leads l ON l.id = wle.lead_id
+           WHERE wle.org_id = ?""",
+        (org_id,),
+    ).fetchall()
+
+    skipped_no_campaign = 0
+    # (campaign_name, resolve_platform) -> list of rows
+    groups: dict[tuple, list] = {}
+    for row in rows:
+        campaign_name = row["campaign_name"]
+        if not campaign_name:
+            skipped_no_campaign += 1
+            continue
+        if platform_filter is not None and row["platform"] != platform_filter:
+            continue
+        if from_workspace_id is not None and row["ws"] != from_workspace_id:
+            continue
+        resolve_platform = row["platform"] or "*"
+        groups.setdefault((campaign_name, resolve_platform), []).append(row)
+
+    campaign_names_checked: set = set()
+    mismatch_subgroups: list = []  # (campaign_name, target, [rows])
+    for (campaign_name, resolve_platform), grp_rows in groups.items():
+        campaign_names_checked.add(campaign_name)
+        ctx = CampaignContext(
+            source_platform=resolve_platform,
+            campaign_platform_id=None,
+            campaign_name_raw=campaign_name,
+            campaign_name_normalized=normalize_campaign_name(campaign_name),
+        )
+        target = resolve_workspace(conn, org_id, ctx)
+        if target is None:
+            continue
+        mism_rows = [r for r in grp_rows if r["ws"] != target.workspace_id]
+        if mism_rows:
+            mismatch_subgroups.append((campaign_name, target, mism_rows))
+
+    if limit and limit > 0:
+        mismatch_subgroups = mismatch_subgroups[:limit]
+
+    mismatched_campaigns: set = set()
+    move_ops: list = []  # (wle_id, lead_id, old_ws, target_ws)
+    move_report: dict = {}  # (campaign_name, old_ws, target_ws) -> report dict
+    for campaign_name, target, mism_rows in mismatch_subgroups:
+        mismatched_campaigns.add(campaign_name)
+        for r in mism_rows:
+            move_ops.append((r["wle_id"], r["lead_id"], r["ws"], target.workspace_id))
+            key = (campaign_name, r["ws"], target.workspace_id)
+            rep = move_report.get(key)
+            if rep is None:
+                rep = {
+                    "campaign_name": campaign_name,
+                    "from_workspace": r["ws"],
+                    "to_workspace": target.workspace_id,
+                    "matched_rule": target.match_strategy,
+                    "matched_map_id": target.map_id,
+                    "event_count": 0,
+                    "_leads": set(),
+                }
+                move_report[key] = rep
+            rep["event_count"] += 1
+            rep["_leads"].add(r["lead_id"])
+
+    moved_lead_ids = {op[1] for op in move_ops}
+
+    if not dry_run and move_ops:
+        lead_targets: dict = {}  # (lead_id, old_ws) -> set(target_ws)
+        for wle_id, lead_id, old_ws, target_ws in move_ops:
+            conn.execute(
+                "UPDATE workspace_lead_events SET workspace_id = ? WHERE id = ?",
+                (target_ws, wle_id),
+            )
+            lead_targets.setdefault((lead_id, old_ws), set()).add(target_ws)
+        for (lead_id, old_ws), targets in lead_targets.items():
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM workspace_lead_events WHERE lead_id = ? AND workspace_id = ?",
+                (lead_id, old_ws),
+            ).fetchone()[0]
+            targets_list = sorted(targets)
+            old_status_row = conn.execute(
+                "SELECT status FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
+                (old_ws, lead_id),
+            ).fetchone()
+            old_status = old_status_row["status"] if old_status_row else "prospecting"
+            if remaining == 0:
+                _move_workspace_lead_row(conn, org_id, lead_id, old_ws, targets_list[0])
+                for extra in targets_list[1:]:
+                    upsert_workspace_lead(conn, org_id, extra, lead_id, status=old_status)
+            else:
+                for t in targets_list:
+                    upsert_workspace_lead(conn, org_id, t, lead_id, status=old_status)
+
+    moves = []
+    for rep in move_report.values():
+        leads = sorted(rep.pop("_leads"))
+        rep["lead_count"] = len(leads)
+        rep["sample_lead_ids"] = leads[:5]
+        moves.append(rep)
+
+    event_count = len(move_ops)
+    lead_count = len(moved_lead_ids)
+    return {
+        "dry_run": dry_run,
+        "campaign_groups_checked": len(campaign_names_checked),
+        "mismatched_groups": len(mismatched_campaigns),
+        "skipped_no_campaign": skipped_no_campaign,
+        "events_would_move": event_count,
+        "leads_would_move": lead_count,
+        "events_moved": 0 if dry_run else event_count,
+        "leads_moved": 0 if dry_run else lead_count,
+        "moves": moves,
+    }
 

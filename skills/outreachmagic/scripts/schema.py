@@ -246,6 +246,7 @@ CREATE TABLE IF NOT EXISTS campaign_workspace_map (
     priority                INTEGER NOT NULL DEFAULT 100,
     is_active               INTEGER NOT NULL DEFAULT 1,
     cloud_synced            INTEGER NOT NULL DEFAULT 0,
+    map_source              TEXT NOT NULL DEFAULT 'manual',
     created_at              TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );

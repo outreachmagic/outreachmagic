@@ -75,6 +75,9 @@ from workspace_routing import (
     WORKSPACE_ROUTING_MULTI,
     WORKSPACE_ROUTING_SINGLE,
     assign_campaign_map,
+    deactivate_campaign_map,
+    deactivate_shadowed_backfill_rules,
+    detect_shadow_conflicts,
     ensure_default_org_workspace,
     ensure_organization,
     extract_campaign_context,
@@ -83,6 +86,7 @@ from workspace_routing import (
     get_org_routing_config,
     lead_entity_key,
     quarantine_event,
+    reconcile_workspace_routing,
     resolve_workspace_identity,
 )
 
@@ -1830,6 +1834,8 @@ def add_campaign_map_cli(
     if not ws:
         conn.close()
         return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
+    # Manual rows keep map_source='manual'; a manual add must never claim
+    # single_mode_backfill provenance (only the one-shot migration does).
     map_id = assign_campaign_map(
         conn,
         DEFAULT_ORG_ID,
@@ -1842,11 +1848,100 @@ def add_campaign_map_cli(
     )
     if cloud_synced:
         conn.execute("UPDATE campaign_workspace_map SET cloud_synced = 1 WHERE id = ?", (map_id,))
+    result = {"status": "created", "map_id": map_id, "workspace_id": ws["id"]}
+    if strategy in ("rule_contains", "rule_prefix", "rule_regex") and campaign_name:
+        deactivated = deactivate_shadowed_backfill_rules(
+            conn, DEFAULT_ORG_ID,
+            source_platform=platform,
+            match_strategy=strategy,
+            pattern=campaign_name,
+        )
+        result["deactivated_shadowed_rules"] = deactivated
+        # A manual name_exact row still shadows this new rule (undecidable to
+        # auto-clear) -- surface it so the user can act via campaign-map deactivate.
+        unresolved = [
+            c for c in detect_shadow_conflicts(conn, DEFAULT_ORG_ID, source_platform=platform)
+            if c["shadowing_rule_map_id"] == map_id
+        ]
+        if unresolved:
+            result["unresolved_conflicts"] = unresolved
     conn.commit()
     conn.close()
-    result = {"status": "created", "map_id": map_id, "workspace_id": ws["id"]}
     if cloud_warning:
         result["cloud_warning"] = cloud_warning
+    return result
+
+
+def _workspace_slug_lookup(conn: sqlite3.Connection, org_id: str = DEFAULT_ORG_ID) -> dict:
+    rows = conn.execute(
+        "SELECT id, slug FROM workspaces WHERE org_id = ?", (org_id,)
+    ).fetchall()
+    return {r["id"]: r["slug"] for r in rows}
+
+
+def campaign_map_conflicts_cli(platform: Optional[str] = None) -> dict:
+    """List active name_exact rows shadowed by a broader rule pointing elsewhere."""
+    conn = get_conn()
+    try:
+        conflicts = detect_shadow_conflicts(conn, DEFAULT_ORG_ID, source_platform=platform)
+        slugs = _workspace_slug_lookup(conn)
+    finally:
+        conn.close()
+    for c in conflicts:
+        c["name_exact_workspace_slug"] = slugs.get(c["name_exact_workspace_id"])
+        c["shadowing_rule_workspace_slug"] = slugs.get(c["shadowing_rule_workspace_id"])
+    return {"conflicts": conflicts, "count": len(conflicts)}
+
+
+def deactivate_campaign_map_cli(map_id: str) -> dict:
+    """Soft-deactivate one campaign_workspace_map row by id."""
+    conn = get_conn()
+    try:
+        result = deactivate_campaign_map(conn, DEFAULT_ORG_ID, map_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return result
+
+
+def reconcile_campaign_routing_cli(
+    *,
+    platform: Optional[str] = None,
+    workspace_slug: Optional[str] = None,
+    dry_run: bool = False,
+    limit: int = 0,
+) -> dict:
+    """Re-apply routing rules to already-ingested workspace_lead_events.
+
+    Operator flow for a database already carrying the shadowing bug:
+      campaign-map conflicts  ->  campaign-map deactivate --id X  ->  campaign-map reconcile
+    Reconcile reuses resolve_workspace() unchanged, so it keeps producing the
+    stale target until the shadowing name_exact row is deactivated.
+    """
+    conn = get_conn()
+    try:
+        from_workspace_id = None
+        if workspace_slug:
+            ws = resolve_workspace_identity(conn, workspace_slug, org_id=DEFAULT_ORG_ID)
+            if not ws:
+                return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
+            from_workspace_id = ws["id"]
+        result = reconcile_workspace_routing(
+            conn, DEFAULT_ORG_ID,
+            platform_filter=platform,
+            from_workspace_id=from_workspace_id,
+            dry_run=dry_run,
+            limit=limit,
+        )
+        slugs = _workspace_slug_lookup(conn)
+        for m in result.get("moves", []):
+            m["from_workspace_slug"] = slugs.get(m["from_workspace"])
+            m["to_workspace_slug"] = slugs.get(m["to_workspace"])
+        if not dry_run:
+            conn.commit()
+    finally:
+        conn.close()
+    result["status"] = "ok"
     return result
 
 

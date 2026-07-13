@@ -34,6 +34,12 @@ class RoutingSyncPendingTests(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def tearDown(self):
+        conn = om.get_conn()
+        conn.execute("DELETE FROM campaign_workspace_map")
+        conn.commit()
+        conn.close()
+
     def test_cloud_signature_skips_semantically_synced_local_rule(self):
         conn = om.get_conn()
         assign_campaign_map(
@@ -92,6 +98,77 @@ class RoutingSyncPendingTests(unittest.TestCase):
                     status = om.get_sync_status()
 
         self.assertEqual(len(status["pending_rules"]), 1)
+
+    def test_apply_bundle_deactivates_shadowed_backfill(self):
+        conn = om.get_conn()
+        assign_campaign_map(
+            conn, DEFAULT_ORG_ID, source_platform="*", workspace_id="ws_acme",
+            campaign_name="acme summer", match_strategy="name_exact",
+            map_source="single_mode_backfill",
+        )
+        conn.commit()
+        bundle = {
+            "mode": "multi",
+            "workspaces": [{"id": "ws_acme", "slug": "acme", "name": "AcmeCo"}],
+            "campaignMaps": [
+                {
+                    "id": "cloud_rule_1",
+                    "sourcePlatform": "*",
+                    "matchStrategy": "rule_contains",
+                    "campaignPlatformId": None,
+                    "campaignNameNormalized": "acme",
+                    "workspaceId": "ws_acme",
+                }
+            ],
+        }
+        result = routing_cloud.apply_routing_bundle_to_sqlite(conn, bundle, org_id=DEFAULT_ORG_ID)
+        conn.commit()
+        self.assertEqual(len(result["deactivated_shadowed_rules"]), 1)
+        row = conn.execute(
+            """SELECT is_active FROM campaign_workspace_map
+               WHERE match_strategy = 'name_exact' AND campaign_name_normalized = 'acme summer'"""
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["is_active"], 0)
+
+    def test_add_campaign_map_cli_deactivates_and_reports(self):
+        conn = om.get_conn()
+        assign_campaign_map(
+            conn, DEFAULT_ORG_ID, source_platform="*", workspace_id="ws_acme",
+            campaign_name="acme summer", match_strategy="name_exact",
+            map_source="single_mode_backfill",
+        )
+        conn.commit()
+        conn.close()
+        result = om.add_campaign_map_cli(
+            "*", "acme", campaign_name="acme", match_strategy="rule_contains"
+        )
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(len(result.get("deactivated_shadowed_rules", [])), 1)
+        self.assertNotIn("unresolved_conflicts", result)
+
+    def test_add_campaign_map_cli_surfaces_unresolved_manual_conflict(self):
+        conn = om.get_conn()
+        # A deliberate manual name_exact -> ws_acme (reads as 'manual').
+        assign_campaign_map(
+            conn, DEFAULT_ORG_ID, source_platform="*", workspace_id="ws_acme",
+            campaign_name="acme summer", match_strategy="name_exact",
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO workspaces (id, org_id, name, slug, cloud_synced, created_at, updated_at)
+               VALUES ('ws_beta', ?, 'Beta', 'beta', 1, datetime('now'), datetime('now'))""",
+            (DEFAULT_ORG_ID,),
+        )
+        conn.commit()
+        conn.close()
+        # New rule_contains -> a different workspace, so the manual row still shadows it.
+        result = om.add_campaign_map_cli(
+            "*", "beta", campaign_name="acme", match_strategy="rule_contains"
+        )
+        self.assertIn("unresolved_conflicts", result)
+        self.assertTrue(
+            any(c["campaign_name"] == "acme summer" for c in result["unresolved_conflicts"])
+        )
 
     def test_campaign_map_signature_normalizes_platform(self):
         sig = routing_cloud.campaign_map_signature(

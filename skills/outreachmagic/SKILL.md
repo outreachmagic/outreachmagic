@@ -245,6 +245,9 @@ pipeline.py db-health                             # local DB diagnostics
 pipeline.py platform-map --json                   # vendor event type map
 pipeline.py campaign-map list                     # show routing rules
 pipeline.py campaign-map add --platform P --workspace W  # add routing rule
+pipeline.py campaign-map conflicts                # list name_exact rows shadowing a broader rule
+pipeline.py campaign-map deactivate --id MAP_ID   # soft-deactivate one stale routing row
+pipeline.py campaign-map reconcile --dry-run      # preview re-routing already-ingested leads/events
 pipeline.py agent-changes                         # cross-platform sync (JSON)
 pipeline.py crm-sync sync --workspace W --dry-run # preview CRM push (GHL/HubSpot)
 pipeline.py crm-sync sync --workspace W           # push leads to CRM

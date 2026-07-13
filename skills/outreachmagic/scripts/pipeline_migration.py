@@ -23,6 +23,7 @@ from workspace_routing import (
     ensure_default_org_workspace,
     ensure_organization,
     get_org_routing_config,
+    normalize_campaign_name,
     upsert_workspace_lead,
 )
 
@@ -232,6 +233,7 @@ def migrate_db(conn=None):
             priority INTEGER NOT NULL DEFAULT 100,
             is_active INTEGER NOT NULL DEFAULT 1,
             cloud_synced INTEGER NOT NULL DEFAULT 0,
+            map_source TEXT NOT NULL DEFAULT 'manual',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -410,6 +412,15 @@ def migrate_db(conn=None):
             conn.execute(f"ALTER TABLE organizations ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
+    # Must run before backfill_workspace_routing(): that call writes map_source
+    # via assign_campaign_map(), so the column has to exist first or a fresh
+    # single-mode migration aborts with OperationalError.
+    try:
+        conn.execute(
+            "ALTER TABLE campaign_workspace_map ADD COLUMN map_source TEXT NOT NULL DEFAULT 'manual'"
+        )
+    except sqlite3.OperationalError:
+        pass
     backfill_workspace_routing(conn)
     for tbl in ("workspaces", "campaign_workspace_map"):
         try:
@@ -769,6 +780,14 @@ def migrate_db(conn=None):
         conn.execute("ALTER TABLE sender_domains ADD COLUMN notes TEXT")
     except sqlite3.OperationalError:
         pass
+    # sending_ip: user-registered static IP (optional, enables IP-based DNSBL checks).
+    # dnsbl_status: dedicated JSON column for blacklist scan results -- never crammed
+    # into notes, which is a blind-overwrite freeform field on both manual set and cloud sync.
+    for col in ("sending_ip", "dnsbl_status"):
+        try:
+            conn.execute(f"ALTER TABLE sender_domains ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass
 
     # Self-heal pre-existing lead_emails duplicates (case/whitespace variants
     # of a lead's own primary email, or repeated inserts of the same email)
@@ -932,6 +951,19 @@ def backfill_workspace_routing(conn: sqlite3.Connection):
         name = (row["name"] or "").strip()
         if not name:
             continue
+        # One-shot per campaign name: skip if any row (active or inactive)
+        # already exists for this key, so a re-run never resurrects a row that
+        # was intentionally deactivated (assign_campaign_map forces is_active=1).
+        name_normalized = normalize_campaign_name(name)
+        existing = conn.execute(
+            """SELECT 1 FROM campaign_workspace_map
+               WHERE org_id = ? AND source_platform = '*'
+                 AND match_strategy = 'name_exact'
+                 AND campaign_name_normalized = ?""",
+            (DEFAULT_ORG_ID, name_normalized),
+        ).fetchone()
+        if existing:
+            continue
         assign_campaign_map(
             conn,
             DEFAULT_ORG_ID,
@@ -939,4 +971,5 @@ def backfill_workspace_routing(conn: sqlite3.Connection):
             workspace_id=workspace_id,
             campaign_name=name,
             match_strategy="name_exact",
+            map_source="single_mode_backfill",
         )

@@ -265,6 +265,22 @@ def daily_digest(
             """,
             [*params, max(1, int(reply_limit))],
         ).fetchall()
+
+        # One-line blacklist summary: any sender domain whose stored DNSBL scan
+        # is not all_clean. Reuses the existing digest delivery path (no new
+        # alerting mechanism). Guarded in case dnsbl_status predates migration.
+        listed_domains = []
+        try:
+            for row in conn.execute(
+                "SELECT domain, dnsbl_status FROM sender_domains WHERE dnsbl_status IS NOT NULL"
+            ).fetchall():
+                try:
+                    if json.loads(row["dnsbl_status"]).get("all_clean") is False:
+                        listed_domains.append(row["domain"])
+                except (ValueError, TypeError):
+                    continue
+        except sqlite3.OperationalError:
+            listed_domains = []
     finally:
         conn.close()
 
@@ -291,6 +307,7 @@ def daily_digest(
         "bounces": int(bounces or 0),
         "top_campaign": dict(top_row) if top_row else None,
         "new_replies": highlights,
+        "blacklisted_domains": listed_domains,
     }
 
 
@@ -311,6 +328,9 @@ def format_daily_digest(data: dict[str, Any]) -> str:
     replies = data.get("new_replies") or []
     if replies:
         lines.append(f"New replies: {', '.join(replies)}")
+    blacklisted = data.get("blacklisted_domains") or []
+    if blacklisted:
+        lines.append(f"Blacklisted domains: {', '.join(blacklisted)}")
     return "\n".join(lines)
 
 

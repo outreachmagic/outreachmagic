@@ -38,7 +38,9 @@ def _setup_workspace() -> str:
 
 
 def _add(ws_id: str, name: str, company: str, *, email: str | None = None) -> int:
-    r = om.resolve_lead(name=name, company=company, email=email)
+    r = om.resolve_lead(name=name, company=company, email=email,
+        allow_weak_identity=True,
+    )
     lead_id = int(r["id"])
     conn = om.get_conn()
     om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_id, lead_id)

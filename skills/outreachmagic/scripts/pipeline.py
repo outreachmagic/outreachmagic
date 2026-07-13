@@ -107,6 +107,8 @@ from workspace_routing import (
     resolve_workspace,
     resolve_workspace_for_ingest,
     resolve_workspace_identity,
+    matchable_identities,
+    NON_PERSISTED_IDENTITY_TYPES,
     upsert_all_identities,
     upsert_identity_alias,
     enqueue_identity_conflict_merge,
@@ -1237,6 +1239,7 @@ def resolve_lead(
     import_batch: Optional[str] = None,
     import_extra: Optional[dict[str, str]] = None,
     force_lead_id: Optional[int] = None,
+    allow_weak_identity: bool = False,
     company_cache: Optional[dict] = None,
 ) -> dict:
     """Match or create lead by tiered identities (email, external_id, name+company, etc.)."""
@@ -1265,6 +1268,22 @@ def resolve_lead(
 
     if not identities and force_lead_id is None:
         return {"status": "error", "error": "no identity: need email, linkedin, external_id, or name+company"}
+
+    # Gate creation on a *matchable* identity, not merely on a non-empty identity
+    # list. build_import_identities() falls through to name_company/import_key for
+    # any named profile, and those types are never persisted nor matched on -- so
+    # without this check a lead with no email/linkedin is created, is unmatchable,
+    # and is re-created again on the next sync. Callers that legitimately import
+    # name+company-only rows opt in with allow_weak_identity=True, which also
+    # persists the composite identity so the *next* import matches instead of
+    # duplicating.
+    if force_lead_id is None and not matchable_identities(identities):
+        if not allow_weak_identity:
+            return {
+                "status": "error",
+                "error": "no matchable identity: need email, linkedin, external_id, or phone",
+                "weak_identity": True,
+            }
 
     own_conn = conn is None
     if own_conn:
@@ -1330,9 +1349,19 @@ def resolve_lead(
         "email", "linkedin_url", "linkedin_sales_nav_id",
         "linkedin_member_id", "external_id",
     })
+    # A weak-identity import (allow_weak_identity) has no strong identity to match
+    # on, so we must also match on the composite types -- which that path persists
+    # for exactly this purpose. Without it, every re-import of the same
+    # name+company row creates another duplicate, which is the bug the flag is
+    # supposed to avoid. Scoped to the opt-in path only: webhook ingest never sets
+    # the flag, so the false-positive risk that keeps composites out of the
+    # default match set is unchanged.
+    match_types = STRONG_IDENTITY_TYPES
+    if allow_weak_identity and not matchable_identities(identities):
+        match_types = STRONG_IDENTITY_TYPES | NON_PERSISTED_IDENTITY_TYPES
     if force_lead_id is None:
         for itype, val in identities:
-            if itype not in STRONG_IDENTITY_TYPES:
+            if itype not in match_types:
                 continue
             # by_email/by_li above already ran this exact lookup (same
             # normalized value: both derive from normalize_email()/
@@ -1349,7 +1378,7 @@ def resolve_lead(
                     lead_id = found
                     match_method = itype
                     created = False
-                elif lead_id != found and itype in STRONG_IDENTITY_TYPES:
+                elif lead_id != found and itype in match_types:
                     pass
                 elif lead_id != found:
                     break
@@ -1468,6 +1497,10 @@ def resolve_lead(
 
     id_conflicts, promote_conflicts = upsert_all_identities(
         conn, DEFAULT_ORG_ID, int(lead_id), identities, source=source_platform,
+        # A weak-identity lead has nothing else to match on, so its composite
+        # identity MUST be persisted -- otherwise allow_weak_identity just
+        # re-opens the duplicate-on-every-sync bug behind a flag.
+        persist_weak=allow_weak_identity,
     )
     linkedin_url_conflicts.extend(promote_conflicts)
 
@@ -1614,6 +1647,10 @@ def add_lead(name, company=None, title=None, industry=None, headcount=None,
         notes=notes,
         source="manual_add",
         source_platform="manual",
+        # Explicit user action: adding a lead by name+company is legitimate here
+        # (the email finder runs over them next). The composite identity is
+        # persisted, so adding the same person again matches instead of duplicating.
+        allow_weak_identity=True,
     )
     if result.get("status") == "error":
         return result
@@ -1837,6 +1874,7 @@ def upsert_lead_profile(
     import_batch: Optional[str] = None,
     import_extra: Optional[dict[str, str]] = None,
     force_lead_id: Optional[int] = None,
+    allow_weak_identity: bool = False,
 ) -> dict:
     """Match or create by tiered identities; enrich profile and company link."""
     extra = dict(import_extra or {})
@@ -1889,6 +1927,7 @@ def upsert_lead_profile(
         import_batch=import_batch,
         import_extra=extra,
         force_lead_id=force_lead_id,
+        allow_weak_identity=allow_weak_identity,
     )
 
 
@@ -2525,6 +2564,13 @@ def import_profiles(
                 import_extra=extra,
                 force_lead_id=lead_id_hint,
                 conn=shared_conn,
+                # An explicit import is the legitimate name+company-only case:
+                # you import the list, then run the email finder over it. The
+                # composite identity gets persisted, so re-importing the same row
+                # matches instead of duplicating. Webhook/relay ingest does NOT
+                # set this -- an inbound event with no matchable identity is
+                # quarantined rather than turned into an unmatchable lead.
+                allow_weak_identity=True,
             )
         except Exception as e:
             summary["errors"].append({"row": i + 1, "email": profile.get("email"), "error": str(e)})

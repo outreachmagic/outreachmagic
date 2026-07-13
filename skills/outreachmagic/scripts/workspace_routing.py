@@ -83,6 +83,24 @@ NON_PERSISTED_IDENTITY_TYPES = frozenset({
     "name_company_domain", "name_company_domain_title", "name_company", "import_key",
 })
 
+
+def matchable_identities(
+    identities: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """The identities that can actually match this lead again later.
+
+    build_import_identities() always returns *something* for a named profile --
+    it falls through to name_company/import_key. Those types are never persisted
+    to lead_identities and are excluded from matching, so a lead whose only
+    identities are weak is created, is unmatchable, and is therefore re-created
+    from scratch on every subsequent sync. That is what produced ~10.8k
+    "Unknown"/no-email rows in a single backfill window (name="Unknown" is
+    truthy, so it earns an import_key and sails past a `if not identities` check).
+
+    Callers gate lead *creation* on this being non-empty.
+    """
+    return [(t, v) for t, v in identities if t not in NON_PERSISTED_IDENTITY_TYPES]
+
 # Identity types safe enough to trigger an AUTOMATIC merge queue on conflict.
 # Narrower than STRONG_IDENTITY_TYPES (pipeline.py) on purpose: external_id's
 # safety depends on the source provider's own guarantees (not verifiable
@@ -617,11 +635,20 @@ def upsert_all_identities(
     identities: list[tuple[str, str]],
     *,
     source: Optional[str] = None,
+    persist_weak: bool = False,
 ) -> tuple[list[dict], list[dict]]:
-    """Register all identities; return (identity conflicts, linkedin_url conflicts)."""
+    """Register all identities; return (identity conflicts, linkedin_url conflicts).
+
+    persist_weak=True also stores the composite (name_company/import_key) types.
+    Only set it for leads that have no strong identity at all -- otherwise they
+    would have nothing to match on and would duplicate on every re-import.
+    """
     conflicts: list[dict] = []
     linkedin_conflicts: list[dict] = []
-    rows = [(t, v) for t, v in identities if t not in NON_PERSISTED_IDENTITY_TYPES]
+    rows = [
+        (t, v) for t, v in identities
+        if persist_weak or t not in NON_PERSISTED_IDENTITY_TYPES
+    ]
     if not rows:
         return conflicts, linkedin_conflicts
 

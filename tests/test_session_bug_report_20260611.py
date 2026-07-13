@@ -132,7 +132,8 @@ def test_email_finder_candidates_scoped_stats():
             company="Acme",
             company_domain="acme.com",
             source="manual",
-        )
+        allow_weak_identity=True,
+    )
         conn = om.get_conn()
         ws_row = om.resolve_workspace_identity(conn, ws)
         om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_row["id"], int(lead["id"]))
@@ -165,6 +166,7 @@ def test_show_json_includes_leads_alias():
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     conn = om.get_conn()
     ws_row = om.resolve_workspace_identity(conn, "default")

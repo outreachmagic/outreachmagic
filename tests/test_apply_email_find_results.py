@@ -45,6 +45,7 @@ def test_apply_email_find_results_updates_email_tags_and_verification():
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     lead_id = int(lead["id"])
     om.create_workspace("Fast WS", slug="fastws")
@@ -128,6 +129,7 @@ def test_collision_skips_email_keeps_tags_and_verification():
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     ghost = om.resolve_lead(
         email=None,
@@ -135,6 +137,7 @@ def test_collision_skips_email_keeps_tags_and_verification():
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     owner_id = int(owner["id"])
     ghost_id = int(ghost["id"])
@@ -191,6 +194,7 @@ def test_batch_with_collision_completes_all_rows():
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     ghost = om.resolve_lead(
         email=None,
@@ -198,6 +202,7 @@ def test_batch_with_collision_completes_all_rows():
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     clean = om.resolve_lead(
         email=None,
@@ -205,6 +210,7 @@ def test_batch_with_collision_completes_all_rows():
         company="Beta",
         company_domain="beta.com",
         source="manual",
+        allow_weak_identity=True,
     )
     owner_id = int(owner["id"])
     ghost_id = int(ghost["id"])
@@ -251,6 +257,7 @@ def test_large_batch_mixed_conflicts_and_success():
         company="BigCo",
         company_domain="bigco.com",
         source="manual",
+        allow_weak_identity=True,
     )
     owner_id = int(owner["id"])
     rows = []
@@ -262,7 +269,8 @@ def test_large_batch_mixed_conflicts_and_success():
             company="BigCo",
             company_domain="bigco.com",
             source="manual",
-        )
+        allow_weak_identity=True,
+    )
         lid = int(lead["id"])
         lead_ids.append(lid)
         email = "shared@bigco.com" if i % 3 == 0 else f"lead{i}@bigco.com"
@@ -302,6 +310,7 @@ def test_overwrite_does_not_steal_email_from_other_lead():
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     ghost = om.resolve_lead(
         email=None,
@@ -309,6 +318,7 @@ def test_overwrite_does_not_steal_email_from_other_lead():
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     owner_id = int(owner["id"])
     ghost_id = int(ghost["id"])
@@ -339,6 +349,7 @@ def test_lead_already_has_same_email_is_idempotent():
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     lead_id = int(lead["id"])
 
@@ -367,6 +378,7 @@ def test_not_found_row_still_gets_attempted_tag():
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     lead_id = int(lead["id"])
 
@@ -406,6 +418,7 @@ def test_cli_apply_email_find_results_handles_collision(tmp_path):
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     ghost = om.resolve_lead(
         email=None,
@@ -413,6 +426,7 @@ def test_cli_apply_email_find_results_handles_collision(tmp_path):
         company="Acme",
         company_domain="acme.com",
         source="manual",
+        allow_weak_identity=True,
     )
     payload = [
         _profile_row(int(ghost["id"]), email="cli@acme.com"),

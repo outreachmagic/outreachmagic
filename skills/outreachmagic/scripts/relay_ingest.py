@@ -1033,7 +1033,10 @@ def ingest_relay_event(
         )
     if upsert_result.get("status") == "error":
         identities = om.collect_identities_from_event(identity, payload, platform)
-        if not identities:
+        # weak_identity means the profile had no matchable identity at all, so we
+        # cannot create a lead for it and must not silently drop the event --
+        # quarantine it so it's visible and replayable once an identity turns up.
+        if not identities or upsert_result.get("weak_identity"):
             om.ensure_organization(conn)
             om.quarantine_event(
                 conn,

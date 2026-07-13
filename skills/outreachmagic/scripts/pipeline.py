@@ -425,21 +425,29 @@ def ensure_company(
             company_cache[name_key] = cid
 
     if company_cache is not None:
+        # Only a domain_key hit is safe to trust blindly -- same normalized
+        # domain string, so no new domain write is needed and there's no
+        # uniqueness risk. A name_key hit is only safe to skip-verify when
+        # there's no domain to write; if domain is present, the row this
+        # name maps to might be a *different* company than the one that
+        # legitimately owns this domain (e.g. created outside this cache by
+        # the company-snapshot phase), so it must still go through the real
+        # domain SELECT below before we ever write to that column.
         cid = company_cache.get(domain_key) if domain_key else None
-        if cid is None:
-            cid = company_cache.get(name_key) if name_key else None
         if cid is not None:
-            if domain:
-                conn.execute(
-                    """UPDATE companies SET domain = COALESCE(domain, ?),
-                       updated_at = datetime('now') WHERE id = ?""",
-                    (domain, cid),
-                )
             _update_company_fields(conn, cid, name, industry, headcount,
                                    hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
                                    authoritative=authoritative)
             _remember(cid)
             return cid
+        if not domain and name_key is not None:
+            cid = company_cache.get(name_key)
+            if cid is not None:
+                _update_company_fields(conn, cid, None, industry, headcount,
+                                       hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
+                                       authoritative=authoritative)
+                _remember(cid)
+                return cid
 
     if domain:
         row = conn.execute("SELECT id FROM companies WHERE domain = ?", (domain,)).fetchone()
@@ -451,11 +459,15 @@ def ensure_company(
             _remember(cid)
             return cid
     if name:
-        row = conn.execute(
-            "SELECT id FROM companies WHERE lower(name) = lower(?)", (name,)
-        ).fetchone()
-        if row:
-            cid = row["id"]
+        cid = company_cache.get(name_key) if company_cache is not None else None
+        if cid is None:
+            row = conn.execute(
+                "SELECT id FROM companies WHERE lower(name) = lower(?)", (name,)
+            ).fetchone()
+            cid = row["id"] if row else None
+        if cid is not None:
+            # domain is confirmed free by the SELECT above (or None), so this
+            # write can't collide with a different company's domain.
             if domain:
                 conn.execute(
                     """UPDATE companies SET domain = COALESCE(domain, ?),

@@ -69,6 +69,7 @@ from pipeline_tags import (
     _decode_event_metadata,
 )
 from relay_ingest import (
+    _phase,
     ingest_relay_event,
     mark_relay_ingested,
     mark_relay_ingested_many,
@@ -1454,6 +1455,7 @@ def _ingest_relay_page(
         pull_conn, DEFAULT_ORG_ID, pull_page_ws_idempotency_keys(events),
     )
     activity_refresh_pairs: set[tuple[int, str]] = set()
+    phase_timer: dict[str, float] = {}
     ingest_kw = {
         "debug_sentiment": debug_sentiment,
         "quiet": quiet,
@@ -1467,6 +1469,7 @@ def _ingest_relay_page(
         "ws_idempotent_prefetch": ws_idempotent_prefetch,
         "defer_activity_refresh": True,
         "activity_refresh_pairs": activity_refresh_pairs,
+        "phase_timer": phase_timer,
     }
 
     page_start = time.monotonic()
@@ -1544,12 +1547,15 @@ def _ingest_relay_page(
                 if event.get("platform") != "agent":
                     _append_pull_ingest_marks(pending_marks, event, ingested, local_client_id)
 
-        for lead_id, workspace_id in activity_refresh_pairs:
-            refresh_lead_activity_from_events(pull_conn, lead_id, workspace_id)
+        with _phase("activity_refresh", phase_timer):
+            for lead_id, workspace_id in activity_refresh_pairs:
+                refresh_lead_activity_from_events(pull_conn, lead_id, workspace_id)
         if pending_marks and pull_conn is not None:
-            mark_relay_ingested_many(pending_marks, conn=pull_conn, commit=False)
+            with _phase("mark_ingested", phase_timer):
+                mark_relay_ingested_many(pending_marks, conn=pull_conn, commit=False)
         if pull_conn is not None:
-            pull_conn.commit()
+            with _phase("commit", phase_timer):
+                pull_conn.commit()
     except Exception:
         if pull_conn is not None:
             try:
@@ -1559,10 +1565,14 @@ def _ingest_relay_page(
         raise
     finally:
         elapsed = time.monotonic() - page_start
-        if not quiet and elapsed >= 30:
+        if not quiet and elapsed >= 8:
+            breakdown = ", ".join(
+                f"{name}={secs:.1f}s"
+                for name, secs in sorted(phase_timer.items(), key=lambda kv: -kv[1])
+            )
             print(
                 f"Slow pull page ingest: {len(events):,} events in {elapsed:.1f}s "
-                f"(imported={imported}, skipped_dup={skipped_duplicates})",
+                f"(imported={imported}, skipped_dup={skipped_duplicates}) [{breakdown}]",
                 flush=True,
             )
         if own_page_conn and pull_conn is not None:

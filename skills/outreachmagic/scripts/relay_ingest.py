@@ -6,6 +6,8 @@ import hashlib
 import json
 import sqlite3
 import sys
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -680,6 +682,21 @@ def _relay_event_timestamp(event: dict, normalize) -> Optional[str]:
     return None
 
 
+@contextmanager
+def _phase(name: str, timer: Optional[dict[str, float]]):
+    """Accumulate wall-clock time under `name` into `timer` (a per-page dict
+    shared across events). No-op overhead (a monotonic() call either side)
+    when timer is None -- safe to leave wrapping the hot path permanently."""
+    if timer is None:
+        yield
+        return
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        timer[name] = timer.get(name, 0.0) + (time.monotonic() - start)
+
+
 def ingest_relay_event(
     event: dict,
     debug_sentiment: bool = False,
@@ -696,6 +713,7 @@ def ingest_relay_event(
     ws_idempotent_prefetch: Optional[set[str]] = None,
     defer_activity_refresh: bool = False,
     activity_refresh_pairs: Optional[set[tuple[int, str]]] = None,
+    phase_timer: Optional[dict[str, float]] = None,
 ) -> Optional[int]:
     """Take a relay event and write it to the local SQLite database. Returns None if duplicate."""
     import pipeline as om  # noqa: PLC0415 — avoid circular import at module load
@@ -907,17 +925,18 @@ def ingest_relay_event(
 
     profile = om.profile_from_relay_lead(lead_fields, identity, display_name)
     campaign_name_for_detail = event_fields.get("campaign") or campaign_ctx.campaign_name_raw
-    upsert_result = om.upsert_lead_profile(
-        profile,
-        channel=channel,
-        stage="prospecting",
-        notes=f"Auto-imported from {platform} via relay",
-        enrich_name=display_name if lead_fields.get("first_name") else None,
-        source="relay_sync",
-        source_detail=campaign_name_for_detail,
-        source_platform=platform,
-        conn=conn,
-    )
+    with _phase("lead_resolve", phase_timer):
+        upsert_result = om.upsert_lead_profile(
+            profile,
+            channel=channel,
+            stage="prospecting",
+            notes=f"Auto-imported from {platform} via relay",
+            enrich_name=display_name if lead_fields.get("first_name") else None,
+            source="relay_sync",
+            source_detail=campaign_name_for_detail,
+            source_platform=platform,
+            conn=conn,
+        )
     if upsert_result.get("status") == "error":
         identities = om.collect_identities_from_event(identity, payload, platform)
         if not identities:
@@ -941,21 +960,22 @@ def ingest_relay_event(
     li_headline = lead_fields.get("headline")
     li_bio = lead_fields.get("bio")
     if li_headline or li_bio:
-        li_row = conn.execute(
-            "SELECT linkedin_headline, linkedin_bio FROM leads WHERE id = ?", (lead_id,)
-        ).fetchone()
-        li_sets: list[str] = []
-        li_params: list = []
-        if li_headline and not (li_row["linkedin_headline"] or "").strip():
-            li_sets.append("linkedin_headline = ?")
-            li_params.append(li_headline)
-        if li_bio and not (li_row["linkedin_bio"] or "").strip():
-            li_sets.append("linkedin_bio = ?")
-            li_params.append(li_bio)
-        if li_sets:
-            li_sets.append("updated_at = datetime('now')")
-            li_params.append(lead_id)
-            conn.execute(f"UPDATE leads SET {', '.join(li_sets)} WHERE id = ?", li_params)
+        with _phase("linkedin_bio_update", phase_timer):
+            li_row = conn.execute(
+                "SELECT linkedin_headline, linkedin_bio FROM leads WHERE id = ?", (lead_id,)
+            ).fetchone()
+            li_sets: list[str] = []
+            li_params: list = []
+            if li_headline and not (li_row["linkedin_headline"] or "").strip():
+                li_sets.append("linkedin_headline = ?")
+                li_params.append(li_headline)
+            if li_bio and not (li_row["linkedin_bio"] or "").strip():
+                li_sets.append("linkedin_bio = ?")
+                li_params.append(li_bio)
+            if li_sets:
+                li_sets.append("updated_at = datetime('now')")
+                li_params.append(lead_id)
+                conn.execute(f"UPDATE leads SET {', '.join(li_sets)} WHERE id = ?", li_params)
 
     # get_org_routing_config() already calls ensure_default_org_workspace()
     # internally whenever needed and returns the result as
@@ -963,15 +983,16 @@ def ingest_relay_event(
     # workspace mode) was 4 redundant SQL statements x every event in a pull.
     cfg = routing_config or om.get_org_routing_config(conn, DEFAULT_ORG_ID)
     identities = om.collect_identities_from_event(identity, payload, platform)
-    for itype, val in identities:
-        try:
-            om.upsert_identity_alias(conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform)
-        except ValueError:
-            if itype not in om.AUTO_MERGE_SAFE_IDENTITY_TYPES:
-                continue  # not solid enough to auto-queue a merge on conflict
-            om.enqueue_identity_conflict_merge(
-                conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform,
-            )
+    with _phase("identity_alias", phase_timer):
+        for itype, val in identities:
+            try:
+                om.upsert_identity_alias(conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform)
+            except ValueError:
+                if itype not in om.AUTO_MERGE_SAFE_IDENTITY_TYPES:
+                    continue  # not solid enough to auto-queue a merge on conflict
+                om.enqueue_identity_conflict_merge(
+                    conn, DEFAULT_ORG_ID, lead_id, itype, val, source=platform,
+                )
 
     resolved = resolve_event(platform, envelope_event_type, payload)
     local_type = resolved.local_type
@@ -1096,118 +1117,120 @@ def ingest_relay_event(
         return None
 
     campaign_name_for_event = event_fields.get("campaign") or campaign_ctx.campaign_name_raw
-    event_id = om.log_event(
-        lead_id=lead_id,
-        event_type=local_type,
-        direction=direction,
-        channel=channel,
-        subject=subject,
-        body_preview=body_preview,
-        metadata=metadata,
-        campaign=campaign_name_for_event,
-        event_at=event_at or None,
-        sender=sender_norm,
-        conn=conn,
-        commit=False,
-        refresh_activity=False,
-    )
-
-    event_time = event_at or None
-    target_stage = relay_target_stage(
-        platform, envelope_event_type, local_type, payload, metadata,
-        resolved_stage=resolved.target_stage,
-    )
-    if target_stage:
-        # Don't downgrade from a higher stage — e.g. auto-reply email
-        # should not overwrite 'contacted' with 'replied', and a bare
-        # reply should not overwrite 'interested'.
-        if target_stage not in ("not_interested", "lost"):
-            current = conn.execute(
-                "SELECT status FROM workspace_leads WHERE lead_id = ? AND org_id = ? ORDER BY id DESC LIMIT 1",
-                (lead_id, DEFAULT_ORG_ID),
-            ).fetchone()
-            current_status = current[0] if current else None
-            # not_interested/lost are terminal negative branches, not points
-            # further along PIPELINE_STAGES' positive track -- but they sort
-            # after 'won' in that list, so furthest_stage() would otherwise
-            # treat them as more advanced than any new positive-track stage
-            # and silently revert it. A later positive-sentiment webhook must
-            # be able to override a stale not_interested/lost classification.
-            if current_status and current_status not in ("not_interested", "lost"):
-                from pipeline import furthest_stage
-                target_stage = furthest_stage(current_status, target_stage)
-        om.update_lead_stage(
-            lead_id,
-            target_stage,
-            event_at=event_time,
+    with _phase("event_log", phase_timer):
+        event_id = om.log_event(
+            lead_id=lead_id,
+            event_type=local_type,
+            direction=direction,
+            channel=channel,
+            subject=subject,
+            body_preview=body_preview,
+            metadata=metadata,
+            campaign=campaign_name_for_event,
+            event_at=event_at or None,
+            sender=sender_norm,
             conn=conn,
             commit=False,
+            refresh_activity=False,
         )
 
-    ws_status = target_stage or "prospecting"
-    ws_lead_id = om.upsert_workspace_lead(
-        conn, DEFAULT_ORG_ID, workspace_id, lead_id, status=ws_status,
-    )
-    if target_stage:
-        stage_ts = event_time or om.utc_now_for_storage()
-        conn.execute(
-            "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
-            (target_stage, stage_ts, ws_lead_id),
+    event_time = event_at or None
+    with _phase("workspace_stage", phase_timer):
+        target_stage = relay_target_stage(
+            platform, envelope_event_type, local_type, payload, metadata,
+            resolved_stage=resolved.target_stage,
         )
-    ws_payload = {
-        # subject/body already live in metadata (nested here as "event") --
-        # storing them again at the top level doubled payload_json size for
-        # no reason; workspace_lead_events is an outbox/idempotency table,
-        # not a content store (see collect_pending_events in crm_sync.py).
-        "event": metadata,
-        "direction": direction,
-        "channel": channel,
-        "campaign_platform_id": campaign_ctx.campaign_platform_id,
-        "campaign_name": campaign_ctx.campaign_name_raw,
-    }
-    om.append_workspace_event(
-        conn,
-        DEFAULT_ORG_ID,
-        workspace_id,
-        lead_id,
-        ws_lead_id,
-        event_type=local_type,
-        event_at=event_at or om.utc_now_for_storage(),
-        source_platform=platform,
-        idempotency_key=ws_idempotency,
-        payload=ws_payload,
-        external_event_id=str(event.get("relay_id") or ""),
-    )
+        if target_stage:
+            # Don't downgrade from a higher stage — e.g. auto-reply email
+            # should not overwrite 'contacted' with 'replied', and a bare
+            # reply should not overwrite 'interested'.
+            if target_stage not in ("not_interested", "lost"):
+                current = conn.execute(
+                    "SELECT status FROM workspace_leads WHERE lead_id = ? AND org_id = ? ORDER BY id DESC LIMIT 1",
+                    (lead_id, DEFAULT_ORG_ID),
+                ).fetchone()
+                current_status = current[0] if current else None
+                # not_interested/lost are terminal negative branches, not points
+                # further along PIPELINE_STAGES' positive track -- but they sort
+                # after 'won' in that list, so furthest_stage() would otherwise
+                # treat them as more advanced than any new positive-track stage
+                # and silently revert it. A later positive-sentiment webhook must
+                # be able to override a stale not_interested/lost classification.
+                if current_status and current_status not in ("not_interested", "lost"):
+                    from pipeline import furthest_stage
+                    target_stage = furthest_stage(current_status, target_stage)
+            om.update_lead_stage(
+                lead_id,
+                target_stage,
+                event_at=event_time,
+                conn=conn,
+                commit=False,
+            )
 
-    status_label = metadata.get("lead_status_raw")
-    status_sentiment = metadata.get("lead_status_sentiment")
-    if status_label or status_sentiment:
-        mat_sets, mat_params = [], []
-        if status_label:
-            mat_sets.append("current_status_label = ?")
-            mat_params.append(status_label)
-        if status_sentiment:
-            mat_sets.append("current_status_sentiment = ?")
-            mat_params.append(status_sentiment)
-        mat_sets.append("updated_at = datetime('now')")
-        mat_params.append(ws_lead_id)
-        conn.execute(
-            f"UPDATE workspace_leads SET {', '.join(mat_sets)} WHERE id = ?", mat_params
+        ws_status = target_stage or "prospecting"
+        ws_lead_id = om.upsert_workspace_lead(
+            conn, DEFAULT_ORG_ID, workspace_id, lead_id, status=ws_status,
+        )
+        if target_stage:
+            stage_ts = event_time or om.utc_now_for_storage()
+            conn.execute(
+                "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
+                (target_stage, stage_ts, ws_lead_id),
+            )
+        ws_payload = {
+            # subject/body already live in metadata (nested here as "event") --
+            # storing them again at the top level doubled payload_json size for
+            # no reason; workspace_lead_events is an outbox/idempotency table,
+            # not a content store (see collect_pending_events in crm_sync.py).
+            "event": metadata,
+            "direction": direction,
+            "channel": channel,
+            "campaign_platform_id": campaign_ctx.campaign_platform_id,
+            "campaign_name": campaign_ctx.campaign_name_raw,
+        }
+        om.append_workspace_event(
+            conn,
+            DEFAULT_ORG_ID,
+            workspace_id,
+            lead_id,
+            ws_lead_id,
+            event_type=local_type,
+            event_at=event_at or om.utc_now_for_storage(),
+            source_platform=platform,
+            idempotency_key=ws_idempotency,
+            payload=ws_payload,
+            external_event_id=str(event.get("relay_id") or ""),
         )
 
-    # Non-human replies (autoreply, invalid) should never show as "replied".
-    # Guarded on ws_status == "replied" so this can't downgrade a lead that
-    # had already advanced further (interested/proposal/etc.) via an earlier
-    # event — same downgrade protection furthest_stage() gives target_stage above.
-    if status_sentiment in ("autoreply", "invalid") and ws_status == "replied":
-        conn.execute(
-            "UPDATE workspace_leads SET status = 'contacted', updated_at = datetime('now') WHERE id = ?",
-            (ws_lead_id,),
-        )
+        status_label = metadata.get("lead_status_raw")
+        status_sentiment = metadata.get("lead_status_sentiment")
+        if status_label or status_sentiment:
+            mat_sets, mat_params = [], []
+            if status_label:
+                mat_sets.append("current_status_label = ?")
+                mat_params.append(status_label)
+            if status_sentiment:
+                mat_sets.append("current_status_sentiment = ?")
+                mat_params.append(status_sentiment)
+            mat_sets.append("updated_at = datetime('now')")
+            mat_params.append(ws_lead_id)
+            conn.execute(
+                f"UPDATE workspace_leads SET {', '.join(mat_sets)} WHERE id = ?", mat_params
+            )
 
-    if sender_norm:
-        event_at_ts = event_at or om.utc_now_for_storage()
-        om._update_lead_sender(conn, lead_id, workspace_id, sender_norm, platform, event_at_ts)
+        # Non-human replies (autoreply, invalid) should never show as "replied".
+        # Guarded on ws_status == "replied" so this can't downgrade a lead that
+        # had already advanced further (interested/proposal/etc.) via an earlier
+        # event — same downgrade protection furthest_stage() gives target_stage above.
+        if status_sentiment in ("autoreply", "invalid") and ws_status == "replied":
+            conn.execute(
+                "UPDATE workspace_leads SET status = 'contacted', updated_at = datetime('now') WHERE id = ?",
+                (ws_lead_id,),
+            )
+
+        if sender_norm:
+            event_at_ts = event_at or om.utc_now_for_storage()
+            om._update_lead_sender(conn, lead_id, workspace_id, sender_norm, platform, event_at_ts)
 
     if local_type in ("linkedin_connect", "linkedin_connection_accepted") and workspace_id:
         sender_li = sender_norm or om.normalize_linkedin(sender_raw)

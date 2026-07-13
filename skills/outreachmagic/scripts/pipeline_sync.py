@@ -608,6 +608,13 @@ SNAPSHOT_ACTIONS = frozenset({
     "sender_domain_update",
 })
 
+# ingest_agent_entry()'s return type is Optional[int] (a lead_id) everywhere
+# else, but company/sender_account/sender_domain snapshots have no lead to
+# report. -1 can never collide with a real leads.id (AUTOINCREMENT starts at
+# 1) and is never passed to _record_mark, so it only reaches
+# _ingest_relay_page's `ingested is None` imported/filtered check.
+AGENT_SNAPSHOT_APPLIED_SENTINEL = -1
+
 
 def ingest_agent_entry(
     event: dict,
@@ -668,6 +675,11 @@ def ingest_agent_entry(
     conn = pull_conn or get_conn()
     lead_id = None
     company_id = None
+    # Set when a company/sender_account/sender_domain snapshot actually wrote
+    # data (entity resolved locally) but has no lead_id to return -- lets the
+    # pull-page counters in _ingest_relay_page report it as imported instead
+    # of filtered. See return statement below.
+    applied_without_lead = False
     slug_map = ws_slug_map or {}
     try:
         org_id = DEFAULT_ORG_ID
@@ -681,6 +693,7 @@ def ingest_agent_entry(
                     payload,
                     conn=conn,
                 )
+                applied_without_lead = True
             if own_conn:
                 conn.commit()
                 conn.close()
@@ -696,6 +709,7 @@ def ingest_agent_entry(
             )
             if sender_account_id:
                 apply_agent_sender_account_sync_payload(sender_account_id, payload, conn=conn)
+                applied_without_lead = True
             if own_conn:
                 conn.commit()
                 conn.close()
@@ -709,6 +723,7 @@ def ingest_agent_entry(
             domain = resolve_sender_domain_from_entity_key(conn, entity_key) if entity_key else None
             if domain:
                 apply_agent_sender_domain_sync_payload(domain, payload, conn=conn)
+                applied_without_lead = True
             if own_conn:
                 conn.commit()
                 conn.close()
@@ -924,6 +939,13 @@ def ingest_agent_entry(
         relay_rid = event.get("relay_id")
         if relay_rid is not None:
             _record_mark(f"relay:{relay_rid}", lead_id)
+    if lead_id is None and applied_without_lead:
+        # Company/sender snapshots have no lead to report -- but the update
+        # was applied, so signal non-None to _ingest_relay_page's caller so
+        # it counts as imported rather than filtered (real lead_id is never
+        # coerced from this: relay_ingested.lead_id above is written from the
+        # untouched `lead_id` local, still None here).
+        return AGENT_SNAPSHOT_APPLIED_SENTINEL
     return lead_id
 
 

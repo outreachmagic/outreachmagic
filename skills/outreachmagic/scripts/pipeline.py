@@ -388,8 +388,17 @@ def ensure_company(
     hq_country: Optional[str] = None,
     *,
     authoritative: bool = False,
+    company_cache: Optional[dict] = None,
 ) -> Optional[int]:
-    """Find or create company row; match business domain first, then exact name."""
+    """Find or create company row; match business domain first, then exact name.
+
+    company_cache (optional): dict shared across a batch (e.g. one pull page)
+    mapping ("d", domain) / ("n", lower(name)) -> company_id. Callers that
+    resolve the same lead's company twice per row (resolve phase + apply
+    phase) or share a company across many rows in the same page turn those
+    repeat SELECTs into dict lookups. Populated as a side effect; omit for
+    one-off calls outside a batch.
+    """
     domain = (domain or "").strip().lower() or None
     if domain and domain in SHARED_EMAIL_DOMAINS:
         domain = None
@@ -403,6 +412,35 @@ def ensure_company(
         name = None
     if not name and not domain:
         return None
+
+    domain_key = ("d", domain) if domain else None
+    name_key = ("n", name.lower()) if name else None
+
+    def _remember(cid: int) -> None:
+        if company_cache is None:
+            return
+        if domain_key:
+            company_cache[domain_key] = cid
+        if name_key:
+            company_cache[name_key] = cid
+
+    if company_cache is not None:
+        cid = company_cache.get(domain_key) if domain_key else None
+        if cid is None:
+            cid = company_cache.get(name_key) if name_key else None
+        if cid is not None:
+            if domain:
+                conn.execute(
+                    """UPDATE companies SET domain = COALESCE(domain, ?),
+                       updated_at = datetime('now') WHERE id = ?""",
+                    (domain, cid),
+                )
+            _update_company_fields(conn, cid, name, industry, headcount,
+                                   hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
+                                   authoritative=authoritative)
+            _remember(cid)
+            return cid
+
     if domain:
         row = conn.execute("SELECT id FROM companies WHERE domain = ?", (domain,)).fetchone()
         if row:
@@ -410,6 +448,7 @@ def ensure_company(
             _update_company_fields(conn, cid, name, industry, headcount,
                                    hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
                                    authoritative=authoritative)
+            _remember(cid)
             return cid
     if name:
         row = conn.execute(
@@ -426,6 +465,7 @@ def ensure_company(
             _update_company_fields(conn, cid, None, industry, headcount,
                                    hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
                                    authoritative=authoritative)
+            _remember(cid)
             return cid
     display_name = name or (domain or "Unknown")
     cid = conn.execute(
@@ -435,6 +475,7 @@ def ensure_company(
         (display_name, domain, industry, headcount, parse_headcount_numeric(headcount),
          hq_city, hq_state, hq_country),
     ).lastrowid
+    _remember(cid)
     return cid
 
 
@@ -535,6 +576,7 @@ def link_lead_company(
     email: Optional[str] = None,
     industry: Optional[str] = None,
     headcount: Optional[str] = None,
+    company_cache: Optional[dict] = None,
 ) -> Optional[int]:
     if email:
         domain = email_domain(email)
@@ -543,7 +585,10 @@ def link_lead_company(
             "SELECT email_domain FROM leads WHERE id = ?", (lead_id,),
         ).fetchone()
         domain = (row["email_domain"] or "").strip().lower() or None if row else None
-    cid = ensure_company(conn, name=company, domain=domain, industry=industry, headcount=headcount)
+    cid = ensure_company(
+        conn, name=company, domain=domain, industry=industry, headcount=headcount,
+        company_cache=company_cache,
+    )
     if cid:
         conn.execute("UPDATE leads SET company_id = ? WHERE id = ?", (cid, lead_id))
     if company:
@@ -1164,6 +1209,7 @@ def resolve_lead(
     import_batch: Optional[str] = None,
     import_extra: Optional[dict[str, str]] = None,
     force_lead_id: Optional[int] = None,
+    company_cache: Optional[dict] = None,
 ) -> dict:
     """Match or create lead by tiered identities (email, external_id, name+company, etc.)."""
     email_norm = normalize_email(email)
@@ -1314,6 +1360,7 @@ def resolve_lead(
         company_id = ensure_company(
             conn, name=company, domain=effective_domain, industry=industry, headcount=headcount,
             hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
+            company_cache=company_cache,
         )
         cur = conn.execute(
             """INSERT INTO leads (name, company_id, company, title, industry, headcount, headcount_numeric,
@@ -1405,11 +1452,13 @@ def resolve_lead(
     if email_norm:
         ensure_lead_domain(lead_id, email_norm, conn=conn, commit=False)
     link_lead_company(conn, lead_id, company=company, email=email_norm,
-                      industry=industry, headcount=headcount)
+                      industry=industry, headcount=headcount,
+                      company_cache=company_cache)
     if domain_explicit:
         ensure_company(conn, name=company, domain=domain_explicit,
                        industry=industry, headcount=headcount,
-                       hq_city=hq_city, hq_state=hq_state, hq_country=hq_country)
+                       hq_city=hq_city, hq_state=hq_state, hq_country=hq_country,
+                       company_cache=company_cache)
     if own_conn:
         conn.commit()
         conn.close()

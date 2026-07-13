@@ -649,6 +649,7 @@ def resolve_lead_from_agent_sync(
     *,
     stage: str = "prospecting",
     conn: Optional[sqlite3.Connection] = None,
+    company_cache: Optional[dict] = None,
 ) -> dict:
     """Create or match a lead from a relay agent entry (uses entity_key + full payload)."""
     from pipeline import resolve_lead
@@ -694,6 +695,7 @@ def resolve_lead_from_agent_sync(
         source_platform=source_platform,
         overwrite=True,
         conn=conn,
+        company_cache=company_cache,
     )
 
 
@@ -704,6 +706,7 @@ def apply_agent_lead_core_payload(
     org_id: str = DEFAULT_ORG_ID,
     entity_key: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
+    company_cache: Optional[dict] = None,
 ) -> None:
     """Apply org-wide lead profile from relay lead_core_update."""
     from bounces import verify_email
@@ -738,7 +741,7 @@ def apply_agent_lead_core_payload(
             loc_params,
         )
 
-    link_lead_company(conn, lead_id, email=payload.get("email"))
+    link_lead_company(conn, lead_id, email=payload.get("email"), company_cache=company_cache)
 
     identities: list[tuple[str, str]] = []
     if payload.get("external_id"):

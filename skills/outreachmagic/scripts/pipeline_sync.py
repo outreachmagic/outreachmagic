@@ -629,6 +629,7 @@ def ingest_agent_entry(
     defer_activity_refresh: bool = False,
     activity_refresh_pairs: Optional[set[tuple[int, str]]] = None,
     phase_timer: Optional[dict[str, float]] = None,
+    company_cache: Optional[dict] = None,
 ) -> Optional[int]:
     """Replay an agent-originated mutation from another client during pull."""
     from pipeline import (
@@ -739,6 +740,7 @@ def ingest_agent_entry(
                         conn = None
                     result = resolve_lead_from_agent_sync(
                         entity_key, payload, conn=None if own_conn else pull_conn,
+                        company_cache=company_cache,
                     )
                     if result.get("status") == "error":
                         _record_mark(dedupe_key, None)
@@ -750,6 +752,7 @@ def ingest_agent_entry(
                 with _phase("agent_lead_core_apply", phase_timer):
                     apply_agent_lead_core_payload(
                         lead_id, payload, org_id=org_id, entity_key=entity_key, conn=conn,
+                        company_cache=company_cache,
                     )
             if own_conn and conn is not None:
                 with _phase("commit", phase_timer):
@@ -850,6 +853,7 @@ def ingest_agent_entry(
                             entity_key,
                             bootstrap_payload,
                             conn=None if own_conn else pull_conn,
+                            company_cache=company_cache,
                         )
                         if result.get("status") == "error":
                             _record_mark(dedupe_key, None)
@@ -1466,6 +1470,12 @@ def _ingest_relay_page(
     )
     activity_refresh_pairs: set[tuple[int, str]] = set()
     phase_timer: dict[str, float] = {}
+    # Page-scoped: company lookups are re-run per row (resolve phase + apply
+    # phase both call ensure_company) and often repeat across rows sharing a
+    # company/domain. One cache per page turns those repeat SELECTs into dict
+    # lookups; discarded at the end of the page since companies can be
+    # created mid-page and must stay visible to later rows within it anyway.
+    company_cache: dict = {}
     ingest_kw = {
         "debug_sentiment": debug_sentiment,
         "quiet": quiet,
@@ -1480,6 +1490,7 @@ def _ingest_relay_page(
         "defer_activity_refresh": True,
         "activity_refresh_pairs": activity_refresh_pairs,
         "phase_timer": phase_timer,
+        "company_cache": company_cache,
     }
 
     page_start = time.monotonic()

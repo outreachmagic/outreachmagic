@@ -62,7 +62,12 @@ def hermes_profile_copy_warning() -> Optional[str]:
         return None
     return (
         "Profile has a full copy of outreachmagic (not a symlink to ~/.hermes/skills/outreachmagic). "
-        "Re-run install: bash install.sh --platform hermes --all-profiles"
+        "install.sh has no Hermes-profile awareness (it only dedupes across "
+        "~/.cursor, ~/.agents, ~/.claude, ~/.hermes), so this can't be fixed by re-running it. "
+        "Ask your agent to consolidate: move this profile's real "
+        "config/databases/scripts into ~/.hermes/skills/outreachmagic (if that path is itself "
+        "a symlink into a single profile, make it the real directory first), then replace "
+        "this profile's copy with `ln -s ../../../skills/outreachmagic outreachmagic`."
     )
 
 

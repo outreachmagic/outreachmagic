@@ -714,6 +714,7 @@ def ingest_relay_event(
     defer_activity_refresh: bool = False,
     activity_refresh_pairs: Optional[set[tuple[int, str]]] = None,
     phase_timer: Optional[dict[str, float]] = None,
+    company_cache: Optional[dict] = None,
 ) -> Optional[int]:
     """Take a relay event and write it to the local SQLite database. Returns None if duplicate."""
     import pipeline as om  # noqa: PLC0415 — avoid circular import at module load
@@ -730,6 +731,7 @@ def ingest_relay_event(
             defer_activity_refresh=defer_activity_refresh,
             activity_refresh_pairs=activity_refresh_pairs,
             phase_timer=phase_timer,
+            company_cache=company_cache,
         )
 
     dedupe_key = relay_dedupe_key(event)

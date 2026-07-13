@@ -281,6 +281,15 @@ def find_lead_by_identifier(conn: sqlite3.Connection, entity_key: str) -> Option
     if not entity_key:
         return None
     key = entity_key.strip()
+
+    # The immutable surrogate key. Checked first: it is exact, and it is what
+    # every snapshot pushed after the uid migration is keyed by.
+    if key.startswith("uid:"):
+        row = conn.execute(
+            "SELECT id FROM leads WHERE uid = ?", (key[4:],)
+        ).fetchone()
+        return int(row["id"]) if row else None
+
     if "@" in key:
         return find_lead_by_email(conn, key.lower())
 

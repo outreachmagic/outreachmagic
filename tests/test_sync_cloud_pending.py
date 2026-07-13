@@ -347,10 +347,22 @@ class TimestampSyncTests(unittest.TestCase):
 
         self.assertGreaterEqual(status["leads_pending"], 1)
         self.assertGreaterEqual(status["workspace_leads_pending"], 1)
+        # Entity keys are the immutable uid now, not the email -- an email is
+        # mutable and used to relocate the lead's entire relay identity when found.
+        # The email still travels, as an alias on the core payload.
+        conn = om.get_conn()
+        uid = conn.execute("SELECT uid FROM leads WHERE id = ?", (lead_id,)).fetchone()["uid"]
+        conn.close()
         core_keys = {e["entity_key"] for e in lead_push["sample_core_entries"]}
         ws_keys = {e["entity_key"] for e in lead_push["sample_ws_entries"]}
-        self.assertIn("stale-never-synced@example.com", core_keys)
-        self.assertIn("stale-never-synced@example.com", ws_keys)
+        self.assertIn(f"uid:{uid}", core_keys)
+        self.assertIn(f"uid:{uid}", ws_keys)
+        core_entry = next(
+            e for e in lead_push["sample_core_entries"] if e["entity_key"] == f"uid:{uid}"
+        )
+        self.assertIn(
+            "stale-never-synced@example.com", core_entry["payload"].get("aliases", [])
+        )
 
     def test_export_local_changes_sample_limit_caps_lead_entries(self):
         """agent-changes --limit threads through to _export_local_lead_entries."""

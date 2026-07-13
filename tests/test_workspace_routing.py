@@ -678,17 +678,28 @@ def test_import_profiles_weak_identity_and_entity_key():
     conn = om.get_conn()
     ekey = lead_entity_key(conn, DEFAULT_ORG_ID, lead_id)
     conn.close()
-    assert ekey.startswith("external_id:nace:")
+    # The wire key is now the immutable uid, not a natural identifier. Natural keys
+    # move (finding an email used to relocate a lead's whole relay identity), so
+    # they are carried as aliases instead -- see the core payload's "aliases".
+    assert ekey.startswith("uid:")
 
     conn = om.get_conn()
     found = om.find_lead_by_identifier(conn, ekey)
     conn.close()
     assert found == lead_id
 
-    itype, val = parse_entity_key(ekey)
-    assert itype == "external_id"
+    # external_id is no longer the wire key, but it must still resolve the lead --
+    # that is what lets an inbound webhook keyed by a natural identifier find its
+    # way back to the uid.
     conn = om.get_conn()
-    assert find_lead_by_identity(conn, DEFAULT_ORG_ID, "external_id", val) == lead_id
+    ext = conn.execute(
+        """SELECT identity_value_normalized AS v FROM lead_identities
+           WHERE lead_id = ? AND identity_type = 'external_id' LIMIT 1""",
+        (lead_id,),
+    ).fetchone()
+    assert ext is not None
+    assert find_lead_by_identity(conn, DEFAULT_ORG_ID, "external_id", ext["v"]) == lead_id
+    assert om.find_lead_by_identifier(conn, f"external_id:{ext['v']}") == lead_id
     conn.close()
 
 

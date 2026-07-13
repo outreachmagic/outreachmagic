@@ -145,6 +145,28 @@ def _assemble_lead_core_sync_payload(
         payload[id_row["identity_type"]] = id_row["identity_value_normalized"]
     if secondary_emails:
         payload["secondary_emails"] = secondary_emails
+
+    # Aliases: every natural identifier this lead can also be known by. The relay
+    # keys snapshots by the immutable uid, but inbound webhooks arrive keyed by
+    # whatever the vendor has (prosp sends a LinkedIn URL, plusvibe an email), so
+    # the relay needs this map to resolve a webhook back to the right uid.
+    aliases: list[str] = []
+    if row["email"]:
+        aliases.append(str(row["email"]).strip().lower())
+    if row["linkedin_url"]:
+        aliases.append(str(row["linkedin_url"]).strip())
+    if row["linkedin_sales_nav_id"]:
+        aliases.append(f"linkedin_sales_nav_id:{str(row['linkedin_sales_nav_id']).strip()}")
+    for id_row in identity_rows:
+        itype, val = id_row["identity_type"], id_row["identity_value_normalized"]
+        if not val:
+            continue
+        aliases.append(val if itype == "email" else f"{itype}:{val}")
+    seen: set[str] = set()
+    aliases = [a for a in aliases if a and not (a in seen or seen.add(a))]
+    if aliases:
+        payload["aliases"] = aliases
+
     if row["latest_sender"]:
         payload["latest_sender"] = row["latest_sender"]
     if row["latest_sender_platform"]:
@@ -387,18 +409,21 @@ def _load_lead_sync_prefetch(
 
 
 def entity_key_from_prefetch(prefetch: dict, lead_id: int) -> str:
+    """The lead's immutable relay key: uid:<uid>. Mirrors lead_entity_key().
+
+    Previously this derived the key from email > linkedin_url > first identity,
+    and returned "" when a lead had none of those -- which the push loop treats as
+    "skip", so 2,830 real leads never reached the relay. It also disagreed with
+    lead_entity_key(), which had a name+company fallback this one lacked.
+
+    Both now return the uid, so there is nothing left to diverge on and no lead is
+    unpushable.
+    """
     row = prefetch["leads"].get(lead_id)
     if not row:
         return ""
-    if row["email"]:
-        return str(row["email"]).strip().lower()
-    if row["linkedin_url"]:
-        return str(row["linkedin_url"]).strip()
-    id_rows = prefetch["identities"].get(lead_id) or []
-    if id_rows:
-        r = id_rows[0]
-        return f"{r['identity_type']}:{r['identity_value_normalized']}"
-    return ""
+    uid = row["uid"] if "uid" in row.keys() else None
+    return f"uid:{uid}" if uid else ""
 
 
 def _lead_row_for_sync(

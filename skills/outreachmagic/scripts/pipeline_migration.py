@@ -823,6 +823,50 @@ def migrate_db(conn=None):
         (f"-{DEFAULT_RETENTION_DAYS} days",),
     )
 
+    # --- Immutable surrogate identity (uid) ---------------------------------
+    #
+    # The relay entity_key is derived from mutable columns today (email wins over
+    # linkedin_url), so finding a lead's email MOVES its wire identity: the old
+    # snapshot orphans on the relay and a fresh one is created under the new key,
+    # stranding all the workspace state filed under the old one. 52,693 leads are
+    # currently one email-find away from exactly that.
+    #
+    # Worse, a lead with neither email nor linkedin gets an EMPTY key and is
+    # skipped by the push loop entirely -- 2,830 real leads (plus junk) have never
+    # reached the relay at all.
+    #
+    # A uid fixes both by construction: every row has one, it is generated once,
+    # and it never changes. Natural keys (email, linkedin, sales-nav id) become
+    # aliases instead of identities.
+    for table in ("leads", "companies"):
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN uid TEXT")
+        except sqlite3.OperationalError:
+            pass
+        # randomblob(16) per row; SQLite evaluates it once per row in an UPDATE.
+        conn.execute(
+            f"UPDATE {table} SET uid = lower(hex(randomblob(16))) "
+            f"WHERE uid IS NULL OR uid = ''"
+        )
+        try:
+            conn.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_uid ON {table}(uid)"
+            )
+        except sqlite3.OperationalError:
+            pass
+        # Stamp new rows from the database, not from application code: SQLite
+        # cannot ALTER ADD COLUMN with a non-constant DEFAULT, and a trigger means
+        # no INSERT path can forget (there are several, across import, enrich,
+        # webhook ingest and snapshot apply).
+        conn.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS trg_{table}_uid
+            AFTER INSERT ON {table}
+            WHEN NEW.uid IS NULL OR NEW.uid = ''
+            BEGIN
+                UPDATE {table} SET uid = lower(hex(randomblob(16))) WHERE id = NEW.id;
+            END
+        """)
+
     conn.commit()
     if own_conn:
         conn.close()

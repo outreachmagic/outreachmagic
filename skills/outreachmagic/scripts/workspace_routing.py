@@ -1191,47 +1191,39 @@ def find_lead_by_identity(
 
 
 def lead_entity_key(conn: sqlite3.Connection, org_id: str, lead_id: int) -> str:
-    """Stable relay push/replay key: email > linkedin > external_id > composite fallback.
+    """The lead's immutable relay key: uid:<uid>.
 
-    The composite (name+company[+domain[+title]]) tier is computed on the fly
-    from the leads/companies row rather than read from lead_identities -- those
-    fuzzy types are no longer persisted there (NON_PERSISTED_IDENTITY_TYPES),
-    since they were never used for actual lead matching and were >96%
-    redundant with a strong identity already on the same lead.
+    This used to derive the key from mutable columns (email > linkedin > ...),
+    which had two failure modes:
+
+      * Finding a lead's email MOVED its wire identity from the LinkedIn URL to
+        the address. The relay's old snapshot orphaned and a new one appeared
+        under the new key, stranding every bit of workspace state filed under the
+        old one. 52,693 leads are one email-find away from exactly that today.
+
+      * A lead with neither email nor LinkedIn produced an EMPTY key, and the
+        push loop skips empty keys -- so 2,830 real leads have never reached the
+        relay at all. (This function had a name+company fallback;
+        entity_key_from_prefetch, which the push path actually calls, did not.
+        Two implementations of one concept, disagreeing.)
+
+    A uid has neither problem: every lead has one, it is stamped once by a
+    database trigger, and nothing can change it. Email/LinkedIn/sales-nav become
+    *aliases* -- see lead_aliases() -- so inbound webhooks keyed by a natural
+    identifier still resolve.
     """
-    row = conn.execute(
-        """SELECT l.email, l.linkedin_url, l.name, l.company, l.title,
-                  co.domain AS company_domain
-           FROM leads l LEFT JOIN companies co ON co.id = l.company_id
-           WHERE l.id = ?""",
-        (lead_id,),
-    ).fetchone()
-    if row and row["email"]:
-        return str(row["email"]).strip().lower()
-    if row and row["linkedin_url"]:
-        return str(row["linkedin_url"]).strip()
-    id_row = conn.execute(
-        """SELECT identity_type, identity_value_normalized FROM lead_identities
-           WHERE org_id = ? AND lead_id = ? AND identity_type = 'external_id'
-           ORDER BY created_at LIMIT 1""",
-        (org_id, lead_id),
-    ).fetchone()
-    if id_row:
-        return f"{id_row['identity_type']}:{id_row['identity_value_normalized']}"
-    if not row:
+    row = conn.execute("SELECT uid FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    if not row or not row["uid"]:
         return ""
-    norm_name = normalize_person_name(row["name"])
-    domain = (row["company_domain"] or "").strip().lower()
-    title = (row["title"] or "").strip().lower()
-    if norm_name and domain:
-        if title:
-            return f"name_company_domain_title:{norm_name}|{domain}|{title}"
-        return f"name_company_domain:{norm_name}|{domain}"
-    if norm_name and row["company"]:
-        ckey = normalize_company_name_key(row["company"])
-        if ckey:
-            return f"name_company:{norm_name}|{ckey}"
-    return ""
+    return f"uid:{row['uid']}"
+
+
+"""Aliases are built in lead_sync._assemble_lead_core_sync_payload(), which already
+has the identity rows prefetched. Deliberately NOT duplicated here: two
+implementations of one concept is what produced the entity_key divergence this
+migration exists to fix (lead_entity_key had a name+company fallback that
+entity_key_from_prefetch lacked, so 2,830 leads were pushable by one code path and
+invisible to the other)."""
 
 
 def parse_entity_key(entity_key: str) -> tuple[Optional[str], Optional[str]]:

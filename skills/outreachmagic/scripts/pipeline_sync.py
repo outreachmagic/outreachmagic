@@ -711,6 +711,26 @@ _SNAPSHOT_ACTION_ENTITY = {
 }
 
 
+def _shadow_from_pulled_event(
+    conn: Optional[sqlite3.Connection], event: dict
+) -> None:
+    """Record the shadow for a snapshot the pull page skipped as a duplicate."""
+    if event.get("platform") != "agent":
+        return
+    try:
+        # parse_agent_envelope, not event["action"] -- 85% of stored snapshots
+        # use the flat envelope shape and the two disagree.
+        action, payload, _, workspace_slug, _ = parse_agent_envelope(event)
+    except Exception:
+        return
+    if action not in SNAPSHOT_ACTIONS:
+        return
+    entity_key = event.get("entity_key") or ""
+    if not entity_key or payload is None:
+        return
+    _record_pull_shadow(conn, action, entity_key, workspace_slug, payload)
+
+
 def _record_pull_shadow(
     conn: Optional[sqlite3.Connection],
     action: str,
@@ -1694,6 +1714,13 @@ def _ingest_relay_page(
             if _pull_page_already_ingested(event, ingested_prefetch, local_client_id):
                 skipped += 1
                 skipped_duplicates += 1
+                # A duplicate is the strongest possible statement that the relay
+                # holds this exact content -- the dedupe key is built from its
+                # content hash. Seed the anti-echo shadow from it. Without this
+                # the shadow only ever learns about genuinely-new snapshots, and
+                # a steady-state pull (where everything is a duplicate) teaches
+                # it nothing at all.
+                _shadow_from_pulled_event(pull_conn, event)
                 continue
 
             try:

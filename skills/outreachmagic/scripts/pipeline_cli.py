@@ -1536,6 +1536,19 @@ def main():
     outbox_p.add_argument("--dry-run", action="store_true", help="Show counts, write nothing")
     outbox_p.add_argument("--json", action="store_true")
 
+    junk_p = sub.add_parser(
+        "cleanup-junk-leads",
+        help="Stage 9: quarantine + delete the weak-identity junk leads. Destructive.",
+    )
+    # Default is dry-run: --yes flips it. Reporting counts is always safe;
+    # deleting is not.
+    junk_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Actually delete. Without this the command reports counts only.",
+    )
+    junk_p.add_argument("--json", action="store_true")
+
     args = parser.parse_args()
 
     if args.command == "export" and getattr(args, "format", None) == "sheets":
@@ -3774,6 +3787,38 @@ def main():
                 for k, n in sorted(counts.items()):
                     print(f"  {k:24} {n:>9,}")
                 print(f"sync_shadow rows: {shadow:,}")
+
+    elif args.command == "cleanup-junk-leads":
+        import junk_cleanup
+
+        dry_run = not getattr(args, "yes", False)
+        if not dry_run:
+            print(
+                "!!! DESTRUCTIVE: about to delete every lead matching the junk "
+                "predicate. Rows are copied to leads_junk_quarantine first.",
+                file=sys.stderr,
+            )
+        result = junk_cleanup.cleanup_junk_leads(dry_run=dry_run, confirm=not dry_run)
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            verb = "Would delete" if result["dry_run"] else "Deleted"
+            print(f"{verb} {result['selected']:,} junk leads")
+            if not result["dry_run"]:
+                print(
+                    f"  quarantined:        {result['quarantined']:,}\n"
+                    f"  deleted:            {result['deleted']:,}\n"
+                    f"  tombstones dropped: {result['tombstones_dropped']:,}"
+                )
+            print("\nTop original_source_detail values (up to 20):")
+            for row in result["distribution"]["top_sources"]:
+                sd = row["source_detail"]
+                print(f"  {row['count']:>7,}  {sd}")
+            print("\nBy month:")
+            for row in result["distribution"]["by_month"]:
+                print(f"  {row['month']}: {row['count']:>7,}")
+            if result["dry_run"]:
+                print("\n(dry-run) Re-run with --yes to actually delete.")
 
     elif args.command == "cleanup-rules":
         result = _pipeline.cleanup_campaign_rules(dry_run=getattr(args, "dry_run", False))

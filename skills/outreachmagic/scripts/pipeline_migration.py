@@ -595,6 +595,16 @@ def migrate_db(conn=None):
             name TEXT PRIMARY KEY,
             done_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        -- Stage 9 pre-image of leads deleted by cleanup_junk_leads. Only the
+        -- original_source_detail is worth preserving (list / import name);
+        -- everything else on the row was null or 'Unknown'.
+        CREATE TABLE IF NOT EXISTS leads_junk_quarantine (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER,
+            uid TEXT,
+            original_source_detail TEXT,
+            quarantined_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS organizations (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,

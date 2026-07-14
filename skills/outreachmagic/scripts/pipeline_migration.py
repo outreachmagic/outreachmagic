@@ -149,6 +149,59 @@ def ensure_outbox(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+# The one-time cutover seed. The triggers only see writes made *after* they are
+# installed, so at cutover the outbox is empty while the relay may still be
+# missing changes the old cursor never managed to push. Everything is marked
+# dirty once; the drain's content-hash check then drops whatever the relay
+# already holds, so this costs payload-build CPU rather than 300k pushes --
+# provided sync_shadow has been seeded by a pull first.
+#
+# updated_at is deliberately not consulted: 40.7% of it is older than its own
+# created_at, so it cannot be used to narrow this down. Ignore it, don't repair it.
+_OUTBOX_BACKFILL_SOURCES = (
+    ("lead_core", "SELECT CAST(id AS TEXT) FROM leads"),
+    (
+        "lead_workspace",
+        "SELECT CAST(lead_id AS TEXT) || ':' || workspace_id FROM workspace_leads",
+    ),
+    ("company", "SELECT CAST(id AS TEXT) FROM companies"),
+    ("sender_account", "SELECT CAST(id AS TEXT) FROM sender_accounts"),
+    ("sender_domain", "SELECT domain FROM sender_domains"),
+)
+
+
+def backfill_outbox(
+    conn: Optional[sqlite3.Connection] = None, *, dry_run: bool = False
+) -> dict:
+    """Mark every synced entity dirty once, for the cutover to the outbox."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    result: dict = {"dry_run": dry_run, "queued": {}, "total": 0}
+    try:
+        for entity_type, select_sql in _OUTBOX_BACKFILL_SOURCES:
+            n = conn.execute(
+                f"SELECT COUNT(*) AS n FROM ({select_sql})"
+            ).fetchone()["n"]
+            result["queued"][entity_type] = n
+            result["total"] += n
+            if dry_run:
+                continue
+            conn.execute(
+                f"""INSERT INTO outbox (entity_type, entity_id, op, dirty_at)
+                    SELECT ?, entity_id, 'upsert', datetime('now') FROM ({select_sql}) AS s(entity_id)
+                    WHERE TRUE
+                    ON CONFLICT (entity_type, entity_id, op) DO NOTHING""",
+                (entity_type,),
+            )
+        if not dry_run:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
+    return result
+
+
 def init_db():
     db = get_db_path()
     db.parent.mkdir(parents=True, exist_ok=True)

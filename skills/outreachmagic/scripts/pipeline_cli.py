@@ -1526,6 +1526,16 @@ def main():
     cleanup_rules_p.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
     cleanup_rules_p.add_argument("--json", action="store_true")
 
+    outbox_p = sub.add_parser("outbox", help="Pending local changes awaiting push")
+    outbox_p.add_argument(
+        "--backfill",
+        action="store_true",
+        help="One-time cutover: mark every synced entity dirty. Pull first, so the "
+             "content-hash check can drop what the relay already holds.",
+    )
+    outbox_p.add_argument("--dry-run", action="store_true", help="Show counts, write nothing")
+    outbox_p.add_argument("--json", action="store_true")
+
     args = parser.parse_args()
 
     if args.command == "export" and getattr(args, "format", None) == "sheets":
@@ -3736,6 +3746,35 @@ def main():
             clear_all=getattr(args, "clear_all", False),
         )
         print(json.dumps(result, indent=2))
+    elif args.command == "outbox":
+        import outbox as _outbox
+        from db_conn import get_conn as _get_conn
+
+        if args.backfill:
+            result = _pipeline.backfill_outbox(dry_run=getattr(args, "dry_run", False))
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2))
+            else:
+                verb = "Would queue" if result["dry_run"] else "Queued"
+                for kind, n in result["queued"].items():
+                    print(f"  {kind:16} {n:>9,}")
+                print(f"{verb} {result['total']:,} entities for push.")
+                if not result["dry_run"]:
+                    print("Run `sync` to drain. Unchanged content is dropped by content hash.")
+        else:
+            c = _get_conn()
+            counts = _outbox.count_dirty(c)
+            shadow = c.execute("SELECT COUNT(*) AS n FROM sync_shadow").fetchone()["n"]
+            c.close()
+            if getattr(args, "json", False):
+                print(json.dumps({"pending": counts, "sync_shadow": shadow}, indent=2))
+            else:
+                if not counts:
+                    print("Outbox empty — nothing pending.")
+                for k, n in sorted(counts.items()):
+                    print(f"  {k:24} {n:>9,}")
+                print(f"sync_shadow rows: {shadow:,}")
+
     elif args.command == "cleanup-rules":
         result = _pipeline.cleanup_campaign_rules(dry_run=getattr(args, "dry_run", False))
         if getattr(args, "json", False):

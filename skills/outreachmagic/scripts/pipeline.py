@@ -261,6 +261,7 @@ from pipeline_utils import (
 )
 
 from pipeline_migration import (
+    backfill_outbox,
     backfill_workspace_routing,
     init_db,
     mark_all_lead_snapshots_pending,

@@ -54,7 +54,7 @@
     "pipeline_tags.py": "35cc840140f8debc9ca822c8bc4e3256e288f74da92b8d25bddcb02006ea51f5",
     "pipeline_update.py": "6d52b3b5c66498c978d0f8130f5303f4dbdffae74d815978e293170b2500820c",
     "pipeline_utils.py": "d7d17312c273afd54df2ccad2c3272385278103d67d8fec4ff2b38d9d530c280",
-    "pipeline_workspace.py": "8b30494d6183afdb74b2800a1dbe10fc6ff31c81065cce6fd1e905e359f96cc6",
+    "pipeline_workspace.py": "9325178eda49063d65ba1948e8b964a797b4eff197120ca4acaf025b1f9f9be3",
     "platform_registry.py": "afcd2ac393ea176c86eaaefd57f5c46be09431ad66f1f2191327bf1e2fae3dcf",
     "progress.py": "3de4fedf1c2c93b371b96b4b0f5bf8f3c7569893e7abfa9f0e07f5db147dc8fb",
     "provider_observations.py": "a1ce2147f52d6ebb143bc5772da6de51ac11b940d15acf1ba9097355e47cf716",

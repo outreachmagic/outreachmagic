@@ -40,10 +40,17 @@ def select_dirty(
     op: str = "upsert",
     limit: Optional[int] = None,
 ) -> list[sqlite3.Row]:
-    """Oldest-dirty-first, so a backlog drains in the order it was created."""
+    """Oldest-dirty-first, so a backlog drains in the order it was created.
+
+    `dirty_at <= now` is what makes record_failure's backoff real: a row that
+    just failed has its dirty_at pushed into the future and is skipped until it
+    comes due. Without this gate the ORDER BY merely reshuffles, and a
+    permanently-failing row is retried on every single pass.
+    """
     sql = (
         "SELECT entity_id, entity_key, workspace_slug, dirty_at, attempts "
-        "FROM outbox WHERE entity_type = ? AND op = ? ORDER BY dirty_at ASC"
+        "FROM outbox WHERE entity_type = ? AND op = ? "
+        "AND dirty_at <= datetime('now') ORDER BY dirty_at ASC"
     )
     params: tuple = (entity_type, op)
     if limit:

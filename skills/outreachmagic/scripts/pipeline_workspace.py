@@ -1597,15 +1597,24 @@ def _push_pending_lead_snapshots(
 
     def _settle(entity_type: str, synced: list[tuple], result: dict) -> None:
         """Outbox rows clear only on a relay ack. A failed push leaves them
-        dirty (with backoff), so nothing is lost to a network blip."""
+        dirty (with backoff), so nothing is lost to a network blip.
+
+        A long push dies part-way (a 149k-entry drain hit `Connection reset by
+        peer` at page 321 of 747). The batches that *did* land must settle as
+        synced -- marking all 149k failed re-pushes 64k rows that the relay
+        already has. _relay_push_batches pushes entries in order, so the first
+        `pushed` of them are the ones that made it.
+        """
+        pushed = int(result.get("pushed", 0) or 0)
+        ok, failed = synced[:pushed], synced[pushed:]
         c = get_conn()
         try:
-            if result.get("error"):
+            if ok:
+                outbox.record_synced(c, entity_type, ok)
+            if failed and result.get("error"):
                 outbox.record_failure(
-                    c, entity_type, [r[0] for r in synced], str(result["error"])
+                    c, entity_type, [r[0] for r in failed], str(result["error"])
                 )
-            else:
-                outbox.record_synced(c, entity_type, synced)
             c.commit()
         finally:
             c.close()
@@ -1733,14 +1742,17 @@ def _push_outbox_entity(
         snapshot_bulk=True,
     )
 
+    # Partial success is the normal case on a long drain -- settle what landed.
+    pushed_n = int(push_result.get("pushed", 0) or 0)
+    ok, failed = synced[:pushed_n], synced[pushed_n:]
     c = get_conn()
     try:
-        if push_result.get("error"):
+        if ok:
+            outbox.record_synced(c, entity_type, ok)
+        if failed and push_result.get("error"):
             outbox.record_failure(
-                c, entity_type, [r[0] for r in synced], str(push_result["error"])
+                c, entity_type, [r[0] for r in failed], str(push_result["error"])
             )
-        else:
-            outbox.record_synced(c, entity_type, synced)
         c.commit()
     finally:
         c.close()

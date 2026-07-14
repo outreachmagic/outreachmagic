@@ -279,6 +279,65 @@ def test_pulled_snapshot_does_not_bounce_straight_back():
     assert push_pull_round() == 0
 
 
+def test_partial_push_settles_what_landed():
+    """A 149k-entry drain died at page 321/747 with `Connection reset by peer`.
+    The 64,200 entries that had already landed must not be re-queued."""
+    conn = om.get_conn()
+    ids = [_mk_lead_in_ws(conn, email=f"p{i}@example.com")[0] for i in range(4)]
+    conn.close()
+
+    class HalfFails:
+        def __call__(self, agent_key, entries, client_id, **kw):
+            # Two of the four land, then the connection drops.
+            return {"pushed": 2, "error": "[Errno 54] Connection reset by peer",
+                    "throttled": False}
+
+    with mock.patch.object(om, "_relay_push_batches", side_effect=HalfFails()):
+        om._push_pending_lead_snapshots("om_agent_test")
+
+    conn = om.get_conn()
+    synced = conn.execute(
+        "SELECT COUNT(*) AS n FROM sync_shadow WHERE entity_type = 'lead_core'"
+    ).fetchone()["n"]
+    still_dirty = conn.execute(
+        "SELECT COUNT(*) AS n FROM outbox "
+        "WHERE entity_type = 'lead_core' AND op = 'upsert'"
+    ).fetchone()["n"]
+    conn.close()
+
+    assert synced == 2, f"the 2 that landed must settle as synced, got {synced}"
+    assert still_dirty == len(ids) - 2, (
+        f"only the unsent ones stay dirty, got {still_dirty}"
+    )
+
+
+def test_failed_row_backs_off_instead_of_retrying_every_pass():
+    """record_failure pushes dirty_at into the future; select_dirty must honour
+    it, or the backoff is decorative and a poison row is retried forever."""
+    conn = om.get_conn()
+    _mk_lead_in_ws(conn)
+    conn.close()
+
+    cap = _Capture(error="relay 503")
+    with mock.patch.object(om, "_relay_push_batches", side_effect=cap):
+        om._push_pending_lead_snapshots("om_agent_test")
+
+    # Immediately retrying must select nothing -- the row is not due yet.
+    cap2 = _Capture()
+    with mock.patch.object(om, "_relay_push_batches", side_effect=cap2):
+        om._push_pending_lead_snapshots("om_agent_test")
+
+    assert "lead_core_update" not in cap2.actions(), (
+        "a just-failed row must wait for its backoff, not retry on the next pass"
+    )
+
+    conn = om.get_conn()
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM outbox WHERE entity_type = 'lead_core'"
+    ).fetchone()["n"] == 1, "it must still be queued, just not due"
+    conn.close()
+
+
 def test_push_timestamp_is_dirty_at_not_corrupt_updated_at():
     """0014 made the relay reject stale writes on source_updated_at_ms, and 40.7%
     of leads have updated_at older than their own created_at. Sending updated_at

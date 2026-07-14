@@ -130,7 +130,9 @@ class TimestampSyncTests(unittest.TestCase):
         self.assertEqual(new_ts, "2026-06-27 12:00:00")
 
     def test_resolve_lead_relay_sync_marks_updated_at(self):
-        """verify that resolve_lead still works correctly (cloud_pending column removed)."""
+        """resolve_lead still works when the caller hands us a transport string
+        as source -- it just scrubs it. original_source becomes NULL rather than
+        a lying "relay_sync" that would then dominate every provenance report."""
         result = om.resolve_lead(
             email="relay@example.com",
             name="Relay User",
@@ -145,7 +147,7 @@ class TimestampSyncTests(unittest.TestCase):
         ).fetchone()
         conn.close()
         self.assertIsNotNone(row["updated_at"])
-        self.assertEqual(row["original_source"], "relay_sync")
+        self.assertIsNone(row["original_source"])
 
     def test_relay_push_defaults(self):
         for key in (

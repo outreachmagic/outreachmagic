@@ -15,6 +15,7 @@ Three defects, all visible in the D1 snapshots:
 3. *_source_platform held the transport ("relay"), not a provenance fact.
 """
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -102,15 +103,20 @@ def test_workspace_payload_always_carries_its_stage():
 
 
 def test_core_payload_drops_duplicate_and_transport_fields():
+    """`*_source_platform` used to hold "relay" (the transport) on 85% of leads.
+    The DB now aborts any INSERT/UPDATE that would install a transport string
+    there, so the wire never sees it either. The four duplicate wire fields
+    (list_source / import_name / email_verification_source / stage-on-core) also
+    stay off the payload."""
     conn = om.get_conn()
     lead_id = _mk_lead(
         conn,
         original_source="csv_import",
         original_source_detail="list A",
-        original_source_platform="relay",
+        original_source_platform="csv",
         latest_source="plusvibe",
         latest_source_detail="list B",
-        latest_source_platform="relay",
+        latest_source_platform="plusvibe",
     )
     _join_ws(conn, lead_id)
     payload = build_lead_core_sync_payload(conn, om.DEFAULT_ORG_ID, lead_id)
@@ -121,9 +127,27 @@ def test_core_payload_drops_duplicate_and_transport_fields():
     for transport in ("original_source_platform", "latest_source_platform"):
         assert transport not in payload, f"{transport} carries transport, not provenance"
 
-    # The originals survive -- this is deduplication, not data loss.
     assert payload["original_source_detail"] == "list A"
     assert payload["latest_source_detail"] == "list B"
+
+
+def test_leads_table_aborts_transport_strings_in_provenance_columns():
+    """Guard behind the wire-side drop: without it, a code path that (re)wrote
+    "agent_sync"/"relay_sync"/"relay" into a provenance column would silently
+    re-dirty 85% of leads and the report drift would come back."""
+    conn = om.get_conn()
+    for col in ("original_source", "latest_source", "original_source_platform", "latest_source_platform"):
+        for value in ("agent_sync", "relay_sync", "relay"):
+            try:
+                conn.execute(
+                    f"INSERT INTO leads (name, email, {col}) VALUES ('T', 't@e.com', ?)",
+                    (value,),
+                )
+            except sqlite3.IntegrityError as exc:
+                assert "transport string" in str(exc)
+                continue
+            raise AssertionError(f"leads.{col} = {value!r} should have been rejected")
+    conn.close()
 
 
 def test_leads_stage_is_derived_from_the_workspace():

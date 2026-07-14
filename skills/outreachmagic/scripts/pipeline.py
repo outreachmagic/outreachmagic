@@ -1244,6 +1244,13 @@ def resolve_lead(
     company_cache: Optional[dict] = None,
 ) -> dict:
     """Match or create lead by tiered identities (email, external_id, name+company, etc.)."""
+    from constants import scrub_provenance_transport
+    # Callers that hand us a transport string ("agent_sync", "relay_sync",
+    # "relay") get None instead -- writing them would trigger the leads-table
+    # abort guard, and the honest state ("we don't know where this lead came
+    # from") is what we want the column to hold.
+    source = scrub_provenance_transport(source)
+    source_platform = scrub_provenance_transport(source_platform)
     email_norm = normalize_email(email)
     li_parsed = parse_linkedin_value(linkedin_url) if linkedin_url else []
     li_public = next((v for t, v in li_parsed if t == "linkedin_url"), None)

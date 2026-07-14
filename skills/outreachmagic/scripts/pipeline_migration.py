@@ -470,6 +470,80 @@ def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
     )
 
 
+# Values that describe the *transport* by which a lead reached us, not *where
+# the lead came from*. Historically every relay-ingested lead had its
+# original_source overwritten with "relay_sync" and its original_source_platform
+# with "relay" -- so ~85% of the ~150k leads read as if their provenance were
+# "relay", which is a useless answer to "where did this person come from". The
+# guard below aborts any INSERT/UPDATE that would put one of these back into a
+# provenance column.
+_TRANSPORT_STRINGS = ("agent_sync", "relay_sync", "relay")
+
+
+def _repair_provenance_transport_strings(conn: sqlite3.Connection) -> None:
+    """One-time backfill: NULL out provenance columns that hold transport strings.
+
+    An unknown provenance is honest; a wrong one silently misleads every report
+    that groups by original_source. Only the four *_source / *_source_platform
+    columns on leads are touched -- source_detail carries the real hint
+    (campaign name, list name), so it stays untouched even if the source itself
+    was garbage.
+    """
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'provenance_transport_backfill'"
+    ).fetchone():
+        return
+
+    placeholders = ",".join("?" for _ in _TRANSPORT_STRINGS)
+    for col in (
+        "original_source",
+        "latest_source",
+        "original_source_platform",
+        "latest_source_platform",
+    ):
+        conn.execute(
+            f"""UPDATE leads
+                   SET {col} = NULL,
+                       updated_at = datetime('now')
+                 WHERE {col} IN ({placeholders})""",
+            _TRANSPORT_STRINGS,
+        )
+    conn.execute(
+        "INSERT INTO migration_flags (name) VALUES ('provenance_transport_backfill')"
+    )
+
+
+def _install_provenance_transport_guard(conn: sqlite3.Connection) -> None:
+    """RAISE(ABORT) if any code path tries to write a transport string back into
+    a provenance column. The backfill above only cleans what's already there;
+    without this guard, the next relay ingest that (re)introduces "relay_sync"
+    would silently re-dirty the columns and the report drift would come back.
+    """
+    values_sql = ", ".join(f"'{v}'" for v in _TRANSPORT_STRINGS)
+    for col in (
+        "original_source",
+        "latest_source",
+        "original_source_platform",
+        "latest_source_platform",
+    ):
+        # BEFORE INSERT and BEFORE UPDATE, one trigger each per column, guarded
+        # so a NULL or an unchanged value never fires -- the abort only sees
+        # actual attempts to install a transport string as provenance.
+        for op, new_ref in (("INSERT", "NEW"), ("UPDATE OF " + col, "NEW")):
+            trigger_name = f"trg_leads_{col}_transport_guard_{op.split()[0].lower()}"
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+            conn.execute(f"""
+                CREATE TRIGGER {trigger_name}
+                BEFORE {op} ON leads
+                FOR EACH ROW
+                WHEN {new_ref}.{col} IN ({values_sql})
+                BEGIN
+                    SELECT RAISE(ABORT,
+                        'transport string in leads.{col} -- agent_sync/relay_sync/relay are transport, not provenance; pass the inbound platform instead');
+                END
+            """)
+
+
 def migrate_db(conn=None):
     """Apply incremental schema changes and backfill derived data."""
     own_conn = conn is None
@@ -1229,6 +1303,8 @@ def migrate_db(conn=None):
     conn.execute("DELETE FROM lead_personalization WHERE field_name = 'linkedin_bio'")
 
     _repair_sales_nav_id_casing(conn)
+    _repair_provenance_transport_strings(conn)
+    _install_provenance_transport_guard(conn)
 
     # Clear the machine-written notes relay_ingest used to stamp on every lead.
     # Deliberately an exact-shape match anchored at both ends, not a LIKE '%via

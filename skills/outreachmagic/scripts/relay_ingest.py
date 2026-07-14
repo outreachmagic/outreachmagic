@@ -1030,7 +1030,13 @@ def ingest_relay_event(
             # every lead_core payload. The provenance lives in the *_source
             # columns; notes stays empty unless a person writes in it.
             enrich_name=display_name if lead_fields.get("first_name") else None,
-            source="relay_sync",
+            # source is the *provenance* (where the lead came from), not the
+            # *transport* (how it reached us). "relay_sync" is the latter, and
+            # writing it here made original_source unusable for reporting -- 85%
+            # of leads read "relay_sync" or "agent_sync" once this path had run.
+            # The inbound event's platform IS the provenance for a relay-ingested
+            # lead, so use it directly.
+            source=platform,
             source_detail=campaign_name_for_detail,
             source_platform=platform,
             conn=conn,

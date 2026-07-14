@@ -113,6 +113,22 @@ def require_professional_domain_clause() -> tuple[str, tuple[str, ...]]:
 
 PLUSVIBE_PLATFORMS = frozenset({"plusvibe"})
 
+# Values that describe the transport by which a lead reached us, not where the
+# lead came from. Callers historically wrote these into original_source /
+# latest_source anyway; the DB now has a BEFORE INSERT/UPDATE trigger that
+# aborts the write, and resolve_lead() scrubs them to None before the SQL layer
+# sees them so callers get a clean upgrade path rather than a hard error.
+PROVENANCE_TRANSPORT_STRINGS = frozenset({"agent_sync", "relay_sync", "relay"})
+
+
+def scrub_provenance_transport(value):
+    """Return None if value is a transport string; otherwise return value."""
+    if value is None:
+        return None
+    if str(value).strip() in PROVENANCE_TRANSPORT_STRINGS:
+        return None
+    return value
+
 AUTO_REPLY_LABELS = frozenset({
     "out_of_office",
     "ooo",

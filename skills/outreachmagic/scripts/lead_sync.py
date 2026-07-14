@@ -586,12 +586,18 @@ def build_lead_sync_payload(
     return merged
 
 
-def _attribution_from_sync_payload(payload: dict) -> tuple[str, Optional[str], str]:
-    """Map relay lead_core snapshot fields to resolve_lead source attribution."""
+def _attribution_from_sync_payload(payload: dict) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Map relay lead_core snapshot fields to resolve_lead source attribution.
+
+    Returns None (not a transport string like "agent_sync"/"relay") when the
+    payload carries no real provenance -- unknown-source is the honest state
+    and the abort trigger blocks anything from re-filling the column with
+    transport garbage.
+    """
     source = (
         (payload.get("original_source") or "").strip()
         or (payload.get("latest_source") or "").strip()
-        or "agent_sync"
+        or None
     )
     source_detail = (
         (payload.get("original_source_detail") or "").strip()
@@ -603,7 +609,7 @@ def _attribution_from_sync_payload(payload: dict) -> tuple[str, Optional[str], s
     source_platform = (
         (payload.get("original_source_platform") or "").strip()
         or (payload.get("latest_source_platform") or "").strip()
-        or "relay"
+        or None
     )
     return source, source_detail, source_platform
 
@@ -641,9 +647,22 @@ def _attribution_sets(
     Split out from apply_attribution_from_sync_payload so the caller can fold
     these into a larger single UPDATE on `leads` instead of issuing another one.
     """
+    from constants import scrub_provenance_transport
+
     current_source = (current_original_source or "").strip()
     payload_source = (payload.get("original_source") or "").strip()
     upgrade_original = bool(payload_source) and current_source in _WEAK_ATTRIBUTION_SOURCES
+
+    # Legacy snapshots in D1 still carry "agent_sync"/"relay_sync"/"relay" in the
+    # provenance columns -- the fields the abort trigger rejects. Scrub those to
+    # None per column so applying a legacy payload silently clears the transport
+    # string instead of aborting the whole UPDATE.
+    _transport_cols = {
+        "original_source",
+        "latest_source",
+        "original_source_platform",
+        "latest_source_platform",
+    }
 
     sets: list[str] = []
     params: list = []
@@ -654,6 +673,8 @@ def _attribution_sets(
         "original_source_at",
     ):
         val = payload.get(col)
+        if col in _transport_cols:
+            val = scrub_provenance_transport(val)
         if val is not None and str(val).strip():
             if upgrade_original:
                 sets.append(f"{col} = ?")
@@ -667,6 +688,8 @@ def _attribution_sets(
         "latest_source_at",
     ):
         val = payload.get(col)
+        if col in _transport_cols:
+            val = scrub_provenance_transport(val)
         if val is not None and str(val).strip():
             sets.append(f"{col} = ?")
             params.append(val)

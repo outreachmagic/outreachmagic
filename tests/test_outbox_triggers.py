@@ -195,6 +195,42 @@ def test_deleting_a_lead_tombstones_and_leaves_no_stale_upsert():
     conn.close()
 
 
+def test_backfill_queues_every_entity():
+    """The cutover seed. It only ever runs once, on a live DB, so a syntax error
+    here is found in production or not at all."""
+    conn = om.get_conn()
+    lead_id = _mk_lead(conn)
+    _mk_membership(conn, lead_id)
+    conn.execute("INSERT INTO companies (name, domain) VALUES ('Acme', 'acme.com')")
+    conn.commit()
+    _clear_outbox(conn)
+    conn.close()
+
+    dry = om.backfill_outbox(dry_run=True)
+    assert dry["queued"]["lead_core"] == 1
+    assert dry["queued"]["lead_workspace"] == 1
+    assert dry["queued"]["company"] == 1
+    assert dry["total"] >= 3
+
+    conn = om.get_conn()
+    assert _outbox(conn) == [], "dry run must write nothing"
+    conn.close()
+
+    real = om.backfill_outbox()
+    assert real["total"] == dry["total"]
+
+    conn = om.get_conn()
+    kinds = {r["entity_type"] for r in _outbox(conn)}
+    assert {"lead_core", "lead_workspace", "company"} <= kinds
+    conn.close()
+
+    # Idempotent: running it twice must not duplicate or reset anything.
+    om.backfill_outbox()
+    conn = om.get_conn()
+    assert len(_outbox(conn, "lead_core")) == 1
+    conn.close()
+
+
 def test_uid_captured_before_row_disappears():
     conn = om.get_conn()
     lead_id = _mk_lead(conn)

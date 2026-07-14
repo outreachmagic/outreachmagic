@@ -159,14 +159,15 @@ def ensure_outbox(conn: sqlite3.Connection) -> None:
 # updated_at is deliberately not consulted: 40.7% of it is older than its own
 # created_at, so it cannot be used to narrow this down. Ignore it, don't repair it.
 _OUTBOX_BACKFILL_SOURCES = (
-    ("lead_core", "SELECT CAST(id AS TEXT) FROM leads"),
+    ("lead_core", "SELECT CAST(id AS TEXT) AS entity_id FROM leads"),
     (
         "lead_workspace",
-        "SELECT CAST(lead_id AS TEXT) || ':' || workspace_id FROM workspace_leads",
+        "SELECT CAST(lead_id AS TEXT) || ':' || workspace_id AS entity_id "
+        "FROM workspace_leads",
     ),
-    ("company", "SELECT CAST(id AS TEXT) FROM companies"),
-    ("sender_account", "SELECT CAST(id AS TEXT) FROM sender_accounts"),
-    ("sender_domain", "SELECT domain FROM sender_domains"),
+    ("company", "SELECT CAST(id AS TEXT) AS entity_id FROM companies"),
+    ("sender_account", "SELECT CAST(id AS TEXT) AS entity_id FROM sender_accounts"),
+    ("sender_domain", "SELECT domain AS entity_id FROM sender_domains"),
 )
 
 
@@ -187,9 +188,12 @@ def backfill_outbox(
             result["total"] += n
             if dry_run:
                 continue
+            # `WHERE TRUE` is load-bearing: without it SQLite cannot tell the
+            # ON CONFLICT clause from a join constraint on the SELECT.
             conn.execute(
                 f"""INSERT INTO outbox (entity_type, entity_id, op, dirty_at)
-                    SELECT ?, entity_id, 'upsert', datetime('now') FROM ({select_sql}) AS s(entity_id)
+                    SELECT ?, entity_id, 'upsert', datetime('now')
+                    FROM ({select_sql})
                     WHERE TRUE
                     ON CONFLICT (entity_type, entity_id, op) DO NOTHING""",
                 (entity_type,),

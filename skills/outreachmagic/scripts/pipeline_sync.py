@@ -701,6 +701,56 @@ SNAPSHOT_ACTIONS = frozenset({
 # _ingest_relay_page's `ingested is None` imported/filtered check.
 AGENT_SNAPSHOT_APPLIED_SENTINEL = -1
 
+# Snapshot action -> the outbox entity_type it corresponds to.
+_SNAPSHOT_ACTION_ENTITY = {
+    "lead_core_update": "lead_core",
+    "lead_workspace_update": "lead_workspace",
+    "company_update": "company",
+    "sender_account_update": "sender_account",
+    "sender_domain_update": "sender_domain",
+}
+
+
+def _record_pull_shadow(
+    conn: Optional[sqlite3.Connection],
+    action: str,
+    entity_key: str,
+    workspace_slug: Optional[str],
+    payload: dict,
+) -> None:
+    """Remember the content the relay just handed us, so the drain can drop the
+    echo. Best-effort: a failure here costs one redundant push, never a write.
+
+    `conn` is None when ingest_agent_entry owned and already closed it (the
+    non-batched path); during a pull page it is the shared pull connection and
+    is committed by the caller.
+    """
+    entity_type = _SNAPSHOT_ACTION_ENTITY.get(action)
+    if not entity_type:
+        return
+    from sync_audit import content_hash
+
+    sql = (
+        "INSERT INTO sync_shadow "
+        "(entity_type, entity_key, workspace_slug, content_hash, synced_at) "
+        "VALUES (?, ?, ?, ?, datetime('now')) "
+        "ON CONFLICT (entity_type, entity_key, workspace_slug) DO UPDATE SET "
+        "content_hash = excluded.content_hash, synced_at = excluded.synced_at"
+    )
+    params = (entity_type, entity_key, workspace_slug or "", content_hash(payload))
+    try:
+        if conn is not None:
+            conn.execute(sql, params)
+            return
+        own = get_conn()
+        try:
+            own.execute(sql, params)
+            own.commit()
+        finally:
+            own.close()
+    except sqlite3.Error:
+        pass
+
 
 def ingest_agent_entry(
     event: dict,
@@ -1029,6 +1079,13 @@ def ingest_agent_entry(
         relay_rid = event.get("relay_id")
         if relay_rid is not None:
             _record_mark(f"relay:{relay_rid}", lead_id)
+
+    # Seed the anti-echo shadow from the pull. Applying this snapshot just wrote
+    # to local tables, which fired the outbox triggers -- without recording what
+    # the relay holds, the very next sync would push back everything we just
+    # pulled. The relay's content is, by definition, the payload it just sent us.
+    if action in SNAPSHOT_ACTIONS and entity_key:
+        _record_pull_shadow(conn, action, entity_key, workspace_slug, payload)
     if lead_id is None and applied_without_lead:
         # Company/sender snapshots have no lead to report -- but the update
         # was applied, so signal non-None to _ingest_relay_page's caller so

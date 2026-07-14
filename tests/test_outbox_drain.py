@@ -225,6 +225,60 @@ def test_failed_push_keeps_the_row_dirty():
     conn.close()
 
 
+def test_pulled_snapshot_does_not_bounce_straight_back():
+    """Applying a pulled snapshot writes locally, which fires the triggers. If
+    the pull did not seed sync_shadow, every pull would push its entire contents
+    straight back to the relay, forever.
+
+    The payload used here is the one the relay actually holds -- i.e. the one we
+    pushed. That distinction matters: applying a snapshot *enriches* the lead
+    (build_lead_core_sync_payload derives company_domain from the email address),
+    so a payload that predates that enrichment legitimately differs from what we
+    would rebuild, and pushing it back is convergence rather than an echo. Once
+    the relay holds the enriched content the hashes agree and the traffic stops.
+    """
+    from pipeline_sync import ingest_agent_entry
+
+    conn = om.get_conn()
+    lead_id, _ = _mk_lead_in_ws(conn)
+    entity_key = om.lead_entity_key(conn, om.DEFAULT_ORG_ID, lead_id)
+    conn.close()
+
+    def push_pull_round():
+        """One full round trip: drain to the relay, then have the relay hand the
+        same content back. Returns how many core snapshots we pushed."""
+        cap = _Capture()
+        with mock.patch.object(om, "_relay_push_batches", side_effect=cap):
+            om._push_pending_lead_snapshots("om_agent_test")
+        core = [e for e in cap.entries if e["action"] == "lead_core_update"]
+        for e in core:
+            ingest_agent_entry({
+                "action": "lead_core_update",
+                "entity_key": entity_key,
+                "client_id": "some-other-client",
+                "payload": e["payload"],
+                "timestamp": "2026-07-14T00:00:00Z",
+            }, quiet=True)
+        return len(core)
+
+    # Round 1 ships the lead. Round 2 ships the enrichment the apply path added
+    # (company_domain, derived from the email) -- genuinely new content, so it is
+    # convergence, not an echo.
+    push_pull_round()
+    push_pull_round()
+
+    conn = om.get_conn()
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM sync_shadow WHERE entity_type = 'lead_core'"
+    ).fetchone()["n"] >= 1, "the pull must record what the relay holds"
+    conn.close()
+
+    # Now it must be quiet. If the pull did not seed sync_shadow, this would push
+    # forever -- every pull re-dirtying exactly what it just delivered.
+    assert push_pull_round() == 0, "pull/push never settled -- the echo is unbounded"
+    assert push_pull_round() == 0
+
+
 def test_push_timestamp_is_dirty_at_not_corrupt_updated_at():
     """0014 made the relay reject stale writes on source_updated_at_ms, and 40.7%
     of leads have updated_at older than their own created_at. Sending updated_at

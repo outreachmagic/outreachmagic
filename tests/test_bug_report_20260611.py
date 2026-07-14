@@ -89,8 +89,12 @@ def test_email_verification_source_survives_sync_roundtrip():
     conn.commit()
     payload = build_lead_core_sync_payload(conn, DEFAULT_ORG_ID, lead_id)
     conn.close()
-    assert payload.get("email_verification_source") == "trykitt"
+    # `email_verification_source` used to be emitted alongside this as a verbatim
+    # copy; it is gone. The round-trip assertion below is the one that matters --
+    # apply still accepts the old key, so the ~150k snapshots already in D1 that
+    # carry it keep replaying.
     assert payload.get("latest_email_verification_source") == "trykitt"
+    assert "email_verification_source" not in payload
 
     # Simulate pull on another machine
     db_path = om.get_db_path()

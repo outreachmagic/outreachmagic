@@ -49,7 +49,10 @@ def test_sync_payload_includes_attribution_fields():
     assert payload["original_source"] == "sales_navigator"
     assert payload["original_source_detail"] == "Headshot Lounge batch"
     assert payload["latest_source"] == "sales_navigator"
-    assert payload["list_source"] == "Headshot Lounge batch"
+    # `list_source` was a verbatim copy of latest_source_detail. Gone from the
+    # wire; latest_source_detail is the single source of truth.
+    assert payload["latest_source_detail"] == "Headshot Lounge batch"
+    assert "list_source" not in payload
 
 
 def test_pull_restores_attribution_not_agent_sync():

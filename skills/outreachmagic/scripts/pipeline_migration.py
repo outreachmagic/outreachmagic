@@ -142,6 +142,79 @@ def build_outbox_triggers() -> list[str]:
     return out
 
 
+def _stage_rank_case(column: str) -> str:
+    """CASE expression ranking stages, byte-for-byte the ordering furthest_stage()
+    uses (PIPELINE_STAGES index), so the derived cache and the Python helper can
+    never disagree."""
+    from constants import PIPELINE_STAGES
+
+    whens = " ".join(
+        f"WHEN '{stage}' THEN {i}" for i, stage in enumerate(PIPELINE_STAGES)
+    )
+    return f"CASE {column} {whens} ELSE 0 END"
+
+
+def ensure_derived_lead_stage(conn: sqlite3.Connection) -> None:
+    """leads.stage stops being a fact and becomes a cache.
+
+    Pipeline stage is per-workspace (workspace_leads.status): the same lead can be
+    `replied` in one workspace and `prospecting` in another, so an org-wide stage
+    is ill-defined by construction. But formatters.py, the stats breakdown,
+    copy-insights and merge all read leads.stage, and rewriting every org-wide
+    report to be workspace-scoped is a much bigger change than this one.
+
+    So: workspace_leads.status is the single source of truth and the only thing on
+    the wire; leads.stage is derived from it (furthest stage across the lead's
+    workspaces) and maintained here. Reports keep working, the duplicate authority
+    is gone, and nothing can write a stage to leads that the workspaces disagree
+    with.
+    """
+    rank = _stage_rank_case("wl.status")
+    derive = f"""
+        UPDATE leads SET stage = COALESCE((
+            SELECT wl.status FROM workspace_leads wl
+            WHERE wl.lead_id = {{lead_ref}}
+            ORDER BY {rank} DESC LIMIT 1
+        ), stage)
+        WHERE id = {{lead_ref}}
+    """
+    for verb, ref in (("INSERT", "NEW.lead_id"), ("UPDATE", "NEW.lead_id")):
+        conn.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS trg_leads_stage_from_ws_{verb.lower()}
+            AFTER {verb} ON workspace_leads
+            BEGIN
+                {derive.format(lead_ref=ref)};
+            END
+        """)
+    conn.execute(f"""
+        CREATE TRIGGER IF NOT EXISTS trg_leads_stage_from_ws_delete
+        AFTER DELETE ON workspace_leads
+        WHEN EXISTS (SELECT 1 FROM leads WHERE id = OLD.lead_id)
+        BEGIN
+            {derive.format(lead_ref="OLD.lead_id")};
+        END
+    """)
+
+
+def backfill_derived_lead_stage(conn: sqlite3.Connection) -> int:
+    """One-time reconciliation of the cache against its source of truth."""
+    rank = _stage_rank_case("wl.status")
+    cur = conn.execute(f"""
+        UPDATE leads SET stage = (
+            SELECT wl.status FROM workspace_leads wl
+            WHERE wl.lead_id = leads.id
+            ORDER BY {rank} DESC LIMIT 1
+        )
+        WHERE EXISTS (SELECT 1 FROM workspace_leads wl WHERE wl.lead_id = leads.id)
+          AND stage IS NOT (
+            SELECT wl.status FROM workspace_leads wl
+            WHERE wl.lead_id = leads.id
+            ORDER BY {rank} DESC LIMIT 1
+          )
+    """)
+    return cur.rowcount
+
+
 def ensure_outbox(conn: sqlite3.Connection) -> None:
     """Create the outbox/shadow tables and (re)install their triggers."""
     conn.executescript(OUTBOX_SQL)
@@ -1047,6 +1120,41 @@ def migrate_db(conn=None):
 
     # Must run after the uid columns above: the tombstone triggers read OLD.uid.
     ensure_outbox(conn)
+
+    # leads.stage becomes a cache of workspace_leads.status; see the docstring.
+    ensure_derived_lead_stage(conn)
+    backfill_derived_lead_stage(conn)
+
+    # linkedin_bio is already a leads column. A personalization row holding it is
+    # a second copy that drifts from the first, and personalization is meant for
+    # human-authored render values (a mailmerge-ready first_name is a genuinely
+    # different fact from leads.name -- those stay). Fold any bio we hold only in
+    # personalization back onto the lead, then drop the rows.
+    conn.execute("""
+        UPDATE leads SET linkedin_bio = (
+            SELECT p.field_value FROM lead_personalization p
+            WHERE p.lead_id = leads.id AND p.field_name = 'linkedin_bio'
+              AND p.field_value IS NOT NULL AND TRIM(p.field_value) != ''
+        )
+        WHERE (linkedin_bio IS NULL OR TRIM(linkedin_bio) = '')
+          AND EXISTS (
+            SELECT 1 FROM lead_personalization p
+            WHERE p.lead_id = leads.id AND p.field_name = 'linkedin_bio'
+              AND p.field_value IS NOT NULL AND TRIM(p.field_value) != ''
+          )
+    """)
+    conn.execute("DELETE FROM lead_personalization WHERE field_name = 'linkedin_bio'")
+
+    # Clear the machine-written notes relay_ingest used to stamp on every lead.
+    # Deliberately an exact-shape match anchored at both ends, not a LIKE '%via
+    # relay%': notes is a human field and a person's note that happens to mention
+    # an import must survive this.
+    conn.execute("""
+        UPDATE leads SET notes = NULL
+        WHERE notes IS NOT NULL
+          AND notes GLOB 'Auto-imported from * via relay'
+          AND notes NOT GLOB '*[' || char(10) || char(13) || ']*'
+    """)
 
     conn.commit()
     if own_conn:

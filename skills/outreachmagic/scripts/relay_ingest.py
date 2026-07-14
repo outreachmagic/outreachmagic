@@ -1024,7 +1024,11 @@ def ingest_relay_event(
             profile,
             channel=channel,
             stage="prospecting",
-            notes=f"Auto-imported from {platform} via relay",
+            # notes is a human field. Stamping "Auto-imported from <platform> via
+            # relay" on every relay-created lead told the reader nothing they
+            # could not get from original_source, and it shipped on the wire in
+            # every lead_core payload. The provenance lives in the *_source
+            # columns; notes stays empty unless a person writes in it.
             enrich_name=display_name if lead_fields.get("first_name") else None,
             source="relay_sync",
             source_detail=campaign_name_for_detail,

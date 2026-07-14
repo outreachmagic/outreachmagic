@@ -28,8 +28,13 @@ from workspace_routing import (
     upsert_workspace_lead,
 )
 
+# `stage` is deliberately absent. Pipeline stage is a per-workspace fact
+# (workspace_leads.status) -- a lead can sit at different stages in different
+# workspaces, so an org-wide stage is ill-defined by construction. leads.stage
+# survives only as a derived cache for org-wide reporting, maintained from
+# workspace_leads by trigger; it is never transmitted and never authoritative.
 SYNC_PROFILE_FIELDS = (
-    "name", "title", "stage", "notes",
+    "name", "title", "notes",
     "location_city", "location_state", "location_country",
     "email_verification_status",
     "linkedin_headline", "linkedin_bio", "linkedin_sales_nav_id",
@@ -178,22 +183,23 @@ def _assemble_lead_core_sync_payload(
     if "original_email_verification_source" in row.keys() and row["original_email_verification_source"]:
         payload["original_email_verification_source"] = row["original_email_verification_source"]
     if "latest_email_verification_source" in row.keys() and row["latest_email_verification_source"]:
-        payload["email_verification_source"] = row["latest_email_verification_source"]
         payload["latest_email_verification_source"] = row["latest_email_verification_source"]
     if external_id:
         payload["external_id"] = external_id
-    if row["latest_source_detail"]:
-        payload["list_source"] = row["latest_source_detail"]
-    if row["original_source_detail"] and row["original_source_detail"] != row["latest_source_detail"]:
-        payload["import_name"] = row["original_source_detail"]
+    # `list_source` and `import_name` were verbatim copies of latest_source_detail
+    # and original_source_detail, and `email_verification_source` a copy of
+    # latest_email_verification_source -- three strings sent twice on every one of
+    # ~150k lead payloads. The originals below are the single source of truth.
+    #
+    # *_source_platform is dropped from the wire: 85% of its values are the
+    # transport ("relay"), not a provenance fact. The local columns and their
+    # backfill are Stage 8; this stops the lie propagating now.
     for field in (
         "original_source",
         "original_source_detail",
-        "original_source_platform",
         "original_source_at",
         "latest_source",
         "latest_source_detail",
-        "latest_source_platform",
         "latest_source_at",
     ):
         val = row[field]
@@ -248,8 +254,15 @@ def _assemble_lead_workspace_sync_payload(
         payload["lead_sentiment"] = wl_row["current_status_sentiment"]
     if wl_row["contact_priority"] is not None:
         payload["contact_order"] = wl_row["contact_priority"]
-    if wl_row["status"] and wl_row["status"] != row["stage"]:
-        payload["workspace_stage"] = wl_row["status"]
+    if wl_row["status"]:
+        # Unconditionally. This used to be emitted only when it differed from
+        # leads.stage, which made the workspace snapshot's stage depend on the
+        # *core* snapshot's stage -- rebuild workspace state from the relay and a
+        # lead whose workspace status happened to equal the org-wide stage came
+        # back with no stage at all. Emitted as `stage` now (this *is* the stage;
+        # there is no other). Apply still accepts the legacy `workspace_stage` key,
+        # which ~140k snapshots already in D1 carry.
+        payload["stage"] = wl_row["status"]
     payload["tags"] = list(tags)
     if linkedin_status:
         payload["linkedin_status"] = [

@@ -387,6 +387,89 @@ def _backfill_sender_account_activity(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO migration_flags (name) VALUES ('sender_activity_backfill')")
 
 
+def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
+    """Case-fold linkedin_sales_nav_id everywhere so 'ACwAA...' and 'acwaa...' stop
+    being treated as two people.
+
+    Sales Navigator itself matches case-insensitively, but the local store kept
+    whatever case the writer passed -- 37,536 of 54,154 identities had been
+    lowercased somewhere upstream while 16,618 retained mixed case. The UNIQUE
+    (org_id, identity_type, identity_value_normalized) constraint compares as
+    plain BINARY, so the two forms coexisted as separate rows, split ~28k people
+    into two leads apiece, and passed straight through the identity-guard tests.
+
+    normalize_identity_value() now lowercases at write time; this migration is the
+    one-time backfill: merge the split pairs, dedupe the redundant identity rows,
+    then lowercase what remains. Guarded because it's O(n) over lead_identities
+    and does real writes.
+    """
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'sales_nav_id_casing_repair'"
+    ).fetchone():
+        return
+
+    from pipeline import _pick_merge_keep_id, merge_leads
+
+    # Pairs of leads that own the same sales-nav id under different casing --
+    # exactly the split we're here to reunite. Take the lead-id pair from each
+    # case group; merge_leads collapses more-than-two accidentally too.
+    duplicate_groups = conn.execute(
+        """SELECT LOWER(identity_value_normalized) AS key,
+                  GROUP_CONCAT(DISTINCT lead_id) AS lead_ids
+             FROM lead_identities
+            WHERE identity_type = 'linkedin_sales_nav_id'
+            GROUP BY org_id, LOWER(identity_value_normalized)
+           HAVING COUNT(DISTINCT lead_id) > 1"""
+    ).fetchall()
+
+    for group in duplicate_groups:
+        ids = sorted({int(x) for x in (group["lead_ids"] or "").split(",") if x})
+        if len(ids) < 2:
+            continue
+        # _pick_merge_keep_id handles pairs; walk the list folding each new lead
+        # into the running survivor.
+        survivor = ids[0]
+        for other in ids[1:]:
+            keep_id, merge_id = _pick_merge_keep_id(conn, survivor, other)
+            merge_leads(keep_id, merge_id, reason="sales_nav_id_case_dupe", conn=conn)
+            survivor = keep_id
+
+    # After merges, one lead can own both a lowercase and a mixed-case identity
+    # row (the merge moved lead_id but didn't collapse identity_value_normalized).
+    # Delete the redundant rows keeping the earliest -- that row's created_at is
+    # the honest "first seen" timestamp for the identity.
+    conn.execute(
+        """DELETE FROM lead_identities
+            WHERE identity_type = 'linkedin_sales_nav_id'
+              AND id NOT IN (
+                  SELECT MIN(id) FROM lead_identities
+                   WHERE identity_type = 'linkedin_sales_nav_id'
+                   GROUP BY org_id, lead_id, LOWER(identity_value_normalized)
+              )"""
+    )
+
+    conn.execute(
+        """UPDATE lead_identities
+              SET identity_value_normalized = LOWER(identity_value_normalized)
+            WHERE identity_type = 'linkedin_sales_nav_id'
+              AND identity_value_normalized != LOWER(identity_value_normalized)"""
+    )
+
+    # And the display column, so aliases in outbound payloads match what the
+    # relay's dedup sees on the ingest side.
+    conn.execute(
+        """UPDATE leads
+              SET linkedin_sales_nav_id = LOWER(linkedin_sales_nav_id),
+                  updated_at = datetime('now')
+            WHERE linkedin_sales_nav_id IS NOT NULL
+              AND linkedin_sales_nav_id != LOWER(linkedin_sales_nav_id)"""
+    )
+
+    conn.execute(
+        "INSERT INTO migration_flags (name) VALUES ('sales_nav_id_casing_repair')"
+    )
+
+
 def migrate_db(conn=None):
     """Apply incremental schema changes and backfill derived data."""
     own_conn = conn is None
@@ -1144,6 +1227,8 @@ def migrate_db(conn=None):
           )
     """)
     conn.execute("DELETE FROM lead_personalization WHERE field_name = 'linkedin_bio'")
+
+    _repair_sales_nav_id_casing(conn)
 
     # Clear the machine-written notes relay_ingest used to stamp on every lead.
     # Deliberately an exact-shape match anchored at both ends, not a LIKE '%via

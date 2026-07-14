@@ -716,7 +716,13 @@ def normalize_identity_value(identity_type: str, value: str) -> Optional[str]:
     if identity_type == "linkedin_url":
         return normalize_linkedin(value)
     if identity_type == "linkedin_sales_nav_id":
-        return normalize_linkedin_sales_nav_id(value)
+        # The canonical (mixed-case) value stays on leads.linkedin_sales_nav_id
+        # and in the outbound aliases -- what we store here is only used as a
+        # match key, and matching on mixed case had split ~37k of ~54k identities
+        # from their duplicates. Case-fold at write time so the UNIQUE constraint
+        # collapses old lowercase/mixed pairs into one row.
+        normalized = normalize_linkedin_sales_nav_id(value)
+        return normalized.lower() if normalized else None
     if identity_type == "linkedin_member_id":
         return normalize_linkedin_member_id(value)
     if identity_type == "phone":

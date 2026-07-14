@@ -337,6 +337,71 @@ def _lead_workspace_slug(conn: sqlite3.Connection, lead_id: int) -> Optional[str
     return row["slug"] if row else None
 
 
+def _build_event_sync_entry(conn: sqlite3.Connection, row) -> Optional[dict]:
+    """Build one event_log relay entry from a joined events+leads(+campaigns) row.
+
+    Shared by export_local_changes (bulk export) and build_event_sync_payload
+    (single-event inspect) so the wire format can't drift between the two.
+    """
+    entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, row["lead_id"])
+    if not entity_key:
+        return None
+    ws_slug = _lead_workspace_slug(conn, row["lead_id"])
+    meta = _decode_event_metadata(row["metadata_json"])
+    campaign_name = (row["campaign_name"] or meta.get("campaign") or "").strip() or None
+    event_entry: dict = {
+        "action": "event_log",
+        "entity_key": entity_key,
+        "timestamp": normalize_relay_timestamp(row["created_at"]),
+        "as_of": snapshot_as_of(),
+        "event_id": row["id"],
+        "payload": {
+            "event_type": row["event_type"],
+            "direction": row["direction"],
+            "channel": row["channel"],
+        },
+    }
+    if ws_slug:
+        event_entry["workspace"] = ws_slug
+    if campaign_name:
+        event_entry["payload"]["campaign"] = campaign_name
+    if row["subject"]:
+        event_entry["payload"]["subject"] = row["subject"]
+    if row["body_preview"]:
+        event_entry["payload"]["body_preview"] = row["body_preview"]
+    if meta.get("body"):
+        event_entry["payload"]["body"] = str(meta.get("body"))
+    if row["sender"]:
+        event_entry["payload"]["sender"] = row["sender"]
+    return event_entry
+
+
+def build_event_sync_payload(conn: sqlite3.Connection, event_id: int) -> dict:
+    """Full event_log payload for one event, regardless of push status (for inspect)."""
+    row = conn.execute(
+        """SELECT e.*, l.email, l.linkedin_url, c.name AS campaign_name
+           FROM events e
+           JOIN leads l ON e.lead_id = l.id
+           LEFT JOIN campaigns c ON c.id = e.campaign_id
+           WHERE e.id = ?""",
+        (event_id,),
+    ).fetchone()
+    if not row:
+        return {}
+    return _build_event_sync_entry(conn, row) or {}
+
+
+def inspect_sync_event(conn: sqlite3.Connection, event_id: int) -> dict:
+    """Full event_log payload for one event, for sync auditing/troubleshooting."""
+    payload = build_event_sync_payload(conn, event_id)
+    if not payload:
+        return {}
+    return {
+        "event_id": event_id,
+        "full_sync_payload": payload,
+    }
+
+
 def export_local_changes(
     *,
     all_leads: bool = False,
@@ -393,37 +458,9 @@ def export_local_changes(
     )
 
     for n, row in enumerate(event_rows, start=1):
-        entity_key = lead_entity_key(conn, DEFAULT_ORG_ID, row["lead_id"])
-        if not entity_key:
-            continue
-        ws_slug = _lead_workspace_slug(conn, row["lead_id"])
-        meta = _decode_event_metadata(row["metadata_json"])
-        campaign_name = (row["campaign_name"] or meta.get("campaign") or "").strip() or None
-        event_entry: dict = {
-            "action": "event_log",
-            "entity_key": entity_key,
-            "timestamp": normalize_relay_timestamp(row["created_at"]),
-            "as_of": snapshot_as_of(),
-            "event_id": row["id"],
-            "payload": {
-                "event_type": row["event_type"],
-                "direction": row["direction"],
-                "channel": row["channel"],
-            },
-        }
-        if ws_slug:
-            event_entry["workspace"] = ws_slug
-        if campaign_name:
-            event_entry["payload"]["campaign"] = campaign_name
-        if row["subject"]:
-            event_entry["payload"]["subject"] = row["subject"]
-        if row["body_preview"]:
-            event_entry["payload"]["body_preview"] = row["body_preview"]
-        if meta.get("body"):
-            event_entry["payload"]["body"] = str(meta.get("body"))
-        if row["sender"]:
-            event_entry["payload"]["sender"] = row["sender"]
-        entries.append(event_entry)
+        event_entry = _build_event_sync_entry(conn, row)
+        if event_entry:
+            entries.append(event_entry)
         if n % 5000 == 0:
             _relay_log(f"export: built {n:,}/{len(event_rows):,} event_log entries ...")
 

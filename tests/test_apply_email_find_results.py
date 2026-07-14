@@ -91,11 +91,6 @@ def test_apply_email_find_results_updates_email_tags_and_verification():
     assert ver["source"] == "trykitt"
 
 
-def test_import_rows_all_have_lead_id():
-    assert om.import_rows_all_have_lead_id([{"id": 1}, {"lead_id": 2}])
-    assert not om.import_rows_all_have_lead_id([{"id": 1}, {"name": "x"}])
-
-
 def _make_workspace(slug: str = "fastws") -> str:
     om.create_workspace("Fast WS", slug=slug)
     return slug

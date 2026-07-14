@@ -975,6 +975,7 @@ def preview_sync(
     company_preview = _push_pending_company_updates(tok, sample_limit=sample_size, dry_run=True)
     sender_account_preview = _push_pending_sender_account_updates(tok, sample_limit=sample_size, dry_run=True)
     sender_domain_preview = _push_pending_sender_domain_updates(tok, sample_limit=sample_size, dry_run=True)
+    quarantine_preview = _push_pending_quarantine_resolutions(tok, sample_limit=sample_size, dry_run=True)
 
     return {
         "status": "dry_run",
@@ -987,6 +988,7 @@ def preview_sync(
             "company_updates_pending": company_preview.get("total_pending", 0),
             "sender_account_updates_pending": sender_account_preview.get("total_pending", 0),
             "sender_domain_updates_pending": sender_domain_preview.get("total_pending", 0),
+            "quarantine_resolutions_pending": quarantine_preview.get("total_pending", 0),
         },
         "samples": {
             "event_log": events_export.get("entries", []),
@@ -996,6 +998,7 @@ def preview_sync(
             "company_update": company_preview.get("sample_entries", []),
             "sender_account_update": sender_account_preview.get("sample_entries", []),
             "sender_domain_update": sender_domain_preview.get("sample_entries", []),
+            "quarantine_resolution": quarantine_preview.get("sample_entries", []),
         },
     }
 
@@ -1289,6 +1292,54 @@ def _push_agent_events_to_relay(agent_key: str) -> dict:
     return result
 
 
+def build_merge_delete_sync_payload(merge_entity_key: str, *, timestamp: Optional[str] = None) -> dict:
+    """The lead_core_delete relay entry for one merge tombstone.
+
+    Shared by _push_pending_merge_deletes (bulk push) and inspect_sync_merge_delete
+    (single-record inspect) so the wire format can't drift between the two.
+    """
+    return {
+        "action": "lead_core_delete",
+        "entity_key": merge_entity_key,
+        "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
+        "payload": {"reason": "merge"},
+    }
+
+
+def inspect_sync_merge_delete(conn: sqlite3.Connection, identifier: str) -> dict:
+    """Full lead_core_delete payload for one merge tombstone, for sync auditing/troubleshooting.
+
+    `identifier` is either a lead_merges.id (int) or a merge_entity_key string.
+    """
+    row = None
+    try:
+        merge_row_id = int(identifier)
+    except (TypeError, ValueError):
+        merge_row_id = None
+    if merge_row_id is not None:
+        row = conn.execute(
+            """SELECT id, keep_id, merge_id, reason, merge_entity_key, relay_delete_pushed
+               FROM lead_merges WHERE id = ?""",
+            (merge_row_id,),
+        ).fetchone()
+    if not row:
+        row = conn.execute(
+            """SELECT id, keep_id, merge_id, reason, merge_entity_key, relay_delete_pushed
+               FROM lead_merges WHERE merge_entity_key = ? ORDER BY merged_at DESC LIMIT 1""",
+            (identifier,),
+        ).fetchone()
+    if not row:
+        return {}
+    return {
+        "merge_id": row["id"],
+        "keep_lead_id": row["keep_id"],
+        "merged_lead_id": row["merge_id"],
+        "reason": row["reason"],
+        "relay_delete_pushed": bool(row["relay_delete_pushed"]),
+        "full_sync_payload": build_merge_delete_sync_payload(row["merge_entity_key"]),
+    }
+
+
 def _push_pending_merge_deletes(
     agent_key: str,
     *,
@@ -1317,12 +1368,7 @@ def _push_pending_merge_deletes(
 
     now_ts = datetime.now(timezone.utc).isoformat()
     entries = [
-        {
-            "action": "lead_core_delete",
-            "entity_key": row["merge_entity_key"],
-            "timestamp": now_ts,
-            "payload": {"reason": "merge"},
-        }
+        build_merge_delete_sync_payload(row["merge_entity_key"], timestamp=now_ts)
         for row in rows
     ]
     mark_ids = [row["id"] for row in rows]
@@ -1677,12 +1723,19 @@ def _push_outbox_entity(
     from pipeline import _relay_push_batches
 
     conn = get_conn()
+    # select_dirty caps at sample_limit for the preview/dry-run path, so total_pending
+    # must come from its own uncapped COUNT -- otherwise a dry-run preview always
+    # reports at most sample_limit pending regardless of the real backlog size.
+    total_pending = conn.execute(
+        "SELECT COUNT(*) AS n FROM outbox WHERE entity_type = ? AND op = 'upsert' "
+        "AND dirty_at <= datetime('now')",
+        (entity_type,),
+    ).fetchone()["n"]
     dirty = outbox.select_dirty(conn, entity_type, limit=sample_limit)
-    total_pending = len(dirty)
     if not dirty:
         conn.close()
         return {"pushed": 0, "error": None, "throttled": False,
-                "total_pending": 0, "sample_entries": []}
+                "total_pending": total_pending, "sample_entries": []}
 
     shadow = outbox.load_shadow(conn, entity_type)
     entries: list[dict] = []
@@ -2417,40 +2470,98 @@ def assign_quarantine(queue_id: str, workspace_slug: str) -> dict:
     }
 
 
-def _push_pending_quarantine_resolutions(agent_key: str) -> dict:
+def build_quarantine_resolution_sync_payload(row: dict) -> Optional[dict]:
+    """The quarantine-resolution relay entry for one resolved queue row, or None if unpushable.
+
+    Shared by _push_pending_quarantine_resolutions (bulk push) and
+    inspect_sync_quarantine_resolution (single-record inspect) so the wire
+    format can't drift between the two.
+    """
+    relay_id = _quarantine_relay_id(row)
+    if not relay_id:
+        return None
+    entry: dict = {
+        "relay_id": relay_id,
+        "status": row["status"],
+        "resolved_at": row.get("resolved_at") or normalize_relay_timestamp(None),
+    }
+    if row["status"] == "assigned":
+        entry["workspace_slug"] = row.get("assigned_workspace")
+    return entry
+
+
+def inspect_sync_quarantine_resolution(conn: sqlite3.Connection, identifier: str) -> dict:
+    """Full quarantine-resolution payload for one queue item, for sync auditing/troubleshooting.
+
+    `identifier` matches either unmapped_campaign_queue.id or external_event_id.
+    """
+    row = conn.execute(
+        """SELECT id, external_event_id, status, assigned_workspace, resolved_at,
+                  source_platform, campaign_platform_id, campaign_name_raw
+           FROM unmapped_campaign_queue
+           WHERE id = ? OR external_event_id = ?""",
+        (str(identifier), str(identifier)),
+    ).fetchone()
+    if not row:
+        return {}
+    row_d = dict(row)
+    payload = None
+    note = None
+    if row_d["status"] in ("skipped", "assigned"):
+        payload = build_quarantine_resolution_sync_payload(row_d)
+        if payload is None:
+            note = "resolved, but missing a usable external_event_id — nothing would be pushed"
+    else:
+        note = f"not yet resolved (status={row_d['status']!r}) — nothing would be pushed"
+    return {
+        "queue_id": row_d["id"],
+        "external_event_id": row_d["external_event_id"],
+        "status": row_d["status"],
+        "source_platform": row_d["source_platform"],
+        "campaign_name": row_d["campaign_name_raw"],
+        "full_sync_payload": payload,
+        "note": note,
+    }
+
+
+def _push_pending_quarantine_resolutions(
+    agent_key: str,
+    *,
+    sample_limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
     from pipeline import __version__
 
     conn = get_conn()
     last_sync = get_last_sync()
+    where_clause = "status IN ('skipped', 'assigned')"
+    where_params: tuple = ()
     if last_sync:
-        rows = conn.execute(
-            """SELECT external_event_id, status, assigned_workspace, resolved_at
-               FROM unmapped_campaign_queue
-               WHERE resolved_at > ? AND status IN ('skipped', 'assigned')""",
-            (last_sync,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT external_event_id, status, assigned_workspace, resolved_at
-               FROM unmapped_campaign_queue
-               WHERE status IN ('skipped', 'assigned')"""
-        ).fetchall()
+        where_clause = f"resolved_at > ? AND {where_clause}"
+        where_params = (last_sync,)
+    total_pending = conn.execute(
+        f"SELECT COUNT(*) AS n FROM unmapped_campaign_queue WHERE {where_clause}",
+        where_params,
+    ).fetchone()["n"]
+    limit_clause = " LIMIT ?" if sample_limit else ""
+    query_params = where_params + ((sample_limit,) if sample_limit else ())
+    rows = conn.execute(
+        f"""SELECT external_event_id, status, assigned_workspace, resolved_at
+           FROM unmapped_campaign_queue WHERE {where_clause}{limit_clause}""",
+        query_params,
+    ).fetchall()
     resolves: list[dict] = []
     relay_ids_sent: list[int] = []
     for row in rows:
-        relay_id = _quarantine_relay_id(dict(row))
-        if not relay_id:
+        entry = build_quarantine_resolution_sync_payload(dict(row))
+        if not entry:
             continue
-        relay_ids_sent.append(relay_id)
-        entry: dict = {
-            "relay_id": relay_id,
-            "status": row["status"],
-            "resolved_at": row["resolved_at"] or normalize_relay_timestamp(None),
-        }
-        if row["status"] == "assigned":
-            entry["workspace_slug"] = row["assigned_workspace"]
+        relay_ids_sent.append(entry["relay_id"])
         resolves.append(entry)
     conn.close()
+
+    if dry_run:
+        return {"synced": 0, "errors": [], "total_pending": total_pending, "sample_entries": resolves}
 
     if not resolves:
         return {"synced": 0, "errors": []}

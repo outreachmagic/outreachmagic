@@ -185,6 +185,45 @@ class QuarantineResolutionTests(unittest.TestCase):
         self.assertGreaterEqual(len(event_calls), 1)
         self.assertTrue(event_calls[0].get("include_queue_resolutions"))
 
+    def test_push_pending_quarantine_resolutions_dry_run_samples(self):
+        """dry_run must cap sample_entries at sample_limit while total_pending
+        still reflects the full resolved-but-unpushed backlog."""
+        qids = []
+        for i in range(5):
+            qid, _ = self._quarantine_event(relay_id=900 + i, email=f"dry{i}@test.com")
+            om.skip_quarantine(qid)
+            qids.append(qid)
+
+        result = om._push_pending_quarantine_resolutions(
+            "om_agent_test", sample_limit=2, dry_run=True,
+        )
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["total_pending"], 5)
+        self.assertEqual(len(result["sample_entries"]), 2)
+        # dry_run must not resolve/push anything
+        conn = om.get_conn()
+        n = conn.execute(
+            "SELECT COUNT(*) FROM unmapped_campaign_queue WHERE status = 'skipped'"
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(n, 5)
+
+    def test_preview_sync_includes_quarantine_resolution_sample(self):
+        qid, _ = self._quarantine_event(relay_id=950)
+        om.skip_quarantine(qid)
+
+        with patch.object(om, "get_agent_key", return_value="om_agent_test"):
+            with patch.object(om.routing_cloud, "cloud_routing_enabled", return_value=True):
+                with patch.object(
+                    om.routing_cloud, "fetch_routing_bundle",
+                    return_value={"workspaces": [], "campaignMaps": []},
+                ):
+                    result = om.preview_sync(sample_size=2)
+
+        self.assertEqual(result["totals"]["quarantine_resolutions_pending"], 1)
+        self.assertEqual(len(result["samples"]["quarantine_resolution"]), 1)
+        self.assertEqual(result["samples"]["quarantine_resolution"][0]["relay_id"], 950)
+
 
 if __name__ == "__main__":
     unittest.main()

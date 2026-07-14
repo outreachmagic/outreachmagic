@@ -197,6 +197,7 @@ from db_conn import (
     format_database_recovery_message,
     get_conn,
 )
+from shared import PIPELINE_CHUNK_SIZE as IMPORT_CHUNK_SIZE
 from formatters import (
     format_campaign_stats,
     format_copy_insights,
@@ -2053,12 +2054,6 @@ def _lead_id_hint_from_raw(raw: dict) -> Optional[int]:
     return None
 
 
-def import_rows_all_have_lead_id(rows: list[dict]) -> bool:
-    if not rows:
-        return False
-    return all(_lead_id_hint_from_raw(row) is not None for row in rows)
-
-
 def _tags_from_import_row(raw: dict, extra: dict[str, str]) -> list[str]:
     tags_val = raw.get("tags") if raw.get("tags") is not None else extra.get("tags")
     if not tags_val:
@@ -2523,13 +2518,19 @@ def import_profiles(
     if personalize_columns_detected and dry_run:
         summary["personalization_detected"] = personalize_columns_detected
 
-    use_shared_conn = (
-        not dry_run
-        and import_rows_all_have_lead_id(rows)
-    )
+    use_shared_conn = not dry_run
     shared_conn: Optional[sqlite3.Connection] = get_conn() if use_shared_conn else None
+    if shared_conn is not None:
+        apply_bulk_pull_pragmas(shared_conn)
 
     for i, raw in enumerate(rows):
+        if shared_conn is not None and i and i % IMPORT_CHUNK_SIZE == 0:
+            shared_conn.commit()
+            print(
+                f"  import-profiles: {i}/{len(rows)} rows "
+                f"({summary['created']} created, {summary['matched']} matched)...",
+                file=sys.stderr, flush=True,
+            )
         profile = normalize_profile_row(raw)
         extra = _extract_extra_import_fields(raw)
         row_company_domain = normalize_company_domain(extra.get("company_domain"))
@@ -2656,15 +2657,16 @@ def import_profiles(
             else:
                 lead_items.append({"lead_id": lead_id, **item})
         if lead_items:
-            personalize_set_batch(lead_items)
+            personalize_set_batch(lead_items, conn=shared_conn)
         if co_items:
-            lid_conn = get_conn()
+            lid_conn = shared_conn or get_conn()
             cid_row = lid_conn.execute("SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
-            lid_conn.close()
+            if lid_conn is not shared_conn:
+                lid_conn.close()
             if cid_row and cid_row["company_id"]:
                 for item in co_items:
                     company_personalize_set(
-                        item["field"], item["value"], company_id=cid_row["company_id"],
+                        item["field"], item["value"], company_id=cid_row["company_id"], conn=shared_conn,
                     )
         if lead_items or co_items:
             summary["personalized"] += 1
@@ -2673,7 +2675,7 @@ def import_profiles(
             ws_pending.append((lead_id, extra))
 
     if shared_conn is not None:
-        shared_conn.commit()
+        end_bulk_pull_session(shared_conn)
         shared_conn.close()
 
     # Batch workspace operations after all leads are resolved (avoids SQLite lock contention)
@@ -2787,6 +2789,8 @@ from pipeline_workspace import (
     api_keys_cli,
     assign_quarantine,
     backfill_null_campaign_quarantine,
+    build_merge_delete_sync_payload,
+    build_quarantine_resolution_sync_payload,
     campaign_map_conflicts_cli,
     cleanup_stale_quarantine_for_reprocessed,
     create_workspace,
@@ -2800,6 +2804,8 @@ from pipeline_workspace import (
     get_routing_config_summary,
     get_sync_status,
     get_workspace_routing,
+    inspect_sync_merge_delete,
+    inspect_sync_quarantine_resolution,
     list_campaign_maps,
     list_quarantine,
     list_workspaces,
@@ -2844,6 +2850,7 @@ from pipeline_sync import (
     _snapshot_pending_count,
     _snapshot_pull_limit_for_kind,
     _stream_pad,
+    build_event_sync_payload,
     cmd_connect_platform,
     cmd_connections,
     cmd_disconnect_platform,
@@ -2856,6 +2863,7 @@ from pipeline_sync import (
     find_lead_by_identifier,
     format_pull_summary,
     ingest_agent_entry,
+    inspect_sync_event,
     list_database_backups,
     login,
     logout,
@@ -2892,6 +2900,7 @@ from pipeline_personalize import (
     company_personalize_set,
     company_personalize_set_batch,
     company_personalize_status,
+    inspect_sync_company,
     is_company_personalization_field,
     personalize_clear,
     personalize_get,
@@ -2908,9 +2917,13 @@ from pipeline_sender_accounts import (
     apply_agent_sender_account_sync_payload,
     blacklist_status_report,
     build_sender_account_sync_payload,
+    build_sender_domain_sync_payload,
     compute_sender_stats,
+    find_sender_account_id_by_email,
     get_sender_domains_for_scan,
     import_sender_accounts,
+    inspect_sync_sender_account,
+    inspect_sync_sender_domain,
     reseller_cost_report,
     resolve_sender_account_from_entity_key,
     run_blacklist_check,

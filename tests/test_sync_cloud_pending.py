@@ -311,6 +311,20 @@ class TimestampSyncTests(unittest.TestCase):
         self.assertGreaterEqual(result["totals"]["leads_core_pending"], 5)
         self.assertLessEqual(len(result["samples"]["lead_core_update"]), 2)
 
+    def test_push_pending_company_updates_reports_uncapped_total(self):
+        """total_pending must reflect the real outbox backlog, not just the
+        sample_limit-capped row count -- a company/sender-scoped dry-run
+        preview used to always report at most sample_limit pending."""
+        conn = om.get_conn()
+        for i in range(5):
+            om.ensure_company(conn, domain=f"pending{i}.example.com")
+        conn.commit()
+        conn.close()
+
+        result = om._push_pending_company_updates("om_agent_test", sample_limit=2, dry_run=True)
+        self.assertGreaterEqual(result["total_pending"], 5)
+        self.assertEqual(len(result["sample_entries"]), 2)
+
     def test_never_synced_lead_is_pending_even_when_older_than_last_sync(self):
         """A lead that predates last_sync but was never actually pushed (no relay_ingested
         row) must still show up as pending — the updated_at > last_sync check alone would

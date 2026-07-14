@@ -833,8 +833,25 @@ def main():
     sync_p.add_argument("--json", action="store_true", help="JSON-only output (use with --status)")
     sync_p.add_argument(
         "--inspect",
-        metavar="EMAIL",
-        help="Compare local activity vs sync payload for one lead (requires --workspace)",
+        metavar="VALUE",
+        help=(
+            "Show the exact sync payload for one entity, keyed by --type "
+            "(default lead: email, requires --workspace)"
+        ),
+    )
+    sync_p.add_argument(
+        "--type",
+        choices=[
+            "lead", "company", "sender_account", "sender_domain", "event",
+            "merge_delete", "quarantine_resolution",
+        ],
+        default="lead",
+        help=(
+            "Entity type for --inspect (default: lead). --inspect VALUE is: email for "
+            "lead/sender_account, domain for company/sender_domain, event id for event, "
+            "lead_merges.id or merge_entity_key for merge_delete, queue id or "
+            "external_event_id for quarantine_resolution"
+        ),
     )
     sync_p.add_argument(
         "--workspace",
@@ -878,7 +895,7 @@ def main():
     )
     sync_p.add_argument(
         "--file",
-        help="With --dry-run, write the preview JSON to a file instead of stdout",
+        help="With --dry-run or --inspect, write the output JSON to a file instead of stdout",
     )
 
     activity_p = sub.add_parser("activity", help="Lead activity summary (last contacted, counts)")
@@ -1786,22 +1803,72 @@ def main():
 
     if args.command == "sync":
         if getattr(args, "inspect", None):
-            if not getattr(args, "workspace", None):
-                print(json.dumps({"error": "--workspace is required with sync --inspect"}))
-                sys.exit(1)
-            email = args.inspect.strip().lower()
-            lead = _pipeline.find_lead(email=email)
-            if not lead:
-                print(json.dumps({"error": f"lead not found: {email}"}))
-                sys.exit(1)
+            inspect_type = getattr(args, "type", None) or "lead"
+            value = args.inspect.strip()
             conn = _pipeline.get_conn()
             try:
-                result = _pipeline.inspect_sync_lead(
-                    conn, _pipeline.DEFAULT_ORG_ID, lead["id"], workspace_slug=args.workspace,
-                )
+                if inspect_type == "lead":
+                    if not getattr(args, "workspace", None):
+                        print(json.dumps({"error": "--workspace is required with sync --inspect --type lead"}))
+                        sys.exit(1)
+                    email = value.lower()
+                    lead = _pipeline.find_lead(email=email)
+                    if not lead:
+                        print(json.dumps({"error": f"lead not found: {email}"}))
+                        sys.exit(1)
+                    result = _pipeline.inspect_sync_lead(
+                        conn, _pipeline.DEFAULT_ORG_ID, lead["id"], workspace_slug=args.workspace,
+                    )
+                elif inspect_type == "company":
+                    row = conn.execute(
+                        "SELECT id FROM companies WHERE domain = ? OR lower(name) = lower(?)",
+                        (value.lower(), value),
+                    ).fetchone()
+                    if not row:
+                        print(json.dumps({"error": f"company not found: {value}"}))
+                        sys.exit(1)
+                    result = _pipeline.inspect_sync_company(conn, row["id"])
+                elif inspect_type == "sender_account":
+                    sender_account_id = _pipeline.find_sender_account_id_by_email(conn, value.lower())
+                    if not sender_account_id:
+                        print(json.dumps({"error": f"sender account not found: {value}"}))
+                        sys.exit(1)
+                    result = _pipeline.inspect_sync_sender_account(conn, sender_account_id)
+                elif inspect_type == "sender_domain":
+                    result = _pipeline.inspect_sync_sender_domain(conn, value.lower())
+                    if not result:
+                        print(json.dumps({"error": f"sender domain not found: {value}"}))
+                        sys.exit(1)
+                elif inspect_type == "event":
+                    try:
+                        event_id = int(value)
+                    except ValueError:
+                        print(json.dumps({"error": "--inspect must be an integer event id with --type event"}))
+                        sys.exit(1)
+                    result = _pipeline.inspect_sync_event(conn, event_id)
+                    if not result:
+                        print(json.dumps({"error": f"event not found: {event_id}"}))
+                        sys.exit(1)
+                elif inspect_type == "merge_delete":
+                    result = _pipeline.inspect_sync_merge_delete(conn, value)
+                    if not result:
+                        print(json.dumps({"error": f"merge tombstone not found: {value}"}))
+                        sys.exit(1)
+                elif inspect_type == "quarantine_resolution":
+                    result = _pipeline.inspect_sync_quarantine_resolution(conn, value)
+                    if not result:
+                        print(json.dumps({"error": f"quarantine queue item not found: {value}"}))
+                        sys.exit(1)
+                else:
+                    print(json.dumps({"error": f"unknown --type: {inspect_type}"}))
+                    sys.exit(1)
             finally:
                 conn.close()
-            print(json.dumps(result, indent=2))
+            if getattr(args, "file", None):
+                Path(args.file).write_text(json.dumps(result, indent=2))
+                print(json.dumps({"status": "written", "file": args.file}))
+            else:
+                print(json.dumps(result, indent=2))
             return
         if getattr(args, "status", False):
             status = _pipeline.get_sync_status()

@@ -470,6 +470,20 @@ def build_sender_account_sync_payload(conn: sqlite3.Connection, sender_account_i
     return payload
 
 
+def inspect_sync_sender_account(conn: sqlite3.Connection, sender_account_id: int) -> dict:
+    """Full sender_account_update payload for one sender account, for sync auditing/troubleshooting."""
+    row = conn.execute(
+        "SELECT id, email FROM sender_accounts WHERE id = ?", (sender_account_id,),
+    ).fetchone()
+    if not row:
+        return {}
+    return {
+        "sender_account_id": row["id"],
+        "email": row["email"],
+        "full_sync_payload": build_sender_account_sync_payload(conn, sender_account_id),
+    }
+
+
 def apply_agent_sender_account_sync_payload(sender_account_id: int, payload: dict, *, conn=None) -> None:
     own_conn = conn is None
     conn = conn or get_conn()
@@ -816,6 +830,17 @@ def build_sender_domain_sync_payload(conn: sqlite3.Connection, domain: str) -> d
         if val is not None and val != "":
             payload[col] = val
     return payload
+
+
+def inspect_sync_sender_domain(conn: sqlite3.Connection, domain: str) -> dict:
+    """Full sender_domain_update payload for one domain, for sync auditing/troubleshooting."""
+    payload = build_sender_domain_sync_payload(conn, domain)
+    if not payload:
+        return {}
+    return {
+        "domain": domain,
+        "full_sync_payload": payload,
+    }
 
 
 def apply_agent_sender_domain_sync_payload(domain: str, payload: dict, *, conn=None) -> None:

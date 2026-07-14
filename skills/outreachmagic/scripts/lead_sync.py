@@ -968,20 +968,36 @@ def apply_agent_lead_core_payload(
         conn.commit()
         conn.close()
 
-    lev_source = (
-        (payload.get("latest_email_verification_source")
-         or payload.get("latest_lev_source")
-         or payload.get("email_verification_source")
-         or payload.get("lev_source") or "").strip()
-    )
-    if payload.get("email_verification_status") and lev_source and not _is_weak_verification_source(lev_source):
-        verify_email(
-            lead_id,
-            str(payload["email_verification_status"]),
-            lev_source,
-            verified_at=payload.get("email_verified_at"),
-            conn=None if own_conn else conn,
+    # This whole block only exists for the ~150k pre-Stage-7 D1 snapshots that
+    # carry email_verification_status/latest_email_verification_source but no
+    # provider_observations array -- for those, it's the only way to
+    # reconstruct a verification event. Once provider_observations is present
+    # (true for every payload built after Stage 7 shipped), the real events
+    # were already replayed above via apply_provider_observations_payload(),
+    # and synthesizing another one here from the lead's *rolled-up* status is
+    # not just redundant, it's wrong: email_verification_status can flip to
+    # "bounced" from a platform bounce (see bounces._compute_verification_status),
+    # which has nothing to do with lev_source (the last *tool* provider that
+    # ran a check) -- calling verify_email(status="bounced", source=lev_source)
+    # then fabricates a "millionverifier said bounced" observation that
+    # MillionVerifier's API can never actually produce, duplicating the real
+    # platform_bounce row under the wrong provider/kind every time this lead
+    # gets pulled again.
+    if not provider_observations:
+        lev_source = (
+            (payload.get("latest_email_verification_source")
+             or payload.get("latest_lev_source")
+             or payload.get("email_verification_source")
+             or payload.get("lev_source") or "").strip()
         )
+        if payload.get("email_verification_status") and lev_source and not _is_weak_verification_source(lev_source):
+            verify_email(
+                lead_id,
+                str(payload["email_verification_status"]),
+                lev_source,
+                verified_at=payload.get("email_verified_at"),
+                conn=None if own_conn else conn,
+            )
 
 
 def apply_agent_lead_workspace_payload(

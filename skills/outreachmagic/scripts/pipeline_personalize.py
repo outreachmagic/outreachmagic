@@ -163,10 +163,13 @@ def personalize_set(
     field_value: str,
     *,
     field_date: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
     if is_company_personalization_field(field_name):
         return {"status": "error", "error": f"{field_name} is company-scoped — use company-personalize-set"}
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     conn.execute("""
         INSERT INTO lead_personalization (lead_id, field_name, field_value, field_date, source_hash)
         VALUES (?, ?, ?, ?, ?)
@@ -179,12 +182,13 @@ def personalize_set(
     # Bump updated_at so timestamp-based relay sync re-pushes the snapshot
     # with updated personalization data.
     conn.execute("UPDATE leads SET updated_at = datetime('now') WHERE id = ?", (lead_id,))
-    conn.commit()
-    conn.close()
+    if own_conn:
+        conn.commit()
+        conn.close()
     return {"status": "ok", "lead_id": lead_id, "field": field_name}
 
 
-def personalize_set_batch(items: list[dict]) -> dict:
+def personalize_set_batch(items: list[dict], *, conn: Optional[sqlite3.Connection] = None) -> dict:
     written = 0
     err_list = []
     for item in items:
@@ -197,7 +201,7 @@ def personalize_set_batch(items: list[dict]) -> dict:
         if is_company_personalization_field(fname):
             err_list.append({"item": item, "error": f"{fname} is company-scoped"})
             continue
-        personalize_set(lid, fname, str(fval), field_date=item.get("date"))
+        personalize_set(lid, fname, str(fval), field_date=item.get("date"), conn=conn)
         written += 1
     return {"status": "ok", "written": written, "errors": err_list}
 
@@ -210,13 +214,17 @@ def company_personalize_set(
     domain: Optional[str] = None,
     name: Optional[str] = None,
     field_date: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
     if not is_company_personalization_field(field_name):
         return {"status": "error", "error": f"{field_name} is not a company personalization field"}
-    conn = get_conn()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
     cid = resolve_company_id(conn, company_id=company_id, domain=domain, name=name)
     if not cid:
-        conn.close()
+        if own_conn:
+            conn.close()
         return {"status": "error", "error": "company not found"}
     conn.execute("""
         INSERT INTO company_personalization (company_id, field_name, field_value, field_date, source_hash)
@@ -229,12 +237,13 @@ def company_personalize_set(
     """, (cid, field_name, field_value, field_date, _company_source_hash(cid, field_name)))
     # Bump updated_at so timestamp-based relay sync re-pushes the company snapshot.
     conn.execute("UPDATE companies SET updated_at = datetime('now') WHERE id = ?", (cid,))
-    conn.commit()
-    conn.close()
+    if own_conn:
+        conn.commit()
+        conn.close()
     return {"status": "ok", "company_id": cid, "field": field_name}
 
 
-def company_personalize_set_batch(items: list[dict]) -> dict:
+def company_personalize_set_batch(items: list[dict], *, conn: Optional[sqlite3.Connection] = None) -> dict:
     written = 0
     errors = []
     for item in items:
@@ -249,6 +258,7 @@ def company_personalize_set_batch(items: list[dict]) -> dict:
             domain=item.get("domain"),
             name=item.get("name") or item.get("company"),
             field_date=item.get("date"),
+            conn=conn,
         )
         if result.get("status") == "ok":
             written += 1
@@ -411,6 +421,21 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
         if at:
             payload["personalization_at"] = at
     return payload
+
+
+def inspect_sync_company(conn: sqlite3.Connection, company_id: int) -> dict:
+    """Full company_update payload for one company, for sync auditing/troubleshooting."""
+    row = conn.execute(
+        "SELECT id, name, domain FROM companies WHERE id = ?", (company_id,),
+    ).fetchone()
+    if not row:
+        return {}
+    return {
+        "company_id": row["id"],
+        "name": row["name"],
+        "domain": row["domain"],
+        "full_sync_payload": build_company_sync_payload(conn, company_id),
+    }
 
 
 def apply_agent_company_sync_payload(company_id: int, payload: dict, *, conn=None) -> None:

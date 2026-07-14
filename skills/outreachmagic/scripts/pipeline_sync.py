@@ -53,6 +53,7 @@ from pipeline_update import (
     get_snapshot_cursor,
     load_config,
     normalize_relay_timestamp,
+    snapshot_as_of,
     normalize_relay_timestamp_for_storage,
     save_config,
     utc_now_for_storage,
@@ -402,6 +403,7 @@ def export_local_changes(
             "action": "event_log",
             "entity_key": entity_key,
             "timestamp": normalize_relay_timestamp(row["created_at"]),
+            "as_of": snapshot_as_of(),
             "event_id": row["id"],
             "payload": {
                 "event_type": row["event_type"],
@@ -485,6 +487,7 @@ def _export_local_lead_entries(
                 "action": "lead_core_update",
                 "entity_key": entity_key,
                 "timestamp": normalize_relay_timestamp(row["created_at"]),
+            "as_of": snapshot_as_of(),
                 "payload": core_payload,
             })
         memberships = conn.execute(
@@ -508,6 +511,7 @@ def _export_local_lead_entries(
                 "entity_key": entity_key,
                 "workspace": ws_slug,
                 "timestamp": normalize_relay_timestamp(row["created_at"]),
+            "as_of": snapshot_as_of(),
                 "payload": ws_payload,
             })
         ws_slug = memberships[0]["slug"] if memberships else _lead_workspace_slug(conn, lead_id)
@@ -517,6 +521,7 @@ def _export_local_lead_entries(
                 "action": "stage_change",
                 "entity_key": entity_key,
                 "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            "as_of": snapshot_as_of(),
                 "payload": {"stage": row["stage"]},
             }
             if ws_slug:
@@ -554,21 +559,69 @@ def write_export_csv(result: dict, path: str):
     print(json.dumps({"status": "exported", "file": str(out_path), "leads": len(lead_entries)}))
 
 
+def parse_agent_envelope(event: dict) -> tuple[str, dict, str, Optional[str], str]:
+    """(action, payload, client_id, workspace_slug, timestamp) from either envelope shape.
+
+    Production carries both: nested (action/data under `payload`, the shape the current
+    worker writes) and flat (action at the top level, `payload` IS the data). Flat is
+    the MAJORITY -- 141,100 of 166,854 lead-core snapshots. Any reader that knows only
+    one shape silently drops most rows.
+    """
+    envelope = event.get("payload") or {}
+    if "action" in envelope or "data" in envelope:
+        return (
+            envelope.get("action", ""),
+            envelope.get("data") or {},
+            envelope.get("client_id", ""),
+            envelope.get("workspace"),
+            envelope.get("timestamp", ""),
+        )
+    return (
+        event.get("action", ""),
+        envelope,
+        event.get("client_id", ""),
+        event.get("workspace"),
+        event.get("timestamp", ""),
+    )
+
+
+def agent_dedupe_key(event: dict, action: str, payload: dict, client_id: str,
+                     workspace_slug: Optional[str], timestamp: str) -> str:
+    """The one definition of an agent entry's dedupe key. See ingest_agent_entry."""
+    entity_key = event.get("entity_key", "")
+    if action in SNAPSHOT_ACTIONS:
+        # Snapshots key on CONTENT. The old key used `timestamp`, which for a snapshot
+        # is the lead's created_at -- constant across every version of the entity -- so
+        # an updated snapshot was discarded on arrival as a duplicate.
+        content_hash = event.get("content_hash")
+        if not content_hash:
+            from sync_audit import content_hash as _hash
+            content_hash = _hash(payload)
+        return f"agent:{entity_key}:{action}:{workspace_slug or ''}:{content_hash}"
+    return f"agent:{client_id}:{entity_key}:{action}:{timestamp}"
+
+
 def agent_entry_dedupe_key(event: dict, local_client_id: Optional[str] = None) -> Optional[str]:
-    """Dedupe key for agent pull entries (distinct from relay:{id} for snapshots)."""
+    """Dedupe key for agent pull entries (distinct from relay:{id} for snapshots).
+
+    Must produce exactly what ingest_agent_entry() computes -- this is the prefetch
+    path for a pull page, and if the two disagree the prefetch misses and every row
+    pays a per-row SELECT (or worse, re-applies).
+    """
     if event.get("platform") != "agent":
         return None
-    payload = event.get("payload") or {}
-    client_id = payload.get("client_id", "")
-    entity_key = event.get("entity_key", "")
-    action = payload.get("action", "")
-    timestamp = payload.get("timestamp", "")
-    if not client_id or not action:
+    action, payload, client_id, workspace_slug, timestamp = parse_agent_envelope(event)
+    if not action:
         return None
-    local = local_client_id if local_client_id is not None else get_or_create_client_id()
-    if client_id == local:
-        return None
-    return f"agent:{client_id}:{entity_key}:{action}:{timestamp}"
+    # A snapshot from our own client still has to be deduped by content, so only the
+    # event path (which is identity-keyed) can short-circuit on client_id.
+    if action not in SNAPSHOT_ACTIONS:
+        if not client_id:
+            return None
+        local = local_client_id if local_client_id is not None else get_or_create_client_id()
+        if client_id == local:
+            return None
+    return agent_dedupe_key(event, action, payload, client_id, workspace_slug, timestamp)
 
 
 def pull_page_dedupe_keys(events: list, local_client_id: str) -> list[str]:
@@ -673,29 +726,19 @@ def ingest_agent_entry(
         upsert_workspace_lead,
     )
 
-    envelope_payload = event.get("payload") or {}
-    # Detect format: the new unified envelope format nests action/data in
-    # payload (post-Jun 30 relay-db.js). Old flat format has action/client_id
-    # at the event top level with enrichment data directly in event.payload.
-    if "action" in envelope_payload or "data" in envelope_payload:
-        action = envelope_payload.get("action", "")
-        payload = envelope_payload.get("data") or {}
-        client_id = envelope_payload.get("client_id", "")
-        workspace_slug = envelope_payload.get("workspace")
-        timestamp = envelope_payload.get("timestamp", "")
-    else:
-        action = event.get("action", "")
-        payload = envelope_payload
-        client_id = event.get("client_id", "")
-        workspace_slug = event.get("workspace")
-        timestamp = event.get("timestamp", "")
+    # One parser, shared with agent_entry_dedupe_key(): the pull page prefetches dedupe
+    # keys through that function and checks them here, so any divergence between the
+    # two silently defeats the prefetch.
+    action, payload, client_id, workspace_slug, timestamp = parse_agent_envelope(event)
     entity_key = event.get("entity_key", "")
 
     local_client_id = get_or_create_client_id()
     if client_id == local_client_id and action not in SNAPSHOT_ACTIONS:
         return None
 
-    dedupe_key = f"agent:{client_id}:{entity_key}:{action}:{timestamp}"
+    dedupe_key = agent_dedupe_key(
+        event, action, payload, client_id, workspace_slug, timestamp
+    )
     # Pull pages prefetch dedupe keys; skip per-row SELECT when batching marks.
     if not defer_mark and relay_already_ingested(dedupe_key):
         return None

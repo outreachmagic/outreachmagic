@@ -866,6 +866,25 @@ def clear_snapshot_cursors() -> None:
     save_config(cfg)
 
 
+def snapshot_as_of() -> str:
+    """The 'as of' clock stamped on every snapshot entry: when we serialized it.
+
+    This is what orders two writes on the relay (its stale-write guard compares it),
+    and it must be monotone. The obvious candidates are not:
+
+      * leads.created_at is CONSTANT across every version of an entity, so two pushes
+        of the same lead are indistinguishable.
+      * leads.updated_at is corrupt -- 60,942 of 149,753 rows (40.7%) have an
+        updated_at OLDER than their own created_at.
+
+    The moment of serialization has neither problem: a payload built later reflects
+    later state, by construction.
+    """
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 def normalize_relay_timestamp(ts: Optional[str]) -> str:
     if not ts:
         return datetime.now(timezone.utc).isoformat()

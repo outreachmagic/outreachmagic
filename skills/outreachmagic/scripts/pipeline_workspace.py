@@ -59,6 +59,7 @@ from pipeline_update import (
     get_relay_push_settings,
     load_config,
     normalize_relay_timestamp,
+    snapshot_as_of,
     save_config,
     set_last_sync,
 )
@@ -1494,6 +1495,7 @@ def _push_pending_lead_snapshots(
             "action": "lead_core_update",
             "entity_key": entity_key,
             "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            "as_of": snapshot_as_of(),
             "payload": payload,
         })
         if n % 2500 == 0:
@@ -1522,6 +1524,7 @@ def _push_pending_lead_snapshots(
             "entity_key": entity_key,
             "workspace": ws_slug,
             "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            "as_of": snapshot_as_of(),
             "payload": payload,
         })
         if n % 2500 == 0:
@@ -1625,6 +1628,7 @@ def _push_pending_company_updates(
             "action": "company_update",
             "entity_key": entity_key,
             "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            "as_of": snapshot_as_of(),
             "payload": payload,
         })
     conn.close()
@@ -1695,6 +1699,7 @@ def _push_pending_sender_account_updates(
             "action": "sender_account_update",
             "entity_key": entity_key,
             "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            "as_of": snapshot_as_of(),
             "payload": payload,
         })
     conn.close()
@@ -1762,6 +1767,7 @@ def _push_pending_sender_domain_updates(
             "action": "sender_domain_update",
             "entity_key": sender_domain_entity_key(row["domain"]),
             "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            "as_of": snapshot_as_of(),
             "payload": payload,
         })
     conn.close()

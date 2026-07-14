@@ -104,15 +104,20 @@ def test_apply_sync_linkedin_sales_nav_id():
         org_id=om.DEFAULT_ORG_ID,
         dry_run=False,
     )
-    row = conn.execute(
+    identity = conn.execute(
         """SELECT identity_value_normalized FROM lead_identities
            WHERE lead_id = ? AND identity_type = 'linkedin_sales_nav_id'""",
         (lead_id,),
     ).fetchone()
+    lead_row = conn.execute(
+        "SELECT linkedin_sales_nav_id FROM leads WHERE id = ?", (lead_id,),
+    ).fetchone()
     conn.close()
 
     assert summary["updated"] == 1
-    assert row["identity_value_normalized"] == SALES
+    # Match key is case-folded; the leads column carries the canonical case.
+    assert identity["identity_value_normalized"] == SALES.lower()
+    assert lead_row["linkedin_sales_nav_id"] == SALES
 
 
 if __name__ == "__main__":

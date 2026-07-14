@@ -388,20 +388,21 @@ def _backfill_sender_account_activity(conn: sqlite3.Connection) -> None:
 
 
 def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
-    """Case-fold linkedin_sales_nav_id everywhere so 'ACwAA...' and 'acwaa...' stop
-    being treated as two people.
+    """Unify 'ACwAA...' and 'acwaa...' -- they're the same person, and the local
+    store kept them as two.
 
-    Sales Navigator itself matches case-insensitively, but the local store kept
-    whatever case the writer passed -- 37,536 of 54,154 identities had been
-    lowercased somewhere upstream while 16,618 retained mixed case. The UNIQUE
-    (org_id, identity_type, identity_value_normalized) constraint compares as
-    plain BINARY, so the two forms coexisted as separate rows, split ~28k people
-    into two leads apiece, and passed straight through the identity-guard tests.
+    37,536 of 54,154 identities had been lowercased somewhere upstream while
+    16,618 retained mixed case. The UNIQUE (org_id, identity_type,
+    identity_value_normalized) constraint compares BINARY, so the two forms
+    coexisted as separate rows, split ~28k people into two leads apiece, and
+    passed straight through the identity-guard tests.
 
-    normalize_identity_value() now lowercases at write time; this migration is the
-    one-time backfill: merge the split pairs, dedupe the redundant identity rows,
-    then lowercase what remains. Guarded because it's O(n) over lead_identities
-    and does real writes.
+    Model going forward: identity_value_normalized is case-folded (match key,
+    enforced at write in upsert_all_identities / upsert_identity_alias);
+    leads.linkedin_sales_nav_id is the canonical mixed case (display + outbound
+    alias). This migration merges the split pairs, promotes the best available
+    case onto the survivor's leads column, then dedupes and case-folds the
+    identity rows. Guarded because it's O(n) over lead_identities.
     """
     if conn.execute(
         "SELECT 1 FROM migration_flags WHERE name = 'sales_nav_id_casing_repair'"
@@ -410,9 +411,8 @@ def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
 
     from pipeline import _pick_merge_keep_id, merge_leads
 
-    # Pairs of leads that own the same sales-nav id under different casing --
-    # exactly the split we're here to reunite. Take the lead-id pair from each
-    # case group; merge_leads collapses more-than-two accidentally too.
+    # Groups of leads that own the same sales-nav id under different casing --
+    # exactly the split we're here to reunite. Merge folds each into a survivor.
     duplicate_groups = conn.execute(
         """SELECT LOWER(identity_value_normalized) AS key,
                   GROUP_CONCAT(DISTINCT lead_id) AS lead_ids
@@ -426,13 +426,37 @@ def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
         ids = sorted({int(x) for x in (group["lead_ids"] or "").split(",") if x})
         if len(ids) < 2:
             continue
-        # _pick_merge_keep_id handles pairs; walk the list folding each new lead
-        # into the running survivor.
+        # Pick the best mixed-case display value from the whole group BEFORE the
+        # merge -- once the losers are deleted, their case is gone. Any value
+        # that differs from its own lower() form is mixed-case; take the first
+        # one we find (Sales Nav ids are one canonical spelling, so any mixed-
+        # case form we've seen is the right one).
+        canonical = None
+        for cur_id in ids:
+            row = conn.execute(
+                "SELECT linkedin_sales_nav_id FROM leads WHERE id = ?", (cur_id,),
+            ).fetchone()
+            val = (row["linkedin_sales_nav_id"] if row else None) or ""
+            if val and val != val.lower():
+                canonical = val
+                break
+
         survivor = ids[0]
         for other in ids[1:]:
             keep_id, merge_id = _pick_merge_keep_id(conn, survivor, other)
             merge_leads(keep_id, merge_id, reason="sales_nav_id_case_dupe", conn=conn)
             survivor = keep_id
+
+        # Stamp the mixed-case value on the survivor so a survivor that was
+        # picked for having more events (but happened to be lowercase) doesn't
+        # discard the canonical form its merged-in twin had.
+        if canonical:
+            conn.execute(
+                """UPDATE leads
+                      SET linkedin_sales_nav_id = ?, updated_at = datetime('now')
+                    WHERE id = ?""",
+                (canonical, survivor),
+            )
 
     # After merges, one lead can own both a lowercase and a mixed-case identity
     # row (the merge moved lead_id but didn't collapse identity_value_normalized).
@@ -455,15 +479,12 @@ def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
               AND identity_value_normalized != LOWER(identity_value_normalized)"""
     )
 
-    # And the display column, so aliases in outbound payloads match what the
-    # relay's dedup sees on the ingest side.
-    conn.execute(
-        """UPDATE leads
-              SET linkedin_sales_nav_id = LOWER(linkedin_sales_nav_id),
-                  updated_at = datetime('now')
-            WHERE linkedin_sales_nav_id IS NOT NULL
-              AND linkedin_sales_nav_id != LOWER(linkedin_sales_nav_id)"""
-    )
+    # leads.linkedin_sales_nav_id is left alone: the merge step above already
+    # stamped the best available case on each survivor, and rows that never had
+    # a duplicate keep whatever they had. Runtime upgrade (see
+    # _upgrade_lead_sales_nav_id_case) picks up any better casing that arrives
+    # later -- including from the next full D1 pull, which carries the original
+    # mixed-case values.
 
     conn.execute(
         "INSERT INTO migration_flags (name) VALUES ('sales_nav_id_casing_repair')"

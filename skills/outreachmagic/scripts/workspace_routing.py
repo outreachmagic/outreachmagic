@@ -578,7 +578,10 @@ def linkedin_sales_nav_id_field_conflict(
     if not sales_nav_id:
         return None
     row = conn.execute(
-        "SELECT id FROM leads WHERE linkedin_sales_nav_id = ? AND id != ?",
+        # Case-insensitive: the display column is mixed-case where we have it,
+        # lowercase where we don't, so equality would miss a legitimate conflict
+        # between an "ACwAA..." write and a stored "acwaa..." row for the same person.
+        "SELECT id FROM leads WHERE LOWER(linkedin_sales_nav_id) = LOWER(?) AND id != ?",
         (sales_nav_id, lead_id),
     ).fetchone()
     if not row:
@@ -593,6 +596,33 @@ def linkedin_sales_nav_id_field_conflict(
             "field left unchanged — consider dedup merge"
         ),
     }
+
+
+def _sales_nav_match_key(value: str) -> str:
+    """Case-folded storage key for lead_identities.identity_value_normalized.
+    Sales Navigator matches case-insensitively; folding at storage keeps the
+    UNIQUE constraint from splitting 'ACwAA...' and 'acwaa...' into two rows."""
+    return value.lower()
+
+
+def _upgrade_lead_sales_nav_id_case(
+    conn: sqlite3.Connection, lead_id: int, canonical_value: str,
+) -> None:
+    """Prefer mixed case on the display column. Called after any write that
+    carries a canonical (mixed-case) sales-nav id, so a lead whose column is
+    empty or lowercase gets upgraded as soon as we see the properly-cased form
+    -- including on a fresh D1 pull after this box's local was lowercased by an
+    earlier migration pass."""
+    if not canonical_value or canonical_value == canonical_value.lower():
+        return
+    conn.execute(
+        """UPDATE leads
+              SET linkedin_sales_nav_id = ?, updated_at = datetime('now')
+            WHERE id = ?
+              AND (linkedin_sales_nav_id IS NULL
+                   OR linkedin_sales_nav_id = LOWER(linkedin_sales_nav_id))""",
+        (canonical_value, lead_id),
+    )
 
 
 def promote_linkedin_sales_nav_id_from_identities(
@@ -652,6 +682,12 @@ def upsert_all_identities(
     if not rows:
         return conflicts, linkedin_conflicts
 
+    # Case-fold sales-nav for the storage key; keep the canonical (input) value
+    # separately so we can upgrade the display column after.
+    def _key(t: str, v: str) -> str:
+        return _sales_nav_match_key(v) if t == "linkedin_sales_nav_id" else v
+    storage_rows = [(t, _key(t, v)) for t, v in rows]
+
     # The UNIQUE (org_id, identity_type, identity_value_normalized) constraint
     # already decides this, so a per-identity pre-SELECT is redundant: a row
     # that exists is ignored whether it belongs to this lead or another. Insert
@@ -664,13 +700,13 @@ def upsert_all_identities(
            ) VALUES (
                ?, ?, ?, ?, ?, 0, datetime('now')
            )""",
-        [(org_id, lead_id, t, v, source) for t, v in rows],
+        [(org_id, lead_id, t, v, source) for t, v in storage_rows],
     )
     inserted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
-    if inserted < len(rows):
-        pairs = ", ".join("(?, ?)" for _ in rows)
+    if inserted < len(storage_rows):
+        pairs = ", ".join("(?, ?)" for _ in storage_rows)
         params: list = [org_id]
-        for t, v in rows:
+        for t, v in storage_rows:
             params.extend((t, v))
         owners = {
             (r["identity_type"], r["identity_value_normalized"]): int(r["lead_id"])
@@ -682,14 +718,19 @@ def upsert_all_identities(
                 params,
             )
         }
-        for t, v in rows:
-            owner = owners.get((t, v))
+        for (t, canonical_v), (_, stored_v) in zip(rows, storage_rows):
+            owner = owners.get((t, stored_v))
             if owner is not None and owner != lead_id:
                 conflicts.append({
                     "identity_type": t,
-                    "value": v,
+                    "value": canonical_v,
                     "existing_lead_id": owner,
                 })
+
+    # Opportunistically upgrade the display column with the canonical case.
+    for t, canonical_v in rows:
+        if t == "linkedin_sales_nav_id":
+            _upgrade_lead_sales_nav_id_case(conn, lead_id, canonical_v)
 
     # Both promotes are pure no-ops unless this batch actually carries the
     # identity type they read -- any promotion from a pre-existing identity row
@@ -716,13 +757,7 @@ def normalize_identity_value(identity_type: str, value: str) -> Optional[str]:
     if identity_type == "linkedin_url":
         return normalize_linkedin(value)
     if identity_type == "linkedin_sales_nav_id":
-        # The canonical (mixed-case) value stays on leads.linkedin_sales_nav_id
-        # and in the outbound aliases -- what we store here is only used as a
-        # match key, and matching on mixed case had split ~37k of ~54k identities
-        # from their duplicates. Case-fold at write time so the UNIQUE constraint
-        # collapses old lowercase/mixed pairs into one row.
-        normalized = normalize_linkedin_sales_nav_id(value)
-        return normalized.lower() if normalized else None
+        return normalize_linkedin_sales_nav_id(value)
     if identity_type == "linkedin_member_id":
         return normalize_linkedin_member_id(value)
     if identity_type == "phone":
@@ -1276,14 +1311,19 @@ def upsert_identity_alias(
     *,
     promote_linkedin: bool = True,
 ) -> None:
+    stored_value = (
+        _sales_nav_match_key(value_normalized)
+        if identity_type == "linkedin_sales_nav_id"
+        else value_normalized
+    )
     existing = conn.execute(
         """SELECT lead_id FROM lead_identities
            WHERE org_id = ? AND identity_type = ? AND identity_value_normalized = ?""",
-        (org_id, identity_type, value_normalized),
+        (org_id, identity_type, stored_value),
     ).fetchone()
     if existing and int(existing["lead_id"]) != lead_id:
         raise ValueError(
-            f"identity conflict: {identity_type}={value_normalized} belongs to lead "
+            f"identity conflict: {identity_type}={stored_value} belongs to lead "
             f"{existing['lead_id']}, not {lead_id}"
         )
     conn.execute(
@@ -1293,8 +1333,10 @@ def upsert_identity_alias(
            ) VALUES (
                ?, ?, ?, ?, ?, 0, datetime('now')
            )""",
-        (org_id, lead_id, identity_type, value_normalized, source),
+        (org_id, lead_id, identity_type, stored_value, source),
     )
+    if identity_type == "linkedin_sales_nav_id":
+        _upgrade_lead_sales_nav_id_case(conn, lead_id, value_normalized)
     if identity_type == "linkedin_url" and promote_linkedin:
         promote_linkedin_url_from_identities(conn, org_id, lead_id)
     elif identity_type == "linkedin_sales_nav_id" and promote_linkedin:

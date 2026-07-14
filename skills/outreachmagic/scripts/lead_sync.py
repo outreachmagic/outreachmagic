@@ -166,6 +166,11 @@ def _assemble_lead_core_sync_payload(
         itype, val = id_row["identity_type"], id_row["identity_value_normalized"]
         if not val:
             continue
+        # Sales-nav is already emitted above from the leads column (which holds
+        # the canonical mixed case); the identity row is lowercase, so appending
+        # it here would ship two aliases for the same identity in different cases.
+        if itype == "linkedin_sales_nav_id":
+            continue
         aliases.append(val if itype == "email" else f"{itype}:{val}")
     seen: set[str] = set()
     aliases = [a for a in aliases if a and not (a in seen or seen.add(a))]

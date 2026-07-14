@@ -1162,10 +1162,14 @@ def enrich_lead_rows(
                     del merged[f"{fname}_date"]
             row["personalization"] = merged
             id_rows = prefetch["identities"].get(lead_id) or []
-            for ident in id_rows:
-                if ident["identity_type"] == "linkedin_sales_nav_id":
-                    row["linkedin_sales_nav_id"] = ident["identity_value_normalized"]
-                    break
+            # Only fall back to the identity table if the lead's own column is
+            # empty. The identity value is case-folded (match key); the leads
+            # column holds the canonical mixed case where we have it.
+            if not (row.get("linkedin_sales_nav_id") or "").strip():
+                for ident in id_rows:
+                    if ident["identity_type"] == "linkedin_sales_nav_id":
+                        row["linkedin_sales_nav_id"] = ident["identity_value_normalized"]
+                        break
             row["linkedin_url"] = row.get("linkedin_url") or row.get("linkedin") or ""
             if not row.get("latest_sender") and lead.get("latest_sender"):
                 row["latest_sender"] = lead["latest_sender"]

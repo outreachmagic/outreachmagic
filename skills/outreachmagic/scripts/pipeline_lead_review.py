@@ -948,7 +948,7 @@ def _current_row_state(
 ) -> dict[str, Any]:
     lead = conn.execute(
         """SELECT l.name, l.email, l.company, l.title, l.notes, l.linkedin_url,
-                  l.linkedin_headline, l.linkedin_bio,
+                  l.linkedin_headline, l.linkedin_bio, l.linkedin_sales_nav_id,
                   l.company_id, COALESCE(co.name, l.company) AS company_display
            FROM leads l
            LEFT JOIN companies co ON l.company_id = co.id
@@ -1000,7 +1000,12 @@ def _current_row_state(
         "title": (lead["title"] if lead else "") or "",
         "linkedin": (lead["linkedin_url"] if lead else "") or "",
         "linkedin_url": (lead["linkedin_url"] if lead else "") or "",
-        "linkedin_sales_nav_id": (sn_row["identity_value_normalized"] if sn_row else "") or "",
+        # Prefer the leads column (canonical mixed case). Fall back to the
+        # identity table (lowercase, since that's the case-folded match key).
+        "linkedin_sales_nav_id": (
+            (lead["linkedin_sales_nav_id"] if lead else "") or ""
+            or (sn_row["identity_value_normalized"] if sn_row else "") or ""
+        ),
         "linkedin_headline": (lead["linkedin_headline"] if lead else "") or "",
         "linkedin_bio": (lead["linkedin_bio"] if lead else "") or "",
         "notes": (lead["notes"] if lead else "") or "",

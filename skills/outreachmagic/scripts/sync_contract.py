@@ -42,19 +42,17 @@ OWNER_TABLES = {
 # or OLD depending on the trigger. entity_id is TEXT: lead_workspace needs a
 # composite, and a single type keeps the outbox PK simple.
 #
-# lead_email_verification and lead_provider_attempts are here even though the
-# plan's target map names `lead_provider_observations` instead -- that table is
-# Stage 7. Until it exists, these two are the tables whose writes must mark a
-# lead dirty, and they are exactly the ones that were silently failing to.
-# Stage 7 retargets these two entries at the observations log; nothing else moves.
+# Stage 7 landed: lead_email_verification and lead_provider_attempts are now
+# read-only VIEWs over lead_provider_observations (pipeline_migration.py's
+# _migrate_provider_observations), so this map -- and the outbox trigger it
+# generates -- points at the base table they were folded into.
 SYNC_MAP = {
     # --- lead_core -------------------------------------------------------
     "leads":                         ("lead_core", "{row}.id"),
     "lead_identities":               ("lead_core", "{row}.lead_id"),
     "lead_personalization":          ("lead_core", "{row}.lead_id"),
     "lead_emails":                   ("lead_core", "{row}.lead_id"),
-    "lead_email_verification":       ("lead_core", "{row}.lead_id"),
-    "lead_provider_attempts":        ("lead_core", "{row}.lead_id"),
+    "lead_provider_observations":    ("lead_core", "{row}.lead_id"),
     # --- lead_workspace --------------------------------------------------
     "workspace_leads":               ("lead_workspace", "{row}.lead_id || ':' || {row}.workspace_id"),
     "workspace_lead_tags":           ("lead_workspace", "{row}.lead_id || ':' || {row}.workspace_id"),
@@ -113,10 +111,10 @@ SYNCED_COLUMNS: dict[str, frozenset[str]] = {
     "lead_identities": frozenset({"identity_type", "identity_value_normalized"}),
     "lead_personalization": frozenset({"field_name", "field_value", "field_date", "processed_at"}),
     "lead_emails": frozenset(),
-    "lead_email_verification": frozenset(),
-    "lead_provider_attempts": frozenset({
-        "provider", "domain", "attempted_at", "completed_at", "status",
-        "result_email", "result_validity",
+    "lead_provider_observations": frozenset({
+        "kind", "origin", "provider", "email", "status", "sub_status", "domain",
+        "source_detail", "bounce_message", "free_email", "mx_found", "smtp_provider",
+        "result_email", "result_validity", "observed_at", "completed_at",
     }),
     "workspace_leads": frozenset({
         "status", "current_status_label", "current_status_sentiment", "contact_priority",
@@ -186,27 +184,13 @@ NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
         "is_primary": "same as email -- local materialization only, populated on apply",
         "created_at": "local bookkeeping",
     },
-    "lead_email_verification": {
-        "id": "surrogate key",
+    "lead_provider_observations": {
+        "obs_uid": "content hash, recomputed deterministically on apply -- not carried as a payload field itself",
         "org_id": "implicit from the authenticated request",
-        "lead_id": "join key",
-        "email": "table is never serialized as its own entity today (Stage 7 introduces lead_provider_observations to fix this)",
-        "status": "write-only column -- never leaves local SQLite (Stage 7)",
-        "sub_status": "write-only column -- never leaves local SQLite (Stage 7)",
-        "source": "read locally by _lev_sources_for_lead to derive leads.original/latest_email_verification_source, but this raw column is never put on the wire itself",
-        "source_detail": "write-only column -- never leaves local SQLite (Stage 7)",
-        "bounce_message": "write-only column -- never leaves local SQLite (Stage 7)",
-        "free_email": "write-only column -- never leaves local SQLite (Stage 7)",
-        "mx_found": "write-only column -- never leaves local SQLite (Stage 7)",
-        "smtp_provider": "write-only column -- never leaves local SQLite (Stage 7)",
-        "verified_at": "read locally to derive leads.email_verified_at, but this row is never transmitted itself",
-        "created_at": "local bookkeeping",
-    },
-    "lead_provider_attempts": {
-        "id": "surrogate key",
         "lead_id": "join key; covered by the parent lead_core entity_id",
-        "batch_id": "FK to provider_batch_jobs, meaningless outside this install; dropped before serialization",
-        "metadata_json": "dropped before serialization -- the provider_attempt_rows query in lead_sync.py does not select it",
+        "batch_id": "FK-shaped but opaque (provider_batch_jobs is empty in production); meaningless outside this install, dropped before serialization",
+        "metadata_json": "dropped before serialization, same as the legacy lead_provider_attempts.metadata_json it replaces",
+        "created_at": "local bookkeeping -- observed_at is the fact's own timestamp and is what travels",
     },
     "workspace_leads": {
         "id": "local surrogate; the composite lead_id:workspace_id is the wire entity_id",

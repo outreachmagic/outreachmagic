@@ -156,7 +156,9 @@ def test_real_change_after_a_sync_is_pushed():
 
 def test_provider_attempt_payload_actually_carries_the_attempt():
     """Marking the lead dirty is worthless if the attempt is not serialized.
-    (lead_email_verification is *not* on the wire yet -- that is Stage 7.)"""
+    Stage 7 unified this onto the wire as `provider_observations` (the old
+    `provider_attempts` key is still *accepted* on apply, for ~150k D1
+    snapshots that already carry it, but is no longer emitted)."""
     from pipeline_provider_attempts import record_provider_attempt
 
     conn = om.get_conn()
@@ -179,9 +181,14 @@ def test_provider_attempt_payload_actually_carries_the_attempt():
 
     core = [e for e in cap.entries if e["action"] == "lead_core_update"]
     assert core, "provider attempt must trigger a core push"
-    assert any("provider_attempts" in e["payload"] for e in core), (
+    assert any("provider_observations" in e["payload"] for e in core), (
         "the attempt must be on the wire, not merely marked dirty"
     )
+    obs = next(
+        o for e in core for o in e["payload"].get("provider_observations", [])
+        if o.get("provider") == "trykitt"
+    )
+    assert obs["result_email"] == "a@example.com"
 
 
 def test_successful_push_clears_outbox_and_records_shadow():

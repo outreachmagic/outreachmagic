@@ -1562,6 +1562,14 @@ def main():
             agent_secrets_cloud.load_local_agent_secrets_to_environ()
         except OSError:
             pass
+        # Hermes stores OUTREACHMAGIC_AGENT_KEY in {data_root}/.env after login.
+        try:
+            from om_paths import get_data_root
+            from shared import load_dotenv_file
+
+            load_dotenv_file(get_data_root() / ".env")
+        except OSError:
+            pass
 
     # Check-only update notice (never downloads). At most once per hour.
     if args.command not in (None, "update", "version"):

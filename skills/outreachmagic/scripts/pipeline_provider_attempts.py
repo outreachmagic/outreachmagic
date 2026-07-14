@@ -46,7 +46,13 @@ def record_provider_attempt(
     attempted_at: Optional[str] = None,
     completed_at: Optional[str] = None,
 ) -> None:
-    """Upsert one provider-attempt row for a lead (one row per lead+provider)."""
+    """Append one provider-attempt observation (Stage 7: lead_provider_observations,
+    origin='attempt'). `lead_provider_attempts` is now a read-only VIEW projecting
+    the latest attempt per (lead_id, provider) -- callers reading it see the same
+    "one row per lead+provider" shape as before; this just stops discarding the
+    history that produced that latest row."""
+    from provider_observations import ORIGIN_ATTEMPT, kind_for_provider_domain, record_observation
+
     provider = (provider or "").strip().lower()
     if not provider or not lead_id:
         return
@@ -54,25 +60,19 @@ def record_provider_attempt(
     if status not in ATTEMPT_STATUSES:
         status = "unknown"
     domain = domain or PROVIDER_DOMAINS.get(provider)
-    conn.execute(
-        """INSERT INTO lead_provider_attempts (
-               lead_id, provider, domain, attempted_at, completed_at, status,
-               result_email, result_validity, batch_id, metadata_json
-           ) VALUES (?, ?, ?, COALESCE(?, datetime('now')), ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (lead_id, provider) DO UPDATE SET
-               domain = excluded.domain,
-               attempted_at = excluded.attempted_at,
-               completed_at = excluded.completed_at,
-               status = excluded.status,
-               result_email = excluded.result_email,
-               result_validity = excluded.result_validity,
-               batch_id = COALESCE(excluded.batch_id, lead_provider_attempts.batch_id),
-               metadata_json = excluded.metadata_json""",
-        (
-            lead_id, provider, domain, attempted_at, completed_at, status,
-            result_email, result_validity, batch_id,
-            json.dumps(metadata) if metadata else None,
-        ),
+    record_observation(
+        conn, lead_id,
+        kind=kind_for_provider_domain(domain),
+        origin=ORIGIN_ATTEMPT,
+        provider=provider,
+        status=status,
+        domain=domain,
+        result_email=result_email,
+        result_validity=result_validity,
+        batch_id=batch_id,
+        metadata_json=json.dumps(metadata) if metadata else None,
+        observed_at=attempted_at,
+        completed_at=completed_at,
     )
 
 

@@ -346,27 +346,12 @@ CREATE TABLE IF NOT EXISTS workspace_lead_linkedin_status (
 CREATE INDEX IF NOT EXISTS idx_li_status_workspace ON workspace_lead_linkedin_status(workspace_id, sender_profile);
 CREATE INDEX IF NOT EXISTS idx_li_status_lead ON workspace_lead_linkedin_status(lead_id);
 
-CREATE TABLE IF NOT EXISTS lead_email_verification (
-    id              TEXT PRIMARY KEY,
-    org_id          TEXT NOT NULL,
-    lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-    email           TEXT NOT NULL,
-    status          TEXT NOT NULL,
-    sub_status      TEXT,
-    source          TEXT NOT NULL,
-    source_detail   TEXT,
-    bounce_message  TEXT,
-    free_email      INTEGER,
-    mx_found        INTEGER,
-    smtp_provider   TEXT,
-    verified_at     TEXT NOT NULL,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (org_id, lead_id, source)
-);
-
-CREATE INDEX IF NOT EXISTS idx_verification_email ON lead_email_verification(email);
-CREATE INDEX IF NOT EXISTS idx_verification_status ON lead_email_verification(org_id, status);
-CREATE INDEX IF NOT EXISTS idx_verification_lead ON lead_email_verification(lead_id);
+-- lead_email_verification used to be created here. Stage 7 folded it into
+-- lead_provider_observations (provider_observations.TABLE_SQL, created in
+-- pipeline_migration._migrate_provider_observations) and retired this name to
+-- a read-only VIEW of the same shape -- creating it as a table here would
+-- collide with that VIEW ("views may not be indexed") on every DB that has
+-- already migrated.
 
 CREATE TABLE IF NOT EXISTS bounce_events (
     id                  TEXT PRIMARY KEY,

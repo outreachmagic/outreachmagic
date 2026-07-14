@@ -215,6 +215,33 @@ def backfill_derived_lead_stage(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
+def _drop_stale_outbox_triggers(conn: sqlite3.Connection) -> None:
+    """Drop every trg_outbox_* trigger so ensure_outbox() rebuilds them fresh.
+
+    CREATE TRIGGER IF NOT EXISTS (what ensure_outbox uses) never updates an
+    existing trigger's body -- if entity_id_expr()/SYNC_MAP changed shape
+    since a trigger was first installed on some install out there, the old
+    body sticks around forever, silently. That already happened for real:
+    an old install had trg_outbox_sender_domains_* referencing NEW.id/OLD.id
+    from before sender_domains was keyed by domain instead of a surrogate id
+    -- SQLite doesn't validate a trigger body's column references at CREATE
+    time, only when the trigger actually fires (or, as discovered here, when
+    an unrelated ALTER TABLE RENAME forces it to recompile every trigger in
+    the schema to check for name references). Any DB with that latent bug
+    would take down the very first ALTER TABLE anyone ever ran against it --
+    which is exactly what Stage 7's rename below is. Rebuilding from
+    SYNC_MAP on every migrate_db() call is cheap (a few dozen tiny
+    statements) and means this class of drift can't accumulate again.
+    """
+    names = [
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'trg_outbox_%'"
+        ).fetchall()
+    ]
+    for name in names:
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+
+
 def ensure_outbox(conn: sqlite3.Connection) -> None:
     """Create the outbox/shadow tables and (re)install their triggers."""
     conn.executescript(OUTBOX_SQL)
@@ -314,7 +341,16 @@ def _repair_lead_provider_attempts_schema(conn: sqlite3.Connection) -> None:
     PRIMARY KEY entirely (e.g. composite (lead_id, provider) instead of a
     real autoincrement id) -- so this does a rename + recreate + best-effort
     data copy instead.
+
+    Stage 7 retires this name to a read-only VIEW over
+    lead_provider_observations (see _migrate_provider_observations below) --
+    once that has happened there is no table left here to repair, and
+    PRAGMA table_info would report the view's columns, not a real table's.
     """
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'provider_observations_unification'"
+    ).fetchone():
+        return
     cols = {r[1] for r in conn.execute("PRAGMA table_info(lead_provider_attempts)").fetchall()}
     if not cols or _LEAD_PROVIDER_ATTEMPTS_REQUIRED_COLUMNS.issubset(cols):
         return  # table doesn't exist yet, or already has the right columns
@@ -357,6 +393,124 @@ def _repair_lead_provider_attempts_schema(conn: sqlite3.Connection) -> None:
             FROM lead_provider_attempts_malformed_backup
         """)
     conn.execute("DROP TABLE lead_provider_attempts_malformed_backup")
+
+
+def _migrate_provider_observations(conn: sqlite3.Connection) -> None:
+    """Stage 7: fold lead_email_verification + lead_provider_attempts into one
+    append-only lead_provider_observations log, then retire both old names to
+    read-only VIEWs projecting "latest row per provider" (see
+    provider_observations.COMPAT_VIEWS_SQL) so every existing reader --
+    _lev_sources_for_lead, get_provider_attempts_map, has_attempted,
+    _compute_verification_status, the CLI -- keeps working unchanged.
+
+    Ordering: must run after the uid backfill above (obs_uid keys on the
+    stable lead_uid, not the local autoincrement id, so a full pull replaying
+    this history onto a wiped DB doesn't duplicate it) and before
+    ensure_outbox (so lead_provider_observations gets an outbox trigger from
+    the same migration that creates it -- installing the table without the
+    trigger would recreate the exact "provider attempt bumps no parent
+    timestamp" bug this whole effort exists to fix).
+
+    Runs the table-create every time (cheap, idempotent); the rename+backfill
+    only once, guarded by a migration flag, since it moves data out of tables
+    that no longer exist on the second run.
+    """
+    from provider_observations import (
+        COMPAT_VIEWS_SQL,
+        KIND_PLATFORM_BOUNCE,
+        ORIGIN_ATTEMPT,
+        ORIGIN_VERIFICATION,
+        TABLE_SQL,
+        compute_obs_uid,
+        kind_for_provider_domain,
+    )
+
+    conn.executescript(TABLE_SQL)
+
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'provider_observations_unification'"
+    ).fetchone():
+        return
+
+    lead_uids = {r["id"]: r["uid"] for r in conn.execute("SELECT id, uid FROM leads").fetchall()}
+
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lead_email_verification'"
+    ).fetchone():
+        for row in conn.execute("SELECT * FROM lead_email_verification").fetchall():
+            lead_uid = lead_uids.get(row["lead_id"])
+            if lead_uid is None:
+                # Orphaned child row: lead_id no longer exists in leads (the
+                # known apply_bulk_pull_pragmas FK-off bulk-pull artifact from
+                # the Stage -1 audit). Dead data with no live parent to attach
+                # to -- inserting it would violate lead_provider_observations'
+                # FK, and there is nothing left in the app that could ever
+                # join it to a real lead anyway. Drop it here rather than
+                # carry it forward as a permanently orphaned observation.
+                continue
+            source = row["source"] or ""
+            kind = KIND_PLATFORM_BOUNCE if source == "platform_bounce" else "email_verification"
+            obs_uid = compute_obs_uid(
+                row["org_id"], lead_uid, source, kind, ORIGIN_VERIFICATION, row["verified_at"],
+                email=row["email"], status=row["status"], sub_status=row["sub_status"],
+                source_detail=row["source_detail"], bounce_message=row["bounce_message"],
+                free_email=row["free_email"], mx_found=row["mx_found"],
+                smtp_provider=row["smtp_provider"],
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO lead_provider_observations (
+                       obs_uid, org_id, lead_id, kind, origin, provider, email, status,
+                       sub_status, source_detail, bounce_message, free_email, mx_found,
+                       smtp_provider, observed_at, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    obs_uid, row["org_id"], row["lead_id"], kind, ORIGIN_VERIFICATION, source,
+                    row["email"], row["status"], row["sub_status"], row["source_detail"],
+                    row["bounce_message"], row["free_email"], row["mx_found"],
+                    row["smtp_provider"], row["verified_at"], row["created_at"],
+                ),
+            )
+        for verb in ("insert", "update", "delete"):
+            conn.execute(f"DROP TRIGGER IF EXISTS trg_outbox_lead_email_verification_{verb}")
+        conn.execute("ALTER TABLE lead_email_verification RENAME TO lead_email_verification_legacy")
+
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lead_provider_attempts'"
+    ).fetchone():
+        from pipeline_provider_attempts import PROVIDER_DOMAINS
+
+        for row in conn.execute("SELECT * FROM lead_provider_attempts").fetchall():
+            lead_uid = lead_uids.get(row["lead_id"])
+            if lead_uid is None:
+                # Orphaned child row -- see the matching guard above.
+                continue
+            domain = row["domain"] or PROVIDER_DOMAINS.get(row["provider"])
+            kind = kind_for_provider_domain(domain)
+            obs_uid = compute_obs_uid(
+                DEFAULT_ORG_ID, lead_uid, row["provider"], kind, ORIGIN_ATTEMPT, row["attempted_at"],
+                status=row["status"], domain=domain, result_email=row["result_email"],
+                result_validity=row["result_validity"], completed_at=row["completed_at"],
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO lead_provider_observations (
+                       obs_uid, org_id, lead_id, kind, origin, provider, domain, status,
+                       result_email, result_validity, batch_id, metadata_json,
+                       observed_at, completed_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    obs_uid, DEFAULT_ORG_ID, row["lead_id"], kind, ORIGIN_ATTEMPT, row["provider"],
+                    domain, row["status"], row["result_email"], row["result_validity"],
+                    row["batch_id"], row["metadata_json"], row["attempted_at"], row["completed_at"],
+                ),
+            )
+        for verb in ("insert", "update", "delete"):
+            conn.execute(f"DROP TRIGGER IF EXISTS trg_outbox_lead_provider_attempts_{verb}")
+        conn.execute("ALTER TABLE lead_provider_attempts RENAME TO lead_provider_attempts_legacy")
+
+    conn.executescript(COMPAT_VIEWS_SQL)
+    conn.execute(
+        "INSERT INTO migration_flags (name) VALUES ('provider_observations_unification')"
+    )
 
 
 def _backfill_sender_account_activity(conn: sqlite3.Connection) -> None:
@@ -726,26 +880,10 @@ def migrate_db(conn=None):
         );
         CREATE INDEX IF NOT EXISTS idx_li_status_workspace ON workspace_lead_linkedin_status(workspace_id, sender_profile);
         CREATE INDEX IF NOT EXISTS idx_li_status_lead ON workspace_lead_linkedin_status(lead_id);
-        CREATE TABLE IF NOT EXISTS lead_email_verification (
-            id TEXT PRIMARY KEY,
-            org_id TEXT NOT NULL,
-            lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-            email TEXT NOT NULL,
-            status TEXT NOT NULL,
-            sub_status TEXT,
-            source TEXT NOT NULL,
-            source_detail TEXT,
-            bounce_message TEXT,
-            free_email INTEGER,
-            mx_found INTEGER,
-            smtp_provider TEXT,
-            verified_at TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE (org_id, lead_id, source)
-        );
-        CREATE INDEX IF NOT EXISTS idx_verification_email ON lead_email_verification(email);
-        CREATE INDEX IF NOT EXISTS idx_verification_status ON lead_email_verification(org_id, status);
-        CREATE INDEX IF NOT EXISTS idx_verification_lead ON lead_email_verification(lead_id);
+        -- lead_email_verification used to be created here. Stage 7 folded it into
+        -- lead_provider_observations and retired this name to a read-only VIEW
+        -- (see _migrate_provider_observations below) -- creating it as a table
+        -- here would collide with that VIEW on every DB that has migrated.
         CREATE TABLE IF NOT EXISTS bounce_events (
             id                  TEXT PRIMARY KEY,
             org_id              TEXT NOT NULL,
@@ -1104,22 +1242,10 @@ def migrate_db(conn=None):
         );
         CREATE INDEX IF NOT EXISTS idx_provider_batch_jobs_hash ON provider_batch_jobs(provider, item_set_hash);
         CREATE INDEX IF NOT EXISTS idx_provider_batch_jobs_job_id ON provider_batch_jobs(provider, job_id);
-        CREATE TABLE IF NOT EXISTS lead_provider_attempts (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-            provider        TEXT NOT NULL,
-            domain          TEXT,
-            attempted_at    TEXT NOT NULL DEFAULT (datetime('now')),
-            completed_at    TEXT,
-            status          TEXT NOT NULL,
-            result_email    TEXT,
-            result_validity TEXT,
-            batch_id        INTEGER REFERENCES provider_batch_jobs(id) ON DELETE SET NULL,
-            metadata_json   TEXT,
-            UNIQUE (lead_id, provider)
-        );
-        CREATE INDEX IF NOT EXISTS idx_lpa_lookup ON lead_provider_attempts(lead_id, provider, status);
-        CREATE INDEX IF NOT EXISTS idx_lpa_provider ON lead_provider_attempts(provider, status, attempted_at);
+        -- lead_provider_attempts used to be created here. Stage 7 folded it into
+        -- lead_provider_observations and retired this name to a read-only VIEW
+        -- (see _migrate_provider_observations below) -- creating it as a table
+        -- here would collide with that VIEW on every DB that has migrated.
         CREATE TABLE IF NOT EXISTS sender_accounts (
             id                      INTEGER PRIMARY KEY AUTOINCREMENT,
             org_id                  TEXT NOT NULL DEFAULT 'default',
@@ -1305,6 +1431,17 @@ def migrate_db(conn=None):
                 UPDATE {table} SET uid = lower(hex(randomblob(16))) WHERE id = NEW.id;
             END
         """)
+
+    # Must run before _migrate_provider_observations: its ALTER TABLE RENAME
+    # is the first DDL against this schema that forces SQLite to recompile
+    # every trigger body, which is exactly when a stale one (see docstring)
+    # blows up.
+    _drop_stale_outbox_triggers(conn)
+
+    # Stage 7: must run after the uid backfill above (obs_uid keys on lead_uid)
+    # and before ensure_outbox below (the new table needs to exist first so it
+    # gets an outbox trigger from the same migration that creates it).
+    _migrate_provider_observations(conn)
 
     # Must run after the uid columns above: the tombstone triggers read OLD.uid.
     ensure_outbox(conn)

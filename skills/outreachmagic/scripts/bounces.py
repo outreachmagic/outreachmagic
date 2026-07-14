@@ -385,26 +385,26 @@ def record_platform_bounce(
     bounce_reason: str,
     event_at: Optional[str] = None,
 ):
-    """Record a platform bounce in lead_email_verification and recompute materialized status."""
+    """Record a platform bounce (Stage 7: lead_provider_observations, kind=platform_bounce)
+    and recompute materialized status. `lead_email_verification` is now a read-only
+    VIEW; see provider_observations.py."""
+    from provider_observations import KIND_PLATFORM_BOUNCE, ORIGIN_VERIFICATION, record_observation
+
     org_id = DEFAULT_ORG_ID
     sub = "hard_bounce" if bounce_type == "hard" else "soft_bounce"
-    ver_id = f"ver_{lead_id}_platform_bounce"
     now_ts = event_at or utc_now_for_storage()
-    conn.execute(
-        """INSERT INTO lead_email_verification
-           (id, org_id, lead_id, email, status, sub_status, source, source_detail,
-            bounce_message, verified_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (org_id, lead_id, source) DO UPDATE SET
-               status = excluded.status,
-               sub_status = excluded.sub_status,
-               source_detail = excluded.source_detail,
-               bounce_message = excluded.bounce_message,
-               verified_at = excluded.verified_at""",
-        (ver_id, org_id, lead_id, email or "",
-         "bounced" if bounce_type == "hard" else "soft_bounce",
-         sub, "platform_bounce", f"{platform}:{bounce_type}",
-         bounce_reason, now_ts),
+    record_observation(
+        conn, lead_id,
+        kind=KIND_PLATFORM_BOUNCE,
+        origin=ORIGIN_VERIFICATION,
+        provider="platform_bounce",
+        status="bounced" if bounce_type == "hard" else "soft_bounce",
+        sub_status=sub,
+        org_id=org_id,
+        email=email or "",
+        source_detail=f"{platform}:{bounce_type}",
+        bounce_message=bounce_reason,
+        observed_at=now_ts,
     )
     _compute_verification_status(conn, lead_id)
 
@@ -430,6 +430,8 @@ def verify_email(
     instead of ``datetime.now()`` so the original verification timestamp is
     preserved through ``pull --full``.
     """
+    from provider_observations import KIND_EMAIL_VERIFICATION, ORIGIN_VERIFICATION, record_observation
+
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
@@ -443,30 +445,25 @@ def verify_email(
     else:
         email = row["email"] or ""
     org_id = DEFAULT_ORG_ID
-    ver_id = f"ver_{lead_id}_{source}"
     # verified_at may come straight from a relay snapshot payload (see
     # apply_agent_lead_workspace_payload in lead_sync.py) in whatever shape
     # the cloud sent, so it needs the same storage normalization as event_at
     # elsewhere -- not just an `or` fallback for the missing case.
     now_ts = normalize_relay_timestamp_for_storage(verified_at)
-    conn.execute(
-        """INSERT INTO lead_email_verification
-           (id, org_id, lead_id, email, status, sub_status, source, source_detail,
-            free_email, mx_found, smtp_provider, verified_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (org_id, lead_id, source) DO UPDATE SET
-               email = excluded.email,
-               status = excluded.status,
-               sub_status = excluded.sub_status,
-               source_detail = excluded.source_detail,
-               free_email = excluded.free_email,
-               mx_found = excluded.mx_found,
-               smtp_provider = excluded.smtp_provider,
-               verified_at = excluded.verified_at""",
-        (ver_id, org_id, lead_id, email, status, sub_status, source, source_detail,
-         1 if free_email else (0 if free_email is not None else None),
-         1 if mx_found else (0 if mx_found is not None else None),
-         smtp_provider, now_ts),
+    record_observation(
+        conn, lead_id,
+        kind=KIND_EMAIL_VERIFICATION,
+        origin=ORIGIN_VERIFICATION,
+        provider=source,
+        status=status,
+        org_id=org_id,
+        email=email,
+        sub_status=sub_status,
+        source_detail=source_detail,
+        free_email=free_email,
+        mx_found=mx_found,
+        smtp_provider=smtp_provider,
+        observed_at=now_ts,
     )
     _compute_verification_status(conn, lead_id)
     if commit is None:
@@ -480,6 +477,8 @@ def verify_email(
 
 def verify_email_batch(results: list[dict]) -> dict:
     """Record multiple verification results at once."""
+    from provider_observations import KIND_EMAIL_VERIFICATION, ORIGIN_VERIFICATION, record_observation
+
     conn = get_conn()
     org_id = DEFAULT_ORG_ID
     recorded = 0
@@ -496,26 +495,21 @@ def verify_email_batch(results: list[dict]) -> dict:
         email = item.get("email") or row["email"] or ""
         status = item.get("status", "unknown")
         source = item.get("source", "unknown")
-        ver_id = f"ver_{lid}_{source}"
         now_ts = utc_now_for_storage()
-        conn.execute(
-            """INSERT INTO lead_email_verification
-               (id, org_id, lead_id, email, status, sub_status, source, source_detail,
-                free_email, mx_found, smtp_provider, verified_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT (org_id, lead_id, source) DO UPDATE SET
-                   email = excluded.email,
-                   status = excluded.status,
-                   sub_status = excluded.sub_status,
-                   source_detail = excluded.source_detail,
-                   free_email = excluded.free_email,
-                   mx_found = excluded.mx_found,
-                   smtp_provider = excluded.smtp_provider,
-                   verified_at = excluded.verified_at""",
-            (ver_id, org_id, lid, email, status, item.get("sub_status"),
-             source, item.get("source_detail"),
-             item.get("free_email"), item.get("mx_found"),
-             item.get("smtp_provider"), now_ts),
+        record_observation(
+            conn, lid,
+            kind=KIND_EMAIL_VERIFICATION,
+            origin=ORIGIN_VERIFICATION,
+            provider=source,
+            status=status,
+            org_id=org_id,
+            email=email,
+            sub_status=item.get("sub_status"),
+            source_detail=item.get("source_detail"),
+            free_email=item.get("free_email"),
+            mx_found=item.get("mx_found"),
+            smtp_provider=item.get("smtp_provider"),
+            observed_at=now_ts,
         )
         _compute_verification_status(conn, lid)
         recorded += 1

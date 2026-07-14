@@ -110,14 +110,17 @@ def test_provider_attempt_marks_lead_dirty_without_touching_the_writer():
 
 
 def test_email_verification_marks_lead_dirty():
-    """lead_email_verification had no wire contract and no parent bump at all."""
+    """lead_email_verification had no wire contract and no parent bump at all --
+    it's now a read-only VIEW over lead_provider_observations (Stage 7), which
+    has both."""
     conn = om.get_conn()
     lead_id = _mk_lead(conn)
     _clear_outbox(conn)
     conn.execute(
-        "INSERT INTO lead_email_verification "
-        "(org_id, lead_id, email, status, source, verified_at) "
-        "VALUES ('default', ?, 'a@example.com', 'valid', 'millionverifier', datetime('now'))",
+        "INSERT INTO lead_provider_observations "
+        "(obs_uid, org_id, lead_id, kind, origin, provider, email, status, observed_at) "
+        "VALUES ('test-obs-1', 'default', ?, 'email_verification', 'verification', "
+        "'millionverifier', 'a@example.com', 'valid', datetime('now'))",
         (lead_id,),
     )
     conn.commit()

@@ -79,9 +79,10 @@ def test_full_export_columns_include_new_fields():
     lead_id = conn.execute("SELECT id FROM leads").fetchone()[0]
     om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_id, lead_id)
     conn.execute(
-        """INSERT INTO lead_email_verification
-           (id, org_id, lead_id, email, status, source, verified_at)
-           VALUES ('lev1', ?, ?, 'pat@test.com', 'valid', 'trykitt', '2026-06-10T12:00:00Z')""",
+        """INSERT INTO lead_provider_observations
+           (obs_uid, org_id, lead_id, kind, origin, provider, email, status, observed_at)
+           VALUES ('lev1', ?, ?, 'email_verification', 'verification', 'trykitt',
+                   'pat@test.com', 'valid', '2026-06-10T12:00:00Z')""",
         (om.DEFAULT_ORG_ID, lead_id),
     )
     conn.commit()

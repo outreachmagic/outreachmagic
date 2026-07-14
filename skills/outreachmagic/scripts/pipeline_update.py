@@ -45,6 +45,7 @@ from db_conn import get_conn
 from om_paths import (
     check_duplicate_installs,
     get_config_path,
+    get_data_root,
     get_install_dir,
 )
 from workspace_routing import (
@@ -510,6 +511,48 @@ def resolve_update_source(
     return None, release["base"], repo_base, release["tag"]
 
 
+def _migrate_db_in_subprocess(dest: Path) -> None:
+    """Run init_db() in a brand-new interpreter, against the just-copied code.
+
+    update_skill() overwrites this install's scripts on disk, then (formerly)
+    called init_db() in the *same* process. Python never re-reads a module
+    once it is in sys.modules -- `from pipeline_migration import init_db`
+    here hands back whatever `pipeline_migration` looked like when this
+    process started (before the copy), not the fresh-off-disk version.
+
+    That stale module can still reach *fresh* code, though: anything it
+    lazily imports for the first time in this process (e.g. `pipeline_
+    migration` calling `from sync_contract import SYNC_MAP` inside a
+    function body, not at module top) gets read off disk on demand -- which
+    by then is the new version. A stale migrate_db() paired with a fresh
+    sync_contract.SYNC_MAP is exactly how this broke in practice: the old
+    migrate_db() never created `lead_provider_observations`, but the new
+    SYNC_MAP told the (still-old-process) outbox-trigger builder to install a
+    trigger on it anyway -- `no such table: main.lead_provider_observations`.
+
+    A fresh interpreter can't have this split: every module it imports comes
+    from the files on disk right now, so migrate_db() and everything it
+    touches are either all-old or all-new, never a mix. This is also exactly
+    what happens naturally on the *next* CLI invocation anyway (main() calls
+    migrate_db() unconditionally) -- this just does it now, in a way that
+    can't observe half-updated state, instead of leaving the DB unmigrated
+    until whatever command happens to run next.
+    """
+    env = {**os.environ, "OUTREACHMAGIC_DATA_ROOT": str(get_data_root())}
+    result = subprocess.run(
+        [sys.executable, "-c", "from pipeline_migration import init_db; init_db()"],
+        cwd=str(dest),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Database migration failed after updating scripts:\n{result.stderr.strip()}"
+        )
+
+
 def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release") -> dict:
     """Download or copy a tagged release into this skill install, then migrate DB."""
     from pipeline import ROOT_SKILL_FILES, _fetch_url, _read_version_file
@@ -594,9 +637,7 @@ def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release"
             except (urllib.error.URLError, urllib.error.HTTPError, OSError):
                 pass
 
-    from pipeline_migration import init_db
-
-    init_db()
+    _migrate_db_in_subprocess(dest)
     sync_skill_md_version()
     cfg = load_config()
     cfg["auto_update"] = False

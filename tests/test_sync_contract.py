@@ -10,8 +10,7 @@ isn't" class of bug, killed by construction instead of by review.
 This is a coverage/classification test, not a losslessness test: NOT_SYNCED
 is a legitimate, common answer, as long as it is deliberate and justified. The
 round-trip property test (extending test_pull_ingest_equivalence.py) is what
-proves SYNCED columns actually survive a push+pull; that one is allowed to be
-red until Stage 7 lands lead_provider_observations.
+proves SYNCED columns actually survive a push+pull.
 """
 
 from __future__ import annotations

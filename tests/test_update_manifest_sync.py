@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
 
 import pipeline as om  # noqa: E402
+import pipeline_update  # noqa: E402
 from generate_skill_manifest import generate_manifest  # noqa: E402
 from skill_suite import manifest_relative_paths  # noqa: E402
 
@@ -86,7 +87,7 @@ class UpdateManifestSyncTests(unittest.TestCase):
                     ):
                         with patch.object(om, "fetch_update_manifest", return_value=remote_manifest) as fetch:
                             with patch.object(om, "_fetch_url", return_value=stub):
-                                with patch.object(om, "init_db"):
+                                with patch.object(pipeline_update, "_migrate_db_in_subprocess"):
                                     with patch.object(om, "sync_skill_md_version"):
                                         with patch.object(om, "load_config", return_value={}):
                                             with patch.object(om, "save_config"):

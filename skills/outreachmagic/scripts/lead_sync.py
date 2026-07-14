@@ -125,7 +125,7 @@ def _assemble_lead_core_sync_payload(
     identity_rows: list,
     external_id: Optional[str],
     personalization_rows: list,
-    provider_attempt_rows: Optional[list] = None,
+    provider_observation_rows: Optional[list] = None,
 ) -> dict:
     """Org-wide lead profile for relay core snapshot."""
     payload: dict = {}
@@ -225,18 +225,31 @@ def _assemble_lead_core_sync_payload(
             payload["personalization_dates"] = dates
         if at:
             payload["personalization_at"] = at
-    if provider_attempt_rows:
-        payload["provider_attempts"] = [
+    if provider_observation_rows:
+        # Stage 7: the full observation history, not just "latest per provider"
+        # (that's what the legacy provider_attempts key used to carry). Apply
+        # keeps *accepting* the old key for the ~150k D1 snapshots that already
+        # carry it (see apply_agent_lead_core_payload) -- only emission moved.
+        payload["provider_observations"] = [
             {
+                "kind": r["kind"],
+                "origin": r["origin"],
                 "provider": r["provider"],
-                "domain": r["domain"],
-                "attempted_at": r["attempted_at"],
-                "completed_at": r["completed_at"],
+                "email": r["email"],
                 "status": r["status"],
+                "sub_status": r["sub_status"],
+                "domain": r["domain"],
+                "source_detail": r["source_detail"],
+                "bounce_message": r["bounce_message"],
+                "free_email": r["free_email"],
+                "mx_found": r["mx_found"],
+                "smtp_provider": r["smtp_provider"],
                 "result_email": r["result_email"],
                 "result_validity": r["result_validity"],
+                "observed_at": r["observed_at"],
+                "completed_at": r["completed_at"],
             }
-            for r in provider_attempt_rows
+            for r in provider_observation_rows
         ]
     return payload
 
@@ -405,15 +418,19 @@ def _load_lead_sync_prefetch(
     ).fetchall():
         personalization[r["lead_id"]].append(r)
 
-    provider_attempts: dict[int, list] = {lid: [] for lid in lead_ids}
+    # Base table, not the lead_provider_attempts/lead_email_verification compat
+    # VIEWs: those each project only the *latest* row per provider (Stage 7),
+    # but the wire payload carries the full append-only history.
+    provider_observations: dict[int, list] = {lid: [] for lid in lead_ids}
     for r in conn.execute(
-        f"""SELECT lead_id, provider, domain, attempted_at, completed_at, status,
-                   result_email, result_validity
-            FROM lead_provider_attempts
+        f"""SELECT lead_id, kind, origin, provider, email, status, sub_status, domain,
+                   source_detail, bounce_message, free_email, mx_found, smtp_provider,
+                   result_email, result_validity, observed_at, completed_at
+            FROM lead_provider_observations
             WHERE lead_id IN ({placeholders})""",
         lead_ids,
     ).fetchall():
-        provider_attempts[r["lead_id"]].append(r)
+        provider_observations[r["lead_id"]].append(r)
 
     return {
         "leads": leads,
@@ -422,7 +439,7 @@ def _load_lead_sync_prefetch(
         "workspace_slugs": workspace_slugs,
         "memberships": memberships,
         "personalization": personalization,
-        "provider_attempts": provider_attempts,
+        "provider_observations": provider_observations,
     }
 
 
@@ -482,7 +499,7 @@ def build_lead_core_sync_payload(
         identity_rows = prefetch["identities"].get(lead_id) or []
         external_id = prefetch["external_ids"].get(lead_id)
         personalization_rows = prefetch["personalization"].get(lead_id) or []
-        provider_attempt_rows = prefetch.get("provider_attempts", {}).get(lead_id) or []
+        provider_observation_rows = prefetch.get("provider_observations", {}).get(lead_id) or []
     else:
         identity_rows = conn.execute(
             """SELECT identity_type, identity_value_normalized FROM lead_identities
@@ -495,10 +512,13 @@ def build_lead_core_sync_payload(
             "SELECT field_name, field_value, field_date, processed_at FROM lead_personalization WHERE lead_id = ?",
             (lead_id,),
         ).fetchall()
-        provider_attempt_rows = conn.execute(
-            """SELECT provider, domain, attempted_at, completed_at, status,
-                      result_email, result_validity
-               FROM lead_provider_attempts WHERE lead_id = ?""",
+        # Base table, not the compat VIEWs: the wire payload carries the full
+        # append-only history, not just the latest row per provider.
+        provider_observation_rows = conn.execute(
+            """SELECT kind, origin, provider, email, status, sub_status, domain,
+                      source_detail, bounce_message, free_email, mx_found, smtp_provider,
+                      result_email, result_validity, observed_at, completed_at
+               FROM lead_provider_observations WHERE lead_id = ?""",
             (lead_id,),
         ).fetchall()
     row_dict = dict(row)
@@ -509,7 +529,7 @@ def build_lead_core_sync_payload(
         row_dict["latest_email_verification_source"] = latest_lev
     return _assemble_lead_core_sync_payload(
         row_dict,
-        provider_attempt_rows=provider_attempt_rows,
+        provider_observation_rows=provider_observation_rows,
         identity_rows=identity_rows,
         external_id=external_id,
         personalization_rows=personalization_rows,
@@ -928,6 +948,15 @@ def apply_agent_lead_core_payload(
             lead_id, payload, table="lead_personalization", id_col="lead_id", entity_id=lead_id,
             conn=conn,
         )
+
+    # Stage 7 emits provider_observations; keep accepting the legacy
+    # provider_attempts key too -- ~150k D1 snapshots already carry it and
+    # must still replay on a `pull --full`.
+    provider_observations = payload.get("provider_observations")
+    if provider_observations:
+        from provider_observations import apply_provider_observations_payload
+
+        apply_provider_observations_payload(conn, lead_id, provider_observations)
 
     provider_attempts = payload.get("provider_attempts")
     if provider_attempts:

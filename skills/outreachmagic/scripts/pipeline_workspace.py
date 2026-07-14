@@ -7,6 +7,7 @@ import agent_secrets_cloud
 import db_health
 import json
 import os
+import outbox
 import quarantine_resolutions as qres
 import re
 import routing_cloud
@@ -655,21 +656,11 @@ def get_local_pending_counts(org_id: str = DEFAULT_ORG_ID) -> dict:
     local_events = conn.execute(
         f"SELECT COUNT(*) AS n FROM events e WHERE {unsynced_event_clause('e')}"
     ).fetchone()["n"]
-    last_sync = get_last_sync()
-    if last_sync:
-        leads_pending = conn.execute(
-            "SELECT COUNT(*) AS n FROM leads WHERE updated_at > ?", (last_sync,)
-        ).fetchone()["n"]
-        ws_pending = conn.execute(
-            "SELECT COUNT(*) AS n FROM workspace_leads WHERE updated_at > ?", (last_sync,)
-        ).fetchone()["n"]
-    else:
-        leads_pending = conn.execute(
-            "SELECT COUNT(*) AS n FROM leads"
-        ).fetchone()["n"]
-        ws_pending = conn.execute(
-            "SELECT COUNT(*) AS n FROM workspace_leads"
-        ).fetchone()["n"]
+    # Pending is now a fact we recorded, not a guess re-derived from a corrupt
+    # updated_at cursor.
+    dirty = outbox.count_dirty(conn)
+    leads_pending = dirty.get("lead_core:upsert", 0)
+    ws_pending = dirty.get("lead_workspace:upsert", 0)
     conn.close()
     return {
         "workspaces": unsynced_ws,
@@ -1373,6 +1364,39 @@ def _push_pending_merge_deletes(
     return result
 
 
+def _log_selector_divergence(conn, outbox_core: int, outbox_ws: int) -> None:
+    """Cutover step 2: run the old cursor alongside the outbox for one release.
+
+    The old selector picking rows the outbox did not = a bug in the triggers.
+    The outbox picking rows the old one did not = the ~40% the cursor was
+    silently dropping, which is the entire point of this stage. Counts only --
+    a full set-difference over 150k leads on every sync is not worth it.
+    """
+    last_sync = get_last_sync()
+    if not last_sync:
+        return
+    try:
+        old_core = conn.execute(
+            f"""SELECT COUNT(*) AS n FROM leads
+               WHERE (updated_at > ? AND NOT {relay_bump_explained_clause('leads.id', 'leads.updated_at')})
+                  OR {unsynced_lead_clause('leads')}""",
+            (last_sync,),
+        ).fetchone()["n"]
+        old_ws = conn.execute(
+            f"""SELECT COUNT(*) AS n FROM workspace_leads wl
+               WHERE (wl.updated_at > ? AND NOT {relay_bump_explained_clause('wl.lead_id', 'wl.updated_at')})
+                  OR {unsynced_workspace_lead_clause('wl')}""",
+            (last_sync,),
+        ).fetchone()["n"]
+    except sqlite3.Error:
+        return
+    if old_core != outbox_core or old_ws != outbox_ws:
+        _relay_log(
+            f"selector divergence: outbox core={outbox_core:,} ws={outbox_ws:,} | "
+            f"old cursor core={old_core:,} ws={old_ws:,}"
+        )
+
+
 def _push_pending_lead_snapshots(
     agent_key: str,
     *,
@@ -1393,80 +1417,64 @@ def _push_pending_lead_snapshots(
     from pipeline import _relay_push_batches
 
     conn = get_conn()
-    last_sync = get_last_sync()
-    limit_clause = " LIMIT ?" if sample_limit else ""
-    limit_param = (sample_limit,) if sample_limit else ()
 
+    ws_id = None
     if workspace:
         ws_row = resolve_workspace_identity(conn, workspace)
         ws_id = ws_row["id"] if ws_row else None
         if ws_id is None:
             conn.close()
             return {"pushed": 0, "error": f"workspace not found: {workspace}", "throttled": False}
-        if last_sync:
-            core_rows = conn.execute(
-                f"""SELECT DISTINCT l.id, l.updated_at
-                   FROM leads l
-                   JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?
-                   WHERE (l.updated_at > ? AND NOT {relay_bump_explained_clause('l.id', 'l.updated_at')})
-                      OR {unsynced_lead_clause('l')}
-                   ORDER BY l.updated_at ASC{limit_clause}""",
-                (ws_id, last_sync) + limit_param,
+
+    # Selection comes from the outbox, which the triggers maintain at write time.
+    # The old `leads.updated_at > last_sync` cursor silently dropped every write
+    # that did not touch the parent row (provider attempts, verification) and,
+    # via relay_bump_explained_clause, every write to a lead that had since
+    # received a webhook (tags). It is kept alongside only to log divergence for
+    # one release -- see _log_selector_divergence.
+    core_dirty = outbox.select_dirty(conn, "lead_core", limit=sample_limit)
+    ws_dirty = outbox.select_dirty(conn, "lead_workspace", limit=sample_limit)
+
+    core_rows = [{"id": int(r["entity_id"]), "dirty_at": r["dirty_at"]} for r in core_dirty]
+
+    ws_rows = []
+    for r in ws_dirty:
+        lead_part, _, wsid = str(r["entity_id"]).partition(":")
+        if not wsid:
+            continue
+        ws_rows.append({
+            "lead_id": int(lead_part),
+            "workspace_id": wsid,
+            "dirty_at": r["dirty_at"],
+            "entity_id": r["entity_id"],
+        })
+
+    if ws_id is not None:
+        members = {
+            row["lead_id"]
+            for row in conn.execute(
+                "SELECT lead_id FROM workspace_leads WHERE workspace_id = ?", (ws_id,)
             ).fetchall()
-            ws_rows = conn.execute(
-                f"""SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
-                   FROM workspace_leads wl
-                   JOIN workspaces w ON w.id = wl.workspace_id
-                   WHERE ((wl.updated_at > ? AND NOT {relay_bump_explained_clause('wl.lead_id', 'wl.updated_at')})
-                          OR {unsynced_workspace_lead_clause('wl')}) AND wl.workspace_id = ?
-                   ORDER BY wl.updated_at ASC{limit_clause}""",
-                (last_sync, ws_id) + limit_param,
-            ).fetchall()
-        else:
-            core_rows = conn.execute(
-                f"""SELECT DISTINCT l.id, l.updated_at
-                   FROM leads l
-                   JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?{limit_clause}""",
-                (ws_id,) + limit_param,
-            ).fetchall()
-            ws_rows = conn.execute(
-                f"""SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
-                   FROM workspace_leads wl
-                   JOIN workspaces w ON w.id = wl.workspace_id
-                   WHERE wl.workspace_id = ?{limit_clause}""",
-                (ws_id,) + limit_param,
-            ).fetchall()
-    else:
-        if last_sync:
-            core_rows = conn.execute(
-                f"""SELECT id, updated_at FROM leads
-                   WHERE (updated_at > ? AND NOT {relay_bump_explained_clause('leads.id', 'leads.updated_at')})
-                      OR {unsynced_lead_clause('leads')}
-                   ORDER BY updated_at ASC{limit_clause}""",
-                (last_sync,) + limit_param,
-            ).fetchall()
-            ws_rows = conn.execute(
-                f"""SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
-                   FROM workspace_leads wl
-                   JOIN workspaces w ON w.id = wl.workspace_id
-                   WHERE (wl.updated_at > ? AND NOT {relay_bump_explained_clause('wl.lead_id', 'wl.updated_at')})
-                      OR {unsynced_workspace_lead_clause('wl')}
-                   ORDER BY wl.updated_at ASC{limit_clause}""",
-                (last_sync,) + limit_param,
-            ).fetchall()
-        else:
-            core_rows = conn.execute(
-                f"SELECT id, updated_at FROM leads{limit_clause}", limit_param,
-            ).fetchall()
-            ws_rows = conn.execute(
-                f"""SELECT wl.lead_id, wl.workspace_id, wl.updated_at, w.slug
-                   FROM workspace_leads wl
-                   JOIN workspaces w ON w.id = wl.workspace_id{limit_clause}""",
-                limit_param,
-            ).fetchall()
+        }
+        core_rows = [r for r in core_rows if r["id"] in members]
+        ws_rows = [r for r in ws_rows if r["workspace_id"] == ws_id]
+
+    slug_by_id = {
+        row["id"]: row["slug"]
+        for row in conn.execute("SELECT id, slug FROM workspaces").fetchall()
+    }
+    for r in ws_rows:
+        r["slug"] = slug_by_id.get(r["workspace_id"])
+    ws_rows = [r for r in ws_rows if r["slug"]]
+
+    _log_selector_divergence(conn, len(core_rows), len(ws_rows))
+
     if not core_rows and not ws_rows:
         conn.close()
         return {"pushed": 0, "error": None, "throttled": False}
+
+    core_shadow = outbox.load_shadow(conn, "lead_core")
+    ws_shadow = outbox.load_shadow(conn, "lead_workspace")
 
     _relay_log(
         f"snapshots: {len(core_rows):,} lead core + {len(ws_rows):,} workspace rows pending"
@@ -1478,6 +1486,8 @@ def _push_pending_lead_snapshots(
     client_id = get_or_create_client_id()
 
     core_entries: list[dict] = []
+    core_synced: list[tuple] = []   # (entity_id, entity_key, ws_slug, payload) -> sync_shadow on ack
+    core_drop: list[str] = []       # echoes / unbuildable -> clear the outbox row, push nothing
     t_core = time.monotonic()
     for n, row in enumerate(core_rows, start=1):
         lead_id = row["id"]
@@ -1485,19 +1495,30 @@ def _push_pending_lead_snapshots(
             conn, DEFAULT_ORG_ID, lead_id,
         )
         if not entity_key:
+            # No matchable identity -- the relay has nowhere to file it. Clearing
+            # the row stops it being rebuilt on every sync forever.
+            core_drop.append(str(lead_id))
             continue
         payload = build_lead_core_sync_payload(
             conn, DEFAULT_ORG_ID, lead_id, prefetch=prefetch,
         )
         if not payload:
+            core_drop.append(str(lead_id))
+            continue
+        if outbox.is_echo(core_shadow, entity_key, None, payload):
+            core_drop.append(str(lead_id))
             continue
         core_entries.append({
             "action": "lead_core_update",
             "entity_key": entity_key,
-            "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            # dirty_at, not leads.updated_at: 0014 made the relay reject stale
+            # writes on source_updated_at_ms, and 40.7% of updated_at is older
+            # than its own created_at -- sending it gets the write rejected.
+            "timestamp": normalize_relay_timestamp(row["dirty_at"]),
             "as_of": snapshot_as_of(),
             "payload": payload,
         })
+        core_synced.append((str(lead_id), entity_key, None, payload))
         if n % 2500 == 0:
             _relay_log(f"snapshots: built {n:,}/{len(core_rows):,} lead_core payloads ...")
     _relay_log(
@@ -1505,43 +1526,63 @@ def _push_pending_lead_snapshots(
     )
 
     ws_entries: list[dict] = []
+    ws_synced: list[tuple] = []
+    ws_drop: list[str] = []
     t_ws = time.monotonic()
     for n, row in enumerate(ws_rows, start=1):
         lead_id = row["lead_id"]
+        entity_id = row["entity_id"]
         entity_key = entity_key_from_prefetch(prefetch, lead_id) or lead_entity_key(
             conn, DEFAULT_ORG_ID, lead_id,
         )
         if not entity_key:
+            ws_drop.append(entity_id)
             continue
         ws_slug = row["slug"]
         payload = build_lead_workspace_sync_payload(
             conn, DEFAULT_ORG_ID, lead_id, workspace_slug=ws_slug, prefetch=prefetch,
         )
         if not payload:
+            ws_drop.append(entity_id)
+            continue
+        if outbox.is_echo(ws_shadow, entity_key, ws_slug, payload):
+            ws_drop.append(entity_id)
             continue
         ws_entries.append({
             "action": "lead_workspace_update",
             "entity_key": entity_key,
             "workspace": ws_slug,
-            "timestamp": normalize_relay_timestamp(row["updated_at"]),
+            "timestamp": normalize_relay_timestamp(row["dirty_at"]),
             "as_of": snapshot_as_of(),
             "payload": payload,
         })
+        ws_synced.append((entity_id, entity_key, ws_slug, payload))
         if n % 2500 == 0:
             _relay_log(f"snapshots: built {n:,}/{len(ws_rows):,} workspace payloads ...")
     _relay_log(
         f"snapshots: {len(ws_entries):,} workspace entries in {time.monotonic() - t_ws:.1f}s"
     )
 
-    conn.close()
-
     if dry_run:
+        conn.close()
         return {
             "pushed": 0,
             "error": None,
             "sample_core_entries": core_entries,
             "sample_ws_entries": ws_entries,
         }
+
+    # Echoes and unpushable rows never reach the relay, but they must leave the
+    # outbox -- otherwise every sync rebuilds the same payloads forever.
+    if core_drop or ws_drop:
+        outbox.drop_clean(conn, "lead_core", core_drop)
+        outbox.drop_clean(conn, "lead_workspace", ws_drop)
+        conn.commit()
+        _relay_log(
+            f"snapshots: dropped {len(core_drop):,} core + {len(ws_drop):,} workspace "
+            "rows as echoes/unpushable"
+        )
+    conn.close()
 
     pending_total = len(core_entries) + len(ws_entries)
     if bulk is None:
@@ -1554,6 +1595,21 @@ def _push_pending_lead_snapshots(
     total_pushed = 0
     last_result: dict = {"pushed": 0, "error": None, "throttled": False}
 
+    def _settle(entity_type: str, synced: list[tuple], result: dict) -> None:
+        """Outbox rows clear only on a relay ack. A failed push leaves them
+        dirty (with backoff), so nothing is lost to a network blip."""
+        c = get_conn()
+        try:
+            if result.get("error"):
+                outbox.record_failure(
+                    c, entity_type, [r[0] for r in synced], str(result["error"])
+                )
+            else:
+                outbox.record_synced(c, entity_type, synced)
+            c.commit()
+        finally:
+            c.close()
+
     if core_entries:
         last_result = _relay_push_batches(
             agent_key,
@@ -1564,6 +1620,7 @@ def _push_pending_lead_snapshots(
             snapshot_bulk=True,
         )
         total_pushed += int(last_result.get("pushed", 0) or 0)
+        _settle("lead_core", core_synced, last_result)
         if last_result.get("error"):
             last_result["pushed"] = total_pushed
             return last_result
@@ -1579,6 +1636,7 @@ def _push_pending_lead_snapshots(
         )
         total_pushed += int(ws_result.get("pushed", 0) or 0)
         last_result = ws_result
+        _settle("lead_workspace", ws_synced, ws_result)
         if ws_result.get("error"):
             last_result["pushed"] = total_pushed
             return last_result
@@ -1587,75 +1645,127 @@ def _push_pending_lead_snapshots(
     return last_result
 
 
+def _push_outbox_entity(
+    agent_key: str,
+    *,
+    entity_type: str,
+    action: str,
+    stream_key: str,
+    entity_key_fn,
+    payload_fn,
+    coerce_id=lambda v: v,
+    sample_limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
+    """One drain for every non-lead entity.
+
+    Companies and senders had the same defect as leads, one level down:
+    company_personalization writes bump no parent timestamp, so a
+    `companies.updated_at > last_sync` cursor never selected them. The triggers
+    record the dirt; this reads it. Same anti-echo, same ack-before-clear rule
+    as the lead path.
+    """
+    from pipeline import _relay_push_batches
+
+    conn = get_conn()
+    dirty = outbox.select_dirty(conn, entity_type, limit=sample_limit)
+    total_pending = len(dirty)
+    if not dirty:
+        conn.close()
+        return {"pushed": 0, "error": None, "throttled": False,
+                "total_pending": 0, "sample_entries": []}
+
+    shadow = outbox.load_shadow(conn, entity_type)
+    entries: list[dict] = []
+    synced: list[tuple] = []
+    drop: list[str] = []
+
+    for row in dirty:
+        raw_id = row["entity_id"]
+        try:
+            eid = coerce_id(raw_id)
+        except (TypeError, ValueError):
+            drop.append(raw_id)
+            continue
+        entity_key = entity_key_fn(conn, eid)
+        if not entity_key:
+            drop.append(raw_id)
+            continue
+        payload = payload_fn(conn, eid)
+        if not payload:
+            drop.append(raw_id)
+            continue
+        if outbox.is_echo(shadow, entity_key, None, payload):
+            drop.append(raw_id)
+            continue
+        entries.append({
+            "action": action,
+            "entity_key": entity_key,
+            # dirty_at, not updated_at -- see outbox.py.
+            "timestamp": normalize_relay_timestamp(row["dirty_at"]),
+            "as_of": snapshot_as_of(),
+            "payload": payload,
+        })
+        synced.append((raw_id, entity_key, None, payload))
+
+    if dry_run:
+        conn.close()
+        return {"pushed": 0, "error": None, "throttled": False,
+                "total_pending": total_pending, "sample_entries": entries}
+
+    if drop:
+        outbox.drop_clean(conn, entity_type, drop)
+        conn.commit()
+    conn.close()
+
+    if not entries:
+        return {"pushed": 0, "error": None, "throttled": False,
+                "total_pending": total_pending, "sample_entries": []}
+
+    client_id = get_or_create_client_id()
+    bulk = len(entries) >= RELAY_BULK_THRESHOLD
+    push_result = _relay_push_batches(
+        agent_key,
+        entries,
+        client_id,
+        stream_label=_SNAPSHOT_KIND_STREAM[stream_key],
+        bulk=bulk,
+        snapshot_bulk=True,
+    )
+
+    c = get_conn()
+    try:
+        if push_result.get("error"):
+            outbox.record_failure(
+                c, entity_type, [r[0] for r in synced], str(push_result["error"])
+            )
+        else:
+            outbox.record_synced(c, entity_type, synced)
+        c.commit()
+    finally:
+        c.close()
+
+    push_result.setdefault("total_pending", total_pending)
+    return push_result
+
+
 def _push_pending_company_updates(
     agent_key: str,
     *,
     sample_limit: Optional[int] = None,
     dry_run: bool = False,
 ) -> dict:
-    from pipeline import _relay_push_batches
-
-    conn = get_conn()
-    last_sync = get_last_sync()
-    if last_sync:
-        total_pending = conn.execute(
-            "SELECT COUNT(*) AS n FROM companies WHERE updated_at > ?", (last_sync,)
-        ).fetchone()["n"]
-    else:
-        total_pending = conn.execute("SELECT COUNT(*) AS n FROM companies").fetchone()["n"]
-    limit_clause = " LIMIT ?" if sample_limit else ""
-    limit_param = (sample_limit,) if sample_limit else ()
-    if last_sync:
-        rows = conn.execute(
-            f"SELECT id, updated_at FROM companies WHERE updated_at > ?{limit_clause}",
-            (last_sync,) + limit_param,
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            f"SELECT id, updated_at FROM companies{limit_clause}", limit_param,
-        ).fetchall()
-    if not rows:
-        conn.close()
-        return {"pushed": 0, "error": None, "throttled": False, "total_pending": total_pending, "sample_entries": []}
-
-    entries = []
-    for row in rows:
-        entity_key = company_entity_key(conn, row["id"])
-        if not entity_key:
-            continue
-        payload = build_company_sync_payload(conn, row["id"])
-        entries.append({
-            "action": "company_update",
-            "entity_key": entity_key,
-            "timestamp": normalize_relay_timestamp(row["updated_at"]),
-            "as_of": snapshot_as_of(),
-            "payload": payload,
-        })
-    conn.close()
-    if not entries:
-        return {"pushed": 0, "error": None, "throttled": False, "total_pending": total_pending, "sample_entries": []}
-
-    if dry_run:
-        return {
-            "pushed": 0,
-            "error": None,
-            "throttled": False,
-            "total_pending": total_pending,
-            "sample_entries": entries,
-        }
-
-    client_id = get_or_create_client_id()
-    bulk = len(entries) >= RELAY_BULK_THRESHOLD
-
-    push_result = _relay_push_batches(
+    return _push_outbox_entity(
         agent_key,
-        entries,
-        client_id,
-        stream_label=_SNAPSHOT_KIND_STREAM["company"],
-        bulk=bulk,
-        snapshot_bulk=True,
+        entity_type="company",
+        action="company_update",
+        stream_key="company",
+        entity_key_fn=company_entity_key,
+        payload_fn=build_company_sync_payload,
+        coerce_id=int,
+        sample_limit=sample_limit,
+        dry_run=dry_run,
     )
-    return push_result
 
 
 def _push_pending_sender_account_updates(
@@ -1664,69 +1774,17 @@ def _push_pending_sender_account_updates(
     sample_limit: Optional[int] = None,
     dry_run: bool = False,
 ) -> dict:
-    from pipeline import _relay_push_batches
-
-    conn = get_conn()
-    last_sync = get_last_sync()
-    if last_sync:
-        total_pending = conn.execute(
-            "SELECT COUNT(*) AS n FROM sender_accounts WHERE updated_at > ?", (last_sync,)
-        ).fetchone()["n"]
-    else:
-        total_pending = conn.execute("SELECT COUNT(*) AS n FROM sender_accounts").fetchone()["n"]
-    limit_clause = " LIMIT ?" if sample_limit else ""
-    limit_param = (sample_limit,) if sample_limit else ()
-    if last_sync:
-        rows = conn.execute(
-            f"SELECT id, updated_at FROM sender_accounts WHERE updated_at > ?{limit_clause}",
-            (last_sync,) + limit_param,
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            f"SELECT id, updated_at FROM sender_accounts{limit_clause}", limit_param,
-        ).fetchall()
-    if not rows:
-        conn.close()
-        return {"pushed": 0, "error": None, "throttled": False, "total_pending": total_pending, "sample_entries": []}
-
-    entries = []
-    for row in rows:
-        entity_key = sender_account_entity_key(conn, row["id"])
-        if not entity_key:
-            continue
-        payload = build_sender_account_sync_payload(conn, row["id"])
-        entries.append({
-            "action": "sender_account_update",
-            "entity_key": entity_key,
-            "timestamp": normalize_relay_timestamp(row["updated_at"]),
-            "as_of": snapshot_as_of(),
-            "payload": payload,
-        })
-    conn.close()
-    if not entries:
-        return {"pushed": 0, "error": None, "throttled": False, "total_pending": total_pending, "sample_entries": []}
-
-    if dry_run:
-        return {
-            "pushed": 0,
-            "error": None,
-            "throttled": False,
-            "total_pending": total_pending,
-            "sample_entries": entries,
-        }
-
-    client_id = get_or_create_client_id()
-    bulk = len(entries) >= RELAY_BULK_THRESHOLD
-
-    push_result = _relay_push_batches(
+    return _push_outbox_entity(
         agent_key,
-        entries,
-        client_id,
-        stream_label=_SNAPSHOT_KIND_STREAM["sender_account"],
-        bulk=bulk,
-        snapshot_bulk=True,
+        entity_type="sender_account",
+        action="sender_account_update",
+        stream_key="sender_account",
+        entity_key_fn=sender_account_entity_key,
+        payload_fn=build_sender_account_sync_payload,
+        coerce_id=int,
+        sample_limit=sample_limit,
+        dry_run=dry_run,
     )
-    return push_result
 
 
 def _push_pending_sender_domain_updates(
@@ -1735,66 +1793,17 @@ def _push_pending_sender_domain_updates(
     sample_limit: Optional[int] = None,
     dry_run: bool = False,
 ) -> dict:
-    from pipeline import _relay_push_batches
-
-    conn = get_conn()
-    last_sync = get_last_sync()
-    if last_sync:
-        total_pending = conn.execute(
-            "SELECT COUNT(*) AS n FROM sender_domains WHERE updated_at > ?", (last_sync,)
-        ).fetchone()["n"]
-    else:
-        total_pending = conn.execute("SELECT COUNT(*) AS n FROM sender_domains").fetchone()["n"]
-    limit_clause = " LIMIT ?" if sample_limit else ""
-    limit_param = (sample_limit,) if sample_limit else ()
-    if last_sync:
-        rows = conn.execute(
-            f"SELECT domain, updated_at FROM sender_domains WHERE updated_at > ?{limit_clause}",
-            (last_sync,) + limit_param,
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            f"SELECT domain, updated_at FROM sender_domains{limit_clause}", limit_param,
-        ).fetchall()
-    if not rows:
-        conn.close()
-        return {"pushed": 0, "error": None, "throttled": False, "total_pending": total_pending, "sample_entries": []}
-
-    entries = []
-    for row in rows:
-        payload = build_sender_domain_sync_payload(conn, row["domain"])
-        entries.append({
-            "action": "sender_domain_update",
-            "entity_key": sender_domain_entity_key(row["domain"]),
-            "timestamp": normalize_relay_timestamp(row["updated_at"]),
-            "as_of": snapshot_as_of(),
-            "payload": payload,
-        })
-    conn.close()
-    if not entries:
-        return {"pushed": 0, "error": None, "throttled": False, "total_pending": total_pending, "sample_entries": []}
-
-    if dry_run:
-        return {
-            "pushed": 0,
-            "error": None,
-            "throttled": False,
-            "total_pending": total_pending,
-            "sample_entries": entries,
-        }
-
-    client_id = get_or_create_client_id()
-    bulk = len(entries) >= RELAY_BULK_THRESHOLD
-
-    push_result = _relay_push_batches(
+    # sender_domain_entity_key takes the domain alone -- no conn.
+    return _push_outbox_entity(
         agent_key,
-        entries,
-        client_id,
-        stream_label=_SNAPSHOT_KIND_STREAM["sender_domain"],
-        bulk=bulk,
-        snapshot_bulk=True,
+        entity_type="sender_domain",
+        action="sender_domain_update",
+        stream_key="sender_domain",
+        entity_key_fn=lambda conn, domain: sender_domain_entity_key(domain),
+        payload_fn=build_sender_domain_sync_payload,
+        sample_limit=sample_limit,
+        dry_run=dry_run,
     )
-    return push_result
 
 
 def list_campaign_maps(org_id: str = DEFAULT_ORG_ID) -> list[dict]:

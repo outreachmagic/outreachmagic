@@ -28,6 +28,127 @@ from workspace_routing import (
 )
 
 
+OUTBOX_SQL = """
+CREATE TABLE IF NOT EXISTS outbox (
+    entity_type    TEXT NOT NULL,
+    entity_id      TEXT NOT NULL,
+    op             TEXT NOT NULL,              -- 'upsert' | 'delete'
+    entity_key     TEXT,                       -- captured at trigger time for deletes only
+    workspace_slug TEXT,
+    dirty_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT,
+    PRIMARY KEY (entity_type, entity_id, op)
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_dirty ON outbox(dirty_at);
+
+-- What we believe the relay currently holds. Lets the push loop drop an echo
+-- (a local write that merely re-applied what we just pulled) by comparing
+-- content hashes, rather than by suppressing writes during a pull -- the latter
+-- latches on a crash and silently un-tracks every subsequent local write.
+CREATE TABLE IF NOT EXISTS sync_shadow (
+    entity_type    TEXT NOT NULL,
+    entity_key     TEXT NOT NULL,
+    workspace_slug TEXT NOT NULL DEFAULT '',
+    content_hash   TEXT NOT NULL,
+    relay_seq      INTEGER,
+    synced_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (entity_type, entity_key, workspace_slug)
+);
+"""
+
+
+def _outbox_upsert_stmt(entity_type: str, id_expr: str) -> str:
+    return (
+        "INSERT INTO outbox (entity_type, entity_id, op, dirty_at) "
+        f"VALUES ('{entity_type}', {id_expr}, 'upsert', datetime('now')) "
+        "ON CONFLICT (entity_type, entity_id, op) DO UPDATE SET "
+        "dirty_at = datetime('now'), attempts = 0, last_error = NULL;"
+    )
+
+
+def build_outbox_triggers() -> list[str]:
+    """Generate the outbox triggers from sync_contract.SYNC_MAP.
+
+    Three rules, and the third is the one that bites if you skip it:
+
+    1. Any INSERT/UPDATE on a mapped table marks its owning entity dirty.
+    2. A DELETE on an *owner* table (leads, companies, ...) is a tombstone --
+       the entity itself is gone, so we record op='delete' and capture the
+       entity_key while the row still exists (hence BEFORE DELETE). We also drop
+       any queued 'upsert' for it: pushing a snapshot for a deleted row is a
+       guaranteed relay-side error.
+    3. A DELETE on a *child* table (a tag removed, a verification row cleared)
+       is an ordinary content change to a still-living parent -> 'upsert'. But
+       when the parent is itself being deleted, SQLite's ON DELETE CASCADE
+       deletes the children too, and those child triggers would re-queue an
+       upsert for the very entity we just tombstoned. Every child DELETE trigger
+       is therefore guarded on the parent still existing.
+    """
+    from sync_contract import OWNER_TABLES, SYNC_MAP, entity_id_expr
+
+    # Parent-existence guard per entity_type, expressed against the child's OLD row.
+    parent_guard = {
+        "lead_core": "EXISTS (SELECT 1 FROM leads WHERE id = OLD.lead_id)",
+        "lead_workspace": (
+            "EXISTS (SELECT 1 FROM workspace_leads "
+            "WHERE lead_id = OLD.lead_id AND workspace_id = OLD.workspace_id)"
+        ),
+        "company": "EXISTS (SELECT 1 FROM companies WHERE id = OLD.company_id)",
+    }
+    # The immutable key to file a tombstone under, read from the owner's OLD row.
+    tombstone_key = {
+        "leads": ("OLD.uid", "NULL"),
+        "companies": ("OLD.uid", "NULL"),
+        "workspace_leads": (
+            "(SELECT uid FROM leads WHERE id = OLD.lead_id)",
+            "(SELECT slug FROM workspaces WHERE id = OLD.workspace_id)",
+        ),
+        "sender_accounts": ("CAST(OLD.id AS TEXT)", "NULL"),
+        "sender_domains": ("OLD.domain", "NULL"),
+    }
+
+    out: list[str] = []
+    for table, (etype, _) in SYNC_MAP.items():
+        new_expr = entity_id_expr(table, "NEW")
+        old_expr = entity_id_expr(table, "OLD")
+
+        for verb, row_expr in (("insert", new_expr), ("update", new_expr)):
+            out.append(
+                f"CREATE TRIGGER IF NOT EXISTS trg_outbox_{table}_{verb} "
+                f"AFTER {verb.upper()} ON {table} BEGIN "
+                f"{_outbox_upsert_stmt(etype, row_expr)} END"
+            )
+
+        if table in OWNER_TABLES:
+            key_expr, slug_expr = tombstone_key[table]
+            out.append(
+                f"CREATE TRIGGER IF NOT EXISTS trg_outbox_{table}_delete "
+                f"BEFORE DELETE ON {table} BEGIN "
+                f"DELETE FROM outbox WHERE entity_type = '{etype}' "
+                f"AND entity_id = {old_expr} AND op = 'upsert'; "
+                "INSERT INTO outbox (entity_type, entity_id, op, entity_key, workspace_slug, dirty_at) "
+                f"VALUES ('{etype}', {old_expr}, 'delete', {key_expr}, {slug_expr}, datetime('now')) "
+                "ON CONFLICT (entity_type, entity_id, op) DO UPDATE SET "
+                "dirty_at = datetime('now'), attempts = 0, last_error = NULL; END"
+            )
+        else:
+            guard = parent_guard[etype]
+            out.append(
+                f"CREATE TRIGGER IF NOT EXISTS trg_outbox_{table}_delete "
+                f"AFTER DELETE ON {table} WHEN {guard} BEGIN "
+                f"{_outbox_upsert_stmt(etype, old_expr)} END"
+            )
+    return out
+
+
+def ensure_outbox(conn: sqlite3.Connection) -> None:
+    """Create the outbox/shadow tables and (re)install their triggers."""
+    conn.executescript(OUTBOX_SQL)
+    for stmt in build_outbox_triggers():
+        conn.execute(stmt)
+
+
 def init_db():
     db = get_db_path()
     db.parent.mkdir(parents=True, exist_ok=True)
@@ -866,6 +987,9 @@ def migrate_db(conn=None):
                 UPDATE {table} SET uid = lower(hex(randomblob(16))) WHERE id = NEW.id;
             END
         """)
+
+    # Must run after the uid columns above: the tombstone triggers read OLD.uid.
+    ensure_outbox(conn)
 
     conn.commit()
     if own_conn:

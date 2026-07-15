@@ -115,6 +115,7 @@ SYNCED_COLUMNS: dict[str, frozenset[str]] = {
         "kind", "origin", "provider", "email", "status", "sub_status", "domain",
         "source_detail", "bounce_message", "free_email", "mx_found", "smtp_provider",
         "result_email", "result_validity", "observed_at", "completed_at",
+        "metadata_json",
     }),
     "workspace_leads": frozenset({
         "status", "current_status_label", "current_status_sentiment", "contact_priority",
@@ -189,7 +190,6 @@ NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
         "org_id": "implicit from the authenticated request",
         "lead_id": "join key; covered by the parent lead_core entity_id",
         "batch_id": "FK-shaped but opaque (provider_batch_jobs is empty in production); meaningless outside this install, dropped before serialization",
-        "metadata_json": "dropped before serialization, same as the legacy lead_provider_attempts.metadata_json it replaces",
         "created_at": "local bookkeeping -- observed_at is the fact's own timestamp and is what travels",
     },
     "workspace_leads": {

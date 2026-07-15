@@ -293,6 +293,7 @@ def apply_provider_observations_payload(
             result_validity=obs.get("result_validity"),
             observed_at=obs.get("observed_at"),
             completed_at=obs.get("completed_at"),
+            metadata_json=obs.get("metadata_json"),
         )
         if origin == ORIGIN_VERIFICATION:
             touched_verification = True

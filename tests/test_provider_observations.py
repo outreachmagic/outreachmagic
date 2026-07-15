@@ -410,6 +410,51 @@ def test_apply_accepts_provider_observations_key():
     assert row["result_email"] == "a@x.com"
 
 
+def test_metadata_json_round_trips_through_sync_payload():
+    """metadata_json used to be classified NOT_SYNCED and dropped before
+    serialization -- but for Serper domain-lookup observations it carries
+    genuinely valuable enrichment (confidence score, candidate email
+    addresses, resolved company name) that the legacy lead_provider_attempts
+    column it replaced never actually needed. Reclassified SYNCED: this
+    proves the query, the payload builder, and the apply path all agree."""
+    import json
+
+    from lead_sync import apply_agent_lead_core_payload, build_lead_core_sync_payload
+    from workspace_routing import DEFAULT_ORG_ID
+
+    conn = om.get_conn()
+    lead_id = _mk_lead(conn)
+    meta = {"company_name": "Acme Corp", "found_domain": "acme.com", "confidence": 0.85}
+    record_observation(
+        conn, lead_id,
+        kind="research", origin=ORIGIN_ATTEMPT, provider="serper",
+        status="valid", domain="acme.com", metadata_json=json.dumps(meta),
+    )
+    conn.commit()
+    payload = build_lead_core_sync_payload(conn, DEFAULT_ORG_ID, lead_id)
+    conn.close()
+
+    obs = payload["provider_observations"][0]
+    assert json.loads(obs["metadata_json"]) == meta
+
+    # Apply that payload onto a fresh lead and confirm it lands in the DB.
+    conn = om.get_conn()
+    other_lead_id = _mk_lead(conn, email="other@example.com")
+    conn.commit()
+    conn.close()
+    apply_agent_lead_core_payload(
+        other_lead_id,
+        {"provider_observations": [obs]},
+        entity_key="other@example.com",
+    )
+    conn = om.get_conn()
+    row = conn.execute(
+        "SELECT metadata_json FROM lead_provider_observations WHERE lead_id = ?", (other_lead_id,)
+    ).fetchone()
+    conn.close()
+    assert json.loads(row["metadata_json"]) == meta
+
+
 def test_apply_still_accepts_legacy_provider_attempts_key():
     """~150k D1 snapshots already carry the old key; they must still replay."""
     from lead_sync import apply_agent_lead_core_payload

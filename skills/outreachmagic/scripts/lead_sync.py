@@ -262,6 +262,7 @@ def _assemble_lead_core_sync_payload(
                 "result_validity": r["result_validity"],
                 "observed_at": r["observed_at"],
                 "completed_at": r["completed_at"],
+                "metadata_json": r["metadata_json"],
             }
             for r in provider_observation_rows
         ]
@@ -453,7 +454,7 @@ def _load_lead_sync_prefetch(
     for r in conn.execute(
         f"""SELECT lead_id, kind, origin, provider, email, status, sub_status, domain,
                    source_detail, bounce_message, free_email, mx_found, smtp_provider,
-                   result_email, result_validity, observed_at, completed_at
+                   result_email, result_validity, observed_at, completed_at, metadata_json
             FROM lead_provider_observations
             WHERE lead_id IN ({placeholders})""",
         lead_ids,
@@ -545,7 +546,7 @@ def build_lead_core_sync_payload(
         provider_observation_rows = conn.execute(
             """SELECT kind, origin, provider, email, status, sub_status, domain,
                       source_detail, bounce_message, free_email, mx_found, smtp_provider,
-                      result_email, result_validity, observed_at, completed_at
+                      result_email, result_validity, observed_at, completed_at, metadata_json
                FROM lead_provider_observations WHERE lead_id = ?""",
             (lead_id,),
         ).fetchall()
@@ -1170,6 +1171,6 @@ def inspect_sync_lead(
         "activity_stored": stored,
         "activity_computed_from_events": computed,
         "activity_sync_payload": payload.get("activity", {}),
-        "full_sync_payload_keys": sorted(payload.keys()),
+        "full_sync_payload": payload,
     }
 

@@ -159,6 +159,48 @@ def test_email_finder_candidates_scoped_stats():
     assert len(candidates) == 2
 
 
+def test_email_finder_candidates_linkedin_only():
+    """Leads with no email and no usable company domain, but a LinkedIn URL,
+    are viable TryKitt candidates (linkedinStandardProfileURL is an optional
+    signal alongside fullName) -- email_finder_candidates_from_leads requires
+    a domain and drops them; email_finder_candidates_linkedin_only is the
+    companion that picks up exactly that gap."""
+    ws = "default"
+    import pipeline_lead_review as plr
+
+    # No domain, has LinkedIn -- should surface as a linkedin-only candidate.
+    li_lead = om.resolve_lead(
+        name="LinkedIn Only", linkedin_url="linkedin.com/in/randilovett",
+        source="manual", allow_weak_identity=True,
+    )
+    # Has domain -- must NOT show up in linkedin-only output (that's the
+    # domain-based builder's job).
+    domain_lead = om.resolve_lead(
+        name="Domain Lead", company="Acme", company_domain="acme.com",
+        source="manual", allow_weak_identity=True,
+    )
+    # Neither domain nor LinkedIn -- not a candidate for either builder.
+    bare_lead = om.resolve_lead(name="Bare Lead", source="manual", allow_weak_identity=True)
+
+    conn = om.get_conn()
+    ws_row = om.resolve_workspace_identity(conn, ws)
+    for lead in (li_lead, domain_lead, bare_lead):
+        om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_row["id"], int(lead["id"]))
+    conn.commit()
+
+    scope = plr.load_workspace_leads_for_review(
+        conn, ws, no_email=False, require_domain=False, enrich_fn=om.enrich_lead_rows,
+    )
+    conn.close()
+    pool = [lead for lead in scope if not (lead.get("email") or "").strip()]
+    candidates = plr.email_finder_candidates_linkedin_only(pool)
+
+    assert len(candidates) == 1
+    assert candidates[0]["lead_id"] == li_lead["id"]
+    assert candidates[0]["linkedin_url"] == "https://linkedin.com/in/randilovett"
+    assert "company_domain" not in candidates[0]
+
+
 def test_show_json_includes_leads_alias():
     lead = om.resolve_lead(
         email="json@acme.com",

@@ -104,6 +104,22 @@ def test_plain_canonical_headers_not_reported_dropped():
     assert meta["sample_preview"]["title"] == "VP Sales"
 
 
+def test_tags_and_preserved_extras_not_reported_dropped():
+    """tags (and the other PRESERVED_EXTRA_FIELDS: list_source, import_name,
+    lead_status, lead_sentiment, contact_order, is_connected_linkedin,
+    is_linkedin_request_pending) are preserved verbatim by normalize_import_row
+    and actually applied during import -- but OM_MAPPED_FIELDS never listed them,
+    so the dry-run's fields_dropped wrongly claimed they were dropped. That
+    false alarm is what a real bug report mistook for tags being silently
+    discarded by the sales_navigator import format."""
+    row = dict(VAYNE_ROW)
+    row["tags"] = "career services 07-11-26"
+    rows, meta = impfmt.preprocess_import_rows([row], import_format="sales_navigator")
+    assert "tags" not in meta["fields_dropped"]
+    assert "tags" in meta["fields_mapped"]
+    assert rows[0]["tags"] == "career services 07-11-26"
+
+
 def test_csv_roundtrip_headers():
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=list(VAYNE_ROW.keys()))

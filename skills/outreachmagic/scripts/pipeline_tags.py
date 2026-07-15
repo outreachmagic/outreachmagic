@@ -38,6 +38,7 @@ from relay_ingest import normalize_lead_status_display
 from workspace_routing import (
     DEFAULT_ORG_ID,
     normalize_linkedin,
+    resolve_lead_ids_by_identity,
     resolve_workspace_identity,
 )
 
@@ -306,6 +307,31 @@ def tag_bulk(workspace_id: str, lead_ids: list[int], tags: list[str], *, remove:
     conn.close()
     action = "removed" if remove else "added"
     return {"status": action, "changed": changed, "leads": len(lead_ids), "tags": tags}
+
+
+def tag_bulk_by_identity(
+    workspace_id: str,
+    identity_type: str,
+    values: list[str],
+    tags: list[str],
+    *,
+    remove: bool = False,
+) -> dict:
+    """tag_bulk(), but resolving lead ids from raw identity values (e.g. a
+    batch of linkedin_sales_nav_id strings from a fresh import) instead of
+    requiring the caller to already know them. A fresh Sales Nav import's
+    only stable identity is linkedin_sales_nav_id -- there was previously no
+    way to bulk-tag those leads without first resolving ids yourself, which
+    for a few thousand values meant either 1 query per lead or a compound
+    SELECT that hits SQLite's SQLITE_LIMIT_COMPOUND_SELECT (500 terms)."""
+    conn = get_conn()
+    lead_ids, unresolved = resolve_lead_ids_by_identity(conn, DEFAULT_ORG_ID, identity_type, values)
+    conn.close()
+    result = tag_bulk(workspace_id, lead_ids, tags, remove=remove)
+    result["identity_type"] = identity_type
+    result["resolved"] = len(lead_ids)
+    result["unresolved"] = unresolved
+    return result
 
 
 

@@ -98,6 +98,44 @@ def test_new_writes_preserve_canonical_case_on_leads_column():
     assert identity["identity_value_normalized"] == LOWER, "identity is folded for match"
 
 
+def test_resolve_lead_matches_legacy_lowercase_and_upgrades_case():
+    """End-to-end: a lead left over from before 664d4f5 (both the identity row
+    and the leads column stored lowercase) must still be found by a fresh
+    inbound payload carrying the properly-cased id -- find_lead_by_identity's
+    LOWER(...) = LOWER(?) comparison is what makes that match possible -- and
+    the match must opportunistically upgrade the display column to the
+    canonical case rather than leave it lowercase forever."""
+    _reset_db()
+    conn = om.get_conn()
+    cur = conn.execute(
+        """INSERT INTO leads (name, email, linkedin_sales_nav_id)
+           VALUES ('Legacy Lead', 'legacy@example.com', ?)""",
+        (LOWER,),
+    )
+    legacy_lead_id = int(cur.lastrowid)
+    conn.execute(
+        """INSERT INTO lead_identities
+               (org_id, lead_id, identity_type, identity_value_normalized, source, created_at)
+           VALUES (?, ?, 'linkedin_sales_nav_id', ?, 'sales_navigator', datetime('now'))""",
+        (wr.DEFAULT_ORG_ID, legacy_lead_id, LOWER),
+    )
+    conn.commit()
+    conn.close()
+
+    result = om.resolve_lead(
+        name="Legacy Lead",
+        identities=[("linkedin_sales_nav_id", MIXED)],
+    )
+
+    conn = om.get_conn()
+    lead = conn.execute(
+        "SELECT id, linkedin_sales_nav_id FROM leads WHERE id = ?", (legacy_lead_id,),
+    ).fetchone()
+    conn.close()
+    assert result["id"] == legacy_lead_id, "must match the existing lead, not create a duplicate"
+    assert lead["linkedin_sales_nav_id"] == MIXED, "match must upgrade the lowercase column to canonical case"
+
+
 def test_upsert_identity_alias_upgrades_lowercase_to_mixed():
     _reset_db()
     conn = om.get_conn()

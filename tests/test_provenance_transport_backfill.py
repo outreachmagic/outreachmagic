@@ -12,7 +12,6 @@ SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import pipeline as om  # noqa: E402
-from constants import PROVENANCE_TRANSPORT_STRINGS, scrub_provenance_transport  # noqa: E402
 from pipeline_migration import (  # noqa: E402
     _install_provenance_transport_guard,
     _repair_provenance_transport_strings,
@@ -25,14 +24,6 @@ def _fresh_db() -> None:
         if candidate.exists():
             candidate.unlink()
     om.init_db()
-
-
-def test_scrub_transport_returns_none_for_transport_strings():
-    for v in PROVENANCE_TRANSPORT_STRINGS:
-        assert scrub_provenance_transport(v) is None
-    assert scrub_provenance_transport("plusvibe") == "plusvibe"
-    assert scrub_provenance_transport(None) is None
-    assert scrub_provenance_transport("") == ""
 
 
 def test_backfill_nulls_legacy_transport_values():
@@ -99,18 +90,20 @@ def test_guard_allows_real_provenance_values():
     assert row["original_source"] == "plusvibe"
 
 
-def test_resolve_lead_scrubs_caller_supplied_transport_source():
+def test_resolve_lead_no_longer_scrubs_transport_source():
+    """Stage 10d: resolve_lead's own scrub_provenance_transport() call was
+    redundant with the DB-level abort trigger (every real writer was already
+    fixed to pass the actual inbound platform, not a transport string) and has
+    been removed. The trigger is now the sole enforcement point -- a caller
+    that still hands us a transport string gets a loud abort, not a silent
+    NULL that could paper over a real bug in a new caller."""
     _fresh_db()
-    r = om.resolve_lead(email="a@example.com", name="A", source="relay_sync", source_platform="relay")
-    conn = om.get_conn()
-    row = conn.execute(
-        "SELECT original_source, latest_source, original_source_platform FROM leads WHERE id = ?",
-        (r["id"],),
-    ).fetchone()
-    conn.close()
-    assert row["original_source"] is None
-    assert row["latest_source"] is None
-    assert row["original_source_platform"] is None
+    try:
+        om.resolve_lead(email="a@example.com", name="A", source="relay_sync", source_platform="relay")
+    except sqlite3.IntegrityError as exc:
+        assert "transport string" in str(exc)
+    else:
+        raise AssertionError("a transport-string source should have been rejected by the abort trigger")
 
 
 def test_guard_is_idempotent_across_reinstalls():

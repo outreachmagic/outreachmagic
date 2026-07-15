@@ -132,15 +132,12 @@ class TimestampSyncTests(unittest.TestCase):
         self.assertNotEqual(new_ts, initial_ts)
         self.assertEqual(new_ts, "2026-06-27 12:00:00")
 
-    def test_resolve_lead_relay_sync_marks_updated_at(self):
-        """resolve_lead still works when the caller hands us a transport string
-        as source -- it just scrubs it. original_source becomes NULL rather than
-        a lying "relay_sync" that would then dominate every provenance report."""
+    def test_resolve_lead_marks_updated_at_on_create(self):
         result = om.resolve_lead(
             email="relay@example.com",
             name="Relay User",
             company="Acme",
-            source="relay_sync",
+            source="smartlead",
             source_platform="smartlead",
         )
         self.assertEqual(result["status"], "created")
@@ -150,7 +147,7 @@ class TimestampSyncTests(unittest.TestCase):
         ).fetchone()
         conn.close()
         self.assertIsNotNone(row["updated_at"])
-        self.assertIsNone(row["original_source"])
+        self.assertEqual(row["original_source"], "smartlead")
 
     def test_relay_push_defaults(self):
         for key in (
@@ -206,7 +203,7 @@ class TimestampSyncTests(unittest.TestCase):
             email="marktest@example.com",
             name="Mark Test",
             company="Acme",
-            source="relay_sync",
+            source="smartlead",
             source_platform="smartlead",
         )
         lead_id = result["id"]

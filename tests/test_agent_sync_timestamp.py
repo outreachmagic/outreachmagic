@@ -56,7 +56,7 @@ class AgentSyncTimestampTests(unittest.TestCase):
             email="ts-preserve@example.com",
             name="TS Preserve",
             company="Acme",
-            source="relay_sync",
+            source="smartlead",
             source_platform="smartlead",
         )
         lead_id = self._ingest_event_log(
@@ -90,7 +90,7 @@ class AgentSyncTimestampTests(unittest.TestCase):
             email="sender-replay@example.com",
             name="Sender Replay",
             company="Acme",
-            source="relay_sync",
+            source="smartlead",
             source_platform="smartlead",
         )
         lead_id = self._ingest_event_log(
@@ -136,7 +136,7 @@ class AgentSyncTimestampTests(unittest.TestCase):
             email="idem@example.com",
             name="Idem",
             company="Acme",
-            source="relay_sync",
+            source="smartlead",
             source_platform="smartlead",
         )
         event = {

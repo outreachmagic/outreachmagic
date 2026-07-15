@@ -1231,6 +1231,36 @@ def find_lead_by_identity(
     return None
 
 
+_IDENTITY_VALUE_NORMALIZERS = {
+    "email": normalize_email,
+    "linkedin_url": normalize_linkedin,
+}
+
+
+def resolve_lead_ids_by_identity(
+    conn: sqlite3.Connection, org_id: str, identity_type: str, values: list[str],
+) -> tuple[list[int], list[str]]:
+    """Resolve raw identity values (e.g. a batch of linkedin_sales_nav_id
+    strings) to lead ids via find_lead_by_identity, one lookup per value --
+    no compound SELECT, so there's no SQLITE_LIMIT_COMPOUND_SELECT to chunk
+    around. Returns (lead_ids, values that didn't resolve to any lead).
+    """
+    normalize = _IDENTITY_VALUE_NORMALIZERS.get(identity_type)
+    lead_ids: list[int] = []
+    unresolved: list[str] = []
+    for raw_value in values:
+        value = normalize(raw_value) if normalize else (raw_value or "").strip()
+        if not value:
+            unresolved.append(raw_value)
+            continue
+        lead_id = find_lead_by_identity(conn, org_id, identity_type, value)
+        if lead_id:
+            lead_ids.append(lead_id)
+        else:
+            unresolved.append(raw_value)
+    return lead_ids, unresolved
+
+
 def lead_entity_key(conn: sqlite3.Connection, org_id: str, lead_id: int) -> str:
     """The lead's immutable relay key: uid:<uid>.
 

@@ -513,7 +513,14 @@ def main():
     tag_list_p.add_argument("--lead-id", type=int, help="Optional: filter to one lead")
     tag_bulk_p = tag_sub.add_parser("bulk", help="Add/remove tags across multiple leads")
     tag_bulk_p.add_argument("--workspace", required=True)
-    tag_bulk_p.add_argument("--lead-ids", required=True, help="Comma-separated lead IDs")
+    tag_bulk_p.add_argument("--lead-ids", help="Comma-separated lead IDs")
+    tag_bulk_p.add_argument(
+        "--identity-type",
+        choices=["linkedin_sales_nav_id", "email", "linkedin_url", "external_id"],
+        help="Resolve --identity-values to lead ids instead of using --lead-ids "
+             "(e.g. tag a fresh Sales Nav import by linkedin_sales_nav_id, its only stable identity)",
+    )
+    tag_bulk_p.add_argument("--identity-values", help="Comma-separated identity values, paired with --identity-type")
     tag_bulk_p.add_argument("--tags", required=True, help="Comma-separated tags")
     tag_bulk_p.add_argument("--remove", action="store_true", help="Remove instead of add")
     tag_repair_p = tag_sub.add_parser(
@@ -648,7 +655,21 @@ def main():
     efc_p.add_argument("--limit", type=int, default=5000)
     efc_p.add_argument("--never-contacted", action="store_true")
     efc_p.add_argument("--no-email", action="store_true", default=True)
-    efc_p.add_argument("--require-domain", action="store_true", default=True)
+    efc_p.add_argument(
+        "--require-domain",
+        action="store_true",
+        help="Pre-filter scope to leads with a professional company domain "
+             "(the domain-based candidate builder already drops domain-less leads "
+             "regardless; this narrows the scope earlier and affects the reported counts)",
+    )
+    efc_p.add_argument(
+        "--linkedin-only",
+        action="store_true",
+        help="Instead of domain-based candidates, list leads with no email, no usable "
+             "company domain, but a linkedin_url -- shaped for TryKitt's optional "
+             "linkedinStandardProfileURL signal. Run separately from the default "
+             "domain-based mode, not combined with it.",
+    )
     efc_p.add_argument(
         "--lead-ids",
         help="Comma-separated lead ids to scope candidates (e.g. from a CSV batch)",
@@ -2433,6 +2454,7 @@ def main():
                     lid = row.get("lead_id") or row.get("id")
                     if lid is not None:
                         lead_ids.append(int(lid))
+            linkedin_only = getattr(args, "linkedin_only", False)
             scope_leads = pipeline_lead_review.load_workspace_leads_for_review(
                 conn,
                 args.workspace,
@@ -2442,7 +2464,7 @@ def main():
                 limit=args.limit,
                 never_contacted=getattr(args, "never_contacted", False),
                 no_email=False,
-                require_domain=False,
+                require_domain=False if linkedin_only else getattr(args, "require_domain", False),
                 lead_ids=lead_ids,
                 enrich_fn=_pipeline.enrich_lead_rows,
             )
@@ -2454,14 +2476,18 @@ def main():
                 pool = [
                     lead for lead in scope_leads if not (lead.get("email") or "").strip()
                 ]
-            candidates = pipeline_lead_review.email_finder_candidates_from_leads(pool)
-            skipped_no_domain = len(pool) - len(candidates)
+            if linkedin_only:
+                candidates = pipeline_lead_review.email_finder_candidates_linkedin_only(pool)
+                skipped_key = "skipped_no_linkedin_or_has_domain"
+            else:
+                candidates = pipeline_lead_review.email_finder_candidates_from_leads(pool)
+                skipped_key = "skipped_no_domain"
             print(json.dumps({
                 "status": "ok",
                 "workspace": args.workspace,
                 "scanned": len(scope_leads),
                 "skipped_has_email": skipped_has_email,
-                "skipped_no_domain": skipped_no_domain,
+                skipped_key: len(pool) - len(candidates),
                 "count": len(candidates),
                 "candidates": candidates,
             }, indent=2))
@@ -2690,9 +2716,26 @@ def main():
         elif action == "list":
             print(json.dumps(_pipeline.tag_list(ws_id, lead_id=getattr(args, "lead_id", None))))
         elif action == "bulk":
-            lead_ids = [int(x.strip()) for x in args.lead_ids.split(",") if x.strip()]
             tags_list = _pipeline._parse_cli_tags(args.tags)
-            print(json.dumps(_pipeline.tag_bulk(ws_id, lead_ids, tags_list, remove=getattr(args, "remove", False))))
+            identity_type = getattr(args, "identity_type", None)
+            identity_values_raw = getattr(args, "identity_values", None)
+            if identity_type or identity_values_raw:
+                if not identity_type or not identity_values_raw:
+                    print(json.dumps({"error": "--identity-type and --identity-values must be used together"}))
+                    sys.exit(1)
+                if getattr(args, "lead_ids", None):
+                    print(json.dumps({"error": "use --lead-ids or --identity-type/--identity-values, not both"}))
+                    sys.exit(1)
+                values = [v.strip() for v in identity_values_raw.split(",") if v.strip()]
+                print(json.dumps(_pipeline.tag_bulk_by_identity(
+                    ws_id, identity_type, values, tags_list, remove=getattr(args, "remove", False),
+                )))
+            else:
+                if not getattr(args, "lead_ids", None):
+                    print(json.dumps({"error": "--lead-ids or --identity-type/--identity-values required"}))
+                    sys.exit(1)
+                lead_ids = [int(x.strip()) for x in args.lead_ids.split(",") if x.strip()]
+                print(json.dumps(_pipeline.tag_bulk(ws_id, lead_ids, tags_list, remove=getattr(args, "remove", False))))
         else:
             print(json.dumps({"error": "tag subcommand required: add, remove, set, list, bulk, repair"}))
     elif args.command == "batch-job":

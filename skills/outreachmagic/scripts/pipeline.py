@@ -98,6 +98,7 @@ from workspace_routing import (
     format_unmapped_campaign_message,
     lead_entity_key,
     match_confidence_for_type,
+    resolve_lead_ids_by_identity,
     MULTI_WORKSPACE_HOLD_MESSAGE,
     get_org_routing_config,
     import_extra_from_entity_key,
@@ -1246,13 +1247,6 @@ def resolve_lead(
     company_cache: Optional[dict] = None,
 ) -> dict:
     """Match or create lead by tiered identities (email, external_id, name+company, etc.)."""
-    from constants import scrub_provenance_transport
-    # Callers that hand us a transport string ("agent_sync", "relay_sync",
-    # "relay") get None instead -- writing them would trigger the leads-table
-    # abort guard, and the honest state ("we don't know where this lead came
-    # from") is what we want the column to hold.
-    source = scrub_provenance_transport(source)
-    source_platform = scrub_provenance_transport(source_platform)
     email_norm = normalize_email(email)
     li_parsed = parse_linkedin_value(linkedin_url) if linkedin_url else []
     li_public = next((v for t, v in li_parsed if t == "linkedin_url"), None)
@@ -2763,7 +2757,7 @@ from pipeline_provider_attempts import (
 )
 
 from pipeline_tags import (
-    tag_add, tag_remove, tag_set, tag_list, tag_bulk,
+    tag_add, tag_remove, tag_set, tag_list, tag_bulk, tag_bulk_by_identity,
     get_workspace_summary, format_workspace_summary, update_lead_stage,
     log_event, get_lead_events, export_leads, get_pipeline, get_stats,
     get_campaign_stats, get_stage_counts, get_lead_by_email,

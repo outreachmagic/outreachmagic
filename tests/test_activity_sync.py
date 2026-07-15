@@ -147,7 +147,7 @@ class ActivitySyncTests(unittest.TestCase):
             email="events@example.com",
             name="Events Lead",
             company="Acme",
-            source="relay_sync",
+            source="smartlead",
             source_platform="smartlead",
         )
         lead_id = result["id"]

@@ -119,7 +119,7 @@ def test_apply_attribution_coalesce_preserves_original():
 
 def test_apply_agent_core_payload_restores_attribution():
     _fresh_db()
-    result = om.resolve_lead(email="core@example.com", name="Core Lead", source="agent_sync")
+    result = om.resolve_lead(email="core@example.com", name="Core Lead", source="csv_import")
     lead_id = result["id"]
     conn = om.get_conn()
     apply_agent_lead_core_payload(

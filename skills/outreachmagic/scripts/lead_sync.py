@@ -641,8 +641,6 @@ def _attribution_from_sync_payload(payload: dict) -> tuple[Optional[str], Option
     source_detail = (
         (payload.get("original_source_detail") or "").strip()
         or (payload.get("latest_source_detail") or "").strip()
-        or (payload.get("import_name") or "").strip()
-        or (payload.get("list_source") or "").strip()
         or None
     )
     source_platform = (
@@ -653,7 +651,6 @@ def _attribution_from_sync_payload(payload: dict) -> tuple[Optional[str], Option
     return source, source_detail, source_platform
 
 
-_WEAK_ATTRIBUTION_SOURCES = frozenset({"agent_sync", "relay_sync", ""})
 _WEAK_VERIFICATION_SOURCES = frozenset({"agent_sync", "relay_sync", "platform_bounce", ""})
 
 
@@ -677,32 +674,20 @@ def _lev_sources_for_lead(conn: sqlite3.Connection, lead_id: int) -> tuple[Optio
     return original, latest
 
 
-def _attribution_sets(
-    payload: dict,
-    current_original_source: Optional[str],
-) -> tuple[list[str], list]:
+def _attribution_sets(payload: dict) -> tuple[list[str], list]:
     """SET clauses restoring source attribution from a relay lead_core snapshot.
 
     Split out from apply_attribution_from_sync_payload so the caller can fold
     these into a larger single UPDATE on `leads` instead of issuing another one.
+
+    original_* is COALESCE-preserved (first-touch attribution never gets
+    overwritten by a later snapshot); latest_* always takes the payload's
+    value. The DB-level abort trigger (pipeline_migration.py's
+    _install_provenance_transport_guard) is the sole enforcement against a
+    transport string ("agent_sync"/"relay_sync"/"relay") landing in a
+    provenance column -- there is no live writer left that could still send
+    one for this to scrub.
     """
-    from constants import scrub_provenance_transport
-
-    current_source = (current_original_source or "").strip()
-    payload_source = (payload.get("original_source") or "").strip()
-    upgrade_original = bool(payload_source) and current_source in _WEAK_ATTRIBUTION_SOURCES
-
-    # Legacy snapshots in D1 still carry "agent_sync"/"relay_sync"/"relay" in the
-    # provenance columns -- the fields the abort trigger rejects. Scrub those to
-    # None per column so applying a legacy payload silently clears the transport
-    # string instead of aborting the whole UPDATE.
-    _transport_cols = {
-        "original_source",
-        "latest_source",
-        "original_source_platform",
-        "latest_source_platform",
-    }
-
     sets: list[str] = []
     params: list = []
     for col in (
@@ -712,13 +697,8 @@ def _attribution_sets(
         "original_source_at",
     ):
         val = payload.get(col)
-        if col in _transport_cols:
-            val = scrub_provenance_transport(val)
         if val is not None and str(val).strip():
-            if upgrade_original:
-                sets.append(f"{col} = ?")
-            else:
-                sets.append(f"{col} = COALESCE({col}, ?)")
+            sets.append(f"{col} = COALESCE({col}, ?)")
             params.append(val)
     for col in (
         "latest_source",
@@ -727,8 +707,6 @@ def _attribution_sets(
         "latest_source_at",
     ):
         val = payload.get(col)
-        if col in _transport_cols:
-            val = scrub_provenance_transport(val)
         if val is not None and str(val).strip():
             sets.append(f"{col} = ?")
             params.append(val)
@@ -741,11 +719,7 @@ def apply_attribution_from_sync_payload(
     payload: dict,
 ) -> None:
     """Restore source attribution from relay lead_core snapshot."""
-    row = conn.execute(
-        "SELECT original_source FROM leads WHERE id = ?",
-        (lead_id,),
-    ).fetchone()
-    sets, params = _attribution_sets(payload, row["original_source"] if row else None)
+    sets, params = _attribution_sets(payload)
     if not sets:
         return
     sets.append("updated_at = datetime('now')")
@@ -821,7 +795,7 @@ def resolve_lead_from_agent_sync(
         title=payload.get("title"),
         industry=payload.get("industry"),
         headcount=payload.get("headcount"),
-        stage=payload.get("stage") or payload.get("workspace_stage") or stage,
+        stage=payload.get("stage") or stage,
         notes=payload.get("notes"),
         company_domain=payload.get("company_domain"),
         location_city=payload.get("location_city"),
@@ -918,9 +892,7 @@ def apply_agent_lead_core_payload(
     if company_id:
         _set("company_id", company_id)
 
-    attr_sets, attr_params = _attribution_sets(
-        payload, row["original_source"] if row else None,
-    )
+    attr_sets, attr_params = _attribution_sets(payload)
     if attr_sets:
         sets.extend(attr_sets)
         params.extend(attr_params)
@@ -1039,7 +1011,7 @@ def apply_agent_lead_workspace_payload(
     ensure_organization(conn)
     upsert_workspace_lead(
         conn, org_id, workspace_id, lead_id,
-        status=payload.get("workspace_stage") or payload.get("stage", "prospecting"),
+        status=payload.get("stage", "prospecting"),
         current_status_label=status_label,
         current_status_sentiment=status_sentiment,
         contact_priority=contact_pri,

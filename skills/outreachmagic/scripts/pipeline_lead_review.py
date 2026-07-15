@@ -1377,3 +1377,31 @@ def email_finder_candidates_from_leads(leads: list[dict]) -> list[dict]:
             row["linkedin_url"] = linkedin_url
         out.append(row)
     return out
+
+
+def email_finder_candidates_linkedin_only(leads: list[dict]) -> list[dict]:
+    """Shape leads with no usable company domain but a LinkedIn URL into
+    batch-find JSON rows. TryKitt's API accepts linkedinStandardProfileURL as
+    an optional signal alongside fullName, so these are viable candidates
+    despite having no domain -- email_finder_candidates_from_leads requires
+    one and drops them. Companion function, not a merge: run separately from
+    the domain-based candidates, since the two produce differently-shaped rows
+    (company_domain vs. linkedin_url) for the same TryKitt endpoint.
+    """
+    from workspace_routing import normalize_linkedin
+
+    out: list[dict] = []
+    for lead in leads:
+        domain = (lead.get("company_domain") or "").strip().lower().lstrip("@")
+        if domain and " " not in domain and "." in domain:
+            continue
+        raw_linkedin = lead.get("linkedin_url") or lead.get("linkedin") or ""
+        normalized = normalize_linkedin(raw_linkedin)
+        if not normalized:
+            continue
+        out.append({
+            "lead_id": lead.get("id") or lead.get("lead_id"),
+            "name": lead.get("name") or "",
+            "linkedin_url": f"https://{normalized}",
+        })
+    return out

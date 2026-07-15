@@ -40,6 +40,29 @@ OM_MAPPED_FIELDS = frozenset({
     "first_name", "last_name", "linkedin_headline", "linkedin_bio",
 })
 
+# Header names normalize_import_row() preserves verbatim onto the row (source
+# of truth for both that loop and preprocess_import_rows()'s fields_dropped
+# report -- keeping one list means the two can't drift apart again like they
+# did here: several of these were already being preserved and applied during
+# import, but weren't in OM_MAPPED_FIELDS, so the dry-run's fields_dropped
+# list wrongly claimed they were dropped when they weren't).
+PRESERVED_EXTRA_FIELDS = frozenset({
+    "member linkedin sales nav id",
+    "linkedin_sales_nav_id",
+    "sales_nav_id",
+    "list_source",
+    "import_name",
+    "tags",
+    "lead_status",
+    "lead_sentiment",
+    "contact_order",
+    "is_connected_linkedin",
+    "is_linkedin_request_pending",
+    "unified_lead_id",
+    "source_id",
+    "external_id",
+})
+
 
 def normalize_header_key(key: str) -> str:
     text = str(key or "").strip().lower()
@@ -162,22 +185,7 @@ def normalize_import_row(raw: dict[str, Any], *, import_format: Optional[str] = 
         row["notes"] = f"{existing}\n\n{combined}".strip() if existing else combined
 
     # Preserve original keys needed by IMPORT_EXTRA_FIELDS (sales nav urn column)
-    for preserve in (
-        "member linkedin sales nav id",
-        "linkedin_sales_nav_id",
-        "sales_nav_id",
-        "list_source",
-        "import_name",
-        "tags",
-        "lead_status",
-        "lead_sentiment",
-        "contact_order",
-        "is_connected_linkedin",
-        "is_linkedin_request_pending",
-        "unified_lead_id",
-        "source_id",
-        "external_id",
-    ):
+    for preserve in PRESERVED_EXTRA_FIELDS:
         for rk, rv in raw.items():
             if normalize_header_key(rk) == normalize_header_key(preserve.replace("_", " ")) or rk == preserve:
                 if rv is not None and str(rv).strip() and preserve not in row:
@@ -225,6 +233,8 @@ def preprocess_import_rows(
         if nk in SALES_NAV_SIGNATURE_HEADERS or nk in HEADER_ALIASES:
             mapped.add(nk)
         elif nk in {"company", "email", "linkedin url"} or nk.replace(" ", "_") in OM_MAPPED_FIELDS:
+            mapped.add(nk)
+        elif nk in PRESERVED_EXTRA_FIELDS or nk.replace(" ", "_") in PRESERVED_EXTRA_FIELDS:
             mapped.add(nk)
         else:
             dropped.add(nk)

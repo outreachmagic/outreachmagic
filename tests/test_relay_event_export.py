@@ -57,7 +57,7 @@ class RelayEventExportTests(unittest.TestCase):
             email="ingest-camp@example.com",
             name="Ingest Camp",
             company="Acme",
-            source="relay_sync",
+            source="smartlead",
             source_platform="smartlead",
         )
         lead_id = result["id"]

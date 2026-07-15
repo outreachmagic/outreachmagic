@@ -115,7 +115,7 @@ class BounceEventsTableTests(unittest.TestCase):
             email="bounce-test@example.com",
             name="Bounce Test",
             company="Acme",
-            source="relay_sync",
+            source="plusvibe",
             source_platform="plusvibe",
         )
 

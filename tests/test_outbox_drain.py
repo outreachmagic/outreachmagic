@@ -367,3 +367,78 @@ def test_push_timestamp_is_dirty_at_not_corrupt_updated_at():
     assert not core[0]["timestamp"].startswith("2020"), (
         f"pushed the corrupt updated_at: {core[0]['timestamp']}"
     )
+
+
+class _CrashAfterFirstBatch:
+    """Simulates a real _relay_push_batches: chunks entries, fires
+    on_mark_cleared for each batch that lands (as the real function does via
+    its own internal HTTP loop), then dies before the next batch -- a
+    connection reset, a kill, a crash. The point under test is whether the
+    batch(es) that DID land before the crash are recorded as synced, not
+    forgotten until a (possibly nonexistent) final return.
+    """
+
+    def __init__(self, batch_size=2):
+        self.batch_size = batch_size
+
+    def __call__(self, agent_key, entries, client_id, mark_ids=None, on_mark_cleared=None, **kw):
+        for i in range(0, len(entries), self.batch_size):
+            if i == 0:
+                if on_mark_cleared and mark_ids:
+                    on_mark_cleared(mark_ids[i : i + self.batch_size])
+            else:
+                raise ConnectionError("simulated crash mid-stream")
+        return {"pushed": min(self.batch_size, len(entries)), "error": None, "throttled": False}
+
+
+def test_lead_core_push_settles_incrementally_not_only_at_the_end():
+    """A push this size can run for many minutes (61,124 companies took ~19).
+    A killed process, or a genuine crash/network death, between batches must
+    not forget every batch the relay already acknowledged -- only settling on
+    return meant a full re-send was required even for work already landed."""
+    conn = om.get_conn()
+    for i in range(4):
+        _mk_lead_in_ws(conn, email=f"batch{i}@example.com")
+    conn.close()
+
+    with mock.patch.object(om, "_relay_push_batches", side_effect=_CrashAfterFirstBatch()):
+        with pytest.raises(ConnectionError):
+            om._push_pending_lead_snapshots("om_agent_test")
+
+    conn = om.get_conn()
+    synced = conn.execute(
+        "SELECT COUNT(*) AS n FROM sync_shadow WHERE entity_type = 'lead_core'"
+    ).fetchone()["n"]
+    still_dirty = conn.execute(
+        "SELECT COUNT(*) AS n FROM outbox WHERE entity_type = 'lead_core' AND op = 'upsert'"
+    ).fetchone()["n"]
+    conn.close()
+    assert synced == 2, "the first batch's ack must survive a crash on the next batch"
+    assert still_dirty == 2, "only the un-acked half should still be dirty"
+
+
+def test_company_push_settles_incrementally_not_only_at_the_end():
+    """Same guarantee for the generic entity push path (_push_outbox_entity),
+    used by company/sender_account/sender_domain -- this is the exact path
+    that ran for ~19 minutes pushing 61,124 companies under their new uid
+    keys."""
+    conn = om.get_conn()
+    for i in range(4):
+        om.ensure_company(conn, name=f"Batch Co {i}", domain=f"batchco{i}.example.com")
+    conn.commit()
+    conn.close()
+
+    with mock.patch.object(om, "_relay_push_batches", side_effect=_CrashAfterFirstBatch()):
+        with pytest.raises(ConnectionError):
+            om._push_pending_company_updates("om_agent_test")
+
+    conn = om.get_conn()
+    synced = conn.execute(
+        "SELECT COUNT(*) AS n FROM sync_shadow WHERE entity_type = 'company'"
+    ).fetchone()["n"]
+    still_dirty = conn.execute(
+        "SELECT COUNT(*) AS n FROM outbox WHERE entity_type = 'company' AND op = 'upsert'"
+    ).fetchone()["n"]
+    conn.close()
+    assert synced == 2, "the first batch's ack must survive a crash on the next batch"
+    assert still_dirty == 2, "only the un-acked half should still be dirty"

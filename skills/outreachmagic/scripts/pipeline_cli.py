@@ -865,12 +865,17 @@ def main():
     sync_p.add_argument(
         "--full-snapshot",
         action="store_true",
-        help="Push all leads and workspace memberships to relay for full backup",
+        help=(
+            "Mark every lead, workspace membership, company, sender account, and "
+            "sender domain pending for a full resync to relay. Expensive: on a large "
+            "account this can take a very long time to drain. Requires --yes unless "
+            "scoped with --workspace"
+        ),
     )
     sync_p.add_argument(
         "--yes",
         action="store_true",
-        help="Confirm --full-snapshot across all workspaces (required unless --workspace is set)",
+        help="Confirm --full-snapshot across the whole account (required unless --workspace is set)",
     )
     sync_p.add_argument(
         "--bulk",
@@ -1908,19 +1913,44 @@ def main():
                         sys.exit(1)
                     ws_id = ws_row["id"]
                 elif not getattr(args, "yes", False):
+                    conn = _pipeline.get_conn()
+                    would_mark = {
+                        "leads": conn.execute("SELECT COUNT(*) AS n FROM leads").fetchone()["n"],
+                        "workspace_memberships": conn.execute(
+                            "SELECT COUNT(*) AS n FROM workspace_leads"
+                        ).fetchone()["n"],
+                        "companies": conn.execute("SELECT COUNT(*) AS n FROM companies").fetchone()["n"],
+                        "sender_accounts": conn.execute(
+                            "SELECT COUNT(*) AS n FROM sender_accounts"
+                        ).fetchone()["n"],
+                        "sender_domains": conn.execute(
+                            "SELECT COUNT(*) AS n FROM sender_domains"
+                        ).fetchone()["n"],
+                    }
+                    conn.close()
                     print(json.dumps({
                         "error": (
-                            "--full-snapshot without --workspace marks ALL leads pending for a "
-                            "full resync. Re-run with --workspace SLUG to scope it, or add --yes "
-                            "to confirm a full-account resync."
+                            "--full-snapshot without --workspace marks EVERY lead, workspace "
+                            "membership, company, sender account, and sender domain in the "
+                            "account pending for a full resync to relay. This is expensive -- "
+                            "the resulting push can take a very long time to drain depending on "
+                            "database size, so re-run only when you're ready to let a full sync "
+                            "run to completion. Re-run with --workspace SLUG to scope it to one "
+                            "workspace's leads, or add --yes to confirm a full-account resync."
                         ),
-                    }))
+                        "would_mark_pending": would_mark,
+                    }, indent=2))
                     sys.exit(1)
-                _pipeline.mark_all_lead_snapshots_pending(workspace_id=ws_id)
                 if sync_ws:
+                    _pipeline.mark_all_lead_snapshots_pending(workspace_id=ws_id)
                     print(f"Marked leads in workspace {sync_ws} pending for full snapshot push.", flush=True)
                 else:
-                    print("Marked all leads and workspace memberships pending for full snapshot push.", flush=True)
+                    _pipeline.mark_all_entities_pending()
+                    print(
+                        "Marked all leads, workspace memberships, companies, sender accounts, "
+                        "and sender domains pending for full snapshot push.",
+                        flush=True,
+                    )
             force_bulk = None
             if getattr(args, "bulk", False) and getattr(args, "no_bulk", False):
                 print(json.dumps({"error": "Use --bulk or --no-bulk, not both"}))

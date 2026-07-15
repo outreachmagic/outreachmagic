@@ -281,7 +281,13 @@ def _assemble_lead_workspace_sync_payload(
         # there is no other). Apply still accepts the legacy `workspace_stage` key,
         # which ~140k snapshots already in D1 carry.
         payload["stage"] = wl_row["status"]
-    payload["tags"] = list(tags)
+    # Sorted, not insertion order: tags added in the same batch import can share
+    # one created_at second, so the ORDER BY that ranks them ties arbitrarily --
+    # and the prefetch batch path's tag list isn't guaranteed to agree with the
+    # single-lookup path's either. An unsorted list here makes content_hash
+    # unstable across two otherwise-identical builds of the same payload, which
+    # looks like a real change and triggers a needless re-push forever.
+    payload["tags"] = sorted(tags)
     if linkedin_status:
         payload["linkedin_status"] = [
             {
@@ -350,11 +356,19 @@ def _load_lead_sync_prefetch(
     ).fetchall():
         identities[r["lead_id"]].append(r)
 
+    # A merge can leave a lead with more than one external_id row (each merged
+    # lead brings its own). ORDER BY ascending + unconditional overwrite means
+    # the last row seen per lead_id -- the most recently recorded one -- wins,
+    # matching lead_external_id_value()'s single-lookup ordering exactly. If
+    # these two disagree, a lead's payload flips depending on which code path
+    # built it (bulk push vs sync-preview/sync-diff), which is exactly the bug
+    # this comment is here to prevent regressing.
     external_ids: dict[int, str] = {}
     for r in conn.execute(
         f"""SELECT lead_id, identity_value_normalized
             FROM lead_identities
-            WHERE org_id = ? AND lead_id IN ({placeholders}) AND identity_type = 'external_id'""",
+            WHERE org_id = ? AND lead_id IN ({placeholders}) AND identity_type = 'external_id'
+            ORDER BY created_at ASC, id ASC""",
         [org_id, *lead_ids],
     ).fetchall():
         external_ids[r["lead_id"]] = r["identity_value_normalized"]

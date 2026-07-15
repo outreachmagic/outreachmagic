@@ -1293,9 +1293,17 @@ def import_extra_from_entity_key(entity_key: str) -> dict[str, str]:
 def lead_external_id_value(
     conn: sqlite3.Connection, org_id: str, lead_id: int,
 ) -> Optional[str]:
+    """The lead's external_id, or None. A merge can leave a lead with more than
+    one external_id row (each merged lead brings its own) -- ORDER BY makes the
+    pick deterministic (most recently recorded wins) and, critically, agrees
+    with the prefetch batch path in lead_sync.py's _load_lead_sync_prefetch,
+    which must resolve to the exact same value or a lead's payload flips
+    depending on which code path built it.
+    """
     row = conn.execute(
         """SELECT identity_value_normalized FROM lead_identities
-           WHERE org_id = ? AND lead_id = ? AND identity_type = 'external_id' LIMIT 1""",
+           WHERE org_id = ? AND lead_id = ? AND identity_type = 'external_id'
+           ORDER BY created_at DESC, id DESC LIMIT 1""",
         (org_id, lead_id),
     ).fetchone()
     return row["identity_value_normalized"] if row else None

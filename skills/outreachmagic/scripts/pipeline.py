@@ -265,6 +265,7 @@ from pipeline_migration import (
     backfill_outbox,
     backfill_workspace_routing,
     init_db,
+    mark_all_entities_pending,
     mark_all_lead_snapshots_pending,
     migrate_db,
     repair_malformed_tags,
@@ -2934,6 +2935,7 @@ from pipeline_sender_accounts import (
     set_sender_domain_cost,
     update_sender_account,
     update_sender_domain_blacklist_status,
+    upsert_sender_account,
     workspace_sender_cost_report,
 )
 

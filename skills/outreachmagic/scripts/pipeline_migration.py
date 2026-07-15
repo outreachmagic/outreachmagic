@@ -1521,6 +1521,27 @@ def mark_all_lead_snapshots_pending(
         conn.close()
 
 
+def mark_all_entities_pending(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Queue a full account-wide resync of every synced entity type.
+
+    Companies, sender accounts, and sender domains aren't workspace-scoped
+    (unlike leads), so there's no per-workspace variant here -- this always
+    touches the whole account. Bumping updated_at fires the same outbox
+    triggers Stage 5 installed for every table in sync_contract.SYNC_MAP, so
+    this is just "touch every row" -- the triggers do the actual dirtying.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    mark_all_lead_snapshots_pending(conn)
+    conn.execute("UPDATE companies SET updated_at = datetime('now')")
+    conn.execute("UPDATE sender_accounts SET updated_at = datetime('now')")
+    conn.execute("UPDATE sender_domains SET updated_at = datetime('now')")
+    if own_conn:
+        conn.commit()
+        conn.close()
+
+
 def repair_malformed_tags(conn: sqlite3.Connection, *, dry_run: bool = False) -> dict:
     """Fix workspace tags stored as list literals (e.g. \"['nace']\" -> \"nace\")."""
     from pipeline_utils import normalize_tag, parse_tags_value

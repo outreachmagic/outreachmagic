@@ -1665,6 +1665,21 @@ def _push_pending_lead_snapshots(
         finally:
             c.close()
 
+    def _settle_batch(entity_type: str):
+        """As each fully-acknowledged batch lands, not just at the end of the
+        whole (core or workspace) stream -- a push this size can run for many
+        minutes, and a killed process (or a genuine crash/network death)
+        between batches must not forget everything the relay already accepted.
+        """
+        def _cb(cleared: list) -> None:
+            c = get_conn()
+            try:
+                outbox.record_synced(c, entity_type, cleared)
+                c.commit()
+            finally:
+                c.close()
+        return _cb
+
     if core_entries:
         last_result = _relay_push_batches(
             agent_key,
@@ -1673,6 +1688,8 @@ def _push_pending_lead_snapshots(
             stream_label=_SNAPSHOT_KIND_STREAM["core"],
             bulk=bulk,
             snapshot_bulk=True,
+            mark_ids=core_synced,
+            on_mark_cleared=_settle_batch("lead_core"),
         )
         total_pushed += int(last_result.get("pushed", 0) or 0)
         _settle("lead_core", core_synced, last_result)
@@ -1688,6 +1705,8 @@ def _push_pending_lead_snapshots(
             stream_label=_SNAPSHOT_KIND_STREAM["workspace"],
             bulk=bulk,
             snapshot_bulk=True,
+            mark_ids=ws_synced,
+            on_mark_cleared=_settle_batch("lead_workspace"),
         )
         total_pushed += int(ws_result.get("pushed", 0) or 0)
         last_result = ws_result
@@ -1786,6 +1805,23 @@ def _push_outbox_entity(
 
     client_id = get_or_create_client_id()
     bulk = len(entries) >= RELAY_BULK_THRESHOLD
+
+    def _settle_batch(cleared: list) -> None:
+        """Record each fully-acknowledged batch as it lands, not just at the very
+        end. A 61k-row company push takes ~20 minutes; settling only on return
+        meant a killed process (or a genuine crash/network death) forgot every
+        batch the relay had already accepted, forcing a full re-send on restart
+        instead of resuming from the outbox as designed. `mark_ids` (here the
+        `synced` tuples themselves) already gives `_relay_push_batches` exactly
+        what it needs to report one fully-succeeded batch at a time.
+        """
+        c = get_conn()
+        try:
+            outbox.record_synced(c, entity_type, cleared)
+            c.commit()
+        finally:
+            c.close()
+
     push_result = _relay_push_batches(
         agent_key,
         entries,
@@ -1793,9 +1829,14 @@ def _push_outbox_entity(
         stream_label=_SNAPSHOT_KIND_STREAM[stream_key],
         bulk=bulk,
         snapshot_bulk=True,
+        mark_ids=synced,
+        on_mark_cleared=_settle_batch,
     )
 
     # Partial success is the normal case on a long drain -- settle what landed.
+    # _settle_batch above already recorded every batch that fully succeeded;
+    # this is the safety net for a batch that only *partially* landed (fewer
+    # rows accepted than sent), which on_mark_cleared skips by design.
     pushed_n = int(push_result.get("pushed", 0) or 0)
     ok, failed = synced[:pushed_n], synced[pushed_n:]
     c = get_conn()

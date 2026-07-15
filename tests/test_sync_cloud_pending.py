@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Tests for timestamp-based sync (get_last_sync / set_last_sync)."""
 
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
@@ -259,6 +262,118 @@ class TimestampSyncTests(unittest.TestCase):
         conn.close()
         self.assertNotEqual(rows[in_ws["id"]], "2020-01-01T00:00:00")
         self.assertEqual(rows[out_ws["id"]], "2020-01-01T00:00:00")
+
+    def test_mark_all_entities_pending_dirties_every_synced_entity_type(self):
+        """mark_all_entities_pending must queue leads, workspace leads, companies,
+        sender accounts, and sender domains for a full account-wide resync -- not
+        just leads, which is all mark_all_lead_snapshots_pending covers."""
+        conn = om.get_conn()
+        company_id = om.ensure_company(conn, domain="resync-test.example.com")
+        sender_account_id = om.upsert_sender_account(conn, {"email": "resync@example.com"})
+        conn.commit()
+        conn.close()
+        om.set_sender_domain_cost("resync-domain.example.com")
+
+        result = om.resolve_lead(
+            email="resync-lead@example.com", name="Resync Lead", company="Acme",
+            source="csv", source_platform="csv",
+        )
+        conn = om.get_conn()
+        ws_row = om.resolve_workspace_identity(conn, "default")
+        om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_row["id"], result["id"])
+        conn.commit()
+        conn.close()
+
+        om.mark_all_entities_pending()
+
+        conn = om.get_conn()
+        counts = {
+            r["entity_type"]: r["n"]
+            for r in conn.execute(
+                "SELECT entity_type, COUNT(*) AS n FROM outbox WHERE op = 'upsert' GROUP BY entity_type"
+            ).fetchall()
+        }
+        company_row = conn.execute(
+            "SELECT 1 FROM outbox WHERE entity_type = 'company' AND entity_id = ?", (str(company_id),),
+        ).fetchone()
+        sender_row = conn.execute(
+            "SELECT 1 FROM outbox WHERE entity_type = 'sender_account' AND entity_id = ?",
+            (str(sender_account_id),),
+        ).fetchone()
+        domain_row = conn.execute(
+            "SELECT 1 FROM outbox WHERE entity_type = 'sender_domain' AND entity_id = ?",
+            ("resync-domain.example.com",),
+        ).fetchone()
+        conn.close()
+
+        self.assertGreaterEqual(counts.get("lead_core", 0), 1)
+        self.assertGreaterEqual(counts.get("lead_workspace", 0), 1)
+        self.assertIsNotNone(company_row)
+        self.assertIsNotNone(sender_row)
+        self.assertIsNotNone(domain_row)
+
+    def test_full_snapshot_without_yes_warns_with_counts_and_exits(self):
+        """--full-snapshot without --workspace or --yes must show a scale-aware
+        warning (counts of every entity type it would mark pending) and exit
+        non-zero without marking anything -- this is an expensive, long-running
+        operation and must not fire without an explicit second confirmation."""
+        om.resolve_lead(
+            email="snapshot-warn@example.com", name="Snapshot Warn", company="Acme",
+            source="csv", source_platform="csv",
+        )
+        conn = om.get_conn()
+        before = conn.execute("SELECT COUNT(*) AS n FROM outbox").fetchone()["n"]
+        conn.close()
+
+        stdout = io.StringIO()
+        with mock.patch.object(sys, "argv", ["pipeline.py", "sync", "--full-snapshot"]):
+            with contextlib.redirect_stdout(stdout):
+                with self.assertRaises(SystemExit) as cm:
+                    om.main()
+        self.assertEqual(cm.exception.code, 1)
+
+        output = json.loads(stdout.getvalue())
+        self.assertIn("error", output)
+        would_mark = output["would_mark_pending"]
+        self.assertIn("leads", would_mark)
+        self.assertIn("companies", would_mark)
+        self.assertIn("sender_accounts", would_mark)
+        self.assertIn("sender_domains", would_mark)
+        self.assertGreaterEqual(would_mark["leads"], 1)
+
+        conn = om.get_conn()
+        after = conn.execute("SELECT COUNT(*) AS n FROM outbox").fetchone()["n"]
+        conn.close()
+        self.assertEqual(before, after)
+
+    def test_full_snapshot_with_yes_marks_all_entity_types(self):
+        """--full-snapshot --yes (no --workspace) must actually run the
+        account-wide mark, covering every entity type, not just leads."""
+        om.resolve_lead(
+            email="snapshot-yes@example.com", name="Snapshot Yes", company="Acme",
+            source="csv", source_platform="csv",
+        )
+        conn = om.get_conn()
+        om.ensure_company(conn, domain="snapshot-yes.example.com")
+        conn.commit()
+        conn.close()
+
+        stdout = io.StringIO()
+        with mock.patch.object(om, "sync_all", return_value={"status": "ok"}):
+            with mock.patch.object(sys, "argv", ["pipeline.py", "sync", "--full-snapshot", "--yes"]):
+                with contextlib.redirect_stdout(stdout):
+                    om.main()
+
+        conn = om.get_conn()
+        counts = {
+            r["entity_type"]: r["n"]
+            for r in conn.execute(
+                "SELECT entity_type, COUNT(*) AS n FROM outbox WHERE op = 'upsert' GROUP BY entity_type"
+            ).fetchall()
+        }
+        conn.close()
+        self.assertGreaterEqual(counts.get("lead_core", 0), 1)
+        self.assertGreaterEqual(counts.get("company", 0), 1)
 
     def test_push_agent_events_to_relay_is_events_only(self):
         """_push_agent_events_to_relay no longer bundles lead_core_update/lead_workspace_update

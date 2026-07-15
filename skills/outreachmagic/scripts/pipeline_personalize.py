@@ -42,19 +42,33 @@ def resolve_company_id(
 
 
 def company_entity_key(conn: sqlite3.Connection, company_id: int) -> Optional[str]:
-    row = conn.execute("SELECT name, domain FROM companies WHERE id = ?", (company_id,)).fetchone()
-    if not row:
+    """The relay wire key: the immutable uid, not domain/name.
+
+    A company keyed by domain-or-name splits in two the moment enrichment
+    finds a domain for a name-only company (or vice versa) -- the old snapshot
+    orphans under the old key and a new one appears under the new one. The
+    same fix already shipped for leads (pipeline_migration.py backfills a uid
+    column on both `leads` and `companies` in the same migration, and the
+    relay's push/alias-resolution code already branches on kind == "company" —
+    this was always meant to land here too). Domain and name become aliases
+    (see build_company_sync_payload) instead of the identity itself.
+    """
+    row = conn.execute("SELECT uid FROM companies WHERE id = ?", (company_id,)).fetchone()
+    if not row or not row["uid"]:
         return None
-    dom = (row["domain"] or "").strip().lower()
-    if dom and dom not in SHARED_EMAIL_DOMAINS:
-        return f"company:domain:{dom}"
-    nm = (row["name"] or "").strip().lower()
-    return f"company:name:{nm}" if nm else None
+    return f"uid:{row['uid']}"
 
 
 def resolve_company_from_entity_key(conn: sqlite3.Connection, entity_key: str) -> Optional[int]:
     from pipeline import ensure_company
 
+    if entity_key.startswith("uid:"):
+        row = conn.execute(
+            "SELECT id FROM companies WHERE uid = ?", (entity_key[4:],),
+        ).fetchone()
+        return int(row["id"]) if row else None
+    # Legacy company:domain:/company:name: keys -- still needed to apply the
+    # ~61k pre-uid snapshots already stored in D1 on a `pull --full`.
     if not entity_key.startswith("company:"):
         return None
     parts = entity_key.split(":", 2)
@@ -412,6 +426,18 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
         payload["industry"] = row["industry"]
     if row["headcount"]:
         payload["headcount"] = row["headcount"]
+    # The relay keys the snapshot by uid now; domain and normalized name are
+    # aliases so relay_entity_aliases can still map either one back to this
+    # company (mirrors leads' aliases -- see _assemble_lead_core_sync_payload).
+    aliases: list[str] = []
+    if row["domain"]:
+        aliases.append(str(row["domain"]).strip().lower())
+    if row["name"]:
+        aliases.append(str(row["name"]).strip().lower())
+    seen: set[str] = set()
+    aliases = [a for a in aliases if a and not (a in seen or seen.add(a))]
+    if aliases:
+        payload["aliases"] = aliases
     pers = _company_personalization_dict(conn, company_id)
     if pers:
         values, dates, at = _personalization_sync_payload(pers)

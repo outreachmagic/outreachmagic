@@ -857,7 +857,8 @@ def main():
         metavar="VALUE",
         help=(
             "Show the exact sync payload for one entity, keyed by --type "
-            "(default lead: email, requires --workspace)"
+            "(default lead: email or lead id -- id is required for a weak-identity "
+            "lead that has no email at all; requires --workspace)"
         ),
     )
     sync_p.add_argument(
@@ -1837,13 +1838,23 @@ def main():
                     if not getattr(args, "workspace", None):
                         print(json.dumps({"error": "--workspace is required with sync --inspect --type lead"}))
                         sys.exit(1)
-                    email = value.lower()
-                    lead = _pipeline.find_lead(email=email)
-                    if not lead:
-                        print(json.dumps({"error": f"lead not found: {email}"}))
+                    # A weak-identity lead (LinkedIn/name+company only, no email
+                    # ever found) can't be looked up by email at all -- a bare
+                    # digit string is unambiguous, since no real email is ever
+                    # purely numeric, so it's treated as a lead id.
+                    if value.isdigit():
+                        lead_row = conn.execute(
+                            "SELECT id FROM leads WHERE id = ?", (int(value),),
+                        ).fetchone()
+                        lead_id = lead_row["id"] if lead_row else None
+                    else:
+                        lead = _pipeline.find_lead(email=value.lower())
+                        lead_id = lead["id"] if lead else None
+                    if not lead_id:
+                        print(json.dumps({"error": f"lead not found: {value}"}))
                         sys.exit(1)
                     result = _pipeline.inspect_sync_lead(
-                        conn, _pipeline.DEFAULT_ORG_ID, lead["id"], workspace_slug=args.workspace,
+                        conn, _pipeline.DEFAULT_ORG_ID, lead_id, workspace_slug=args.workspace,
                     )
                 elif inspect_type == "company":
                     row = conn.execute(

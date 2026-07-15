@@ -147,6 +147,20 @@ def _assemble_lead_core_sync_payload(
             if val and val != primary_email_norm:
                 secondary_emails.append(val)
             continue
+        if id_row["identity_type"] == "linkedin_sales_nav_id":
+            # Normally already set above from SYNC_PROFILE_FIELDS/
+            # row["linkedin_sales_nav_id"], which holds the canonical mixed
+            # case -- lead_identities stores this lowercase on purpose (the
+            # match key, see _sales_nav_match_key), so blindly assigning it
+            # here would clobber the mixed-case value with the lowercase one,
+            # same bug the aliases loop below already guards against for the
+            # same reason. Only fall back to the lowercase identity value in
+            # the rare case promote_linkedin_sales_nav_id_from_identities
+            # never ran (a field conflict with another lead blocked it), so
+            # the payload isn't missing the field entirely.
+            if not payload.get("linkedin_sales_nav_id"):
+                payload["linkedin_sales_nav_id"] = id_row["identity_value_normalized"]
+            continue
         payload[id_row["identity_type"]] = id_row["identity_value_normalized"]
     if secondary_emails:
         payload["secondary_emails"] = secondary_emails

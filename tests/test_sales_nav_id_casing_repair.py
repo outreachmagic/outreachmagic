@@ -98,6 +98,32 @@ def test_new_writes_preserve_canonical_case_on_leads_column():
     assert identity["identity_value_normalized"] == LOWER, "identity is folded for match"
 
 
+def test_sync_payload_carries_mixed_case_not_the_folded_match_key():
+    """_assemble_lead_core_sync_payload's SYNC_PROFILE_FIELDS loop sets
+    payload["linkedin_sales_nav_id"] from the leads column (mixed case)
+    first, but a second loop over identity_rows used to unconditionally
+    overwrite it with identity_value_normalized (the lowercase match key) --
+    the aliases loop already had a skip for exactly this reason, the scalar
+    field assignment loop didn't. Confirms the fix: the payload's scalar
+    field must carry the same mixed case as its own aliases entry."""
+    from lead_sync import build_lead_core_sync_payload
+
+    _reset_db()
+    om.resolve_lead(
+        email="payload-case@example.com",
+        name="Payload Case",
+        identities=[("linkedin_sales_nav_id", MIXED), ("email", "payload-case@example.com")],
+    )
+    conn = om.get_conn()
+    lead_id = conn.execute(
+        "SELECT id FROM leads WHERE email = 'payload-case@example.com'"
+    ).fetchone()["id"]
+    payload = build_lead_core_sync_payload(conn, om.DEFAULT_ORG_ID, lead_id)
+    conn.close()
+    assert payload["linkedin_sales_nav_id"] == MIXED
+    assert f"linkedin_sales_nav_id:{MIXED}" in payload["aliases"]
+
+
 def test_resolve_lead_matches_legacy_lowercase_and_upgrades_case():
     """End-to-end: a lead left over from before 664d4f5 (both the identity row
     and the leads column stored lowercase) must still be found by a fresh

@@ -73,7 +73,10 @@ class TestBuildImportProfile(unittest.TestCase):
         )
         self.assertEqual(
             profile["_provider_attempts"],
-            [{"provider": "trykitt", "status": "found", "result_email": "j@acme.com", "result_validity": "valid"}],
+            [{
+                "provider": "trykitt", "status": "found", "domain": "acme.com",
+                "result_email": "j@acme.com", "result_validity": "valid",
+            }],
         )
         self.assertEqual(profile["notes"], "trykitt verify: valid")
 
@@ -86,7 +89,10 @@ class TestBuildImportProfile(unittest.TestCase):
             find_result={"status": "not_found", "provider": "trykitt"},
             normalize_linkedin_fn=norm.normalize_linkedin,
         )
-        self.assertEqual(profile["_provider_attempts"], [{"provider": "trykitt", "status": "not_found"}])
+        self.assertEqual(
+            profile["_provider_attempts"],
+            [{"provider": "trykitt", "status": "not_found", "domain": "acme.com"}],
+        )
         self.assertNotIn("email", profile)
 
     def test_icypeas_found_tags_and_notes(self):
@@ -100,7 +106,10 @@ class TestBuildImportProfile(unittest.TestCase):
         )
         self.assertEqual(
             profile["_provider_attempts"],
-            [{"provider": "icypeas", "status": "found", "result_email": "j@acme.com", "result_validity": "ultra_sure"}],
+            [{
+                "provider": "icypeas", "status": "found", "domain": "acme.com",
+                "result_email": "j@acme.com", "result_validity": "ultra_sure",
+            }],
         )
         self.assertEqual(profile["notes"], "icypeas certainty: ultra_sure")
 
@@ -1195,6 +1204,47 @@ class TestLeadIdResolution(unittest.TestCase):
         self.assertEqual(payload["verify"]["recorded"], 1)
         items = mock_batch.call_args[0][1]
         self.assertEqual(items[0]["lead_id"], 42)
+
+    @patch.object(lemail.cc, "mark_batch_job_status")
+    @patch.object(lemail.cc, "record_batch_job")
+    @patch.object(lemail.cc, "find_pending_batch_job")
+    @patch.object(lemail, "_tag_mv_attempted")
+    @patch.object(lemail.cc, "run_verify_email_batch")
+    @patch.object(lemail, "_lead_id_map_for_emails")
+    @patch.object(lemail, "find_outreachmagic")
+    @patch.object(lemail, "_mv_provider")
+    def test_verify_bulk_poll_reads_result_field_not_just_status(
+        self, mock_provider, mock_om, mock_map, mock_batch, mock_tag,
+        mock_find_pending, mock_record, mock_mark,
+    ):
+        """debug-email-finding-domain-bug.md bonus bug: MV's CSV download
+        returns the outcome in the `result` field, not `status` -- the
+        auto-poll save path used to read only `status`, saving everything as
+        `unknown`. cmd_verify_download (a separate code path) already got
+        this right; this path must now match it."""
+        mv = MagicMock()
+        mv.create_bulk.return_value = {"file_id": "f1"}
+        mv.poll_until_complete.return_value = {"status": "finished"}
+        mv.download_results.return_value = [{"email": "a@x.com", "result": "ok"}]
+        mock_provider.return_value = mv
+        mock_om.return_value = Path("/tmp/om")
+        mock_map.return_value = {"a@x.com": 42}
+        mock_batch.return_value = {"recorded": 1, "errors": []}
+        mock_tag.return_value = {"status": "ok", "tagged": 1}
+        mock_find_pending.return_value = None
+
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+            f.write("email\na@x.com\n")
+            path = f.name
+        try:
+            buf = StringIO()
+            with redirect_stdout(buf):
+                lemail.cmd_verify_bulk(workspace="ws", file_path=path, poll=True)
+        finally:
+            Path(path).unlink()
+
+        items = mock_batch.call_args[0][1]
+        self.assertEqual(items[0]["status"], "valid")
 
     @patch.object(lemail, "_tag_mv_attempted")
     @patch.object(lemail.cc, "run_verify_email_batch")

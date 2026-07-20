@@ -785,6 +785,59 @@ def migrate_db(conn=None):
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE (org_id, identity_type, identity_value_normalized)
         );
+        -- Tiered company identities, mirroring lead_identities. 'domain' rows
+        -- are one-to-many per company (a real company can send mail from a
+        -- different domain than its website, or from several per-branch
+        -- domains) -- the UNIQUE constraint keeps one exact domain string
+        -- mapped to exactly one company while letting a company own several
+        -- such rows. role/verified_mx/source are nullable and opportunistic:
+        -- they rank candidate domains for email-finding (rank_company_domains)
+        -- but are never required or enforced. identity_type STRONG tier
+        -- ('domain', 'linkedin_company_id') is safe to auto-match on; MEDIUM
+        -- ('linkedin_company_url') gets tracked but conflicts are logged to
+        -- company_merge_candidates rather than auto-resolved, since the same
+        -- domain can map to more than one LinkedIn company page; WEAK
+        -- ('name_normalized') never auto-attaches anything on its own.
+        CREATE TABLE IF NOT EXISTS company_identities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            org_id TEXT NOT NULL,
+            company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+            identity_type TEXT NOT NULL,
+            identity_value_normalized TEXT NOT NULL,
+            role TEXT,
+            verified_mx INTEGER,
+            source TEXT,
+            is_verified INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (org_id, identity_type, identity_value_normalized)
+        );
+        CREATE INDEX IF NOT EXISTS idx_company_identities_company_type ON company_identities(company_id, identity_type);
+        -- Human-review queue for ambiguous company matches (name-only fallback
+        -- hits, LinkedIn-URL/domain conflicts, backfill audit findings). Shape
+        -- mirrors unmapped_campaign_queue: pending -> resolved/dismissed, full
+        -- context kept in payload_json. Never auto-resolved -- see
+        -- ensure_company()'s name-only fallback and merge_companies().
+        CREATE TABLE IF NOT EXISTS company_merge_candidates (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            candidate_company_id INTEGER,
+            existing_company_id INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            payload_json TEXT NOT NULL,
+            received_at TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_company_merge_candidates_status ON company_merge_candidates(status);
+        CREATE TABLE IF NOT EXISTS company_merges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            keep_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+            merge_id INTEGER NOT NULL,
+            reason TEXT,
+            merge_entity_key TEXT,
+            relay_delete_pushed INTEGER NOT NULL DEFAULT 0,
+            merged_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS workspace_leads (
             id TEXT PRIMARY KEY,
             org_id TEXT NOT NULL,
@@ -1484,6 +1537,15 @@ def migrate_db(conn=None):
           AND notes GLOB 'Auto-imported from * via relay'
           AND notes NOT GLOB '*[' || char(10) || char(13) || ']*'
     """)
+
+    # Stage D7: human-curated branch/department label on a company's known
+    # domain (e.g. "College of Engineering" on coe.northeastern.edu) --
+    # nullable, purely descriptive, never used by matching/ranking/confidence
+    # logic (same discipline as `role`).
+    try:
+        conn.execute("ALTER TABLE company_identities ADD COLUMN label TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     if own_conn:

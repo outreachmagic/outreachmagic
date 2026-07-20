@@ -58,6 +58,7 @@ PRESERVED_EXTRA_FIELDS = frozenset({
     "contact_order",
     "is_connected_linkedin",
     "is_linkedin_request_pending",
+    "linkedin_connected_at",
     "unified_lead_id",
     "source_id",
     "external_id",

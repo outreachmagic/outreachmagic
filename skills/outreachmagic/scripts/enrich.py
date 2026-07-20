@@ -44,6 +44,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 import shared as cc
 from constants import is_non_company_name
+from pipeline_utils import normalize_company_name as _canonical_normalize_company_name
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -222,18 +223,17 @@ def validate_company_domain(domain: str, company_name: str) -> tuple[str, str]:
 
 # ── Company matching (dedup) ─────────────────────────────────────────────────
 
-_COMPANY_STOPWORDS = frozenset({
-    "inc", "llc", "ltd", "corp", "corporation", "company", "co", "the", "and",
-    "group", "holdings", "international", "intl",
-})
-
-
 def normalize_company_name(name: str) -> str:
-    """Lowercase company token for fuzzy comparison."""
-    text = (name or "").lower().strip()
-    text = re.sub(r"[^\w\s]", " ", text)
-    tokens = [t for t in text.split() if t and t not in _COMPANY_STOPWORDS]
-    return " ".join(tokens)
+    """Lowercase company token for fuzzy comparison.
+
+    Delegates to pipeline_utils.normalize_company_name(), the canonical
+    normalizer (Stage C1) -- it strips a strict superset of this module's old
+    stopword list, which only ever widens (never narrows) what
+    companies_match() below considers a match, since that function's own
+    "cannot verify -> True" default and substring/overlap fallback logic stay
+    local to this module. See tests/test_company_name_normalizer.py.
+    """
+    return _canonical_normalize_company_name(name)
 
 
 def companies_match(expected: str, actual: str) -> bool:

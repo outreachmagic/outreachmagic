@@ -37,6 +37,7 @@ from waterfall import (
     provider_note_text,
     provider_request_delay_seconds,
     resolve_provider_names,
+    run_find_with_domain_fallback,
     run_find_with_fallback,
     validity_to_verify_status,
 )
@@ -139,7 +140,15 @@ def build_import_profile(
             p = str(attempt.get("provider") or "")
             if p not in ("trykitt", "icypeas"):
                 continue
-            entry: dict[str, Any] = {"provider": p, "status": str(attempt.get("status") or "unknown")}
+            # A domain-waterfall result (Stage D5) tags each attempt with the
+            # specific domain it was tried against, since a single find_result
+            # can now span several candidate domains -- prefer that over the
+            # single outer `domain` param, which only reflects the caller's
+            # primary domain and would mis-tag attempts against other domains.
+            entry: dict[str, Any] = {
+                "provider": p, "status": str(attempt.get("status") or "unknown"),
+                "domain": attempt.get("domain") or domain or None,
+            }
             if email and p == str(find_result.get("provider") or ""):
                 entry["result_email"] = email
                 entry["result_validity"] = validity
@@ -148,7 +157,7 @@ def build_import_profile(
         p = str(find_result.get("provider") or ("trykitt" if email else ""))
         if p in ("trykitt", "icypeas"):
             status = str(find_result.get("status") or ("found" if email else "unknown"))
-            entry = {"provider": p, "status": status}
+            entry = {"provider": p, "status": status, "domain": domain or None}
             if email:
                 entry["result_email"] = email
                 entry["result_validity"] = validity
@@ -527,11 +536,23 @@ def skip_reason_from_lookup(
     # found/not_found blocks retry; a prior "error" attempt is retry-eligible.
     attempts = lookup.get("provider_attempts") or []
     attempted_by_provider = {
-        str(a.get("provider")): str(a.get("status"))
+        str(a.get("provider")): a
         for a in attempts if isinstance(a, dict)
     }
     for p in provider_names:
-        if attempted_by_provider.get(p) in ("found", "not_found"):
+        prior = attempted_by_provider.get(p)
+        if not prior:
+            continue
+        status = str(prior.get("status"))
+        if status == "found":
+            return f"{p}_attempted"
+        if status == "not_found" and (prior.get("domain") or "").strip():
+            # A "not_found" attempt only blocks retry when it was a genuine
+            # domain search -- a prior attempt recorded with no domain never
+            # actually searched anything (the lead had none at the time), so
+            # once a real domain becomes available (e.g. from a later Serper
+            # domain_lookup) it must be retried, not skipped forever. See
+            # debug-email-finding-domain-bug.md.
             return f"{p}_attempted"
     return None
 
@@ -731,7 +752,17 @@ def run_batch(
 ) -> dict[str, Any]:
     people = load_people_json(input_path)
     if len(people) > opts.max_leads:
-        return {"error": f"max {opts.max_leads} people per run (use --max to raise)"}
+        # Used to hard-error here, requiring --max to match the input file
+        # size exactly -- clipping is what every caller actually wanted
+        # ("run at most N of these"), and the dropped rows are still in the
+        # input file for a follow-up run rather than losing the whole batch
+        # to an off-by-one on --max.
+        print(
+            f"⚠️  Input has {len(people)} people, clipping to --max {opts.max_leads} "
+            f"({len(people) - opts.max_leads} left for a follow-up run).",
+            file=sys.stderr, flush=True,
+        )
+        people = people[: opts.max_leads]
 
     provider_names = prompt_batch_provider_plan(
         cfg, cli_provider=opts.provider, yes=opts.yes, dry_run=opts.dry_run,
@@ -993,14 +1024,32 @@ def run_batch(
         if request_delay > 0:
             time.sleep(request_delay)
         name, domain, _company, linkedin, _lead_id = row_fields(row)
+        # Stage D5: when the OM lookup surfaced more than one known domain
+        # for this lead's company (company_identities tracking a website vs
+        # email-sending vs branch domain), waterfall across them in ranked
+        # order and stop at first success -- same cost as today for the
+        # common single-domain case, since run_find_with_domain_fallback()
+        # falls straight through to one provider-waterfall call when there's
+        # only one candidate.
+        lookup = lookup_by_index.get(idx)
+        company_domains = (lookup or {}).get("company_domains") or []
         try:
-            result = run_find_with_fallback(
-                cfg,
-                full_name=name,
-                domain=domain,
-                linkedin=linkedin,
-                provider_names=provider_names,
-            )
+            if len(company_domains) > 1:
+                result = run_find_with_domain_fallback(
+                    cfg,
+                    full_name=name,
+                    domains=company_domains,
+                    linkedin=linkedin,
+                    provider_names=provider_names,
+                )
+            else:
+                result = run_find_with_fallback(
+                    cfg,
+                    full_name=name,
+                    domain=domain,
+                    linkedin=linkedin,
+                    provider_names=provider_names,
+                )
         except CreditsExhaustedError as e:
             result = {
                 "status": "credits_exhausted",
@@ -1042,19 +1091,38 @@ def run_batch(
         if not chunk:
             continue
         with ThreadPoolExecutor(max_workers=len(chunk)) as pool:
-            futures = {pool.submit(_work, item): item for item in chunk}
+            chunk_start = time.time()
+            submit_times: dict[Any, float] = {}
+            futures = {}
+            for item in chunk:
+                fut = pool.submit(_work, item)
+                futures[fut] = item
+                submit_times[fut] = time.time()
+            completed_in_chunk = 0
+            slowest_call_s = 0.0
             for fut in as_completed(futures):
                 item = futures[fut]
                 idx, result = fut.result()
                 if _maybe_resync_on_auth(result):
                     idx, result = _work(item)
+                call_duration = time.time() - submit_times[fut]
+                slowest_call_s = max(slowest_call_s, call_duration)
                 results[idx] = result
                 done_count += 1
+                completed_in_chunk += 1
                 _record_result(idx, people[idx], result, writer, stats)
                 if done_count % CREDIT_RECHECK_EVERY == 0:
                     credits_stop = _mid_batch_credit_stop(cfg, api_providers, provider_names, stats)
                 if done_count % opts.progress_every == 0:
-                    print_progress(done_count, total_work, stats, start, provider=provider_label)
+                    tick_elapsed = max(time.time() - chunk_start, 0.001)
+                    print_progress(
+                        done_count, total_work, stats, start, provider=provider_label,
+                        resumed=resume_done,
+                        active_workers=len(chunk) - completed_in_chunk,
+                        pool_size=len(chunk),
+                        tick_rate=completed_in_chunk / tick_elapsed,
+                        slowest_call_s=slowest_call_s,
+                    )
         if credits_stop:
             _mark_credit_stop_remaining(pending_queue)
             pending_queue = []
@@ -1121,7 +1189,7 @@ def run_batch(
             print(
                 f"\n  Importing {len(profiles)} profile(s) to workspace {opts.workspace}"
                 f" ({profile_source})...",
-                flush=True,
+                file=sys.stderr, flush=True,
             )
             try:
                 batch_source = (opts.provider or "").strip() if opts.provider else ""
@@ -1159,7 +1227,7 @@ def run_batch(
                         save_out["verify"] = vout
                 print(
                     f"  Imported: {len(profiles)} profile(s), verified {verified} record(s)",
-                    flush=True,
+                    file=sys.stderr, flush=True,
                 )
                 import_status = {
                     "reason": "success",
@@ -1169,29 +1237,77 @@ def run_batch(
                     "import_created": import_created,
                 }
             except Exception as e:
-                save_out = {"error": str(e), "imported": 0}
-                import_status = {
-                    "reason": "failed",
-                    "error": str(e),
-                    "source": profile_source,
-                    "recovery_hint": (
-                        f"python3 scripts/email_finder.py import-to-om --file {csv_hint}"
-                        f" --workspace {opts.workspace}"
-                    ),
-                }
-                cc.print_import_failure_recovery(
-                    e,
-                    skill="email-finder/batch-find",
-                    data_paths=[csv_hint, json_hint],
-                    recovery_lines=[
-                        "Re-sync to OM:",
-                        f"python3 scripts/email_finder.py import-to-om --file {csv_hint}"
-                        f" --workspace {opts.workspace}",
-                        f"python3 scripts/email_finder.py import-to-om --file {json_hint}"
-                        f" --workspace {opts.workspace}",
-                        "Or re-run batch-find (resume skips completed API rows).",
-                    ],
+                # Auto-import can fail for a transient reason (network blip,
+                # a stray non-JSON line breaking a subprocess response
+                # parser, a timeout) that a bare retry clears on its own --
+                # try once automatically before falling back to printing
+                # manual recovery instructions, since the checkpoint/profiles
+                # already in memory are exactly what a manual `import-to-om`
+                # re-run would use anyway.
+                print(
+                    f"\n⚠️  Auto-import failed ({e}); retrying once...",
+                    file=sys.stderr, flush=True,
                 )
+                try:
+                    retry_imported = cc.save_email_find_profiles(
+                        om_dir,
+                        profiles,
+                        workspace=opts.workspace,
+                        source=batch_source,
+                        source_detail="email-finder/batch-retry",
+                        skill_dir=skill_dir,
+                    )
+                    import_created = int(retry_imported.get("created") or 0)
+                    save_out = {
+                        "imported": len(profiles), "import": retry_imported,
+                        "created": import_created, "retried": True,
+                    }
+                    if retry_imported.get("mode") == "apply_email_find_results":
+                        verified = int(retry_imported.get("recorded") or 0)
+                    else:
+                        verify_items = build_verify_batch(retry_imported, profiles)
+                        if verify_items:
+                            vout = cc.run_verify_email_batch(om_dir, verify_items, skill_dir=skill_dir)
+                            verified = int(vout.get("recorded") or 0)
+                            save_out["verify"] = vout
+                    print(
+                        f"  Retry succeeded: {len(profiles)} profile(s) imported, "
+                        f"verified {verified} record(s)",
+                        file=sys.stderr, flush=True,
+                    )
+                    import_status = {
+                        "reason": "success_after_retry",
+                        "source": profile_source,
+                        "imported_count": len(profiles),
+                        "verified_count": verified,
+                        "import_created": import_created,
+                        "first_attempt_error": str(e),
+                    }
+                except Exception as retry_exc:
+                    save_out = {"error": str(retry_exc), "imported": 0, "first_attempt_error": str(e)}
+                    import_status = {
+                        "reason": "failed",
+                        "error": str(retry_exc),
+                        "first_attempt_error": str(e),
+                        "source": profile_source,
+                        "recovery_hint": (
+                            f"python3 scripts/email_finder.py import-to-om --file {csv_hint}"
+                            f" --workspace {opts.workspace}"
+                        ),
+                    }
+                    cc.print_import_failure_recovery(
+                        retry_exc,
+                        skill="email-finder/batch-find",
+                        data_paths=[csv_hint, json_hint],
+                        recovery_lines=[
+                            "Re-sync to OM:",
+                            f"python3 scripts/email_finder.py import-to-om --file {csv_hint}"
+                            f" --workspace {opts.workspace}",
+                            f"python3 scripts/email_finder.py import-to-om --file {json_hint}"
+                            f" --workspace {opts.workspace}",
+                            "Or re-run batch-find (resume skips completed API rows).",
+                        ],
+                    )
 
     elapsed = time.time() - start
     auth_n = int(stats.get("auth_errors", 0))

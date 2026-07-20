@@ -24,7 +24,15 @@ def email_domain(email: Optional[str]) -> Optional[str]:
 
 
 def normalize_company_domain(raw: Optional[str]) -> Optional[str]:
-    """Normalize a company domain to canonical form: 'acme.com'."""
+    """Normalize a company domain to canonical form: 'acme.com'.
+
+    See also: company_registrable_domain(), a few lines below -- that one is
+    for COMPARING two already-normalized domains, never for storage. This
+    function is the single source of truth for what gets stored/matched on
+    (company_identities.identity_value_normalized, ensure_company()'s domain
+    lookups, the wire aliases array); do not fold registrable-domain
+    collapsing into it.
+    """
     if not raw:
         return None
     text = str(raw).strip().lower()
@@ -39,6 +47,84 @@ def normalize_company_domain(raw: Optional[str]) -> Optional[str]:
     if not text or "." not in text or " " in text or len(text) > 253:
         return None
     return text
+
+
+# Curated, stdlib-only approximation of the Public Suffix List's "two-label
+# effective TLD" cases (co.uk, com.au, etc.) -- NOT a full PSL mirror (this
+# codebase has zero third-party dependencies, confirmed, and a full PSL
+# library isn't warranted for a dataset that's overwhelmingly US .edu/.com/
+# .org/.net/.io). Exists specifically so company_registrable_domain() never
+# collapses e.g. "foo.co.uk" and "bar.co.uk" to the same "co.uk" value, which
+# a naive last-two-labels split would do.
+_MULTI_LABEL_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "sch.uk", "ltd.uk", "plc.uk", "me.uk",
+    "co.nz", "org.nz", "govt.nz", "ac.nz", "net.nz", "school.nz",
+    "com.au", "org.au", "edu.au", "gov.au", "net.au", "asn.au", "id.au",
+    "co.za", "org.za", "gov.za", "net.za", "ac.za",
+    "co.in", "org.in", "gov.in", "net.in", "ac.in",
+    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
+    "com.sg", "org.sg", "gov.sg", "edu.sg",
+    "com.br", "org.br", "gov.br", "net.br",
+    "com.mx", "org.mx", "gov.mx",
+    "co.il", "co.kr", "co.id", "com.cn",
+})
+
+
+def company_registrable_domain(domain: Optional[str]) -> Optional[str]:
+    """eTLD+1 (registrable domain) for COMPARISON purposes only.
+
+    Used to decide whether two domains plausibly belong to the same
+    organization (e.g. "mail.wvu.edu" and "wvu.edu" both reduce to
+    "wvu.edu") -- never for storage. A future maintainer must not "simplify"
+    by folding this into normalize_company_domain(): doing so would collapse
+    distinct domain identities that company_identities/ensure_company()/
+    rank_company_domains() deliberately track separately (multi-domain
+    tracking is a shipped feature, not an oversight).
+
+    Expects an already-normalize_company_domain()-normalized input (lowercase,
+    no scheme/www/path). Returns None for falsy/malformed input.
+    """
+    if not domain or "." not in domain:
+        return None
+    labels = domain.split(".")
+    if len(labels) <= 2:
+        return domain
+    last_two = ".".join(labels[-2:])
+    if last_two in _MULTI_LABEL_SUFFIXES and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return last_two
+
+
+_COMPANY_GENERIC_WORDS_RE = re.compile(
+    r"\b(?:university|college|corp|corporation|inc|llc|ltd|co|company|technologies|"
+    r"technology|systems|services|solutions|group|associates|partners|school|of|the|and|at|"
+    r"incorporated|holdings|international|intl)\b",
+    re.I,
+)
+_COMPANY_PUNCT_RE = re.compile(r"[,.\-()&]")
+
+
+def normalize_company_name(name: Optional[str]) -> str:
+    """Canonical company-name normalizer: strip punctuation and generic
+    business/legal words, collapse whitespace, lowercase.
+
+    Single source of truth for "is this the same company name" -- the
+    codebase used to have three separate, uncoordinated implementations of
+    this (pipeline_dedup.normalize_company(), enrich.normalize_company_name(),
+    and constants.squash_company_name()) none of which were used by
+    ensure_company()'s actual company-matching fallback. This is their
+    replacement; pipeline_dedup and enrich now delegate here.
+
+    Deliberately NOT a replacement for workspace_routing.normalize_company_name_key():
+    that one feeds build_import_key_fingerprint(), a hash relied on to
+    re-match already-imported weak-identity leads on repeat import, and
+    changing its stripping rules would change already-persisted fingerprints.
+    """
+    if not name:
+        return ""
+    text = _COMPANY_PUNCT_RE.sub(" ", str(name))
+    text = _COMPANY_GENERIC_WORDS_RE.sub(" ", text)
+    return " ".join(text.split()).lower()
 
 
 def normalize_email(email: Optional[str]) -> Optional[str]:

@@ -1231,6 +1231,32 @@ def find_lead_by_identity(
     return None
 
 
+def find_company_by_identity(
+    conn: sqlite3.Connection,
+    org_id: str,
+    identity_type: str,
+    value_normalized: str,
+) -> Optional[int]:
+    """Mirrors find_lead_by_identity() for companies. 'domain' falls back to
+    the legacy companies.domain column, since most of the 60k+ existing
+    companies predate company_identities and were never backfilled into it.
+    linkedin_company_id/linkedin_company_url/name_normalized are brand-new
+    identity types with no legacy column to fall back to."""
+    row = conn.execute(
+        """SELECT company_id FROM company_identities
+           WHERE org_id = ? AND identity_type = ? AND identity_value_normalized = ?""",
+        (org_id, identity_type, value_normalized),
+    ).fetchone()
+    if row:
+        return int(row["company_id"])
+    if identity_type == "domain":
+        row = conn.execute(
+            "SELECT id FROM companies WHERE domain = ?", (value_normalized,)
+        ).fetchone()
+        return int(row["id"]) if row else None
+    return None
+
+
 _IDENTITY_VALUE_NORMALIZERS = {
     "email": normalize_email,
     "linkedin_url": normalize_linkedin,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 _USE_COLOR = hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
@@ -80,6 +81,10 @@ def record_verify_status(stats: dict[str, Any], validity: str, provider: str) ->
     v[key] = int(v.get(key, 0)) + 1
 
 
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def print_progress(
     done: int,
     total: int,
@@ -88,6 +93,11 @@ def print_progress(
     *,
     provider: str = "",
     file=sys.stderr,
+    resumed: int = 0,
+    active_workers: Optional[int] = None,
+    pool_size: Optional[int] = None,
+    tick_rate: Optional[float] = None,
+    slowest_call_s: Optional[float] = None,
 ) -> None:
     stats = _init_stats(stats)
     elapsed = max(time.time() - start_time, 0.001)
@@ -103,7 +113,12 @@ def print_progress(
 
     print(file=file)
     print("═" * 60, file=file)
-    print(f" PROGRESS: {done}/{total} leads ({pct:.1f}%)  elapsed: {elapsed_str}", file=file)
+    print(
+        f" [{_utc_timestamp()}] PROGRESS: {done}/{total} leads ({pct:.1f}%)  elapsed: {elapsed_str}",
+        file=file,
+    )
+    if resumed:
+        print(f" ({done} new + {resumed} resumed = {done + resumed} total handled)", file=file)
     print("─" * 60, file=file)
     print(f" Found:      {stats.get('found', 0):>5}  ({hit_rate:.1f}% hit rate)  {bar}", file=file)
     print(f" Not found:  {stats.get('not_found', 0):>5}", file=file)
@@ -115,10 +130,21 @@ def print_progress(
     print("─" * 60, file=file)
     print(f" {_api_calls_line(stats)}", file=file)
     print(f" Rate:       {rate:.2f}/s  ETA: {eta_str}", file=file)
+    if active_workers is not None and pool_size is not None:
+        worker_line = f" Workers:    {active_workers}/{pool_size} active"
+        if tick_rate is not None:
+            worker_line += f"  |  this tick: {tick_rate:.1f}/s"
+        if slowest_call_s is not None:
+            worker_line += f"  |  slowest call: {slowest_call_s:.1f}s"
+        print(worker_line, file=file)
     if provider:
         print(f" Provider:   {provider}", file=file)
     print("═" * 60, file=file)
     print(file=file)
+    # Piped/buffered output managers (e.g. `| tail -30`) don't see these lines
+    # until the stream is flushed -- without this, a running batch-find looks
+    # completely blank in a piped terminal tab until the whole process exits.
+    file.flush()
 
 
 def _import_status_lines(

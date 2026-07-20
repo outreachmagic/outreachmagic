@@ -176,3 +176,54 @@ def run_find_with_fallback(
         final["provider_attempts"] = attempts
         return final
     return {"status": "skipped", "reason": "no providers available", "provider_attempts": attempts}
+
+
+def run_find_with_domain_fallback(
+    cfg: dict[str, Any],
+    *,
+    full_name: str,
+    domains: list[str],
+    linkedin: str = "",
+    provider_names: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Try each candidate domain in ranked-best-first order, running the
+    existing provider waterfall (run_find_with_fallback) against each one,
+    and stop at the first domain+provider combination that returns an email
+    -- the same "stop at first success" shape run_find_with_fallback already
+    uses across providers, just one level up across domains. Does NOT try
+    every domain once one succeeds (deliberately, for cost: N candidate
+    domains would otherwise mean N x the API spend per lead).
+
+    provider_attempts in the result covers every domain actually tried, each
+    tagged with its own "domain" -- build_import_profile() (batch_runner.py)
+    reads that per-attempt domain when present, so lead_provider_attempts
+    ends up with the correct domain for every attempt, not just the winner.
+    """
+    if not domains:
+        return {"status": "skipped", "reason": "no domains available", "provider_attempts": []}
+    all_attempts: list[dict[str, Any]] = []
+    last_result: dict[str, Any] = {}
+    for domain in domains:
+        result = run_find_with_fallback(
+            cfg, full_name=full_name, domain=domain, linkedin=linkedin, provider_names=provider_names,
+        )
+        last_result = result
+        for attempt in result.get("provider_attempts") or []:
+            tagged = dict(attempt)
+            tagged["domain"] = domain
+            all_attempts.append(tagged)
+        if result.get("email"):
+            out = dict(result)
+            out["provider_attempts"] = all_attempts
+            out["winning_domain"] = domain
+            return out
+        if result.get("status") == "credits_exhausted":
+            # No provider has credits left -- trying another domain can't
+            # help, same stop condition run_find_with_fallback() itself uses
+            # once every provider is exhausted.
+            break
+    out = dict(last_result) if last_result else {"status": "not_found"}
+    out["provider_attempts"] = all_attempts
+    out.setdefault("email", None)
+    out.setdefault("validity", None)
+    return out

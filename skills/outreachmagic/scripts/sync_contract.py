@@ -61,6 +61,7 @@ SYNC_MAP = {
     # --- company ---------------------------------------------------------
     "companies":                     ("company", "{row}.id"),
     "company_personalization":       ("company", "{row}.company_id"),
+    "company_identities":            ("company", "{row}.company_id"),
     # --- sender ----------------------------------------------------------
     # sender_domains is keyed by the domain itself, not a surrogate id.
     "sender_accounts":               ("sender_account", "{row}.id"),
@@ -134,6 +135,9 @@ SYNCED_COLUMNS: dict[str, frozenset[str]] = {
         "uid",  # transmitted as the entity_key (uid:<uid>), not a payload field
     }),
     "company_personalization": frozenset({"field_name", "field_value", "field_date", "processed_at"}),
+    "company_identities": frozenset({
+        "identity_type", "identity_value_normalized", "role", "label", "verified_mx",
+    }),
     "sender_accounts": frozenset({
         "email", "first_name", "last_name", "provider", "daily_limit", "warmup_status",
         "source_created_at", "status", "spf_status", "dkim_status", "dmarc_status",
@@ -237,6 +241,14 @@ NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
     "company_personalization": {
         "company_id": "join key; covered by the parent company entity_id",
         "source_hash": "local change-detection hash, not needed by the relay",
+    },
+    "company_identities": {
+        "id": "local autoincrement surrogate; not addressable from the relay side",
+        "org_id": "implicit from the authenticated request, not carried per-row",
+        "company_id": "join key; covered by the parent company entity_id",
+        "source": "local provenance for domain ranking (import|serper|manual|enrichment|relay_alias|relay_pull), not read by the company payload builder",
+        "is_verified": "not selected by the company payload query",
+        "created_at": "not selected by the company payload query",
     },
     "sender_accounts": {
         "id": "local surrogate; not part of the payload body",

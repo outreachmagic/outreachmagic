@@ -92,6 +92,7 @@ from workspace_routing import (
     ensure_default_org_workspace,
     ensure_organization,
     extract_campaign_context,
+    find_company_by_identity,
     find_lead_by_identity,
     find_match_method_for_lead,
     format_no_campaign_event_message,
@@ -252,6 +253,7 @@ from relay_ingest import (
 from pipeline_utils import (
     _dedupe_tags,
     _parse_tags,
+    company_registrable_domain,
     email_domain,
     furthest_stage,
     normalize_company_domain,
@@ -389,6 +391,27 @@ _COMPANY_SELECT = (
 )
 
 
+def _log_company_merge_candidate(
+    conn: sqlite3.Connection,
+    *,
+    existing_company_id: int,
+    candidate_company_id: Optional[int],
+    reason: str,
+    payload: dict,
+) -> str:
+    """Human-review queue row for an ambiguous company match -- never an
+    auto-merge. See company_merge_candidates (Stage C5) and the `company
+    merge-review` CLI."""
+    cmc_id = f"cmc_{datetime.now(timezone.utc).timestamp()}".replace(".", "")
+    conn.execute(
+        """INSERT INTO company_merge_candidates
+               (id, org_id, candidate_company_id, existing_company_id, reason, status, payload_json)
+           VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+        (cmc_id, DEFAULT_ORG_ID, candidate_company_id, existing_company_id, reason, json.dumps(payload)),
+    )
+    return cmc_id
+
+
 def ensure_company(
     conn: sqlite3.Connection,
     name: Optional[str] = None,
@@ -400,6 +423,7 @@ def ensure_company(
     hq_country: Optional[str] = None,
     *,
     authoritative: bool = False,
+    authoritative_domain_attach: bool = False,
     company_cache: Optional[dict] = None,
 ) -> Optional[int]:
     """Find or create company row; match business domain first, then exact name.
@@ -412,6 +436,15 @@ def ensure_company(
     _update_company_fields tell a no-op write from a real one without going back
     to the database. Populated as a side effect; omit for one-off calls outside
     a batch.
+
+    authoritative_domain_attach: only pass True when the caller can guarantee
+    the incoming (name, domain) pair is one atomic fact about one entity --
+    e.g. resolve_lead() reconciling a single lead's own website-domain vs
+    email-domain within the same resolution event. In that case attaching the
+    domain to a name-matched row is safe. Everywhere else, a name-only match
+    never auto-attaches an incoming domain: two unrelated companies can share
+    a generic name, so it logs a company_merge_candidates row for human
+    review and creates a new company row instead (Stage C4).
     """
     domain = (domain or "").strip().lower() or None
     if domain and domain in SHARED_EMAIL_DOMAINS:
@@ -457,23 +490,96 @@ def ensure_company(
                 rec = cand
 
     if rec is None and domain:
-        row = conn.execute(_COMPANY_SELECT + "WHERE domain = ?", (domain,)).fetchone()
-        if row:
-            rec = dict(row)
+        cid = find_company_by_identity(conn, DEFAULT_ORG_ID, "domain", domain)
+        if cid:
+            row = conn.execute(_COMPANY_SELECT + "WHERE id = ?", (cid,)).fetchone()
+            if row:
+                rec = dict(row)
+
+    pending_candidate: Optional[dict] = None
     if rec is None and name:
         row = conn.execute(
             _COMPANY_SELECT + "WHERE lower(name) = lower(?)", (name,)
         ).fetchone()
         if row:
-            rec = dict(row)
+            existing = dict(row)
             # domain is confirmed free by the SELECT above (or None), so this
             # write can't collide with a different company's domain.
-            if domain and not rec.get("domain"):
-                conn.execute(
-                    "UPDATE companies SET domain = ?, updated_at = datetime('now') WHERE id = ?",
-                    (domain, rec["id"]),
-                )
-                rec["domain"] = domain
+            if domain and not existing.get("domain"):
+                if authoritative_domain_attach:
+                    conn.execute(
+                        "UPDATE companies SET domain = ?, updated_at = datetime('now') WHERE id = ?",
+                        (domain, existing["id"]),
+                    )
+                    existing["domain"] = domain
+                    rec = existing
+                else:
+                    # Two unrelated companies can share a generic name --
+                    # never silently attach the domain here. Fall through to
+                    # create a new row and let a human reconcile via the
+                    # company merge-review queue (Stage C4/C5). Confidence:
+                    # rank_company_domains() surfaces any domains the
+                    # name-matched row already owns via company_identities
+                    # (companies.domain is empty here by construction), so
+                    # compare against those rather than a single legacy value.
+                    known_domains = rank_company_domains(conn, existing["id"])
+                    if known_domains:
+                        confidence = max(
+                            (_classify_company_domain_pair(domain, d) for d in known_domains),
+                            key=pipeline_dedup.confidence_rank,
+                        )
+                    else:
+                        confidence = "LOW"
+                    pending_candidate = {
+                        "existing_company_id": existing["id"],
+                        "existing_name": existing["name"],
+                        "existing_domain": existing.get("domain"),
+                        "incoming_name": name,
+                        "incoming_domain": domain,
+                        "incoming_industry": industry,
+                        "incoming_headcount": headcount,
+                        "confidence": confidence,
+                    }
+            elif domain and existing.get("domain") and domain != existing["domain"]:
+                # Existing row already has ITS OWN domain that differs from
+                # the incoming one -- used to silently fall through to
+                # `rec = existing` below, discarding the incoming domain
+                # entirely with no record anywhere (Stage D3b fix).
+                pair_confidence = _classify_company_domain_pair(domain, existing["domain"])
+                if pair_confidence == "HIGH":
+                    # Same registrable domain as a row already positively
+                    # identified by name -- a subdomain of an org's own
+                    # domain is a strong, hard-to-spoof signal (DNS
+                    # delegation implies control of the parent zone), unlike
+                    # name-string similarity alone. Safe to record as an
+                    # ADDITIONAL identity on the SAME row without a merge or
+                    # human review -- this never merges two potentially
+                    # different company rows, it only recognizes a subdomain
+                    # of an already-confirmed one.
+                    conn.execute(
+                        """INSERT OR IGNORE INTO company_identities
+                               (org_id, company_id, identity_type, identity_value_normalized, source)
+                           VALUES (?, ?, 'domain', ?, 'ensure_company_registrable_match')""",
+                        (DEFAULT_ORG_ID, existing["id"], domain),
+                    )
+                    rec = existing
+                else:
+                    # Different registrable domain -- could be a real
+                    # subsidiary, could be a wholly different entity. Never
+                    # silently attach or reuse; same pattern as the
+                    # empty-domain branch above.
+                    pending_candidate = {
+                        "existing_company_id": existing["id"],
+                        "existing_name": existing["name"],
+                        "existing_domain": existing.get("domain"),
+                        "incoming_name": name,
+                        "incoming_domain": domain,
+                        "incoming_industry": industry,
+                        "incoming_headcount": headcount,
+                        "confidence": pair_confidence,
+                    }
+            else:
+                rec = existing
 
     if rec is None:
         display_name = name or (domain or "Unknown")
@@ -490,6 +596,14 @@ def ensure_company(
             "headcount": headcount, "headcount_numeric": hc_num,
             "hq_city": hq_city, "hq_state": hq_state, "hq_country": hq_country,
         }
+        if pending_candidate is not None:
+            _log_company_merge_candidate(
+                conn,
+                existing_company_id=pending_candidate["existing_company_id"],
+                candidate_company_id=cid,
+                reason="name_only_domain_attach",
+                payload=pending_candidate,
+            )
         _remember(rec)
         return cid
 
@@ -500,6 +614,161 @@ def ensure_company(
     )
     _remember(rec)
     return rec["id"]
+
+
+def company_domain_email_stats(conn: sqlite3.Connection, company_id: int) -> dict[str, dict]:
+    """{domain: {"found": N, "attempted": M}} computed on demand from
+    lead_provider_attempts, joined through leads.company_id (indexed:
+    idx_leads_company). Deliberately NOT a maintained counter column: the
+    underlying domain-per-attempt data is already synced to the relay
+    (lead_provider_observations.domain), so this is correct on any machine
+    immediately after a pull with zero extra work, and merge_companies()
+    needs no special-case summing logic -- leads already carry their own
+    attempt history through a company_id reassignment."""
+    rows = conn.execute(
+        """SELECT lpa.domain,
+                  SUM(CASE WHEN lpa.status = 'found' THEN 1 ELSE 0 END) AS found,
+                  COUNT(*) AS attempted
+           FROM lead_provider_attempts lpa
+           JOIN leads l ON l.id = lpa.lead_id
+           WHERE l.company_id = ? AND lpa.domain IS NOT NULL AND lpa.domain != ''
+           GROUP BY lpa.domain""",
+        (company_id,),
+    ).fetchall()
+    return {r["domain"]: {"found": r["found"], "attempted": r["attempted"]} for r in rows}
+
+
+def _domain_rank_score(row: dict) -> tuple:
+    found_count = row.get("found") or 0
+    role_score = {"email": 2, "branch": 1, "website": 1}.get(row.get("role"), 0)
+    verified_score = 1 if row.get("verified_mx") else 0
+    return (found_count, role_score, verified_score, row.get("created_at") or "")
+
+
+def rank_company_domains(conn: sqlite3.Connection, company_id: int) -> list[str]:
+    """Best-first list of domains this company is known to send/host mail
+    from. A real company often has more than one legitimate domain (website
+    domain vs email-sending domain vs per-branch domain) -- email-finding
+    code should try these in order rather than assuming a single canonical
+    domain. Always includes the legacy single companies.domain column
+    alongside whatever company_identities has -- ensure_company() only ever
+    writes that column directly, so a company with exactly one domain (most
+    of the 60k+ companies that predate company_identities) would otherwise
+    silently drop out of ranking the moment any OTHER domain got tracked for
+    it (e.g. via a merge).
+
+    Ranked primarily by how many emails have actually been found on each
+    domain (Stage D6) -- a domain that's never been tried (found=0, the
+    common case) falls through to today's role/verified/recency ordering
+    unchanged, so untried domains are never penalized relative to each
+    other, only outranked by domains with a proven track record.
+    """
+    rows = [
+        dict(r) for r in conn.execute(
+            """SELECT identity_value_normalized, role, verified_mx, created_at
+               FROM company_identities WHERE company_id = ? AND identity_type = 'domain'""",
+            (company_id,),
+        ).fetchall()
+    ]
+    legacy = conn.execute("SELECT domain FROM companies WHERE id = ?", (company_id,)).fetchone()
+    if legacy and legacy["domain"] and not any(
+        r["identity_value_normalized"] == legacy["domain"] for r in rows
+    ):
+        rows.append({
+            "identity_value_normalized": legacy["domain"],
+            "role": None, "verified_mx": None, "created_at": "",
+        })
+    if not rows:
+        return []
+    stats = company_domain_email_stats(conn, company_id)
+    for r in rows:
+        r["found"] = (stats.get(r["identity_value_normalized"]) or {}).get("found", 0)
+    ranked = sorted(rows, key=_domain_rank_score, reverse=True)
+    seen: set[str] = set()
+    out: list[str] = []
+    for r in ranked:
+        val = r["identity_value_normalized"]
+        if val and val not in seen:
+            seen.add(val)
+            out.append(val)
+    return out
+
+
+def company_domain_stats_report(conn: sqlite3.Connection, company_id: int) -> Optional[dict]:
+    """pipeline.py company domain-stats: full found/attempted/role breakdown
+    per known domain, in the same best-first order rank_company_domains()
+    uses -- the "easily tell and check" answer for domain prioritization."""
+    company = conn.execute(
+        "SELECT id, name FROM companies WHERE id = ?", (company_id,),
+    ).fetchone()
+    if not company:
+        return None
+    rows = {
+        r["identity_value_normalized"]: dict(r)
+        for r in conn.execute(
+            """SELECT identity_value_normalized, role, verified_mx, label
+               FROM company_identities WHERE company_id = ? AND identity_type = 'domain'""",
+            (company_id,),
+        ).fetchall()
+    }
+    legacy = conn.execute("SELECT domain FROM companies WHERE id = ?", (company_id,)).fetchone()
+    if legacy and legacy["domain"] and legacy["domain"] not in rows:
+        rows[legacy["domain"]] = {
+            "identity_value_normalized": legacy["domain"], "role": None, "verified_mx": None, "label": None,
+        }
+    stats = company_domain_email_stats(conn, company_id)
+    ranked_domains = rank_company_domains(conn, company_id)
+    domains = []
+    for rank, domain in enumerate(ranked_domains, start=1):
+        meta = rows.get(domain, {})
+        s = stats.get(domain, {})
+        domains.append({
+            "domain": domain,
+            "found": s.get("found", 0),
+            "attempted": s.get("attempted", 0),
+            "role": meta.get("role"),
+            "label": meta.get("label"),
+            "rank": rank,
+        })
+    return {"company_id": company["id"], "company_name": company["name"], "domains": domains}
+
+
+def set_company_domain_label(company_id: int, domain: str, label: str) -> dict:
+    """pipeline.py company domain-label: attach a human-curated branch/
+    department label to one of a company's known domains. Purely descriptive
+    -- never used by matching/ranking/confidence logic (same discipline as
+    role). Only sets a label on a domain already tracked for this company
+    (via company_identities or the legacy companies.domain column); does not
+    invent a new domain identity as a side effect."""
+    domain_norm = normalize_company_domain(domain)
+    if not domain_norm:
+        return {"status": "error", "error": f"invalid domain: {domain}"}
+    conn = get_conn()
+    try:
+        company = conn.execute("SELECT id, domain FROM companies WHERE id = ?", (company_id,)).fetchone()
+        if not company:
+            return {"status": "error", "error": f"company not found: {company_id}"}
+        row = conn.execute(
+            """SELECT id FROM company_identities
+               WHERE company_id = ? AND identity_type = 'domain' AND identity_value_normalized = ?""",
+            (company_id, domain_norm),
+        ).fetchone()
+        if row:
+            conn.execute("UPDATE company_identities SET label = ? WHERE id = ?", (label, row["id"]))
+        elif company["domain"] == domain_norm:
+            # Legacy single-column domain, no company_identities row yet --
+            # create one so the label has somewhere to live.
+            conn.execute(
+                """INSERT INTO company_identities (org_id, company_id, identity_type, identity_value_normalized, label, source)
+                   VALUES (?, ?, 'domain', ?, ?, 'manual_label')""",
+                (DEFAULT_ORG_ID, company_id, domain_norm, label),
+            )
+        else:
+            return {"status": "error", "error": f"domain not known for company {company_id}: {domain_norm}"}
+        conn.commit()
+        return {"status": "ok", "company_id": company_id, "domain": domain_norm, "label": label}
+    finally:
+        conn.close()
 
 
 def _update_company_fields(
@@ -597,6 +866,144 @@ def backfill_companies_from_leads(conn: sqlite3.Connection):
                    WHERE lower(company) = lower(?) AND (company_id IS NULL)""",
                 (cid, name),
             )
+
+
+def _classify_company_domain_pair(domain_a: Optional[str], domain_b: Optional[str]) -> str:
+    """HIGH/MEDIUM/LOW confidence that two company domains belong to the same
+    real-world organization -- reuses pipeline_dedup.CONFIDENCE_ORDER's
+    vocabulary rather than inventing a parallel one.
+
+    HIGH: same registrable domain (eTLD+1), differing subdomain label --
+    mechanically explainable (e.g. mail.wvu.edu vs wvu.edu).
+    MEDIUM: both real (non-personal, non-null) domains, different registrable
+    domains -- genuine business judgment (e.g. wvu.edu vs wvup.edu).
+    LOW: at least one side is None or a personal-email domain -- no real
+    signal to compare.
+    """
+    a = domain_a if domain_a and domain_a not in SHARED_EMAIL_DOMAINS else None
+    b = domain_b if domain_b and domain_b not in SHARED_EMAIL_DOMAINS else None
+    if a is None or b is None:
+        return "LOW"
+    if company_registrable_domain(a) == company_registrable_domain(b):
+        return "HIGH"
+    return "MEDIUM"
+
+
+def company_dedup_baseline_audit(conn: sqlite3.Connection, limit: Optional[int] = None) -> list[dict]:
+    """Read-only report on existing companies sharing an exact (lower-cased)
+    name. For each member of a duplicate-name group, surfaces whether its
+    attached leads' own email domains disagree with the domain that company
+    row ended up with -- that disagreement is the fingerprint of a
+    pre-existing silent-merge from ensure_company()'s old name-only fallback.
+    Writes nothing; feeds the Stage C7 backfill queue (company_merge_candidates).
+    """
+    groups = conn.execute(
+        """SELECT lower(name) AS name_lower, COUNT(*) AS n
+           FROM companies GROUP BY lower(name) HAVING COUNT(*) > 1
+           ORDER BY n DESC"""
+    ).fetchall()
+    report: list[dict] = []
+    for g in groups:
+        companies = conn.execute(
+            """SELECT id, name, domain, industry, headcount, hq_city, hq_state, hq_country
+               FROM companies WHERE lower(name) = ? ORDER BY id""",
+            (g["name_lower"],),
+        ).fetchall()
+        members = []
+        for c in companies:
+            domains = sorted({
+                row["email_domain"] for row in conn.execute(
+                    """SELECT DISTINCT email_domain FROM leads
+                       WHERE company_id = ? AND email_domain IS NOT NULL AND email_domain != ''""",
+                    (c["id"],),
+                ).fetchall()
+            })
+            # A domain-less company row has nothing to compare its leads'
+            # email domains against -- every one of them would "conflict"
+            # under the old logic, which made ~50% of all flagged groups
+            # pure noise (a domain-less row with only personal-email leads
+            # attached, e.g. a single gmail.com contact). Nothing to verify
+            # means nothing to flag as conflicting.
+            conflicting = [d for d in domains if d != c["domain"]] if c["domain"] else []
+            members.append({
+                "id": c["id"], "name": c["name"], "domain": c["domain"],
+                "industry": c["industry"], "headcount": c["headcount"],
+                "hq_city": c["hq_city"], "hq_state": c["hq_state"], "hq_country": c["hq_country"],
+                "lead_email_domains": domains,
+                "conflicting_lead_domains": conflicting,
+                # Informational only -- never read by likely_bad_merge or
+                # confidence below, so it can't reintroduce the same noise
+                # under a new name. Just context for a human reviewer.
+                "personal_email_leads_only": bool(
+                    c["domain"] is None and domains and all(d in SHARED_EMAIL_DOMAINS for d in domains)
+                ),
+            })
+        likely_bad_merge = any(m["conflicting_lead_domains"] for m in members)
+        confidence = None
+        if likely_bad_merge:
+            tiers = [
+                _classify_company_domain_pair(members[i]["domain"], members[j]["domain"])
+                for i in range(len(members))
+                for j in range(i + 1, len(members))
+            ]
+            confidence = max(tiers, key=pipeline_dedup.confidence_rank) if tiers else "LOW"
+        report.append({
+            "name": companies[0]["name"] if companies else g["name_lower"],
+            "company_count": len(members),
+            "members": members,
+            "likely_bad_merge": likely_bad_merge,
+            "confidence": confidence,
+        })
+    report.sort(key=lambda r: (not r["likely_bad_merge"], -r["company_count"]))
+    if limit:
+        report = report[:limit]
+    return report
+
+
+def company_merge_candidates_backfill(conn: Optional[sqlite3.Connection] = None) -> dict:
+    """One-time, re-runnable backfill (Stage C7): walks
+    company_dedup_baseline_audit()'s duplicate-name groups and queues one
+    company_merge_candidates row per pair flagged likely_bad_merge, so
+    pre-existing silent-merges enter the same human-review queue as
+    live-detected candidates. Never auto-fixes anything. Idempotent: skips a
+    pair that already has a backfill_audit candidate on file.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    report = company_dedup_baseline_audit(conn)
+    queued = 0
+    skipped = 0
+    for group in report:
+        if not group["likely_bad_merge"]:
+            continue
+        members = group["members"]
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                a, b = members[i], members[j]
+                existing = conn.execute(
+                    """SELECT id FROM company_merge_candidates
+                       WHERE reason = 'backfill_audit'
+                         AND ((existing_company_id = ? AND candidate_company_id = ?)
+                           OR (existing_company_id = ? AND candidate_company_id = ?))""",
+                    (a["id"], b["id"], b["id"], a["id"]),
+                ).fetchone()
+                if existing:
+                    skipped += 1
+                    continue
+                pair_confidence = _classify_company_domain_pair(a["domain"], b["domain"])
+                _log_company_merge_candidate(
+                    conn,
+                    existing_company_id=a["id"],
+                    candidate_company_id=b["id"],
+                    reason="backfill_audit",
+                    payload={"a": a, "b": b, "group_name": group["name"], "confidence": pair_confidence},
+                )
+                queued += 1
+    if own_conn:
+        conn.commit()
+        conn.close()
+    return {"status": "ok", "queued": queued, "skipped": skipped}
 
 
 def link_lead_company(
@@ -821,7 +1228,7 @@ def batch_lead_lookup(
                 lid = int(lead["id"])
                 lead_ids.append(lid)
                 domain_row = conn.execute(
-                    """SELECT c.domain AS company_domain
+                    """SELECT c.id AS company_id, c.domain AS company_domain
                        FROM leads l
                        LEFT JOIN companies c ON l.company_id = c.id
                        WHERE l.id = ?""",
@@ -832,6 +1239,16 @@ def batch_lead_lookup(
                     company_domain = str(domain_row["company_domain"]).strip().lower().lstrip("@")
                 if not company_domain:
                     company_domain = (lead.get("email_domain") or "").strip().lower().lstrip("@") or None
+                # Ranked list of every domain known for this company (Stage
+                # D5) -- callers that want to try more than one candidate
+                # domain for email-finding should use this, not
+                # company_domain alone. Kept alongside company_domain for
+                # backward compatibility with existing consumers.
+                company_domains: list[str] = []
+                if domain_row and domain_row["company_id"]:
+                    company_domains = rank_company_domains(conn, int(domain_row["company_id"]))
+                if not company_domains and company_domain:
+                    company_domains = [company_domain]
                 entry = {
                     "index": idx,
                     "status": "found",
@@ -840,6 +1257,7 @@ def batch_lead_lookup(
                     "name": lead.get("name"),
                     "company": lead.get("company_display") or lead.get("company"),
                     "company_domain": company_domain,
+                    "company_domains": company_domains,
                     "linkedin_url": lead.get("linkedin_url"),
                 }
             results.append(entry)
@@ -1126,6 +1544,131 @@ def merge_leads(
     }
 
 
+def merge_companies(
+    keep_id: int,
+    merge_id: int,
+    reason: str = "manual",
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict:
+    """Combine two company rows; merge_id is deleted after moving children.
+
+    Mirrors merge_leads() structurally. Writes a company_merges audit row
+    (mirroring lead_merges); the relay tombstone itself is pushed separately
+    by _push_pending_company_merge_deletes() during sync (mirroring how lead
+    merge tombstones are pushed by _push_pending_merge_deletes(), not by
+    merge_leads() itself). Requires wbhk-worker to recognize the
+    "company_core_delete" action -- see build_company_merge_delete_sync_payload().
+    """
+    if keep_id == merge_id:
+        return {"status": "noop", "keep_id": keep_id}
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+        conn.execute("BEGIN")
+    try:
+        keep = conn.execute("SELECT * FROM companies WHERE id = ?", (keep_id,)).fetchone()
+        other = conn.execute("SELECT * FROM companies WHERE id = ?", (merge_id,)).fetchone()
+        if not keep or not other:
+            if own_conn:
+                conn.execute("ROLLBACK")
+            return {"status": "error", "error": "company not found"}
+
+        conn.execute("UPDATE leads SET company_id = ? WHERE company_id = ?", (keep_id, merge_id))
+
+        # company_personalization has a composite PK (company_id, field_name) --
+        # a blind UPDATE can collide if both companies have a row for the same
+        # field_name. Move what doesn't collide; keep-row wins on conflict,
+        # same as merge_leads()'s workspace_lead_tags handling.
+        for row in conn.execute(
+            """SELECT field_name, field_value, field_date, source_hash, processed_at
+               FROM company_personalization WHERE company_id = ?""",
+            (merge_id,),
+        ).fetchall():
+            conn.execute(
+                """INSERT OR IGNORE INTO company_personalization
+                   (company_id, field_name, field_value, field_date, source_hash, processed_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (keep_id, row["field_name"], row["field_value"], row["field_date"],
+                 row["source_hash"], row["processed_at"]),
+            )
+        conn.execute("DELETE FROM company_personalization WHERE company_id = ?", (merge_id,))
+
+        # company_identities: a domain the keep row already owns is
+        # corroborating evidence, not a conflict (INSERT OR IGNORE drops it
+        # silently); a *different* domain becomes an additional identity on
+        # the keep row -- this is how a merged company legitimately ends up
+        # with two domains, feeding rank_company_domains().
+        for row in conn.execute(
+            """SELECT identity_type, identity_value_normalized, role, verified_mx, source, is_verified
+               FROM company_identities WHERE company_id = ?""",
+            (merge_id,),
+        ).fetchall():
+            conn.execute(
+                """INSERT OR IGNORE INTO company_identities
+                   (org_id, company_id, identity_type, identity_value_normalized, role, verified_mx, source, is_verified)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (DEFAULT_ORG_ID, keep_id, row["identity_type"], row["identity_value_normalized"],
+                 row["role"], row["verified_mx"], row["source"], row["is_verified"]),
+            )
+        conn.execute("DELETE FROM company_identities WHERE company_id = ?", (merge_id,))
+
+        # The merge row's own legacy companies.domain may not have a
+        # company_identities row yet (ensure_company only ever writes that
+        # column directly) -- without this, COALESCE below would silently
+        # drop a real second domain the moment it differs from keep's.
+        if other["domain"] and other["domain"] != keep["domain"]:
+            conn.execute(
+                """INSERT OR IGNORE INTO company_identities
+                       (org_id, company_id, identity_type, identity_value_normalized, source)
+                   VALUES (?, ?, 'domain', ?, 'legacy_companies_column')""",
+                (DEFAULT_ORG_ID, keep_id, other["domain"]),
+            )
+
+        domain = keep["domain"] or other["domain"]
+        industry = (keep["industry"] or "") or (other["industry"] or "") or None
+        headcount = keep["headcount"] or other["headcount"]
+        headcount_numeric = keep["headcount_numeric"] or other["headcount_numeric"]
+        hq_city = (keep["hq_city"] or "") or (other["hq_city"] or "") or None
+        hq_state = (keep["hq_state"] or "") or (other["hq_state"] or "") or None
+        hq_country = (keep["hq_country"] or "") or (other["hq_country"] or "") or None
+
+        merge_entity_key = company_entity_key(conn, merge_id)
+        conn.execute(
+            """INSERT INTO company_merges (keep_id, merge_id, reason, merge_entity_key, relay_delete_pushed)
+               VALUES (?, ?, ?, ?, 0)""",
+            (keep_id, merge_id, reason, merge_entity_key or None),
+        )
+        conn.execute("DELETE FROM companies WHERE id = ?", (merge_id,))
+
+        conn.execute(
+            """UPDATE companies SET
+               domain = COALESCE(domain, ?),
+               industry = COALESCE(NULLIF(trim(industry), ''), ?),
+               headcount = COALESCE(headcount, ?),
+               headcount_numeric = COALESCE(headcount_numeric, ?),
+               hq_city = COALESCE(NULLIF(trim(hq_city), ''), ?),
+               hq_state = COALESCE(NULLIF(trim(hq_state), ''), ?),
+               hq_country = COALESCE(NULLIF(trim(hq_country), ''), ?),
+               updated_at = datetime('now')
+               WHERE id = ?""",
+            (domain, industry, headcount, headcount_numeric,
+             hq_city, hq_state, hq_country, keep_id),
+        )
+        if own_conn:
+            conn.execute("COMMIT")
+    except Exception:
+        if own_conn:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+        raise
+    finally:
+        if own_conn and conn is not None:
+            conn.close()
+    return {"status": "merged", "keep_id": keep_id, "merge_id": merge_id, "reason": reason}
+
+
 def _merge_job_row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     if d.get("audit_json"):
@@ -1208,6 +1751,124 @@ def reject_merge_proposal(job_id: str, *, note: Optional[str] = None) -> dict:
         )
         conn.commit()
         return {"status": "ok", "job_id": job_id, "rejected": True}
+    finally:
+        conn.close()
+
+
+def _payload_domain_pair(reason: str, payload: dict) -> tuple[Optional[str], Optional[str]]:
+    """Shape-sniff a company_merge_candidates payload's two domain values by
+    its reason -- backfill_audit payloads nest them under "a"/"b", while
+    name_only_domain_attach payloads carry them flat. Used to recompute
+    confidence on read for candidates queued before Stage D3 added the
+    "confidence" key to new payloads."""
+    if reason == "backfill_audit":
+        a = (payload.get("a") or {}).get("domain")
+        b = (payload.get("b") or {}).get("domain")
+        return a, b
+    return payload.get("existing_domain"), payload.get("incoming_domain")
+
+
+def list_company_merge_candidates(
+    *,
+    status: Optional[str] = "pending",
+    reason: Optional[str] = None,
+    limit: int = 50,
+    min_confidence: str = "ALL",
+) -> dict:
+    """List queued company merge candidates (ambiguous name-only matches,
+    LinkedIn-URL conflicts, backfill audit findings) for review."""
+    conn = get_conn()
+    try:
+        clauses, params = [], []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if reason:
+            clauses.append("reason = ?")
+            params.append(reason)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = conn.execute(
+            f"SELECT * FROM company_merge_candidates {where} ORDER BY received_at DESC", params,
+        ).fetchall()
+        candidates = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d.get("payload_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                d["payload"] = None
+            confidence = (d["payload"] or {}).get("confidence")
+            if not confidence:
+                # Legacy row queued before Stage D3 -- recompute rather than
+                # treat as unfilterable, so --min-confidence works on the
+                # already-queued production backfill without a migration.
+                a, b = _payload_domain_pair(d.get("reason") or "", d["payload"] or {})
+                confidence = _classify_company_domain_pair(a, b)
+            if not pipeline_dedup.meets_min_confidence(confidence, min_confidence):
+                continue
+            candidates.append(d)
+            if len(candidates) >= limit:
+                break
+        return {"status": "ok", "count": len(candidates), "candidates": candidates}
+    finally:
+        conn.close()
+
+
+def approve_company_merge_candidate(candidate_id: str) -> dict:
+    """Execute a queued company merge candidate: merges existing_company_id
+    (kept) and candidate_company_id (merged away), then marks it resolved."""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM company_merge_candidates WHERE id = ?", (candidate_id,)
+        ).fetchone()
+        if not row:
+            return {"status": "error", "error": f"merge candidate not found: {candidate_id}"}
+        if row["status"] != "pending":
+            return {"status": "error", "error": f"candidate {candidate_id} is not pending (status={row['status']})"}
+        if not row["candidate_company_id"]:
+            return {"status": "error", "error": f"candidate {candidate_id} has no candidate_company_id to merge"}
+        result = merge_companies(
+            int(row["existing_company_id"]), int(row["candidate_company_id"]),
+            reason=f"approved:{row['reason']}", conn=conn,
+        )
+        if result.get("status") == "merged":
+            conn.execute(
+                "UPDATE company_merge_candidates SET status = 'resolved', resolved_at = datetime('now') WHERE id = ?",
+                (candidate_id,),
+            )
+            conn.commit()
+        return {"status": "ok", "candidate_id": candidate_id, "merge_result": result}
+    finally:
+        conn.close()
+
+
+def reject_company_merge_candidate(candidate_id: str, *, note: Optional[str] = None) -> dict:
+    """Dismiss a queued company merge candidate without merging."""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM company_merge_candidates WHERE id = ?", (candidate_id,)
+        ).fetchone()
+        if not row:
+            return {"status": "error", "error": f"merge candidate not found: {candidate_id}"}
+        if row["status"] != "pending":
+            return {"status": "error", "error": f"candidate {candidate_id} is not pending (status={row['status']})"}
+        payload = {}
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            pass
+        if note:
+            payload["rejection_note"] = note
+        conn.execute(
+            """UPDATE company_merge_candidates
+               SET status = 'dismissed', resolved_at = datetime('now'), payload_json = ?
+               WHERE id = ?""",
+            (json.dumps(payload), candidate_id),
+        )
+        conn.commit()
+        return {"status": "ok", "candidate_id": candidate_id, "dismissed": True}
     finally:
         conn.close()
 
@@ -1937,7 +2598,7 @@ def upsert_lead_profile(
 
 IMPORT_EXTRA_FIELDS = (
     "company_domain", "personalized_first_name", "personalized_company_name",
-    "is_connected_linkedin", "is_linkedin_request_pending",
+    "is_connected_linkedin", "is_linkedin_request_pending", "linkedin_connected_at",
     "lead_status", "lead_sentiment", "import_name", "list_source",
     "tags", "contact_order",
     "hq_city", "hq_state", "hq_country",
@@ -1961,7 +2622,7 @@ _EXTRA_FIELD_ALIASES: dict[str, str] = {
 # linkedin_bio must stay listed here; otherwise they'd double-write into
 # personalization as bogus custom merge-fields in addition to the leads columns.
 RESERVED_IMPORT_FIELDS = frozenset([
-    "company_domain", "is_connected_linkedin", "is_linkedin_request_pending",
+    "company_domain", "is_connected_linkedin", "is_linkedin_request_pending", "linkedin_connected_at",
     "lead_status", "lead_sentiment", "import_name", "list_source",
     "tags", "contact_order", "hq_city", "hq_state", "hq_country",
     "external_id", "notes", "last_message_sent", "last_message_received",
@@ -2422,9 +3083,42 @@ def apply_email_find_results(
                     int(item["lead_id"]),
                     str(item["provider"]),
                     status=str(item.get("status") or "unknown"),
+                    domain=item.get("domain"),
                     result_email=item.get("result_email"),
                     result_validity=item.get("result_validity"),
                 )
+                # Stage D5: a domain that just produced a real email is
+                # strong evidence it's this company's actual mail-sending
+                # domain -- bump its company_identities role so the next
+                # lead at this company tries it first via
+                # rank_company_domains(), without re-searching every known
+                # domain each time. Never overwrites an existing curated
+                # role, and only ever touches the identity row for the SAME
+                # company_id the winning lead belongs to.
+                if str(item.get("status") or "") == "found" and item.get("domain"):
+                    company_row = ws_conn.execute(
+                        "SELECT company_id FROM leads WHERE id = ?", (int(item["lead_id"]),),
+                    ).fetchone()
+                    if company_row and company_row["company_id"]:
+                        cid = int(company_row["company_id"])
+                        identity_row = ws_conn.execute(
+                            """SELECT company_id, role FROM company_identities
+                               WHERE org_id = ? AND identity_type = 'domain' AND identity_value_normalized = ?""",
+                            (DEFAULT_ORG_ID, item["domain"]),
+                        ).fetchone()
+                        if identity_row is None:
+                            ws_conn.execute(
+                                """INSERT INTO company_identities
+                                       (org_id, company_id, identity_type, identity_value_normalized, role, source)
+                                   VALUES (?, ?, 'domain', ?, 'email', 'email_finder_success')""",
+                                (DEFAULT_ORG_ID, cid, item["domain"]),
+                            )
+                        elif identity_row["company_id"] == cid and not identity_row["role"]:
+                            ws_conn.execute(
+                                """UPDATE company_identities SET role = 'email'
+                                   WHERE org_id = ? AND identity_type = 'domain' AND identity_value_normalized = ?""",
+                                (DEFAULT_ORG_ID, item["domain"]),
+                            )
             summary["provider_attempts_recorded"] = len(provider_attempt_pending)
 
         ws_conn.commit()
@@ -2712,6 +3406,12 @@ def import_profiles(
                 is_pending = extra.get("is_linkedin_request_pending", "").lower() in ("true", "1", "yes")
                 if is_connected or is_pending:
                     now_ts = datetime.now(timezone.utc).isoformat()
+                    # A real historical connection date (e.g. LinkedIn's own
+                    # "Connected On" export column) is more useful than "when
+                    # this import happened" -- callers that have one pass it
+                    # pre-parsed to ISO 8601 via linkedin_connected_at; falls
+                    # back to import time when absent, same as before.
+                    connected_ts = extra.get("linkedin_connected_at") or now_ts
                     li_id = f"lis_{workspace_id}_{lead_id}_{sender_normalized[:20]}"
                     ws_conn.execute(
                         """INSERT INTO workspace_lead_linkedin_status
@@ -2726,7 +3426,7 @@ def import_profiles(
                                updated_at = datetime('now')""",
                         (li_id, workspace_id, lead_id, sender_normalized,
                          1 if is_connected else 0, 1 if is_pending else 0,
-                         now_ts if is_connected else None,
+                         connected_ts if is_connected else None,
                          now_ts if is_pending else None),
                     )
 
@@ -2772,6 +3472,7 @@ from pipeline_tags import (
 
 from pipeline_workspace import (
     _push_agent_events_to_relay,
+    _push_pending_company_merge_deletes,
     _push_pending_company_updates,
     _push_pending_lead_snapshots,
     _push_pending_merge_deletes,
@@ -2784,6 +3485,7 @@ from pipeline_workspace import (
     api_keys_cli,
     assign_quarantine,
     backfill_null_campaign_quarantine,
+    build_company_merge_delete_sync_payload,
     build_merge_delete_sync_payload,
     build_quarantine_resolution_sync_payload,
     campaign_map_conflicts_cli,
@@ -2799,6 +3501,7 @@ from pipeline_workspace import (
     get_routing_config_summary,
     get_sync_status,
     get_workspace_routing,
+    inspect_sync_company_merge_delete,
     inspect_sync_merge_delete,
     inspect_sync_quarantine_resolution,
     list_campaign_maps,

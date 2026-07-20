@@ -434,10 +434,37 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
         aliases.append(str(row["domain"]).strip().lower())
     if row["name"]:
         aliases.append(str(row["name"]).strip().lower())
+    # A company can legitimately own more than one domain (website vs
+    # email-sending vs per-branch) -- company_identities tracks those; fold
+    # any beyond the primary companies.domain into aliases too, so the relay
+    # can map any of them back to this uid.
+    identity_rows = conn.execute(
+        "SELECT identity_value_normalized, role, label, verified_mx FROM company_identities "
+        "WHERE company_id = ? AND identity_type = 'domain'",
+        (company_id,),
+    ).fetchall()
+    for id_row in identity_rows:
+        aliases.append(id_row["identity_value_normalized"])
     seen: set[str] = set()
     aliases = [a for a in aliases if a and not (a in seen or seen.add(a))]
     if aliases:
         payload["aliases"] = aliases
+    # Stage D8: the relay stores/returns whatever this payload contains
+    # verbatim (confirmed against wbhk-worker/relay-db.js -- no server-side
+    # allowlist), so a richer, structured field alongside the flat aliases
+    # array round-trips role/label/verified_mx too, not just the bare domain
+    # string. aliases itself is untouched -- the relay's alias-resolution
+    # index needs plain strings and already works correctly.
+    if identity_rows:
+        payload["domain_identities"] = [
+            {
+                "domain": r["identity_value_normalized"],
+                "role": r["role"],
+                "label": r["label"],
+                "verified_mx": r["verified_mx"],
+            }
+            for r in identity_rows
+        ]
     pers = _company_personalization_dict(conn, company_id)
     if pers:
         values, dates, at = _personalization_sync_payload(pers)
@@ -465,7 +492,7 @@ def inspect_sync_company(conn: sqlite3.Connection, company_id: int) -> dict:
 
 
 def apply_agent_company_sync_payload(company_id: int, payload: dict, *, conn=None) -> None:
-    from pipeline import ensure_company
+    from pipeline import DEFAULT_ORG_ID, ensure_company
 
     own_conn = conn is None
     conn = conn or get_conn()
@@ -476,14 +503,68 @@ def apply_agent_company_sync_payload(company_id: int, payload: dict, *, conn=Non
     company_industry = payload.get("industry") or ""
     company_headcount = payload.get("headcount") or ""
 
-    ensure_company(
+    # authoritative_domain_attach=True: this payload was resolved against a
+    # SPECIFIC, already-known company_id via its uid/entity_key (see the
+    # caller in pipeline_sync.py) -- it is not a name-only guess that might
+    # land on an unrelated company, so it's safe to attach the domain
+    # directly to a name-matched row with no domain yet, same as
+    # resolve_lead()'s own website-vs-email-domain reconciliation. Without
+    # this, Stage D3's "never silently attach on an ambiguous name-only
+    # match" guard would (correctly, for the ambiguous case it targets, but
+    # wrongly here) create a stray second row instead of updating the one
+    # this snapshot is actually for.
+    resolved_id = ensure_company(
         conn,
         name=company_name,
         domain=company_domain,
         industry=company_industry,
         headcount=company_headcount,
         authoritative=True,
+        authoritative_domain_attach=True,
     )
+
+    # Stage D8: reconstruct every domain this company is known to own, not
+    # just the primary one -- previously, a company_identities domain row
+    # beyond companies.domain only existed on the machine that created it; a
+    # fresh install pulling this company down would silently lose it.
+    target_id = resolved_id or company_id
+    if target_id:
+        domain_identities = payload.get("domain_identities")
+        if isinstance(domain_identities, list) and domain_identities:
+            # Rich, structured form (this plan) -- full-fidelity
+            # reconstruction of role/label/verified_mx, not just the domain.
+            for entry in domain_identities:
+                if not isinstance(entry, dict):
+                    continue
+                domain_val = normalize_company_domain(entry.get("domain"))
+                if not domain_val or domain_val == normalize_company_domain(company_domain):
+                    continue
+                conn.execute(
+                    """INSERT INTO company_identities
+                           (org_id, company_id, identity_type, identity_value_normalized, role, label, verified_mx, source)
+                       VALUES (?, ?, 'domain', ?, ?, ?, ?, 'relay_pull')
+                       ON CONFLICT (org_id, identity_type, identity_value_normalized) DO UPDATE SET
+                           role = COALESCE(excluded.role, company_identities.role),
+                           label = COALESCE(excluded.label, company_identities.label),
+                           verified_mx = COALESCE(excluded.verified_mx, company_identities.verified_mx)""",
+                    (DEFAULT_ORG_ID, target_id, domain_val, entry.get("role"), entry.get("label"), entry.get("verified_mx")),
+                )
+        else:
+            # Backward-compat fallback for snapshots pushed before this
+            # change (or by an older client): aliases is a flat list mixing
+            # the company's own lowercased name with its domain(s) -- pick
+            # out anything that's syntactically a valid domain and isn't
+            # already the primary one just written above.
+            for alias in payload.get("aliases") or []:
+                domain_val = normalize_company_domain(alias if isinstance(alias, str) else None)
+                if not domain_val or domain_val == normalize_company_domain(company_domain):
+                    continue
+                conn.execute(
+                    """INSERT OR IGNORE INTO company_identities
+                           (org_id, company_id, identity_type, identity_value_normalized, source)
+                       VALUES (?, ?, 'domain', ?, 'relay_alias')""",
+                    (DEFAULT_ORG_ID, target_id, domain_val),
+                )
 
     # Existing personalization logic
     _apply_personalization_payload(

@@ -9,6 +9,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+from pipeline_utils import normalize_company_name as _canonical_normalize_company_name
+
 CONFIDENCE_ORDER = ("HIGH", "MEDIUM", "LOW", "ALL")
 MIN_CONFIDENCE_DEFAULT_FIND = "MEDIUM"
 MIN_CONFIDENCE_DEFAULT_MERGE = "ALL"
@@ -24,14 +26,6 @@ TRAILING_SUFFIX_RE = re.compile(
     re.I,
 )
 DR_PREFIX_RE = re.compile(r"^dr\.?\s+", re.I)
-
-GENERIC_WORDS_RE = re.compile(
-    r"\b(?:university|college|corp|corporation|inc|llc|ltd|co|company|technologies|"
-    r"technology|systems|services|solutions|group|associates|partners|school|of|the|and|at|"
-    r"incorporated)\b",
-    re.I,
-)
-PUNCT_RE = re.compile(r"[,.\-()&]")
 
 
 def normalize_name(name: Optional[str]) -> str:
@@ -51,12 +45,15 @@ def is_first_name_only(name: Optional[str]) -> bool:
 
 
 def normalize_company(company: Optional[str]) -> str:
-    """Strip generic words and punctuation for comparison (not for acronyms)."""
-    if not company:
-        return ""
-    text = PUNCT_RE.sub(" ", str(company))
-    text = GENERIC_WORDS_RE.sub(" ", text)
-    return " ".join(text.split()).lower()
+    """Strip generic words and punctuation for comparison (not for acronyms).
+
+    Delegates to pipeline_utils.normalize_company_name(), the canonical
+    normalizer (Stage C1) -- it strips a strict superset of the words this
+    module used to strip on its own (adds holdings/international/intl), so a
+    few pairs that used to tier as 'similar' now tier as 'exact' instead of
+    changing behavior. See tests/test_company_name_normalizer.py.
+    """
+    return _canonical_normalize_company_name(company)
 
 
 ACRONYM_OMIT_WORDS = frozenset({
@@ -147,6 +144,19 @@ def _keep_score(lead: dict[str, Any]) -> tuple:
 
 def pick_keep_lead(leads: list[dict[str, Any]]) -> dict[str, Any]:
     return max(leads, key=_keep_score)
+
+
+def _company_keep_score(company: dict[str, Any]) -> tuple:
+    name_parts = len(normalize_name(company.get("name")).split())
+    has_domain = 1 if (company.get("domain") or "").strip() else 0
+    has_li = 1 if (company.get("linkedin_company_id") or "").strip() else 0
+    return (has_domain, has_li, name_parts, -int(company["id"]))
+
+
+def pick_keep_company(companies: list[dict[str, Any]]) -> dict[str, Any]:
+    """Which of two duplicate company rows survives a merge -- richer
+    identity wins, same tuple-sort style as pick_keep_lead()."""
+    return max(companies, key=_company_keep_score)
 
 
 def _name_variations(leads: list[dict[str, Any]]) -> list[str]:

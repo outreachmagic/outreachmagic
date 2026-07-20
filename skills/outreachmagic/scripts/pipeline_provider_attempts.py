@@ -59,10 +59,19 @@ def record_provider_attempt(
     status = (status or "unknown").strip().lower()
     if status not in ATTEMPT_STATUSES:
         status = "unknown"
-    domain = domain or PROVIDER_DOMAINS.get(provider)
+    # PROVIDER_DOMAINS is keyed by provider name to a *category* label
+    # ("email_finding", "research", ...), only meaningful as input to
+    # kind_for_provider_domain() below -- it must never be written into the
+    # actual domain column. That used to happen here (`domain = domain or
+    # PROVIDER_DOMAINS.get(provider)`), so every trykitt/icypeas attempt
+    # recorded the literal string "email_finding" as its domain, including
+    # leads that had a real domain to search against -- see
+    # debug-email-finding-domain-bug.md. Leave the real domain (possibly
+    # None) untouched; only fall back to the category label for kind.
+    kind = kind_for_provider_domain(domain or PROVIDER_DOMAINS.get(provider))
     record_observation(
         conn, lead_id,
-        kind=kind_for_provider_domain(domain),
+        kind=kind,
         origin=ORIGIN_ATTEMPT,
         provider=provider,
         status=status,

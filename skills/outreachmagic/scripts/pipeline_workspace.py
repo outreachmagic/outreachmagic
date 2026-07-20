@@ -714,6 +714,7 @@ def sync_all(
         get_agent_key,
         get_sync_status,
         _push_agent_events_to_relay,
+        _push_pending_company_merge_deletes,
         _push_pending_company_updates,
         _push_pending_lead_snapshots,
         _push_pending_merge_deletes,
@@ -751,11 +752,10 @@ def sync_all(
     )
     transport = _use_bulk_transport(snapshot_pending, force_bulk=force_bulk)
     if transport["bulk"]:
-        print(
+        _relay_log(
             f"Syncing to relay (bulk mode, {transport['push_batch_size']}/request) — "
             f"{snapshot_pending} snapshot(s) pending, "
-            f"{status.get('local_agent_events', 0)} event(s) pending...",
-            flush=True,
+            f"{status.get('local_agent_events', 0)} event(s) pending..."
         )
     elif _sync_events_only() and status.get("local_agent_events", 0) >= RELAY_BULK_THRESHOLD:
         pending_ev = status.get("local_agent_events", 0)
@@ -764,7 +764,7 @@ def sync_all(
             f"Syncing to relay (events-only, {ev_batch}/request) — {pending_ev:,} event(s) pending ..."
         )
     else:
-        print("Syncing to relay...", flush=True)
+        _relay_log("Syncing to relay...")
 
     for ws in status.get("pending_workspaces") or []:
         try:
@@ -874,6 +874,11 @@ def sync_all(
         if merge_delete_push.get("error"):
             results["merge_deletes_error"] = merge_delete_push["error"]
 
+        company_merge_delete_push = _push_pending_company_merge_deletes(agent_key, bulk=transport["bulk"])
+        results["company_merge_deletes_pushed"] = int(company_merge_delete_push.get("pushed", 0) or 0)
+        if company_merge_delete_push.get("error"):
+            results["company_merge_deletes_error"] = company_merge_delete_push["error"]
+
         lead_push = _push_pending_lead_snapshots(agent_key, bulk=transport["bulk"], workspace=workspace)
         leads_pushed = int(lead_push.get("pushed", 0) or 0)
         results["lead_snapshots_pushed"] = leads_pushed
@@ -972,6 +977,7 @@ def preview_sync(
         tok, workspace=workspace, sample_limit=sample_size, dry_run=True,
     )
     merge_preview = _push_pending_merge_deletes(tok, sample_limit=sample_size, dry_run=True)
+    company_merge_preview = _push_pending_company_merge_deletes(tok, sample_limit=sample_size, dry_run=True)
     company_preview = _push_pending_company_updates(tok, sample_limit=sample_size, dry_run=True)
     sender_account_preview = _push_pending_sender_account_updates(tok, sample_limit=sample_size, dry_run=True)
     sender_domain_preview = _push_pending_sender_domain_updates(tok, sample_limit=sample_size, dry_run=True)
@@ -985,6 +991,7 @@ def preview_sync(
             "leads_core_pending": status.get("leads_pending", 0),
             "leads_workspace_pending": status.get("workspace_leads_pending", 0),
             "merge_deletes_pending": merge_preview.get("total_pending", 0),
+            "company_merge_deletes_pending": company_merge_preview.get("total_pending", 0),
             "company_updates_pending": company_preview.get("total_pending", 0),
             "sender_account_updates_pending": sender_account_preview.get("total_pending", 0),
             "sender_domain_updates_pending": sender_domain_preview.get("total_pending", 0),
@@ -995,6 +1002,7 @@ def preview_sync(
             "lead_core_update": lead_preview.get("sample_core_entries", []),
             "lead_workspace_update": lead_preview.get("sample_ws_entries", []),
             "lead_core_delete": merge_preview.get("sample_entries", []),
+            "company_core_delete": company_merge_preview.get("sample_entries", []),
             "company_update": company_preview.get("sample_entries", []),
             "sender_account_update": sender_account_preview.get("sample_entries", []),
             "sender_domain_update": sender_domain_preview.get("sample_entries", []),
@@ -1306,6 +1314,24 @@ def build_merge_delete_sync_payload(merge_entity_key: str, *, timestamp: Optiona
     }
 
 
+def build_company_merge_delete_sync_payload(merge_entity_key: str, *, timestamp: Optional[str] = None) -> dict:
+    """The company_core_delete relay entry for one company merge tombstone --
+    parallels build_merge_delete_sync_payload() for leads. Requires
+    wbhk-worker to recognize "company_core_delete" as a snapshot-delete
+    action (added alongside this); shipping this half without that relay
+    support would push tombstones that fall through to the relay's generic
+    event log, mark relay_delete_pushed=1 locally, and never actually
+    remove the stale company_core_snapshots row -- confirm the relay-side
+    change is deployed before enabling this in production.
+    """
+    return {
+        "action": "company_core_delete",
+        "entity_key": merge_entity_key,
+        "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
+        "payload": {"reason": "merge"},
+    }
+
+
 def inspect_sync_merge_delete(conn: sqlite3.Connection, identifier: str) -> dict:
     """Full lead_core_delete payload for one merge tombstone, for sync auditing/troubleshooting.
 
@@ -1337,6 +1363,41 @@ def inspect_sync_merge_delete(conn: sqlite3.Connection, identifier: str) -> dict
         "reason": row["reason"],
         "relay_delete_pushed": bool(row["relay_delete_pushed"]),
         "full_sync_payload": build_merge_delete_sync_payload(row["merge_entity_key"]),
+    }
+
+
+def inspect_sync_company_merge_delete(conn: sqlite3.Connection, identifier: str) -> dict:
+    """Full company_core_delete payload for one company merge tombstone, for
+    sync auditing/troubleshooting. Mirrors inspect_sync_merge_delete().
+
+    `identifier` is either a company_merges.id (int) or a merge_entity_key string.
+    """
+    row = None
+    try:
+        merge_row_id = int(identifier)
+    except (TypeError, ValueError):
+        merge_row_id = None
+    if merge_row_id is not None:
+        row = conn.execute(
+            """SELECT id, keep_id, merge_id, reason, merge_entity_key, relay_delete_pushed
+               FROM company_merges WHERE id = ?""",
+            (merge_row_id,),
+        ).fetchone()
+    if not row:
+        row = conn.execute(
+            """SELECT id, keep_id, merge_id, reason, merge_entity_key, relay_delete_pushed
+               FROM company_merges WHERE merge_entity_key = ? ORDER BY merged_at DESC LIMIT 1""",
+            (identifier,),
+        ).fetchone()
+    if not row:
+        return {}
+    return {
+        "merge_id": row["id"],
+        "keep_company_id": row["keep_id"],
+        "merged_company_id": row["merge_id"],
+        "reason": row["reason"],
+        "relay_delete_pushed": bool(row["relay_delete_pushed"]),
+        "full_sync_payload": build_company_merge_delete_sync_payload(row["merge_entity_key"]),
     }
 
 
@@ -1405,6 +1466,78 @@ def _push_pending_merge_deletes(
         snapshot_bulk=True,
         mark_ids=mark_ids,
         on_mark_cleared=clear_merge_ids,
+    )
+    result["total_pending"] = total_pending
+    return result
+
+
+def _push_pending_company_merge_deletes(
+    agent_key: str,
+    *,
+    bulk: bool = False,
+    sample_limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Push tombstones for merged companies so relay drops stale entity keys.
+    Mirrors _push_pending_merge_deletes() for leads. Requires wbhk-worker to
+    recognize "company_core_delete" (see build_company_merge_delete_sync_payload)."""
+    from pipeline import _relay_push_batches
+
+    conn = get_conn()
+    where_clause = """WHERE merge_entity_key IS NOT NULL AND TRIM(merge_entity_key) != ''
+             AND COALESCE(relay_delete_pushed, 0) = 0"""
+    total_pending = conn.execute(
+        f"SELECT COUNT(*) AS n FROM company_merges {where_clause}"
+    ).fetchone()["n"]
+    limit_clause = " LIMIT ?" if sample_limit else ""
+    query_params = [sample_limit] if sample_limit else []
+    rows = conn.execute(
+        f"SELECT id, merge_entity_key FROM company_merges {where_clause}{limit_clause}",
+        query_params,
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return {"pushed": 0, "error": None, "total_pending": total_pending, "sample_entries": []}
+
+    now_ts = datetime.now(timezone.utc).isoformat()
+    entries = [
+        build_company_merge_delete_sync_payload(row["merge_entity_key"], timestamp=now_ts)
+        for row in rows
+    ]
+    mark_ids = [row["id"] for row in rows]
+    conn.close()
+
+    if dry_run:
+        return {
+            "pushed": 0,
+            "error": None,
+            "total_pending": total_pending,
+            "sample_entries": entries,
+        }
+
+    client_id = get_or_create_client_id()
+
+    def clear_company_merge_ids(ids: list) -> None:
+        if not ids:
+            return
+        mark_conn = get_conn()
+        ph = ",".join("?" for _ in ids)
+        mark_conn.execute(
+            f"UPDATE company_merges SET relay_delete_pushed = 1 WHERE id IN ({ph})",
+            ids,
+        )
+        mark_conn.commit()
+        mark_conn.close()
+
+    result = _relay_push_batches(
+        agent_key,
+        entries,
+        client_id,
+        stream_label="company_merge_delete",
+        bulk=bulk,
+        snapshot_bulk=True,
+        mark_ids=mark_ids,
+        on_mark_cleared=clear_company_merge_ids,
     )
     result["total_pending"] = total_pending
     return result

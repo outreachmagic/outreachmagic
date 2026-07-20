@@ -40,8 +40,10 @@ from __future__ import annotations
 import csv
 import json
 import os
+import signal
 import subprocess
 import sys
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -505,6 +507,24 @@ def _parse_batch_args(argv: list[str]) -> tuple[BatchOptions, str]:
     return opts, path
 
 
+def _crash_log_path(path: str, opts: BatchOptions) -> str:
+    """Sidecar log next to the checkpoint output (or the input file, if no
+    checkpoint was ever configured) -- so a process that disappears (OOM,
+    SIGTERM, an unhandled exception) leaves a trail instead of no error
+    message at all."""
+    base = opts.output_base or path
+    return f"{base}.crash.log"
+
+
+def _write_crash_log(path: str, opts: BatchOptions, message: str) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        with open(_crash_log_path(path, opts), "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {message}\n")
+    except OSError:
+        pass  # best-effort -- crash logging must never itself crash the process
+
+
 def cmd_batch_find(path: str, opts: BatchOptions) -> None:
     cfg = load_config()
     if opts.max_leads == 500:
@@ -514,6 +534,18 @@ def cmd_batch_find(path: str, opts: BatchOptions) -> None:
         print_om_setup_box()
         print(json.dumps({"error": "outreachmagic not found — use --skip-om or install"}))
         sys.exit(1)
+
+    def _on_terminate(signum, _frame):
+        _write_crash_log(
+            path, opts, f"Terminated by signal {signum} ({signal.Signals(signum).name})",
+        )
+        sys.exit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, _on_terminate)
+    except (ValueError, OSError):
+        pass  # not running on the main thread, or platform doesn't support it
+
     try:
         out = run_batch(
             path,
@@ -527,6 +559,11 @@ def cmd_batch_find(path: str, opts: BatchOptions) -> None:
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}))
         sys.exit(1)
+    except Exception as exc:
+        _write_crash_log(
+            path, opts, f"Crashed: {type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+        )
+        raise
     if out.get("error"):
         print(json.dumps(out, indent=2))
         sys.exit(1)
@@ -844,7 +881,7 @@ def cmd_verify_bulk(
                     {
                         "lead_id": lead_id_map[em.lower()],
                         "email": em,
-                        "status": mv_to_om_status(str(r.get("status") or "")),
+                        "status": mv_to_om_status(str(r.get("status") or r.get("result") or "")),
                         "source": "millionverifier",
                         "source_detail": "email-finder/verify-bulk",
                     }

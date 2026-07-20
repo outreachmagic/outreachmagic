@@ -865,13 +865,14 @@ def main():
         "--type",
         choices=[
             "lead", "company", "sender_account", "sender_domain", "event",
-            "merge_delete", "quarantine_resolution",
+            "merge_delete", "company_merge_delete", "quarantine_resolution",
         ],
         default="lead",
         help=(
             "Entity type for --inspect (default: lead). --inspect VALUE is: email for "
             "lead/sender_account, domain for company/sender_domain, event id for event, "
-            "lead_merges.id or merge_entity_key for merge_delete, queue id or "
+            "lead_merges.id or merge_entity_key for merge_delete, company_merges.id or "
+            "merge_entity_key for company_merge_delete, queue id or "
             "external_event_id for quarantine_resolution"
         ),
     )
@@ -1029,6 +1030,59 @@ def main():
         help="Merge historical duplicate email_reply events sharing a message_id",
     )
     dedup_events_p.add_argument("--commit", action="store_true", help="Perform the merge (default dry-run)")
+
+    company_p = sub.add_parser("company", help="Company entity-resolution audit, review, and merge")
+    company_sub = company_p.add_subparsers(dest="company_command", required=True)
+
+    company_audit_p = company_sub.add_parser(
+        "dedup-audit",
+        help="Read-only report: existing companies sharing a name, flagged by conflicting lead email domains",
+    )
+    company_audit_p.add_argument("--limit", type=int, help="Cap the number of groups returned")
+
+    company_backfill_p = company_sub.add_parser(
+        "backfill-candidates",
+        help="Queue likely pre-existing bad merges from dedup-audit into the merge-review queue",
+    )
+
+    company_domain_stats_p = company_sub.add_parser(
+        "domain-stats",
+        help="Per-domain found/attempted email counts and rank for one company",
+    )
+    company_domain_stats_p.add_argument("--id", type=int, required=True, help="Company id")
+
+    company_domain_label_p = company_sub.add_parser(
+        "domain-label",
+        help="Set a human-curated label (e.g. branch/department name) on a company's known domain",
+    )
+    company_domain_label_p.add_argument("--company-id", type=int, required=True)
+    company_domain_label_p.add_argument("--domain", required=True)
+    company_domain_label_p.add_argument("--label", required=True)
+
+    company_mr_p = company_sub.add_parser(
+        "merge-review",
+        help="Review proposed company merges (name-only domain-attach conflicts, backfill audit) before executing",
+    )
+    company_mr_sub = company_mr_p.add_subparsers(dest="company_merge_review_action")
+    company_mr_list_p = company_mr_sub.add_parser("list", help="List merge candidates")
+    company_mr_list_p.add_argument("--status", default="pending", help="Filter by status (default: pending)")
+    company_mr_list_p.add_argument("--reason", help="Filter by reason (e.g. name_only_domain_attach, backfill_audit)")
+    company_mr_list_p.add_argument("--limit", type=int, default=50)
+    company_mr_list_p.add_argument(
+        "--min-confidence",
+        choices=pipeline_dedup.CONFIDENCE_ORDER,
+        default="ALL",
+        help="Filter to candidates at or above this confidence tier (HIGH = mechanically explainable, e.g. same registrable domain)",
+    )
+    company_mr_approve_p = company_mr_sub.add_parser("approve", help="Execute a proposed company merge")
+    company_mr_approve_p.add_argument("--id", required=True, help="Candidate id from 'company merge-review list'")
+    company_mr_reject_p = company_mr_sub.add_parser("reject", help="Dismiss a proposed company merge without merging")
+    company_mr_reject_p.add_argument("--id", required=True)
+    company_mr_reject_p.add_argument("--note", help="Optional reason for the rejection")
+
+    company_merge_p = company_sub.add_parser("merge", help="Merge two company records into one")
+    company_merge_p.add_argument("--keep", type=int, required=True, help="Company ID to keep")
+    company_merge_p.add_argument("--merge", type=int, required=True, help="Company ID to merge into --keep and delete")
 
     review_p = sub.add_parser(
         "review",
@@ -1264,6 +1318,20 @@ def main():
     mr_reject_p = mr_sub.add_parser("reject", help="Dismiss a proposed merge without merging")
     mr_reject_p.add_argument("--id", required=True)
     mr_reject_p.add_argument("--note", help="Optional reason for the rejection")
+
+    ilc_p = sub.add_parser(
+        "import-linkedin-connections",
+        help="Import a LinkedIn connections CSV export and track connection status per sender",
+    )
+    ilc_p.add_argument("--file", required=True, help="Path to LinkedIn's Connections.csv export")
+    ilc_p.add_argument("--workspace", required=True, help="Workspace slug/ID to associate imported leads with")
+    ilc_p.add_argument(
+        "--sender", required=True,
+        help="LinkedIn sender profile URL this connections list belongs to (e.g. linkedin.com/in/janedoe)",
+    )
+    ilc_p.add_argument("--tag", help="Optional tag applied to every matched/imported lead (requires --workspace)")
+    ilc_p.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
+    ilc_p.add_argument("--overwrite", action="store_true", help="Overwrite non-empty profile fields")
 
     isa_p = sub.add_parser(
         "import-sender-accounts",
@@ -1891,6 +1959,11 @@ def main():
                     if not result:
                         print(json.dumps({"error": f"merge tombstone not found: {value}"}))
                         sys.exit(1)
+                elif inspect_type == "company_merge_delete":
+                    result = _pipeline.inspect_sync_company_merge_delete(conn, value)
+                    if not result:
+                        print(json.dumps({"error": f"company merge tombstone not found: {value}"}))
+                        sys.exit(1)
                 elif inspect_type == "quarantine_resolution":
                     result = _pipeline.inspect_sync_quarantine_resolution(conn, value)
                     if not result:
@@ -1975,13 +2048,16 @@ def main():
                     sys.exit(1)
                 if sync_ws:
                     _pipeline.mark_all_lead_snapshots_pending(workspace_id=ws_id)
-                    print(f"Marked leads in workspace {sync_ws} pending for full snapshot push.", flush=True)
+                    print(
+                        f"Marked leads in workspace {sync_ws} pending for full snapshot push.",
+                        file=sys.stderr, flush=True,
+                    )
                 else:
                     _pipeline.mark_all_entities_pending()
                     print(
                         "Marked all leads, workspace memberships, companies, sender accounts, "
                         "and sender domains pending for full snapshot push.",
-                        flush=True,
+                        file=sys.stderr, flush=True,
                     )
             force_bulk = None
             if getattr(args, "bulk", False) and getattr(args, "no_bulk", False):
@@ -3492,6 +3568,73 @@ def main():
             print(json.dumps(_pipeline.reject_merge_proposal(args.id, note=getattr(args, "note", None)), indent=2))
         else:
             print(json.dumps({"error": "merge-review subcommand required: list, approve, reject"}))
+    elif args.command == "company":
+        if args.company_command == "dedup-audit":
+            conn = _pipeline.get_conn()
+            try:
+                report = _pipeline.company_dedup_baseline_audit(conn, limit=getattr(args, "limit", None))
+            finally:
+                conn.close()
+            print(json.dumps({"status": "ok", "group_count": len(report), "groups": report}, indent=2))
+        elif args.company_command == "backfill-candidates":
+            print(json.dumps(_pipeline.company_merge_candidates_backfill(), indent=2))
+        elif args.company_command == "domain-stats":
+            conn = _pipeline.get_conn()
+            try:
+                report = _pipeline.company_domain_stats_report(conn, args.id)
+            finally:
+                conn.close()
+            if not report:
+                print(json.dumps({"error": f"company not found: {args.id}"}))
+                sys.exit(1)
+            print(json.dumps(report, indent=2))
+        elif args.company_command == "domain-label":
+            print(json.dumps(
+                _pipeline.set_company_domain_label(args.company_id, args.domain, args.label), indent=2,
+            ))
+        elif args.company_command == "merge-review":
+            cmr_action = getattr(args, "company_merge_review_action", None)
+            if cmr_action == "list":
+                print(json.dumps(_pipeline.list_company_merge_candidates(
+                    status=getattr(args, "status", "pending"),
+                    reason=getattr(args, "reason", None),
+                    limit=getattr(args, "limit", 50),
+                    min_confidence=getattr(args, "min_confidence", "ALL"),
+                ), indent=2))
+            elif cmr_action == "approve":
+                print(json.dumps(_pipeline.approve_company_merge_candidate(args.id), indent=2))
+            elif cmr_action == "reject":
+                print(json.dumps(
+                    _pipeline.reject_company_merge_candidate(args.id, note=getattr(args, "note", None)), indent=2,
+                ))
+            else:
+                print(json.dumps({"error": "company merge-review subcommand required: list, approve, reject"}))
+                sys.exit(1)
+        elif args.company_command == "merge":
+            print(json.dumps(_pipeline.merge_companies(args.keep, args.merge, reason="manual_cli"), indent=2))
+        else:
+            print(json.dumps({"error": f"unknown company subcommand: {args.company_command}"}))
+            sys.exit(1)
+    elif args.command == "import-linkedin-connections":
+        try:
+            path = _pipeline.resolve_project_path(args.file, kind="input")
+        except ValueError as e:
+            print(json.dumps({"error": str(e)}))
+            sys.exit(1)
+        if not path.is_file():
+            print(json.dumps({"error": f"File not found: {path}"}))
+            sys.exit(1)
+        from linkedin_connections import import_linkedin_connections
+
+        summary = import_linkedin_connections(
+            str(path),
+            workspace=args.workspace,
+            sender=args.sender,
+            tag=getattr(args, "tag", None),
+            dry_run=args.dry_run,
+            overwrite=args.overwrite,
+        )
+        print(json.dumps(summary, indent=2))
     elif args.command == "import-sender-accounts":
         print(json.dumps(_pipeline.import_sender_accounts(
             args.file, workspace=getattr(args, "workspace", None),

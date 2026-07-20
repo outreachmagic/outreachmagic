@@ -771,7 +771,7 @@ def run_apply_email_find_results(
         )
         print(
             f"  apply-email-find-results chunk {chunk_num}/{total_chunks} ({len(chunk)} leads)...",
-            flush=True,
+            file=sys.stderr, flush=True,
         )
         t0 = time.monotonic()
         summaries.append(
@@ -791,7 +791,7 @@ def run_apply_email_find_results(
         print(
             f"    matched={last.get('matched', 0)} enriched={last.get('enriched', 0)} "
             f"recorded={last.get('recorded', 0)} ({elapsed:.1f}s)",
-            flush=True,
+            file=sys.stderr, flush=True,
         )
     return _merge_pipeline_summaries(summaries)
 
@@ -987,7 +987,7 @@ def run_batch_lead_lookup(
         chunk_num = i // LOOKUP_CHUNK_SIZE + 1
         print(
             f"  batch-lead-lookup chunk {chunk_num}/{total_chunks} ({len(chunk)} keys)...",
-            flush=True,
+            file=sys.stderr, flush=True,
         )
         part = _run_batch_lead_lookup_once(
             om_dir,

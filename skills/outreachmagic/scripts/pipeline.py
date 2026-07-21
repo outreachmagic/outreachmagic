@@ -783,6 +783,62 @@ def set_company_domain_label(company_id: int, domain: str, label: str) -> dict:
         conn.close()
 
 
+def claim_public_emails(
+    workspace: str,
+    *,
+    tags: Optional[list] = None,
+    include_free_providers: bool = False,
+    dry_run: bool = False,
+) -> dict:
+    """pipeline.py claim-public-emails: assign a company public email to the
+    lead whose own name it matches, before any paid provider runs.
+
+    Serper already found these while resolving domains, so they cost nothing,
+    and a domain-based finder can never surface some of them -- an address on
+    gmail.com is invisible to trykitt no matter how many credits you spend.
+    Claimed leads then have an email, so email-finding-candidates drops them
+    and no provider is ever called for them.
+
+    Routed through apply_email_find_results() rather than writing leads.email
+    directly, so email-conflict handling, observation logging, tagging and
+    relay sync all behave exactly as they do for a provider result.
+    """
+    import domain_discovery
+
+    conn = get_conn()
+    try:
+        ws_row = resolve_workspace_identity(conn, workspace)
+        if not ws_row:
+            return {"status": "error", "error": f"workspace not found: {workspace}"}
+        hits = domain_discovery.find_claimable_public_emails(
+            conn, ws_row["id"], tags=tags, include_free_providers=include_free_providers,
+        )
+    finally:
+        conn.close()
+
+    if dry_run or not hits:
+        return {
+            "status": "ok", "workspace": workspace, "claimable": len(hits),
+            "dry_run": dry_run, "claims": hits,
+        }
+
+    rows = [{
+        "lead_id": h["lead_id"],
+        "email": h["email"],
+        "provider": "public_email_match",
+        "status": "found",
+    } for h in hits]
+    applied = apply_email_find_results(
+        rows, workspace=workspace,
+        source="public_email_match",
+        source_detail="serper public email matching the lead's own name",
+    )
+    return {
+        "status": "ok", "workspace": workspace, "claimable": len(hits),
+        "claims": hits, "applied": {k: v for k, v in applied.items() if k != "results"},
+    }
+
+
 def audit_discovered_domains() -> dict:
     """pipeline.py find-domains --audit: re-score every domain and public email
     this feature has written, against current logic. Read-only, org-wide, free.

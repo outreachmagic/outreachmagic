@@ -704,6 +704,15 @@ def main():
     log_p.add_argument("--workspace", help="Workspace for this event (required in multi-workspace mode)")
     log_p.add_argument("--crm-sync", action="store_true", help="Trigger CRM sync after logging event")
 
+    cpe_p = sub.add_parser(
+        "claim-public-emails",
+        help="Assign a company public email to the lead whose own name it matches (free; run before any provider)",
+    )
+    cpe_p.add_argument("--workspace", required=True)
+    cpe_p.add_argument("--tag", nargs="+", dest="tags", help="Limit to leads carrying any of these workspace tags")
+    cpe_p.add_argument("--include-free-providers", action="store_true", help="Also claim gmail/yahoo matches (plausible but unverifiable)")
+    cpe_p.add_argument("--dry-run", action="store_true", help="Show what would be claimed without writing")
+
     fd_p = sub.add_parser(
         "find-domains",
         help="Discover company domains + public emails via Serper for undomained companies in a workspace",
@@ -3100,6 +3109,13 @@ def main():
         print(json.dumps(result))
         if getattr(args, "crm_sync", False) and ws_slug:
             _maybe_trigger_crm_sync(lead_id=args.lead_id, workspace_slug=ws_slug)
+    elif args.command == "claim-public-emails":
+        print(json.dumps(_pipeline.claim_public_emails(
+            args.workspace,
+            tags=getattr(args, "tags", None),
+            include_free_providers=getattr(args, "include_free_providers", False),
+            dry_run=getattr(args, "dry_run", False),
+        ), indent=2))
     elif args.command == "find-domains":
         if getattr(args, "export_corpus", None):
             print(json.dumps(_pipeline.export_domain_corpus(args.export_corpus), indent=2))

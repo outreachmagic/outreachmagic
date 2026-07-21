@@ -1167,3 +1167,121 @@ def test_subdomain_with_a_proven_track_record_still_wins():
          "verified_mx": None, "created_at": ""},
     ]
     assert max(rows, key=om._domain_rank_score)["identity_value_normalized"] == "mail.beta.com"
+
+
+# ── Claiming a public email as the lead's own address ────────────────────────
+
+@pytest.mark.parametrize("name, email, pattern", [
+    ("Adam Sanders", "asanders@acme.com", "finitial_last"),
+    ("Jeremy Wise", "jewise@acme.com", "f2_last"),
+    ("Adam Sanders", "adam.sanders@acme.com", "first_last"),
+    ("Adam Sanders", "sanders.adam@acme.com", "last_first"),
+    ("Adam Sanders", "adams@acme.com", "first_linitial"),
+    # Credentials in the LinkedIn name must not defeat the match.
+    ("Xalicia Slater, MSW, FHC, CACTS", "xslater@acme.com", "finitial_last"),
+    ("Julia Korabelnikova, RN, BSN, MBA", "jkorabelnikova@acme.com", "finitial_last"),
+])
+def test_public_email_matches_the_lead(name, email, pattern):
+    assert dd.match_public_email_to_lead(name, email) == pattern
+
+
+@pytest.mark.parametrize("name, email", [
+    # A different employee.
+    ("Lauren Barker", "jkang@acme.com"),
+    # Role mailboxes reach a function, not a person.
+    ("Adam Sanders", "info@acme.com"),
+    ("Adam Sanders", "admissions@acme.com"),
+    ("Adam Sanders", "noreply@acme.com"),
+    # Substring collisions -- the whole reason this is pattern-exact rather
+    # than fuzzy. asanders@ is Adam Sanders, not Alice Sanderson.
+    ("Alice Sanderson", "asanders@acme.com"),
+    ("Sam Anderson", "sanders@acme.com"),
+    # Too short to be distinctive.
+    ("Jo Li", "jo@acme.com"),
+    ("Jo Li", "li@acme.com"),
+])
+def test_public_email_does_not_match_the_lead(name, email):
+    assert dd.match_public_email_to_lead(name, email) is None
+
+
+def _lead_at(conn, ws_id, company, person, public_emails=()):
+    cid = om.ensure_company(conn, name=company)
+    lead = om.resolve_lead(name=person, source="csv", allow_weak_identity=True, conn=conn)
+    conn.execute("UPDATE leads SET company_id = ? WHERE id = ?", (cid, lead["id"]))
+    om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_id, lead["id"])
+    for email, role in public_emails:
+        conn.execute(
+            """INSERT OR IGNORE INTO company_identities
+                   (org_id, company_id, identity_type, identity_value_normalized, role, source)
+               VALUES ('default', ?, 'public_email', ?, ?, 'serper_domain_discovery')""",
+            (cid, email, role))
+    conn.commit()
+    return cid, lead["id"]
+
+
+def test_claimable_requires_a_corporate_domain_by_default():
+    conn = om.get_conn()
+    om.create_workspace("Storefront", slug="storefront")
+    ws = om.resolve_workspace_identity(conn, "storefront")
+    _lead_at(conn, ws["id"], "Acme Care", "Adam Sanders",
+             [("asanders@acmecare.com", "corporate")])
+    _lead_at(conn, ws["id"], "Beta Care", "Betty Jones",
+             [("bjones@gmail.com", "free_provider")])
+
+    strict = {h["email"] for h in dd.find_claimable_public_emails(conn, ws["id"])}
+    assert strict == {"asanders@acmecare.com"}
+
+    loose = {h["email"] for h in dd.find_claimable_public_emails(
+        conn, ws["id"], include_free_providers=True)}
+    assert loose == {"asanders@acmecare.com", "bjones@gmail.com"}
+
+
+def test_an_address_two_leads_could_own_is_never_claimed():
+    """"Jeremy Wise" and "Jessica Wise" both produce jewise@ -- there is no way
+    to tell from the string which one it is, and a wrong address burns a send."""
+    conn = om.get_conn()
+    om.create_workspace("Storefront", slug="storefront")
+    ws = om.resolve_workspace_identity(conn, "storefront")
+    cid, _ = _lead_at(conn, ws["id"], "Wise Co", "Jeremy Wise",
+                      [("jewise@wiseco.com", "corporate")])
+    lead2 = om.resolve_lead(name="Jessica Wise", source="csv",
+                            allow_weak_identity=True, conn=conn)
+    conn.execute("UPDATE leads SET company_id = ? WHERE id = ?", (cid, lead2["id"]))
+    om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws["id"], lead2["id"])
+    conn.commit()
+
+    assert dd.find_claimable_public_emails(conn, ws["id"]) == []
+
+
+def test_leads_that_already_have_an_email_are_left_alone():
+    conn = om.get_conn()
+    om.create_workspace("Storefront", slug="storefront")
+    ws = om.resolve_workspace_identity(conn, "storefront")
+    _, lead_id = _lead_at(conn, ws["id"], "Acme Care", "Adam Sanders",
+                          [("asanders@acmecare.com", "corporate")])
+    conn.execute("UPDATE leads SET email = 'existing@elsewhere.com' WHERE id = ?", (lead_id,))
+    conn.commit()
+    assert dd.find_claimable_public_emails(conn, ws["id"]) == []
+
+
+def test_claim_writes_the_email_so_providers_never_see_the_lead():
+    conn = om.get_conn()
+    om.create_workspace("Storefront", slug="storefront")
+    ws = om.resolve_workspace_identity(conn, "storefront")
+    _, lead_id = _lead_at(conn, ws["id"], "Acme Care", "Adam Sanders",
+                          [("asanders@acmecare.com", "corporate")])
+    conn.execute("UPDATE companies SET domain='acmecare.com' WHERE id=(SELECT company_id FROM leads WHERE id=?)", (lead_id,))
+    conn.commit()
+    conn.close()
+
+    preview = om.claim_public_emails("storefront", dry_run=True)
+    assert preview["claimable"] == 1
+    conn = om.get_conn()
+    assert conn.execute("SELECT email FROM leads WHERE id=?", (lead_id,)).fetchone()["email"] is None
+    conn.close()
+
+    om.claim_public_emails("storefront")
+    conn = om.get_conn()
+    assert conn.execute(
+        "SELECT email FROM leads WHERE id=?", (lead_id,)).fetchone()["email"] == "asanders@acmecare.com"
+    conn.close()

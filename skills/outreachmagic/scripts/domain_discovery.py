@@ -1225,3 +1225,149 @@ def run_company_domain_discovery(
         return _finish("found", best, q3["confidence"], role="email" if best["has_email"] else None)
 
     return _finish("not_found", None, 0.0)
+
+
+# ── Claiming a public email as a lead's own address ──────────────────────────
+# Serper already found these while resolving domains, so they cost nothing.
+# Most are useless as a *person's* address -- role mailboxes reach the company,
+# and the majority belong to a different employee -- but a minority follow a
+# recognizable personal-address pattern built from this lead's own name, and
+# those are free wins a domain-based provider will never surface (trykitt could
+# not find Rebekah's address because it lives on Gmail).
+
+# Local parts that address a function, never a person.
+_ROLE_LOCALS = ROLE_PREFIXES | frozenset({
+    "hr", "marketing", "service", "services", "enquiries", "enquiry", "inquiries",
+    "reception", "frontdesk", "general", "mail", "email", "newsletter", "press",
+    "media", "legal", "privacy", "compliance", "accounts", "accounting", "payroll",
+    "reservations", "bookings", "orders", "shop", "store", "web", "webmaster",
+    "postmaster", "noreply", "no-reply", "donotreply", "admissions", "referrals",
+})
+
+_NAME_NOISE = frozenset({
+    "dba", "rn", "bsn", "msn", "mba", "msw", "dnp", "mn", "phn", "md", "do", "np",
+    "pa", "lpn", "cna", "phd", "esq", "cpa", "jr", "sr", "ii", "iii", "iv",
+    "cacts", "fhc", "lcsw", "ot", "pt", "rd", "chpn", "ccm", "clc",
+})
+
+
+def _person_tokens(full_name: str) -> tuple[str, str]:
+    """(first, last) with credentials and honorifics removed. LinkedIn names
+    routinely carry them -- "Xalicia Slater, MSW, FHC, CACTS"."""
+    cleaned = re.sub(r"[^a-z ]+", " ", (full_name or "").lower())
+    parts = [p for p in cleaned.split() if len(p) > 1 and p not in _NAME_NOISE]
+    if not parts:
+        return ("", "")
+    return (parts[0], parts[-1] if len(parts) > 1 else "")
+
+
+def match_public_email_to_lead(full_name: str, email: str) -> Optional[str]:
+    """Name of the address pattern when `email` is plausibly THIS person's,
+    else None.
+
+    Deliberately pattern-exact rather than fuzzy: a substring test would
+    accept asanders@ for "Alice Sanderson" and every other employee whose
+    surname merely contains the lead's. Everything here is a full-local-part
+    equality against a form built from the lead's own first/last name.
+    """
+    local = (email or "").partition("@")[0]
+    key = re.sub(r"[^a-z0-9]", "", local.lower())
+    if not key or key in _ROLE_LOCALS:
+        return None
+    first, last = _person_tokens(full_name)
+    if not first:
+        return None
+
+    patterns: list[tuple[str, str]] = []
+    if first and last:
+        patterns += [
+            (f"{first}{last}", "first_last"),
+            (f"{last}{first}", "last_first"),
+            (f"{first[0]}{last}", "finitial_last"),
+            (f"{first[:2]}{last}", "f2_last"),
+            (f"{first}{last[0]}", "first_linitial"),
+            (f"{last}{first[0]}", "last_finitial"),
+            (f"{first[0]}{last[0]}", "initials"),
+        ]
+    # A bare first or last name only when it is long enough to be
+    # distinctive; "jo@" or "lee@" would match half a company.
+    if len(first) >= 4:
+        patterns.append((first, "first_only"))
+    if len(last) >= 4:
+        patterns.append((last, "last_only"))
+
+    for candidate, label in patterns:
+        if len(candidate) >= 3 and key == candidate:
+            return label
+    return None
+
+
+def find_claimable_public_emails(
+    conn: sqlite3.Connection,
+    workspace_id: Optional[str] = None,
+    *,
+    tags: Optional[list] = None,
+    include_free_providers: bool = False,
+) -> list[dict[str, Any]]:
+    """Leads with no email whose company has a public address matching their
+    own name. Read-only.
+
+    Corporate-domain addresses only by default: a free-provider match
+    (rebekah.<company>@gmail.com) is plausible but unverifiable, and a wrong
+    email is worse than none -- it burns a send and can bounce.
+
+    An address that matches MORE than one lead at the company is dropped
+    rather than guessed at. "Jeremy Wise" and "Jessica Wise" both produce
+    jewise@, and there is no way to tell from the string which one it is.
+    """
+    where = ["(l.email IS NULL OR TRIM(l.email) = '')"]
+    params: list = []
+    if workspace_id:
+        where.append("wl.workspace_id = ?")
+        params.append(workspace_id)
+    if tags:
+        where.append(
+            f"""EXISTS (SELECT 1 FROM workspace_lead_tags t
+                        WHERE t.workspace_id = wl.workspace_id AND t.lead_id = l.id
+                          AND t.tag IN ({",".join("?" * len(tags))}))"""
+        )
+        params.extend(tags)
+
+    rows = conn.execute(
+        f"""SELECT DISTINCT l.id AS lead_id, l.name AS lead_name, l.company_id,
+                   co.name AS company_name,
+                   ci.identity_value_normalized AS email, ci.role, ci.label
+            FROM workspace_leads wl
+            JOIN leads l ON l.id = wl.lead_id
+            JOIN companies co ON co.id = l.company_id
+            JOIN company_identities ci
+              ON ci.company_id = l.company_id AND ci.identity_type = 'public_email'
+            WHERE {" AND ".join(where)}""",
+        params,
+    ).fetchall()
+
+    hits: list[dict[str, Any]] = []
+    for row in rows:
+        if row["role"] != "corporate" and not include_free_providers:
+            continue
+        pattern = match_public_email_to_lead(row["lead_name"], row["email"])
+        if not pattern:
+            continue
+        hits.append({
+            "lead_id": row["lead_id"],
+            "lead_name": row["lead_name"],
+            "company_id": row["company_id"],
+            "company_name": row["company_name"],
+            "email": row["email"],
+            "pattern": pattern,
+            "role": row["role"],
+            "source_url": row["label"],
+        })
+
+    # Drop any address claimed by more than one lead, and any lead matching
+    # more than one address -- both are ambiguous, and a wrong address is
+    # worse than none.
+    from collections import Counter
+    by_email = Counter(h["email"] for h in hits)
+    by_lead = Counter(h["lead_id"] for h in hits)
+    return [h for h in hits if by_email[h["email"]] == 1 and by_lead[h["lead_id"]] == 1]

@@ -63,7 +63,7 @@ def test_progress_shows_worker_status_line():
         active_workers=3, pool_size=5, tick_rate=0.8, slowest_call_s=12.4,
     )
     out = buf.getvalue()
-    assert "Workers:    3/5 active" in out
+    assert "Workers: 3/5 active" in out
     assert "this tick: 0.8/s" in out
     assert "slowest call: 12.4s" in out
 

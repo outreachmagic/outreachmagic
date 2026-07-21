@@ -24,6 +24,8 @@ from health import (
 from normalize import lead_resume_key, load_people_json, row_fields, sanitize_input_path, validate_domain
 from om_paths import default_working_root
 from progress import (
+    print_result_line,
+    verdict_bucket,
     print_dry_run_box,
     print_final_summary,
     print_preflight_summary,
@@ -1077,7 +1079,6 @@ def run_batch(
     # Feeds the progress readout: tried/found per domain, and the last few
     # outcomes so the operator can see what is actually coming back.
     domain_stats: dict[str, dict[str, int]] = {}
-    recent_outcomes: list = []
     skipped_no_coverage = 0
     domain_state_lock = threading.Lock()
 
@@ -1087,14 +1088,22 @@ def run_batch(
         with domain_state_lock:
             return domain_misses.get(domain.lower(), 0) >= abandon_after
 
-    def _note_domain_outcome(domain: str, found: bool) -> None:
+    def _note_domain_outcome(domain: str, found: bool, verdict: str = "") -> None:
         key = (domain or "").lower()
         if key:
             with domain_state_lock:
-                entry = domain_stats.setdefault(key, {"tried": 0, "found": 0})
+                entry = domain_stats.setdefault(
+                    key, {"tried": 0, "found": 0, "valid": 0, "risky": 0,
+                          "invalid": 0, "unknown": 0})
                 entry["tried"] += 1
                 if found:
                     entry["found"] += 1
+                    # Bucketed here, not just counted: a domain answering every
+                    # probe with risky/catch-all is a catch-all mail server, and
+                    # "24 found" hides that completely.
+                    bucket = {"catch-all": "risky"}.get(verdict, verdict)
+                    if bucket in entry:
+                        entry[bucket] += 1
         if abandon_after <= 0 or not domain:
             return
         with domain_state_lock:
@@ -1150,7 +1159,8 @@ def run_batch(
             }
         result["batch_status"] = "processed"
         _note_domain_outcome(
-            result.get("winning_domain") or domain, bool(result.get("email")))
+            result.get("winning_domain") or domain, bool(result.get("email")),
+            verdict_bucket(result.get("validity"), result.get("email")))
         return idx, result
 
     def _mark_credit_stop_remaining(queue: list[tuple[int, dict[str, Any]]]) -> None:
@@ -1206,15 +1216,22 @@ def run_batch(
                 completed_in_chunk += 1
                 if result.get("skip_reason") == "no_provider_coverage":
                     skipped_no_coverage += 1
-                with domain_state_lock:
-                    recent_outcomes.append({
-                        "name": row_fields(people[idx])[0],
-                        "domain": result.get("winning_domain") or row_fields(people[idx])[1],
-                        "email": result.get("email"),
-                        "validity": result.get("validity"),
-                        "status": result.get("status"),
-                    })
-                    del recent_outcomes[:-10]
+                _lead_name, _lead_domain = row_fields(people[idx])[0], row_fields(people[idx])[1]
+                bucket = verdict_bucket(
+                    result.get("validity"), result.get("email"),
+                    str(result.get("status") or ""))
+                if result.get("email"):
+                    verdict_tally = stats.setdefault("verdicts", {})
+                    verdict_tally[bucket] = verdict_tally.get(bucket, 0) + 1
+                print_result_line(
+                    done_count, total_work,
+                    name=_lead_name,
+                    domain=result.get("winning_domain") or _lead_domain,
+                    email=result.get("email"),
+                    validity=result.get("validity"),
+                    status=str(result.get("status") or ""),
+                    skip_reason=str(result.get("skip_reason") or ""),
+                )
                 _record_result(idx, people[idx], result, writer, stats)
                 if done_count % CREDIT_RECHECK_EVERY == 0:
                     credits_stop = _mid_batch_credit_stop(cfg, api_providers, provider_names, stats)
@@ -1227,7 +1244,6 @@ def run_batch(
                         pool_size=len(chunk),
                         tick_rate=completed_in_chunk / tick_elapsed,
                         slowest_call_s=slowest_call_s,
-                        recent=list(recent_outcomes),
                         domain_stats=dict(domain_stats),
                         skipped_no_coverage=skipped_no_coverage,
                     )

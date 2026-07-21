@@ -38,6 +38,7 @@ def _init_stats(stats: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     base.setdefault("timeout", 0)
     base.setdefault("api_calls", {})
     base.setdefault("verify", {"valid": 0, "catch_all": 0, "invalid": 0, "unknown": 0})
+    base.setdefault("verdicts", {})
     base.setdefault("waterfall", {})
     base.setdefault("credits_used", 0)
     return base
@@ -85,6 +86,63 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# trykitt returns valid / valid-risky; verification maps risky and unconfirmed
+# onto catch_all. Grouped for display because the send decision is the same for
+# both: a catch-all or risky address is one the server declined to confirm.
+_VERDICTS = {
+    "valid": ("valid", "OK "),
+    "valid-risky": ("risky", "~  "),
+    "catch_all": ("catch-all", "~  "),
+    "risky": ("risky", "~  "),
+    "invalid": ("invalid", "BAD"),
+    "unknown": ("unknown", "?  "),
+}
+
+
+def verdict_bucket(validity: Optional[str], email: Optional[str], status: str = "") -> str:
+    """Which running tally this result belongs to."""
+    if not email:
+        return "skipped" if status == "skipped" else "not_found"
+    return _VERDICTS.get((validity or "").strip().lower(), ("unknown", "?  "))[0]
+
+
+def print_result_line(
+    n: int,
+    total: int,
+    *,
+    name: str,
+    domain: str,
+    email: Optional[str],
+    validity: Optional[str] = None,
+    status: str = "",
+    skip_reason: str = "",
+    file=sys.stderr,
+) -> None:
+    """One line per lead, appended as it completes.
+
+    A dashboard that redraws every N leads answers "how far along am I"; it
+    cannot answer "what did we actually get for this person", which is the
+    question being asked while a batch runs. This is a log, so it scrolls and
+    stays greppable after the fact.
+    """
+    if email:
+        label, mark = _VERDICTS.get((validity or "").strip().lower(), ("unknown", "?  "))
+        detail = email
+    elif status == "skipped":
+        # Short label keeps the columns aligned; the full reason goes in the
+        # detail column where it has room.
+        label, mark = "skipped", "-  "
+        detail = (skip_reason or "").replace("_", " ")
+    else:
+        label, mark = "not found", "-  "
+        detail = ""
+    print(
+        f" {n:>4}/{total:<4} {mark} {label:<10} {str(name)[:24]:26}{str(domain)[:26]:28}{detail}",
+        file=file,
+    )
+    file.flush()
+
+
 def print_progress(
     done: int,
     total: int,
@@ -102,90 +160,75 @@ def print_progress(
     domain_stats: Optional[dict] = None,
     skipped_no_coverage: int = 0,
 ) -> None:
+    """A rule between blocks of streamed per-lead lines -- not a dashboard.
+
+    The per-lead log above already carries the detail; a redrawing panel just
+    pushes it off screen. What a rule has to add is the shape of the run: the
+    verdict split, and which domains are returning addresses nobody can verify.
+    """
     stats = _init_stats(stats)
     elapsed = max(time.time() - start_time, 0.001)
     rate = done / elapsed
     eta = (total - done) / rate if rate > 0 else 0
-    pct = (done / total * 100) if total else 0
-    hit_rate = (stats.get("found", 0) / done * 100) if done else 0
-    bar_len = 20
-    filled = int(bar_len * stats.get("found", 0) / max(done, 1))
-    bar = "█" * filled + "░" * (bar_len - filled)
     elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
-    eta_str = f"{int(eta // 60)}m {int(eta % 60)}s" if eta > 0 else "—"
+    eta_str = f"{int(eta // 60)}m" if eta > 0 else "—"
 
+    verdicts = stats.get("verdicts") or {}
+    parts = [f"{done}/{total}", elapsed_str, f"ETA {eta_str}"]
+    for key in ("valid", "risky", "catch-all", "invalid", "unknown"):
+        if verdicts.get(key):
+            parts.append(f"{key} {verdicts[key]}")
+    parts.append(f"none {stats.get('not_found', 0)}")
+    if skipped_no_coverage:
+        parts.append(f"skipped {skipped_no_coverage}")
+    if stats.get("errors"):
+        parts.append(f"errors {stats['errors']}")
+    line = "  ".join(parts)
     print(file=file)
-    print("═" * 60, file=file)
-    print(
-        f" [{_utc_timestamp()}] PROGRESS: {done}/{total} leads ({pct:.1f}%)  elapsed: {elapsed_str}",
-        file=file,
-    )
-    if resumed:
-        print(f" ({done} new + {resumed} resumed = {done + resumed} total handled)", file=file)
-    print("─" * 60, file=file)
-    print(f" Found:      {stats.get('found', 0):>5}  ({hit_rate:.1f}% hit rate)  {bar}", file=file)
-    print(f" Not found:  {stats.get('not_found', 0):>5}", file=file)
-    print(f" Errors:     {stats.get('errors', 0):>5}", file=file)
-    if stats.get("rate_limited"):
-        print(f" Rate limit: {stats.get('rate_limited', 0):>5}", file=file)
-    if stats.get("timeout"):
-        print(f" Timeouts:   {stats.get('timeout', 0):>5}", file=file)
-    print("─" * 60, file=file)
-    print(f" {_api_calls_line(stats)}", file=file)
-    print(f" Rate:       {rate:.2f}/s  ETA: {eta_str}", file=file)
-    if active_workers is not None and pool_size is not None:
-        worker_line = f" Workers:    {active_workers}/{pool_size} active"
-        if tick_rate is not None:
-            worker_line += f"  |  this tick: {tick_rate:.1f}/s"
-        if slowest_call_s is not None:
-            worker_line += f"  |  slowest call: {slowest_call_s:.1f}s"
-        print(worker_line, file=file)
-    if provider:
-        print(f" Provider:   {provider}", file=file)
+    print(f"─── {line} " + "─" * max(4, 76 - len(line)), file=file)
 
-    # A bare counter cannot tell you WHY a run is underperforming. These two
-    # blocks can: the recent lines show what is actually coming back, and the
-    # per-domain tally exposes that coverage is bimodal -- a domain resolves
-    # nearly every lead or none of them, and an average hides both.
-    if recent:
-        print("─" * 60, file=file)
-        for entry in recent[-5:]:
-            email = entry.get("email")
-            # The validity matters as much as the hit: a catch_all address is
-            # a guess the server declined to confirm, and treating it like a
-            # verified one is how bounce rates climb.
-            verdict = (entry.get("validity") or "").strip() if email else ""
-            mark = {"valid": "OK  ", "valid-risky": "RISK", "catch_all": "CTCH",
-                    "invalid": "BAD "}.get(verdict, "OK  " if email else " -  ")
-            trailer = f"  [{verdict}]" if verdict else ""
+    # Diagnostics on their own line, below the verdict split: useful when a run
+    # stalls (slowest call, idle workers) but never the headline.
+    diag = [f"[{_utc_timestamp()}] PROGRESS:"]
+    diag.append(f"{done} new + {resumed} resumed" if resumed else f"{done}/{total}")
+    if active_workers is not None and pool_size is not None:
+        diag.append(f"Workers: {active_workers}/{pool_size} active")
+        if tick_rate is not None:
+            diag.append(f"this tick: {tick_rate:.1f}/s")
+        if slowest_call_s is not None:
+            diag.append(f"slowest call: {slowest_call_s:.1f}s")
+    if provider:
+        diag.append(provider)
+    print("    " + "  ".join(diag), file=file)
+
+    # Per-domain verdict split. "cousins.com 24/24" says nothing about whether
+    # those 24 are usable: 24 valid addresses and 24 catch-alls are the same
+    # number and a completely different outcome. A domain answering every probe
+    # with risky/catch-all is a catch-all mail server -- the provider cannot
+    # confirm anything there, so those addresses carry send risk the count
+    # alone hides.
+    if domain_stats:
+        interesting = [
+            (d, v) for d, v in domain_stats.items()
+            if v.get("found", 0) > 0 or v.get("tried", 0) > 2
+        ]
+        interesting.sort(key=lambda kv: (-(kv[1].get("risky", 0) + kv[1].get("invalid", 0)),
+                                         -kv[1].get("found", 0)))
+        for dom, v in interesting[:6]:
+            bits = []
+            for key in ("valid", "risky", "invalid"):
+                if v.get(key):
+                    bits.append(f"{key} {v[key]}")
+            flag = ""
+            if v.get("found") and not v.get("valid"):
+                flag = "   <- none confirmed"
+            elif v.get("tried", 0) >= 3 and not v.get("found"):
+                flag = "   <- no coverage"
             print(
-                f" {mark}{str(entry.get('name') or '')[:20]:22}"
-                f"{str(entry.get('domain') or '')[:24]:26}"
-                f"{str(email or entry.get('status') or '')[:28]:30}{trailer}",
+                f"    {dom[:30]:32}{v.get('found', 0)}/{v.get('tried', 0):<6}"
+                f"{'  '.join(bits):<34}{flag}",
                 file=file,
             )
-    if domain_stats:
-        multi = sorted(
-            ((d, v["tried"], v["found"]) for d, v in domain_stats.items() if v["tried"] > 1),
-            key=lambda x: (-x[1], -x[2]),
-        )[:5]
-        if multi:
-            print("─" * 60, file=file)
-            for dom, tried, hits in multi:
-                print(
-                    f" {dom[:30]:32}{hits}/{tried}  "
-                    f"{'#' * min(hits, 12)}{'.' * min(tried - hits, 12)}",
-                    file=file,
-                )
-        dead = [(d, v["tried"]) for d, v in domain_stats.items()
-                if v["tried"] >= 3 and v["found"] == 0]
-        if dead:
-            dead.sort(key=lambda x: -x[1])
-            label = ", ".join(f"{d} 0/{t}" for d, t in dead[:3])
-            print(f" no coverage: {label}", file=file)
-    if skipped_no_coverage:
-        print(f" skipped (no coverage): {skipped_no_coverage}", file=file)
-    print("═" * 60, file=file)
     print(file=file)
     # Piped/buffered output managers (e.g. `| tail -30`) don't see these lines
     # until the stream is flushed -- without this, a running batch-find looks

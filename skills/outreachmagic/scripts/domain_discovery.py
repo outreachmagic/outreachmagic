@@ -218,6 +218,28 @@ def extract_emails(serper_json: dict) -> list[dict[str, Any]]:
     return emails
 
 
+def _is_word_subset(label: str, name_tokens: list[str]) -> bool:
+    """True when `label` is exactly an in-order subset of the name's words,
+    concatenated -- "eastcobbnursing" from ["east","cobb","center","for",
+    "nursing","and","healing"].
+
+    Requires the label to be consumed EXACTLY (no leftover characters) and at
+    least two whole words to participate. Both conditions matter: without the
+    exact-consumption rule "eastcobbsomethingelse" would pass, and without the
+    two-word rule any domain starting with a single generic word ("living",
+    "health", "care") would match half this dataset.
+    """
+    if not label or len(name_tokens) < 2:
+        return False
+    pos = 0
+    used = 0
+    for word in name_tokens:
+        if word and label.startswith(word, pos):
+            pos += len(word)
+            used += 1
+    return pos == len(label) and used >= 2
+
+
 def _trigrams(text: str) -> set[str]:
     if len(text) < 3:
         return {text} if text else set()
@@ -269,11 +291,36 @@ def score_domain_match(company_name: str, domain: str) -> tuple[int, str]:
     if len(label) >= 4 and label in collapsed_raw:
         return (15, "domain_in_raw_name")
 
+    # The domain keeps an in-order SUBSET of the name's words and drops the
+    # rest: "East Cobb Center for Nursing and Healing" -> eastcobbnursing.
+    # Extremely common for facilities whose registered name is a long
+    # descriptive phrase. Requires 2+ whole words matched end to end, so a
+    # single generic word ("living", "health") can never trigger it.
+    if _is_word_subset(label, raw_tokens):
+        return (14, "word_subset")
+
     # Acronym: "American Health Facilities" -> ahf. Only meaningful at 3+
     # letters; 2-letter acronyms collide with far too much.
-    acronym = "".join(t[0] for t in raw_tokens)
-    if len(acronym) >= 3 and label == acronym:
+    #
+    # Both conventions occur and neither dominates, so both are tried:
+    # "Village Park Senior Living, LLC" -> vpsl.com drops the entity suffix,
+    # "Refrigerated Warehousing Inc" -> rwizero.com keeps it (RWI).
+    stripped_tokens = [
+        t for t in re.sub(r"[^a-z0-9]+", " ", strip_entity_suffix(company_name).lower()).split() if t
+    ]
+    acronyms = {
+        "".join(t[0] for t in raw_tokens),
+        "".join(t[0] for t in stripped_tokens),
+    }
+    acronyms = {a for a in acronyms if len(a) >= 3}
+    if label in acronyms:
         return (12, "acronym")
+    # ...and the same acronym carrying a suffix the name never shows:
+    # "Premier Senior Living" -> pslgroupllc.com. Kept out of
+    # STRICT_MATCH_REASONS -- a 3-letter prefix is too thin to write a domain
+    # on with no search result backing it.
+    if any(label.startswith(a) for a in acronyms):
+        return (12, "acronym_prefix")
 
     shared = _trigrams(label) & _trigrams(collapsed_raw)
     union = _trigrams(label) | _trigrams(collapsed_raw)
@@ -436,7 +483,14 @@ def classify_domains(
         })
         seen.add(cleaned)
 
-    out.sort(key=lambda d: (d["has_email"], d["score"]), reverse=True)
+    # Score first, attached-email as the TIEBREAK -- which is what this
+    # function's contract has always said ("outranks a *same-scored* domain").
+    # Sorting on (has_email, score) instead made a proven mailbox beat any
+    # score difference at all, so a score-0 address scraped off the page
+    # displaced the company's own domain: psychatlanta.com (0) beat
+    # hightophealth.com (34), email4pr.com (0) beat precioushospice.com (34).
+    # Across 213 real observations it picked the wrong winner 48 times.
+    out.sort(key=lambda d: (d["score"], d["has_email"]), reverse=True)
     return out
 
 

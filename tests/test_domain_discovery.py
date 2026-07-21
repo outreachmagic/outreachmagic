@@ -109,19 +109,38 @@ def test_extract_emails_flags_role_addresses():
     assert emails[0]["is_role"] is True
 
 
-def test_classify_domains_email_attached_beats_higher_string_score():
-    """A weaker name-match with a real email must outrank a stronger
-    name-match with none -- the whole point of the feature."""
+def test_classify_domains_email_attached_breaks_a_tie():
+    """An attached email decides between EQUALLY name-matched domains -- a
+    company owns several (website vs email-sending vs per-branch) and the one
+    with proven mail delivery is the better bet."""
+    scored = [
+        {"domain": "acmehq.com", "score": 12, "reason": "acronym"},
+        {"domain": "acme-mail.net", "score": 12, "reason": "acronym"},
+    ]
+    emails = [{"email": "info@acme-mail.net", "is_role": True, "is_free_provider": False}]
+    ranked = dd.classify_domains(scored, emails)
+    assert ranked[0]["domain"] == "acme-mail.net"
+    assert ranked[0]["has_email"] is True
+
+
+def test_classify_domains_does_not_let_an_email_override_a_better_name_match():
+    """Corrected contract. This previously asserted the opposite -- that any
+    attached email outranks any name score -- which is how a score-0 address
+    scraped off a page displaced the company's own domain. Measured across 213
+    real observations, that ordering picked the wrong winner 48 times:
+    psychatlanta.com (0) over hightophealth.com (34), email4pr.com (0) over
+    precioushospice.com (34). Mail-delivery preference is preserved where it
+    belongs -- on the identity's role='email' flag, which rank_company_domains()
+    reads when the email waterfall picks what to try first."""
     scored = [
         {"domain": "acmehq.com", "score": 20, "reason": "exact"},
         {"domain": "acme-mail.net", "score": 3, "reason": "token_overlap_1"},
     ]
     emails = [{"email": "info@acme-mail.net", "is_role": True, "is_free_provider": False}]
     ranked = dd.classify_domains(scored, emails)
-    assert ranked[0]["domain"] == "acme-mail.net"
-    assert ranked[0]["has_email"] is True
-    assert ranked[1]["domain"] == "acmehq.com"
-    assert ranked[1]["has_email"] is False
+    assert ranked[0]["domain"] == "acmehq.com"
+    assert ranked[1]["domain"] == "acme-mail.net"
+    assert ranked[1]["has_email"] is True
 
 
 def test_classify_domains_adds_email_only_domain_missed_by_organic_scoring():
@@ -1045,3 +1064,37 @@ def test_aggregator_subdomain_never_becomes_the_company_domain():
     assert outcome["domain"] is None
     assert conn.execute(
         "SELECT domain FROM companies WHERE id = ?", (cid,)).fetchone()["domain"] is None
+
+
+# ── Recall patterns found by measuring 213 real observations ─────────────────
+# Synthetic names, real shapes: the repo is public, so no client company names
+# live here. What is under test is the matching pattern, not the customer.
+
+@pytest.mark.parametrize("name, domain, reason", [
+    # Long descriptive facility names whose domain keeps a subset of the words.
+    ("Fairview Center for Nursing and Healing", "fairviewnursing.com", "word_subset"),
+    ("Northgate Center For Nursing and Healing", "northgatenursing.com", "word_subset"),
+    ("Harbor Estates Senior Living", "harborestatesliving.com", "word_subset"),
+    # Acronym plus a suffix the registered name never shows.
+    ("Village Park Senior Living, LLC", "vpsl.com", "acronym"),
+    ("Premier Senior Living", "pslgroupllc.com", "acronym_prefix"),
+    ("Refrigerated Warehousing Inc", "rwizero.com", "acronym_prefix"),
+])
+def test_recall_patterns_from_real_data(name, domain, reason):
+    score, got = dd.score_domain_match(name, domain)
+    assert got == reason, f"{name} -> {domain} gave {got}"
+    assert score > 0
+
+
+@pytest.mark.parametrize("name, domain", [
+    # A single generic word must never trigger word_subset, or it would match
+    # half of any senior-living dataset.
+    ("Harbor Estates Senior Living", "livingmagazine.com"),
+    ("Summit Health Partners", "health.com"),
+    ("Grove Nursing Center", "nursing-directory.net"),
+    # Two-letter acronyms collide with far too much.
+    ("Modern Storefront", "ms.com"),
+])
+def test_recall_patterns_do_not_over_match(name, domain):
+    score, reason = dd.score_domain_match(name, domain)
+    assert reason not in ("word_subset", "acronym", "acronym_prefix"), f"{name} -> {domain} ({reason})"

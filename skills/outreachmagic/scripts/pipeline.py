@@ -819,6 +819,7 @@ def find_domains_for_workspace(
     *,
     limit: Optional[int] = None,
     force: bool = False,
+    retry_unresolved: bool = False,
     dry_run: bool = False,
     debug: bool = False,
     max_queries: Optional[int] = None,
@@ -929,7 +930,7 @@ def find_domains_for_workspace(
 
             name_key = normalize_company_name(company_name)
             memo = name_memo.get(name_key) if name_key else None
-            if memo is not None and not force:
+            if memo is not None and not force and not retry_unresolved:
                 outcome = {"status": "cached", "domain": memo.get("domain"),
                            "reason": "same_name_resolved_this_run", "queries_run": []}
             else:
@@ -942,6 +943,7 @@ def find_domains_for_workspace(
                     conn, cfg,
                     company_id=company_id, company_name=company_name,
                     rep_lead_id=rep_lead_id, force=force,
+                    retry_unresolved=retry_unresolved,
                     debug=debug, query_budget=budget, name_index=name_index,
                 )
                 if name_key:

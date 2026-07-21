@@ -222,3 +222,46 @@ def test_summary_reports_the_tag_filter_used():
         "storefront", dry_run=True, tags=["assisted_living"], exclude_tags=["needs_review"])
     assert res["tags"] == ["assisted_living"]
     assert res["exclude_tags"] == ["needs_review"]
+
+
+def test_retry_unresolved_reworks_only_the_companies_without_a_domain():
+    """After a scoring change you want the held companies re-evaluated, but
+    not the resolved ones re-targeted -- that is what --force does, and it
+    would re-spend a credit on every company that already succeeded."""
+    resolved_cid, _ = _tagged_company("Resolved Co", "R One", tags=("seg",))
+    held_cid, _ = _tagged_company("Held Co", "H One", tags=("seg",))
+    conn = om.get_conn()
+    conn.execute("UPDATE companies SET domain = 'resolvedco.com' WHERE id = ?", (resolved_cid,))
+    conn.commit()
+    conn.close()
+
+    # A prior search of the held company that resolved nothing -- normally
+    # cached for 30 days, which is exactly what has to be bypassed here.
+    with mock.patch.object(enrich, "serper_search",
+                           return_value={"organic": [], "knowledgeGraph": {}}):
+        om.find_domains_for_workspace("storefront", tags=["seg"])
+
+    searched = []
+    def fake(query, config):
+        searched.append(query)
+        return {"organic": [], "knowledgeGraph": {}}
+
+    with mock.patch.object(enrich, "serper_search", side_effect=fake):
+        res = om.find_domains_for_workspace("storefront", tags=["seg"], retry_unresolved=True)
+
+    assert res["companies_targeted"] == 1          # the resolved one is not re-targeted
+    assert res["results"][0]["company_name"] == "Held Co"
+    assert searched, "the 30-day cache must be bypassed for the unresolved company"
+
+
+def test_plain_rerun_still_respects_the_cache():
+    _tagged_company("Cached Co", "C One", tags=("seg2",))
+    with mock.patch.object(enrich, "serper_search",
+                           return_value={"organic": [], "knowledgeGraph": {}}):
+        om.find_domains_for_workspace("storefront", tags=["seg2"])
+
+    with mock.patch.object(enrich, "serper_search",
+                           side_effect=AssertionError("must not re-query")) as fake:
+        res = om.find_domains_for_workspace("storefront", tags=["seg2"])
+        fake.assert_not_called()
+    assert res["cached"] == 1

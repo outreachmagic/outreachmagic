@@ -1000,6 +1000,7 @@ def run_company_domain_discovery(
     company_name: str,
     rep_lead_id: int,
     force: bool = False,
+    retry_unresolved: bool = False,
     debug: bool = False,
     query_budget: Optional[int] = None,
     name_index: Optional[dict[str, tuple[int, str]]] = None,
@@ -1048,7 +1049,11 @@ def run_company_domain_discovery(
                 "attach": attach,
             }
 
-    cached = _recent_domain_lookup(conn, company_id, force=force)
+    # retry_unresolved bypasses the freshness cache but NOT the free
+    # pre-flight above: the point is to re-evaluate a company the scoring
+    # could not resolve, under current logic, without re-targeting the ones
+    # that already succeeded (which is what --force does).
+    cached = _recent_domain_lookup(conn, company_id, force=force or retry_unresolved)
     if cached is not None:
         return {"status": "cached", "domain": cached["domain"], "observed_at": cached["observed_at"]}
 

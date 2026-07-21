@@ -712,6 +712,7 @@ def main():
     fd_p.add_argument("--export-corpus", metavar="FILE", help="Dump observations for local scoring measurement (contains live company names -- never commit)")
     fd_p.add_argument("--audit", action="store_true", help="Re-score every domain/public email already attached, org-wide. Read-only, no credits")
     fd_p.add_argument("--limit", type=int, help="Cap number of companies searched this run")
+    fd_p.add_argument("--retry-unresolved", action="store_true", help="Re-search only companies still without a domain, ignoring the 30-day cache (use after a scoring change)")
     fd_p.add_argument("--force", action="store_true", help="Re-search companies that already have a domain or a cached lookup")
     fd_p.add_argument("--dry-run", action="store_true", help="List target companies and worst-case query count without spending Serper credits")
     fd_p.add_argument("--max-queries", type=int, help="Hard cap on Serper queries this run; stops cleanly when reached")
@@ -1887,6 +1888,7 @@ def main():
             device_code=getattr(args, "device_code", None),
             wait_seconds=getattr(args, "wait", 30),
             force=getattr(args, "force", False),
+            retry_unresolved=getattr(args, "retry_unresolved", False),
         )
         return
     if args.command == "logout":

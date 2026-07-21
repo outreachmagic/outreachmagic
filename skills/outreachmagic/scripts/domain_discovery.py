@@ -816,8 +816,29 @@ def audit_attached_domains(conn: sqlite3.Connection) -> dict[str, Any]:
                 "issues": issues,
             })
 
+    # A company legitimately owns several domains -- that is what
+    # company_identities exists for -- and companies.domain is frequently NULL
+    # even when we know one, because the clash guard declines to backfill a
+    # domain another company row already claims. Judging an address against
+    # companies.domain alone therefore flags info@kippatl.org as belonging to
+    # somebody else. Compare against every domain we know for the company.
+    known_domains: dict[int, set[str]] = {}
+    for row in conn.execute(
+        """SELECT company_id, identity_value_normalized AS domain FROM company_identities
+           WHERE identity_type = 'domain'""",
+    ).fetchall():
+        reg = company_registrable_domain(row["domain"])
+        if reg:
+            known_domains.setdefault(row["company_id"], set()).add(reg)
+    for row in conn.execute(
+        "SELECT id, domain FROM companies WHERE domain IS NOT NULL AND TRIM(domain) != ''",
+    ).fetchall():
+        reg = company_registrable_domain(row["domain"])
+        if reg:
+            known_domains.setdefault(row["id"], set()).add(reg)
+
     email_rows = conn.execute(
-        """SELECT ci.company_id, c.name AS company_name, c.domain AS company_domain,
+        """SELECT ci.company_id, c.name AS company_name,
                   ci.identity_value_normalized AS email, ci.role
            FROM company_identities ci JOIN companies c ON c.id = ci.company_id
            WHERE ci.identity_type = 'public_email' AND ci.source = 'serper_domain_discovery'
@@ -825,7 +846,17 @@ def audit_attached_domains(conn: sqlite3.Connection) -> dict[str, Any]:
     ).fetchall()
 
     for row in email_rows:
-        expected = classify_public_email(row["email"], row["company_domain"])
+        email = row["email"]
+        owned = known_domains.get(row["company_id"], set())
+        email_reg = company_registrable_domain(email.partition("@")[2])
+        if is_placeholder_email(email):
+            expected = "placeholder"
+        elif email.partition("@")[2] in SHARED_EMAIL_DOMAINS:
+            expected = "free_provider"
+        elif email_reg and email_reg in owned:
+            expected = "corporate"
+        else:
+            expected = "off_domain"
         # Only the two trustworthy classes should ever have been stored; an
         # older build's looser rules can leave the others behind.
         if expected not in ("corporate", "free_provider"):
@@ -833,7 +864,7 @@ def audit_attached_domains(conn: sqlite3.Connection) -> dict[str, Any]:
                 "kind": "public_email",
                 "company_id": row["company_id"],
                 "company_name": row["company_name"] or "",
-                "value": row["email"],
+                "value": email,
                 "stored_role": row["role"],
                 "issues": [expected],
             })

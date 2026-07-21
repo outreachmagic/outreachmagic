@@ -98,6 +98,9 @@ def print_progress(
     pool_size: Optional[int] = None,
     tick_rate: Optional[float] = None,
     slowest_call_s: Optional[float] = None,
+    recent: Optional[list] = None,
+    domain_stats: Optional[dict] = None,
+    skipped_no_coverage: int = 0,
 ) -> None:
     stats = _init_stats(stats)
     elapsed = max(time.time() - start_time, 0.001)
@@ -139,6 +142,42 @@ def print_progress(
         print(worker_line, file=file)
     if provider:
         print(f" Provider:   {provider}", file=file)
+
+    # A bare counter cannot tell you WHY a run is underperforming. These two
+    # blocks can: the recent lines show what is actually coming back, and the
+    # per-domain tally exposes that coverage is bimodal -- a domain resolves
+    # nearly every lead or none of them, and an average hides both.
+    if recent:
+        print("─" * 60, file=file)
+        for entry in recent[-5:]:
+            mark = "OK " if entry.get("email") else " - "
+            print(
+                f" {mark}{str(entry.get('name') or '')[:20]:22}"
+                f"{str(entry.get('domain') or '')[:24]:26}"
+                f"{str(entry.get('email') or entry.get('status') or '')[:30]}",
+                file=file,
+            )
+    if domain_stats:
+        multi = sorted(
+            ((d, v["tried"], v["found"]) for d, v in domain_stats.items() if v["tried"] > 1),
+            key=lambda x: (-x[1], -x[2]),
+        )[:5]
+        if multi:
+            print("─" * 60, file=file)
+            for dom, tried, hits in multi:
+                print(
+                    f" {dom[:30]:32}{hits}/{tried}  "
+                    f"{'#' * min(hits, 12)}{'.' * min(tried - hits, 12)}",
+                    file=file,
+                )
+        dead = [(d, v["tried"]) for d, v in domain_stats.items()
+                if v["tried"] >= 3 and v["found"] == 0]
+        if dead:
+            dead.sort(key=lambda x: -x[1])
+            label = ", ".join(f"{d} 0/{t}" for d, t in dead[:3])
+            print(f" no coverage: {label}", file=file)
+    if skipped_no_coverage:
+        print(f" skipped (no coverage): {skipped_no_coverage}", file=file)
     print("═" * 60, file=file)
     print(file=file)
     # Piped/buffered output managers (e.g. `| tail -30`) don't see these lines

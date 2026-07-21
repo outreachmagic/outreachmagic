@@ -15,6 +15,7 @@ Usage:
 
 batch-find options:
     --workspace W --delay 8 --workers 1 --max 500 --provider trykitt|icypeas
+    --abandon-after N   stop calling a domain after N consecutive misses (default 3, 0=off)
     --output-base PATH --output-csv PATH --no-save --skip-om --dry-run --yes
 
 MillionVerifier (bulk email verification):
@@ -472,6 +473,12 @@ def _parse_batch_args(argv: list[str]) -> tuple[BatchOptions, str]:
         elif arg.startswith("--provider="):
             opts.provider = arg.split("=", 1)[1]
             i += 1
+        elif arg == "--abandon-after" and i + 1 < len(argv):
+            opts.abandon_after = int(argv[i + 1])
+            i += 2
+            continue
+        elif arg.startswith("--abandon-after="):
+            opts.abandon_after = int(arg.split("=", 1)[1])
         elif arg == "--output-base" and i + 1 < len(argv):
             opts.output_base = argv[i + 1]
             i += 2

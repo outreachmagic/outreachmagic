@@ -112,6 +112,9 @@ class BatchOptions:
     progress_every: int = 25
     json_checkpoint: int = 50
     retry_errors: bool = False
+    # Consecutive misses on one domain before the provider is treated as
+    # having no coverage for it and its remaining leads are skipped. 0 = off.
+    abandon_after: int = 3
 
 
 def build_import_profile(
@@ -1019,11 +1022,58 @@ def run_batch(
         api_providers = _api_providers_from_cfg(cfg, provider_names)
         return True
 
+    # Provider coverage is bimodal per domain, not uniform: measured over 342
+    # real leads, a domain either resolves almost every lead (voya.com 14/14,
+    # cortland.com 13/13, transwestern.com 17/18) or none at all
+    # (lincolnapts.com 0/29, ventronmanagement.com 0/15). The 0/29 cost 29
+    # calls to learn the same fact 29 times -- 58 of 342 calls in that run went
+    # to domains that never returned anything. After a few consecutive misses
+    # the domain is telling us the provider has no coverage for it, and every
+    # further lead there is a wasted credit.
+    abandon_after = max(int(getattr(opts, "abandon_after", 3) or 0), 0)
+    domain_misses: dict[str, int] = {}
+    # Feeds the progress readout: tried/found per domain, and the last few
+    # outcomes so the operator can see what is actually coming back.
+    domain_stats: dict[str, dict[str, int]] = {}
+    recent_outcomes: list = []
+    skipped_no_coverage = 0
+    domain_state_lock = threading.Lock()
+
+    def _domain_exhausted(domain: str) -> bool:
+        if abandon_after <= 0 or not domain:
+            return False
+        with domain_state_lock:
+            return domain_misses.get(domain.lower(), 0) >= abandon_after
+
+    def _note_domain_outcome(domain: str, found: bool) -> None:
+        key = (domain or "").lower()
+        if key:
+            with domain_state_lock:
+                entry = domain_stats.setdefault(key, {"tried": 0, "found": 0})
+                entry["tried"] += 1
+                if found:
+                    entry["found"] += 1
+        if abandon_after <= 0 or not domain:
+            return
+        with domain_state_lock:
+            # A single hit proves coverage exists, so the counter resets
+            # rather than decrements -- misses on a productive domain are
+            # about the person, not the domain.
+            domain_misses[key] = 0 if found else domain_misses.get(key, 0) + 1
+
     def _work(item: tuple[int, dict[str, Any]]) -> tuple[int, dict[str, Any]]:
         idx, row = item
         if request_delay > 0:
             time.sleep(request_delay)
         name, domain, _company, linkedin, _lead_id = row_fields(row)
+        if _domain_exhausted(domain):
+            return idx, {
+                "status": "skipped",
+                "batch_status": "skipped",
+                "skip_reason": "no_provider_coverage",
+                "domain": domain,
+                "provider_attempts": [],
+            }
         # Stage D5: when the OM lookup surfaced more than one known domain
         # for this lead's company (company_identities tracking a website vs
         # email-sending vs branch domain), waterfall across them in ranked
@@ -1057,6 +1107,8 @@ def run_batch(
                 "provider_attempts": [],
             }
         result["batch_status"] = "processed"
+        _note_domain_outcome(
+            result.get("winning_domain") or domain, bool(result.get("email")))
         return idx, result
 
     def _mark_credit_stop_remaining(queue: list[tuple[int, dict[str, Any]]]) -> None:
@@ -1110,6 +1162,16 @@ def run_batch(
                 results[idx] = result
                 done_count += 1
                 completed_in_chunk += 1
+                if result.get("skip_reason") == "no_provider_coverage":
+                    skipped_no_coverage += 1
+                with domain_state_lock:
+                    recent_outcomes.append({
+                        "name": row_fields(people[idx])[0],
+                        "domain": result.get("winning_domain") or row_fields(people[idx])[1],
+                        "email": result.get("email"),
+                        "status": result.get("status"),
+                    })
+                    del recent_outcomes[:-10]
                 _record_result(idx, people[idx], result, writer, stats)
                 if done_count % CREDIT_RECHECK_EVERY == 0:
                     credits_stop = _mid_batch_credit_stop(cfg, api_providers, provider_names, stats)
@@ -1122,6 +1184,9 @@ def run_batch(
                         pool_size=len(chunk),
                         tick_rate=completed_in_chunk / tick_elapsed,
                         slowest_call_s=slowest_call_s,
+                        recent=list(recent_outcomes),
+                        domain_stats=dict(domain_stats),
+                        skipped_no_coverage=skipped_no_coverage,
                     )
         if credits_stop:
             _mark_credit_stop_remaining(pending_queue)

@@ -708,7 +708,8 @@ def main():
         "find-domains",
         help="Discover company domains + public emails via Serper for undomained companies in a workspace",
     )
-    fd_p.add_argument("--workspace", required=True, help="Workspace whose undomained companies to search")
+    fd_p.add_argument("--workspace", help="Workspace whose undomained companies to search (not needed with --audit)")
+    fd_p.add_argument("--audit", action="store_true", help="Re-score every domain/public email already attached, org-wide. Read-only, no credits")
     fd_p.add_argument("--limit", type=int, help="Cap number of companies searched this run")
     fd_p.add_argument("--force", action="store_true", help="Re-search companies that already have a domain or a cached lookup")
     fd_p.add_argument("--dry-run", action="store_true", help="List target companies and worst-case query count without spending Serper credits")
@@ -3098,6 +3099,12 @@ def main():
         if getattr(args, "crm_sync", False) and ws_slug:
             _maybe_trigger_crm_sync(lead_id=args.lead_id, workspace_slug=ws_slug)
     elif args.command == "find-domains":
+        if getattr(args, "audit", False):
+            print(json.dumps(_pipeline.audit_discovered_domains(), indent=2))
+            return
+        if not getattr(args, "workspace", None):
+            print(json.dumps({"status": "error", "error": "--workspace is required (or use --audit)"}))
+            sys.exit(1)
         result = _pipeline.find_domains_for_workspace(
             args.workspace,
             limit=getattr(args, "limit", None),

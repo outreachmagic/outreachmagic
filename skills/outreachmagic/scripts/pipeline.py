@@ -772,6 +772,20 @@ def set_company_domain_label(company_id: int, domain: str, label: str) -> dict:
         conn.close()
 
 
+def audit_discovered_domains() -> dict:
+    """pipeline.py find-domains --audit: re-score every domain and public email
+    this feature has written, against current logic. Read-only, org-wide, free.
+    Catches both bad rows written by older builds and regressions in new ones
+    -- a scoring fix otherwise never reaches data already on disk."""
+    import domain_discovery
+
+    conn = get_conn()
+    try:
+        return domain_discovery.audit_attached_domains(conn)
+    finally:
+        conn.close()
+
+
 def find_domains_for_workspace(
     workspace: str,
     *,

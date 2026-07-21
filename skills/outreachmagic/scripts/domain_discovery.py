@@ -762,6 +762,98 @@ def _attach_public_emails(
     return attached
 
 
+DISCOVERY_SOURCES = ("serper_domain_discovery", "local_evidence")
+
+
+def audit_attached_domains(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Re-score everything this feature has ever written, against current logic.
+
+    Exists because four separate defects this feature shipped were caught by
+    looking at real attached results, not by any test: a directory subdomain
+    (health.usnews.com), a free provider (gmail.com), an unrelated address's
+    domain (psychatlanta.com), and a heuristic that was wrong 50/50. Each was
+    obvious the moment its output was scored; none was visible from the code.
+
+    Read-only and free. Run it after every batch -- it also re-checks rows
+    written by OLDER versions, which is the only way a scoring fix reaches
+    data that is already on disk.
+    """
+    findings: list[dict[str, Any]] = []
+    placeholders = ",".join("?" * len(DISCOVERY_SOURCES))
+
+    domain_rows = conn.execute(
+        f"""SELECT ci.company_id, c.name AS company_name, c.domain AS primary_domain,
+                   ci.identity_value_normalized AS domain, ci.source
+            FROM company_identities ci JOIN companies c ON c.id = ci.company_id
+            WHERE ci.identity_type = 'domain' AND ci.source IN ({placeholders})
+            ORDER BY c.name""",
+        DISCOVERY_SOURCES,
+    ).fetchall()
+
+    for row in domain_rows:
+        domain, name = row["domain"], row["company_name"] or ""
+        issues: list[str] = []
+        if normalize_company_domain(domain) != domain:
+            issues.append("malformed")
+        if domain in SHARED_EMAIL_DOMAINS:
+            issues.append("free_provider")
+        cleaned, warning = enrich.validate_company_domain(domain, name)
+        if not cleaned:
+            issues.append("aggregator" if "ggregator" in warning else "rejected")
+        score, reason = score_domain_match(name, domain)
+        if score <= 0:
+            issues.append("no_name_match")
+        if issues:
+            findings.append({
+                "kind": "domain",
+                "company_id": row["company_id"],
+                "company_name": name,
+                "value": domain,
+                "is_primary": row["primary_domain"] == domain,
+                "source": row["source"],
+                "score": score,
+                "reason": reason,
+                "issues": issues,
+            })
+
+    email_rows = conn.execute(
+        """SELECT ci.company_id, c.name AS company_name, c.domain AS company_domain,
+                  ci.identity_value_normalized AS email, ci.role
+           FROM company_identities ci JOIN companies c ON c.id = ci.company_id
+           WHERE ci.identity_type = 'public_email' AND ci.source = 'serper_domain_discovery'
+           ORDER BY c.name""",
+    ).fetchall()
+
+    for row in email_rows:
+        expected = classify_public_email(row["email"], row["company_domain"])
+        # Only the two trustworthy classes should ever have been stored; an
+        # older build's looser rules can leave the others behind.
+        if expected not in ("corporate", "free_provider"):
+            findings.append({
+                "kind": "public_email",
+                "company_id": row["company_id"],
+                "company_name": row["company_name"] or "",
+                "value": row["email"],
+                "stored_role": row["role"],
+                "issues": [expected],
+            })
+
+    by_issue: dict[str, int] = {}
+    for f in findings:
+        for i in f["issues"]:
+            by_issue[i] = by_issue.get(i, 0) + 1
+
+    return {
+        "status": "ok",
+        "domains_checked": len(domain_rows),
+        "public_emails_checked": len(email_rows),
+        "clean": len(domain_rows) + len(email_rows) - len(findings),
+        "suspect": len(findings),
+        "by_issue": by_issue,
+        "findings": findings,
+    }
+
+
 def run_company_domain_discovery(
     conn: sqlite3.Connection,
     cfg: dict[str, Any],
@@ -915,11 +1007,17 @@ def run_company_domain_discovery(
         """Single exit point: public emails are persisted on EVERY outcome
         (a published contact is worth keeping even when the domain pick was
         uncertain), the domain only when confidence clears the floor."""
-        # Classification needs the winning domain, which is only known here.
-        winner_domain = winner["domain"] if winner else None
+        # Classify against the domain we are actually ATTACHING, not merely the
+        # one that ranked first. An address is only "corporate" relative to an
+        # established company domain -- when the winner is held back below the
+        # confidence floor there is no such domain, so an address on it is just
+        # someone else's (intake@psychatlanta.com under "Hightop Health").
+        # Free-provider addresses are unaffected: they never depended on the
+        # domain, and are the fallback contact worth keeping either way.
+        attached_domain = winner["domain"] if winner and confidence >= MIN_ATTACH_CONFIDENCE else None
         emails = drop_truncated_duplicates(list(all_emails.values()))
         for e in emails:
-            e["role"] = classify_public_email(e["email"], winner_domain)
+            e["role"] = classify_public_email(e["email"], attached_domain)
         emails_attached = _attach_public_emails(conn, company_id, emails)
         out: dict[str, Any] = {
             "status": status,

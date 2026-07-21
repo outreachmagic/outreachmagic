@@ -217,3 +217,71 @@ def test_rerunning_the_corpus_changes_nothing(corpus_run):
     assert sorted((r["company_id"], r["domain"]) for r in _attached_domains(conn)) == before
     assert conn.execute(
         "SELECT COUNT(*) c FROM company_merge_candidates").fetchone()["c"] == n_candidates
+
+
+# ── Contacts follow the domain that was actually established ─────────────────
+
+def test_contacts_are_not_stored_when_the_domain_went_to_a_duplicate_row():
+    """Live regression: "Great Oaks Senior Living" ended up with five
+    greatoaks.net contacts and no domain, because the duplicate row "Great
+    Oaks Assisted Living" already owned that identity. Classifying against the
+    merely top-ranked domain -- rather than the one that actually attached --
+    stored contacts for a company row that owns nothing."""
+    conn = om.get_conn()
+    twin = om.ensure_company(conn, name="Great Oaks Assisted Living")
+    conn.execute(
+        """INSERT INTO company_identities
+               (org_id, company_id, identity_type, identity_value_normalized, source)
+           VALUES ('default', ?, 'domain', 'greatoaks.net', 'seed')""", (twin,))
+    conn.commit()
+
+    cid = om.ensure_company(conn, name="Great Oaks Senior Living")
+    lead = om.resolve_lead(name="Go Poe", source="csv", allow_weak_identity=True, conn=conn)
+    conn.execute("UPDATE leads SET company_id = ? WHERE id = ?", (cid, lead["id"]))
+    conn.commit()
+
+    raw = _result(["https://www.greatoaks.net/"],
+                  snippet="Great Oaks Senior Living. Contact marketing@greatoaks.net.",
+                  title="Great Oaks Senior Living")
+    with mock.patch.object(enrich, "serper_search", side_effect=lambda q, c: raw):
+        out = dd.run_company_domain_discovery(
+            conn, {}, company_id=cid, company_name="Great Oaks Senior Living",
+            rep_lead_id=lead["id"])
+    conn.commit()
+
+    assert out["attach"]["attached"] is False
+    assert out["attach"]["reason"] == "domain_owned_by_other_company"
+    # No domain established for this row -> no contacts filed against it.
+    assert conn.execute(
+        """SELECT COUNT(*) c FROM company_identities
+           WHERE company_id = ? AND identity_type = 'public_email'""", (cid,)).fetchone()["c"] == 0
+    # ...and the duplicate is queued for a human instead of silently ignored.
+    assert conn.execute(
+        """SELECT COUNT(*) c FROM company_merge_candidates
+           WHERE existing_company_id = ? AND candidate_company_id = ?""",
+        (twin, cid)).fetchone()["c"] == 1
+    conn.close()
+
+
+def test_free_provider_contact_survives_even_with_no_domain():
+    """The one address type that never depended on the domain: for many small
+    businesses the Gmail address is the only published contact there is."""
+    conn = om.get_conn()
+    cid = om.ensure_company(conn, name="Zzz Unfindable Services")
+    lead = om.resolve_lead(name="Zz Poe", source="csv", allow_weak_identity=True, conn=conn)
+    conn.execute("UPDATE leads SET company_id = ? WHERE id = ?", (cid, lead["id"]))
+    conn.commit()
+
+    raw = _result(["https://carelistings.com/zzz"],
+                  snippet="Zzz Unfindable Services -- email zzzunfindable@gmail.com.")
+    with mock.patch.object(enrich, "serper_search", side_effect=lambda q, c: raw):
+        dd.run_company_domain_discovery(
+            conn, {}, company_id=cid, company_name="Zzz Unfindable Services",
+            rep_lead_id=lead["id"])
+    conn.commit()
+
+    stored = conn.execute(
+        """SELECT identity_value_normalized AS e, role FROM company_identities
+           WHERE company_id = ? AND identity_type = 'public_email'""", (cid,)).fetchall()
+    assert [(r["e"], r["role"]) for r in stored] == [("zzzunfindable@gmail.com", "free_provider")]
+    conn.close()

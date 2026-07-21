@@ -524,6 +524,21 @@ def _attach_domain(
         # Already claimed by a different company row -- reconciling that is
         # ensure_company()/company merge-review's job, not this function's;
         # surface it instead of silently dropping or misattaching it.
+        #
+        # This fires BEFORE the companies.domain clash below and is the more
+        # common of the two, so a merge candidate has to be queued here as
+        # well: "Great Oaks Senior Living" and "Great Oaks Assisted Living"
+        # both resolved to greatoaks.net and nothing was queued, because this
+        # branch returned first.
+        if owner is not None:
+            _queue_merge_candidate(
+                conn,
+                existing_company_id=owner["company_id"],
+                candidate_company_id=company_id,
+                reason="domain_discovery_shared_domain",
+                payload={"domain": domain, "source": source,
+                         "discovered_for_company_id": company_id},
+            )
         return {
             "attached": False,
             "reason": "domain_owned_by_other_company",
@@ -1035,39 +1050,46 @@ def run_company_domain_discovery(
     def _finish(
         status: str, winner: Optional[dict[str, Any]], confidence: float, *, role: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Single exit point: public emails are persisted on EVERY outcome
-        (a published contact is worth keeping even when the domain pick was
-        uncertain), the domain only when confidence clears the floor."""
-        # Classify against the domain we are actually ATTACHING, not merely the
-        # one that ranked first. An address is only "corporate" relative to an
-        # established company domain -- when the winner is held back below the
-        # confidence floor there is no such domain, so an address on it is just
-        # someone else's (intake@psychatlanta.com under "Hightop Health").
-        # Free-provider addresses are unaffected: they never depended on the
-        # domain, and are the fallback contact worth keeping either way.
-        attached_domain = winner["domain"] if winner and confidence >= MIN_ATTACH_CONFIDENCE else None
-        emails = drop_truncated_duplicates(list(all_emails.values()))
-        for e in emails:
-            e["role"] = classify_public_email(e["email"], attached_domain)
-        emails_attached = _attach_public_emails(conn, company_id, emails)
+        """Single exit point. The domain is attached FIRST, then addresses are
+        classified against whatever that attach actually established -- an
+        address is only 'corporate' relative to a domain this company row
+        genuinely owns.
+
+        Order matters. Classifying against the merely top-ranked domain stored
+        five greatoaks.net contacts on "Great Oaks Senior Living" while the
+        domain itself went nowhere (the duplicate row "Great Oaks Assisted
+        Living" already owned that identity), and stored
+        intake@psychatlanta.com on a company whose domain was refused for low
+        confidence. Free-provider addresses never depended on the domain and
+        are kept regardless -- for many small businesses they are the only
+        published contact there is.
+        """
         out: dict[str, Any] = {
             "status": status,
             "domain": winner["domain"] if winner else None,
             "confidence": confidence,
             "queries_run": queries_run,
-            "public_emails_attached": emails_attached,
         }
-        if winner is None:
-            return out
-        if confidence < MIN_ATTACH_CONFIDENCE:
-            # Recorded and reviewable, but nothing is written to
-            # companies.domain -- nothing downstream ever corrects a wrong one.
-            out["status"] = "low_confidence"
-            out["attach"] = {"attached": False, "reason": "below_confidence_floor"}
-            return out
-        out["attach"] = _attach_domain(
-            conn, company_id, winner["domain"], role=role, source="serper_domain_discovery",
-        )
+        attached_domain: Optional[str] = None
+        if winner is not None:
+            if confidence < MIN_ATTACH_CONFIDENCE:
+                # Recorded and reviewable, but nothing is written to
+                # companies.domain -- nothing downstream ever corrects a wrong one.
+                out["status"] = "low_confidence"
+                out["attach"] = {"attached": False, "reason": "below_confidence_floor"}
+            else:
+                attach = _attach_domain(
+                    conn, company_id, winner["domain"], role=role,
+                    source="serper_domain_discovery",
+                )
+                out["attach"] = attach
+                if attach.get("attached"):
+                    attached_domain = attach.get("domain")
+
+        emails = drop_truncated_duplicates(list(all_emails.values()))
+        for e in emails:
+            e["role"] = classify_public_email(e["email"], attached_domain)
+        out["public_emails_attached"] = _attach_public_emails(conn, company_id, emails)
         return out
 
     q1 = _run_query(build_discovery_query(company_name, "email"), 1)

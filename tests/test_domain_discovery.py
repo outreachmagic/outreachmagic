@@ -314,23 +314,22 @@ def test_force_bypasses_the_cache():
 
 
 def test_domain_owned_by_another_company_is_not_misattached():
+    """Both companies name-match modernstorefront.com strongly enough to clear
+    the confidence floor, so the ownership guard -- not the floor -- is what
+    stops the second one."""
     conn = om.get_conn()
-    cid_a, lead_a = _company_with_lead(conn, name="Original Owner LLC", person="Jane Doe")
-    cid_b, lead_b = _company_with_lead(conn, name="Second Company LLC", person="John Smith")
+    cid_a, lead_a = _company_with_lead(conn, name="Modern Storefront LLC", person="Jane Doe")
+    cid_b, lead_b = _company_with_lead(conn, name="Modern Storefront Group", person="John Smith")
 
-    with mock.patch.object(enrich, "serper_search", return_value=_serper_result(
-        company_name="Original Owner LLC", with_email=True,
-    )):
+    with mock.patch.object(enrich, "serper_search", return_value=_serper_result(with_email=True)):
         dd.run_company_domain_discovery(
-            conn, {}, company_id=cid_a, company_name="Original Owner LLC", rep_lead_id=lead_a,
+            conn, {}, company_id=cid_a, company_name="Modern Storefront LLC", rep_lead_id=lead_a,
         )
     conn.commit()
 
-    with mock.patch.object(enrich, "serper_search", return_value=_serper_result(
-        company_name="Second Company LLC", with_email=True,
-    )):
+    with mock.patch.object(enrich, "serper_search", return_value=_serper_result(with_email=True)):
         outcome = dd.run_company_domain_discovery(
-            conn, {}, company_id=cid_b, company_name="Second Company LLC", rep_lead_id=lead_b,
+            conn, {}, company_id=cid_b, company_name="Modern Storefront Group", rep_lead_id=lead_b,
         )
     conn.commit()
 
@@ -954,3 +953,52 @@ def test_merge_candidate_is_queued_once_per_pair():
         """SELECT COUNT(*) c FROM company_merge_candidates
            WHERE existing_company_id = ? AND candidate_company_id = ?""", (twin, cid)).fetchone()["c"]
     assert n == 1
+
+
+def test_email_derived_domain_unrelated_to_the_company_is_not_attached():
+    """Live regression: "Hightop Health" was assigned psychatlanta.com purely
+    because an address on that domain appeared in a snippet. An attached email
+    proves a domain receives mail, not whose domain it is."""
+    conn = om.get_conn()
+    cid, lead_id = _company_with_lead(conn, name="Hightop Health", person="Hi Poe")
+    raw = {"organic": [{
+        "link": "https://directory.example.org/listing/hightop",
+        "title": "Hightop Health - Provider Directory",
+        "snippet": "Hightop Health. Billing handled by intake@psychatlanta.com.",
+    }], "knowledgeGraph": {}}
+
+    with mock.patch.object(enrich, "serper_search", side_effect=lambda q, c: raw):
+        outcome = dd.run_company_domain_discovery(
+            conn, {}, company_id=cid, company_name="Hightop Health", rep_lead_id=lead_id,
+        )
+    conn.commit()
+
+    assert outcome["status"] == "low_confidence"
+    assert conn.execute(
+        "SELECT domain FROM companies WHERE id = ?", (cid,)).fetchone()["domain"] is None
+    assert conn.execute(
+        """SELECT COUNT(*) c FROM company_identities
+           WHERE company_id = ? AND identity_type = 'domain'""", (cid,)).fetchone()["c"] == 0
+
+
+def test_email_derived_domain_matching_the_company_name_still_wins():
+    """The guard must not cost us the good case: SANZIE HEALTHCARE SERVICES
+    resolved via an address on sanziehealthcareservices.com, a domain that
+    never appeared as an organic link."""
+    conn = om.get_conn()
+    cid, lead_id = _company_with_lead(conn, name="Sanzie Healthcare Services, Inc.", person="Sa Poe")
+    raw = {"organic": [{
+        "link": "https://directory.example.org/listing/sanzie",
+        "title": "Sanzie Healthcare Services - Directory",
+        "snippet": "Contact info@sanziehealthcareservices.com for details.",
+    }], "knowledgeGraph": {}}
+
+    with mock.patch.object(enrich, "serper_search", side_effect=lambda q, c: raw):
+        outcome = dd.run_company_domain_discovery(
+            conn, {}, company_id=cid, company_name="Sanzie Healthcare Services, Inc.",
+            rep_lead_id=lead_id,
+        )
+    conn.commit()
+
+    assert outcome["status"] == "found"
+    assert outcome["domain"] == "sanziehealthcareservices.com"

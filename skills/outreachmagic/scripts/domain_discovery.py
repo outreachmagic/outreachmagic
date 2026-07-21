@@ -373,7 +373,9 @@ def extract_domains(serper_json: dict, company_name: str) -> list[dict[str, Any]
 
 
 def classify_domains(
-    scored_domains: list[dict[str, Any]], emails: list[dict[str, Any]],
+    scored_domains: list[dict[str, Any]],
+    emails: list[dict[str, Any]],
+    company_name: str = "",
 ) -> list[dict[str, Any]]:
     """Best-first candidate list, ranked so a domain with a real attached
     email always outranks a same-scored domain matched by name alone -- the
@@ -414,7 +416,18 @@ def classify_domains(
         cleaned, _warning = enrich.validate_company_domain(domain, "")
         if not cleaned or cleaned in seen:
             continue
-        out.append({"domain": cleaned, "score": 0, "reason": "email_derived", "has_email": True})
+        # Score it like any other candidate. Hardcoding 0 here meant an
+        # address merely *mentioned* on the page -- a partner clinic, a
+        # billing vendor -- became the company's domain unchallenged, because
+        # has_email sorts ahead of score and lifted a 0 to 0.85 confidence.
+        # "Hightop Health" -> psychatlanta.com came in exactly this way.
+        e_score, e_reason = score_domain_match(company_name, cleaned)
+        out.append({
+            "domain": cleaned,
+            "score": e_score,
+            "reason": f"email_derived_{e_reason}",
+            "has_email": True,
+        })
         seen.add(cleaned)
 
     out.sort(key=lambda d: (d["has_email"], d["score"]), reverse=True)
@@ -440,7 +453,18 @@ def compute_confidence(ranked_domains: list[dict[str, Any]]) -> float:
         return 0.0
     top = ranked_domains[0]
     if top["has_email"]:
-        return 0.95 if top["score"] >= 15 else 0.85
+        # An attached email proves the domain receives mail. It proves nothing
+        # about WHOSE domain it is -- a partner clinic or billing vendor
+        # mentioned on the page has a working address too. With no name
+        # relation at all this stays below MIN_ATTACH_CONFIDENCE, so it is
+        # recorded for review instead of written onto the company.
+        if top["score"] >= 15:
+            return 0.95
+        if top["score"] >= 5:
+            return 0.85
+        if top["score"] > 0:
+            return 0.60
+        return 0.35
     if top["score"] >= 15:
         return 0.70
     if top["score"] >= 5:
@@ -814,7 +838,7 @@ def run_company_domain_discovery(
 
         emails = extract_emails(raw)
         scored = extract_domains(raw, company_name)
-        ranked = classify_domains(scored, emails)
+        ranked = classify_domains(scored, emails, company_name)
         # The "q<n>" prefix is load-bearing, not decoration: compute_obs_uid()
         # hashes the content columns and metadata_json is NOT one of them, so
         # two queries for the same company that return the same domain in the

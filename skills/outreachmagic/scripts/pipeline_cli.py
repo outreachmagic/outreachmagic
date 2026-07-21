@@ -1888,7 +1888,6 @@ def main():
             device_code=getattr(args, "device_code", None),
             wait_seconds=getattr(args, "wait", 30),
             force=getattr(args, "force", False),
-            retry_unresolved=getattr(args, "retry_unresolved", False),
         )
         return
     if args.command == "logout":
@@ -3115,6 +3114,7 @@ def main():
             args.workspace,
             limit=getattr(args, "limit", None),
             force=getattr(args, "force", False),
+            retry_unresolved=getattr(args, "retry_unresolved", False),
             dry_run=getattr(args, "dry_run", False),
             debug=getattr(args, "debug", False),
             max_queries=getattr(args, "max_queries", None),

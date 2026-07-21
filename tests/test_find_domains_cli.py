@@ -265,3 +265,48 @@ def test_plain_rerun_still_respects_the_cache():
         res = om.find_domains_for_workspace("storefront", tags=["seg2"])
         fake.assert_not_called()
     assert res["cached"] == 1
+
+
+# ── CLI wiring ───────────────────────────────────────────────────────────────
+# Every flag above was tested against find_domains_for_workspace() directly,
+# which cannot catch a flag wired into the wrong command's dispatch --
+# --retry-unresolved was injected into the `login` call, so find-domains
+# silently ignored it AND `pipeline.py login` would have raised TypeError.
+
+@pytest.mark.parametrize("argv, kwarg, expected", [
+    (["--retry-unresolved"], "retry_unresolved", True),
+    (["--force"], "force", True),
+    (["--debug"], "debug", True),
+    (["--dry-run"], "dry_run", True),
+    (["--max-queries", "42"], "max_queries", 42),
+    (["--limit", "7"], "limit", 7),
+    (["--tag", "a", "b"], "tags", ["a", "b"]),
+    (["--exclude-tag", "z"], "exclude_tags", ["z"]),
+])
+def test_cli_flags_reach_find_domains_for_workspace(argv, kwarg, expected, monkeypatch):
+    import pipeline_cli
+
+    seen = {}
+    def fake(workspace, **kw):
+        seen.update(kw)
+        return {"status": "ok", "results": []}
+
+    # main() does `import pipeline as _pipeline`, so the alias IS this module
+    # object -- patching the attribute here is what the dispatch will see.
+    monkeypatch.setattr(om, "find_domains_for_workspace", fake)
+    monkeypatch.setattr(
+        sys, "argv", ["pipeline.py", "find-domains", "--workspace", "storefront", *argv])
+    pipeline_cli.main()
+    assert seen.get(kwarg) == expected, f"{argv} did not reach the function as {kwarg}"
+
+
+def test_login_dispatch_takes_no_find_domains_flags():
+    """Guards the specific mistake: a find-domains kwarg pasted into the login
+    call, which argparse cannot catch and no find-domains test would see."""
+    import inspect
+    import pipeline_cli
+
+    src = inspect.getsource(pipeline_cli.main)
+    login_call = src[src.index('if args.command == "login"'):]
+    login_call = login_call[:login_call.index("return")]
+    assert "retry_unresolved" not in login_call

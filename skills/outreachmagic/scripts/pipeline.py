@@ -1044,7 +1044,17 @@ def find_domains_for_workspace(
                     # companies.domain, and the tag is the review queue.
                     tag = "domain_low_confidence"
                 elif outcome.get("domain"):
-                    tag = f"domain_found_{outcome['domain']}"
+                    # A single flag, NOT domain_found_<domain>. Embedding the
+                    # value in the tag name minted one tag per domain -- 288
+                    # of 340 tags in one workspace, 218 of them used by a
+                    # single lead. Worse, it is a denormalized copy of
+                    # companies.domain that nothing keeps in step: tags reading
+                    # domain_found_gmail.com. and domain_found_health.usnews.com
+                    # outlived the values themselves, so the tag namespace
+                    # became a permanent record of answers since corrected.
+                    # The domain lives in companies.domain; tags are for
+                    # workspace groupings.
+                    tag = "domain_discovered"
                 else:
                     tag = "domain_not_found"
                 for lead_id in lead_ids:

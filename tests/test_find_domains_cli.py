@@ -71,7 +71,8 @@ def test_finds_domain_tags_lead_and_reports_counts():
 
     conn = om.get_conn()
     tags = {r["tag"] for r in conn.execute("SELECT tag FROM workspace_lead_tags WHERE lead_id = ?", (lead_id,))}
-    assert "domain_found_modernstorefront.com" in tags
+    assert "domain_discovered" in tags
+    assert not any(t.startswith("domain_found_") for t in tags), "per-domain tags mint one tag per value"
     company = conn.execute("SELECT domain FROM companies WHERE id = ?", (cid,)).fetchone()
     assert company["domain"] == "modernstorefront.com"
 

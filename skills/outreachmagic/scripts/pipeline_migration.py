@@ -395,6 +395,40 @@ def _repair_lead_provider_attempts_schema(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE lead_provider_attempts_malformed_backup")
 
 
+def _collapse_domain_found_tags(conn: sqlite3.Connection) -> None:
+    """Replace per-domain domain_found_<domain> tags with one domain_discovered.
+
+    The old form minted a tag per unique domain -- 288 of 340 tags in one real
+    workspace, 218 used by exactly one lead -- burying the handful of tags that
+    describe an actual segment. It was also a denormalized copy of
+    companies.domain that nothing kept in step, so tags naming values that were
+    later corrected (gmail.com., health.usnews.com) persisted as a permanent
+    record of the wrong answer.
+    """
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'domain_found_tag_collapse'"
+    ).fetchone():
+        return
+    rows = conn.execute(
+        # substr() rather than LIKE: '_' is a single-char wildcard in LIKE, so
+        # the pattern would also match tags this migration has no business
+        # touching, and escaping it portably is fiddlier than an exact prefix.
+        """SELECT id, workspace_id, lead_id FROM workspace_lead_tags
+           WHERE substr(tag, 1, 13) = 'domain_found_'"""
+    ).fetchall()
+    for row in rows:
+        # INSERT OR IGNORE first: several old tags can collapse onto the same
+        # (workspace, lead) pair, and the table is uniquely keyed on the tag.
+        conn.execute(
+            """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
+               VALUES (?, ?, ?, 'domain_discovered')""",
+            (f"wlt_{row['workspace_id']}_{row['lead_id']}_domdisc",
+             row["workspace_id"], row["lead_id"]),
+        )
+        conn.execute("DELETE FROM workspace_lead_tags WHERE id = ?", (row["id"],))
+    conn.execute("INSERT INTO migration_flags (name) VALUES ('domain_found_tag_collapse')")
+
+
 def _migrate_provider_observations(conn: sqlite3.Connection) -> None:
     """Stage 7: fold lead_email_verification + lead_provider_attempts into one
     append-only lead_provider_observations log, then retire both old names to
@@ -1495,6 +1529,10 @@ def migrate_db(conn=None):
     # and before ensure_outbox below (the new table needs to exist first so it
     # gets an outbox trigger from the same migration that creates it).
     _migrate_provider_observations(conn)
+
+    # Collapses per-domain domain_found_<domain> tags onto one flag. Runs
+    # before ensure_outbox so the rewritten rows enqueue under the new trigger.
+    _collapse_domain_found_tags(conn)
 
     # Must run after the uid columns above: the tombstone triggers read OLD.uid.
     ensure_outbox(conn)

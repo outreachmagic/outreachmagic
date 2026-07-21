@@ -148,7 +148,7 @@ Tags narrow only what you pay to search. The freshness cache, the pre-flight ide
 - Discovered public emails land in `company_identities` as `identity_type='public_email'` with `role='corporate'|'free_provider'` and the source URL in `label`. They round-trip the relay and stay verifiable through the normal flow (`verify-email` against the company's rep lead).
 - Domains write into `company_identities` (not a new column) — the same multi-domain store `rank_company_domains()` / `email_finder`'s domain fallback already read. `companies.domain` is backfilled only when it was `NULL`.
 - Below a confidence floor the result is recorded and tagged but **not** attached — no `companies.domain`, no identity row, since nothing downstream corrects a wrong domain later. Status `low_confidence`.
-- Tags workspace leads `domain_found_<domain>` / `domain_low_confidence` / `domain_not_found` for the audit trail.
+- Tags workspace leads `domain_discovered` / `domain_low_confidence` / `domain_not_found`. Deliberately one flag, not `domain_found_<domain>`: embedding the value minted a tag per domain (288 of 340 tags in one workspace, most used by a single lead) and was a copy of `companies.domain` that nothing kept in step. Query the column for the value; tags mark the segment. A migration collapses existing per-domain tags on first run.
 - Observations store a lean summary (~0.5 KB) — ranked candidates with scores and reasons, found emails, top 3 links. `--debug` adds the full raw Serper response (~5-8 KB), which also crosses the relay wire, so it is off by default.
 
 ## Email verification (MillionVerifier bulk)

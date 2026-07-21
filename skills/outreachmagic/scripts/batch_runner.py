@@ -475,6 +475,48 @@ def bulk_dedup_map(
     return out, False
 
 
+def spread_by_domain(
+    queue: list[tuple[int, dict[str, Any]]],
+) -> list[tuple[int, dict[str, Any]]]:
+    """Reorder so leads sharing a domain land as far apart as possible.
+
+    Input order comes from the candidate query, which groups by company -- so
+    a domain with 6 leads arrives as 6 consecutive rows and, at 3 workers, gets
+    3 simultaneous lookups against one mail server. Providers verify by probing
+    SMTP, and a burst against a single host invites rate limiting, greylisting
+    and catch-all-looking responses: the domain reads as dead when what
+    actually happened is that we knocked too hard. ventronmanagement.com
+    arrived as runs of 6, 4 and 3 and scored 0/15.
+
+    Round-robins across domains, so N domains means roughly N leads between
+    consecutive hits on any one of them. Order within a domain is preserved,
+    and every input row appears exactly once -- resume keys are per-lead, so
+    reordering cannot cause a re-spend.
+    """
+    from collections import OrderedDict
+
+    buckets: "OrderedDict[str, list]" = OrderedDict()
+    for item in queue:
+        domain = (row_fields(item[1])[1] or "").lower()
+        buckets.setdefault(domain, []).append(item)
+
+    # Greedy "most remaining first, never twice in a row". A plain round-robin
+    # spaces the head of the queue well but clusters the tail: once the small
+    # domains are exhausted, whatever is left runs consecutively, which is
+    # exactly the burst we are trying to avoid. Draining the largest bucket
+    # first keeps every domain in play as long as possible.
+    out: list[tuple[int, dict[str, Any]]] = []
+    previous = None
+    while buckets:
+        order = sorted(buckets, key=lambda d: (-len(buckets[d]), d))
+        pick = next((d for d in order if d != previous), order[0])
+        out.append(buckets[pick].pop(0))
+        previous = pick
+        if not buckets[pick]:
+            del buckets[pick]
+    return out
+
+
 def skip_resolved_before_api(
     om_dir: Path,
     chunk: list[tuple[int, dict[str, Any]]],
@@ -1000,7 +1042,7 @@ def run_batch(
     total_work = len(to_process)
 
     credits_stop = False
-    pending_queue: list[tuple[int, dict[str, Any]]] = list(to_process)
+    pending_queue: list[tuple[int, dict[str, Any]]] = spread_by_domain(list(to_process))
     auth_resync_lock = threading.Lock()
     auth_resync_attempted = False
 
@@ -1169,6 +1211,7 @@ def run_batch(
                         "name": row_fields(people[idx])[0],
                         "domain": result.get("winning_domain") or row_fields(people[idx])[1],
                         "email": result.get("email"),
+                        "validity": result.get("validity"),
                         "status": result.get("status"),
                     })
                     del recent_outcomes[:-10]

@@ -150,11 +150,18 @@ def print_progress(
     if recent:
         print("─" * 60, file=file)
         for entry in recent[-5:]:
-            mark = "OK " if entry.get("email") else " - "
+            email = entry.get("email")
+            # The validity matters as much as the hit: a catch_all address is
+            # a guess the server declined to confirm, and treating it like a
+            # verified one is how bounce rates climb.
+            verdict = (entry.get("validity") or "").strip() if email else ""
+            mark = {"valid": "OK  ", "valid-risky": "RISK", "catch_all": "CTCH",
+                    "invalid": "BAD "}.get(verdict, "OK  " if email else " -  ")
+            trailer = f"  [{verdict}]" if verdict else ""
             print(
                 f" {mark}{str(entry.get('name') or '')[:20]:22}"
                 f"{str(entry.get('domain') or '')[:24]:26}"
-                f"{str(entry.get('email') or entry.get('status') or '')[:30]}",
+                f"{str(email or entry.get('status') or '')[:28]:30}{trailer}",
                 file=file,
             )
     if domain_stats:

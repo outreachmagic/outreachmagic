@@ -32,3 +32,8 @@ awesome-agent-skills/
 awesome-claude-code-and-skills/
 awesome-claude-code-toolkit/
 awesome-hermes-agent/
+
+# Local scoring corpus exported from live observations (real company names;
+# this repo is public). See find-domains --export-corpus.
+*.corpus.json
+corpus*.json

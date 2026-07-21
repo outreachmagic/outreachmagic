@@ -709,6 +709,7 @@ def main():
         help="Discover company domains + public emails via Serper for undomained companies in a workspace",
     )
     fd_p.add_argument("--workspace", help="Workspace whose undomained companies to search (not needed with --audit)")
+    fd_p.add_argument("--export-corpus", metavar="FILE", help="Dump observations for local scoring measurement (contains live company names -- never commit)")
     fd_p.add_argument("--audit", action="store_true", help="Re-score every domain/public email already attached, org-wide. Read-only, no credits")
     fd_p.add_argument("--limit", type=int, help="Cap number of companies searched this run")
     fd_p.add_argument("--force", action="store_true", help="Re-search companies that already have a domain or a cached lookup")
@@ -3099,6 +3100,9 @@ def main():
         if getattr(args, "crm_sync", False) and ws_slug:
             _maybe_trigger_crm_sync(lead_id=args.lead_id, workspace_slug=ws_slug)
     elif args.command == "find-domains":
+        if getattr(args, "export_corpus", None):
+            print(json.dumps(_pipeline.export_domain_corpus(args.export_corpus), indent=2))
+            return
         if getattr(args, "audit", False):
             print(json.dumps(_pipeline.audit_discovered_domains(), indent=2))
             return

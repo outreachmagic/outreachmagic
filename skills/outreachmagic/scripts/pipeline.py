@@ -786,6 +786,23 @@ def audit_discovered_domains() -> dict:
         conn.close()
 
 
+def export_domain_corpus(path: str) -> dict:
+    """pipeline.py find-domains --export-corpus FILE: dump real observations
+    for local scoring measurement. Never commit the output -- it contains live
+    company names and this repo is public."""
+    import domain_discovery
+
+    conn = get_conn()
+    try:
+        rows = domain_discovery.export_scoring_corpus(conn)
+    finally:
+        conn.close()
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(rows, fh, indent=1)
+    return {"status": "ok", "observations": len(rows), "path": path,
+            "warning": "contains live company names -- do not commit"}
+
+
 def find_domains_for_workspace(
     workspace: str,
     *,

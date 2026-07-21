@@ -954,6 +954,42 @@ def audit_attached_domains(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def export_scoring_corpus(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every stored domain_lookup as a (company_name, candidates) record, for
+    measuring a scoring change against real data before shipping it.
+
+    Deliberately NOT committed anywhere: these are live customer company
+    names, and this repo is public. The repo's fixtures carry the same
+    matching SHAPES under synthetic names; this exists so a rule can be scored
+    against the real distribution first -- which is the step whose absence let
+    every scoring bug in this module reach production. Costs nothing: it reads
+    observations already paid for.
+    """
+    out: list[dict[str, Any]] = []
+    for row in conn.execute(
+        """SELECT metadata_json FROM lead_provider_observations
+           WHERE kind = ? AND metadata_json IS NOT NULL""",
+        (KIND_DOMAIN_LOOKUP,),
+    ).fetchall():
+        try:
+            meta = json.loads(row["metadata_json"])
+        except (TypeError, ValueError):
+            continue
+        if not meta.get("ranked_domains"):
+            continue
+        out.append({
+            "company_name": meta.get("company_name"),
+            "found_domain": meta.get("found_domain"),
+            "confidence": meta.get("confidence"),
+            "candidates": [
+                {"domain": d.get("domain"), "score": d.get("score"),
+                 "reason": d.get("reason", ""), "has_email": d.get("has_email", False)}
+                for d in meta["ranked_domains"]
+            ],
+        })
+    return out
+
+
 def run_company_domain_discovery(
     conn: sqlite3.Connection,
     cfg: dict[str, Any],

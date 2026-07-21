@@ -1248,6 +1248,12 @@ _NAME_NOISE = frozenset({
     "dba", "rn", "bsn", "msn", "mba", "msw", "dnp", "mn", "phn", "md", "do", "np",
     "pa", "lpn", "cna", "phd", "esq", "cpa", "jr", "sr", "ii", "iii", "iv",
     "cacts", "fhc", "lcsw", "ot", "pt", "rd", "chpn", "ccm", "clc",
+    # A trailing credential steals the "last name" slot and silently breaks
+    # every pattern: "Joanne Smith, CCSP" yielded last="ccsp", so jsmith@ did
+    # not match its own owner.
+    "ccsp", "cam", "cpm", "crx", "cfa", "cfp", "cpc", "chfp", "fache", "fache",
+    "mha", "mph", "mpa", "ms", "ma", "bs", "ba", "aprn", "fnp", "pmp", "sphr",
+    "phr", "cscp", "cpsm", "ccim", "sior", "leed", "ap", "reia", "gri", "abr",
 })
 
 

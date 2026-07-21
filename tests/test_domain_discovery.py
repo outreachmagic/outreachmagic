@@ -1285,3 +1285,16 @@ def test_claim_writes_the_email_so_providers_never_see_the_lead():
     assert conn.execute(
         "SELECT email FROM leads WHERE id=?", (lead_id,)).fetchone()["email"] == "asanders@acmecare.com"
     conn.close()
+
+
+@pytest.mark.parametrize("name, email", [
+    # A trailing credential steals the "last name" slot and breaks every
+    # pattern -- "Joanne Smith, CCSP" yielded last="ccsp", so jsmith@ failed
+    # to match its own owner.
+    ("Joanne Smith, CCSP", "jsmith@acme.com"),
+    ("Amanda Luttrell, CAM", "aluttrell@acme.com"),
+    ("Dana Reed, FACHE", "dreed@acme.com"),
+    ("Paul Ortiz, LEED AP", "portiz@acme.com"),
+])
+def test_credential_suffixes_do_not_break_the_name_match(name, email):
+    assert dd.match_public_email_to_lead(name, email) is not None

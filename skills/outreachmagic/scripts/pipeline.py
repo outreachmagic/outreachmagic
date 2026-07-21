@@ -780,6 +780,8 @@ def find_domains_for_workspace(
     dry_run: bool = False,
     debug: bool = False,
     max_queries: Optional[int] = None,
+    tags: Optional[list] = None,
+    exclude_tags: Optional[list] = None,
 ) -> dict:
     """pipeline.py find-domains: discover domains + public emails (via Serper)
     for companies in `workspace` that don't have one yet, and write results
@@ -798,16 +800,47 @@ def find_domains_for_workspace(
         if not ws_row:
             return {"status": "error", "error": f"workspace not found: {workspace}"}
 
+        # Tags narrow only WHAT WE PAY TO SEARCH. Every "do we already know
+        # this domain?" check stays org-wide -- the c.domain filter here, the
+        # freshness cache, the pre-flight identity/duplicate lookups, and
+        # _attach_domain's clash guard all ignore workspace and tag. So
+        # searching one tag never re-pays for a company another tag, workspace,
+        # or campaign already resolved.
+        clauses = ["wl.workspace_id = ?", "(c.domain IS NULL OR c.domain = '' OR ?)"]
+        params: list = [ws_row["id"], 1 if force else 0]
+        if tags:
+            # A company qualifies when ANY of its leads in this workspace
+            # carries any of the tags; filtering leads (not companies) also
+            # makes MIN(l.id) below a *tagged* lead, so the observation lands
+            # on a lead the campaign actually cares about.
+            clauses.append(
+                f"""EXISTS (SELECT 1 FROM workspace_lead_tags t
+                            WHERE t.workspace_id = wl.workspace_id AND t.lead_id = l.id
+                              AND t.tag IN ({",".join("?" * len(tags))}))"""
+            )
+            params.extend(tags)
+        if exclude_tags:
+            # Company-level: one flagged lead disqualifies the whole company,
+            # since the domain is a company-level fact.
+            clauses.append(
+                f"""NOT EXISTS (SELECT 1 FROM workspace_lead_tags t2
+                                JOIN leads l2 ON l2.id = t2.lead_id
+                                WHERE t2.workspace_id = wl.workspace_id
+                                  AND l2.company_id = c.id
+                                  AND t2.tag IN ({",".join("?" * len(exclude_tags))}))"""
+            )
+            params.extend(exclude_tags)
+
         rows = conn.execute(
-            """SELECT c.id AS company_id, c.name AS company_name,
-                      MIN(l.id) AS rep_lead_id
-               FROM workspace_leads wl
-               JOIN leads l ON l.id = wl.lead_id
-               JOIN companies c ON c.id = l.company_id
-               WHERE wl.workspace_id = ? AND (c.domain IS NULL OR c.domain = '' OR ?)
-               GROUP BY c.id
-               ORDER BY c.id""",
-            (ws_row["id"], 1 if force else 0),
+            f"""SELECT c.id AS company_id, c.name AS company_name,
+                       MIN(l.id) AS rep_lead_id
+                FROM workspace_leads wl
+                JOIN leads l ON l.id = wl.lead_id
+                JOIN companies c ON c.id = l.company_id
+                WHERE {" AND ".join(clauses)}
+                GROUP BY c.id
+                ORDER BY c.id""",
+            params,
         ).fetchall()
         if limit:
             rows = rows[: int(limit)]
@@ -930,6 +963,8 @@ def find_domains_for_workspace(
         summary = {
             "status": "ok",
             "workspace": ws_row["slug"],
+            "tags": list(tags) if tags else None,
+            "exclude_tags": list(exclude_tags) if exclude_tags else None,
             "companies_targeted": len(rows),
             "found": found,
             "found_no_email": found_no_email,

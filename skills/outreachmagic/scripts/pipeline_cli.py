@@ -714,6 +714,8 @@ def main():
     fd_p.add_argument("--dry-run", action="store_true", help="List target companies and worst-case query count without spending Serper credits")
     fd_p.add_argument("--max-queries", type=int, help="Hard cap on Serper queries this run; stops cleanly when reached")
     fd_p.add_argument("--debug", action="store_true", help="Store the full raw Serper response in the observation (large; off by default)")
+    fd_p.add_argument("--tag", nargs="+", dest="tags", help="Only companies with a lead carrying any of these workspace tags")
+    fd_p.add_argument("--exclude-tag", nargs="+", dest="exclude_tags", help="Skip companies with a lead carrying any of these tags (e.g. needs_review)")
 
     # ── Setup & relay commands ──
     login_p = sub.add_parser("login", help="Connect this machine via browser (device authorization)")
@@ -3103,6 +3105,8 @@ def main():
             dry_run=getattr(args, "dry_run", False),
             debug=getattr(args, "debug", False),
             max_queries=getattr(args, "max_queries", None),
+            tags=getattr(args, "tags", None),
+            exclude_tags=getattr(args, "exclude_tags", None),
         )
         if result.get("status") == "error":
             print(json.dumps(result))

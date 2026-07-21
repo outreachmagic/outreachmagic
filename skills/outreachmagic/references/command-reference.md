@@ -117,8 +117,18 @@ pipeline.py merge-leads --email j@acme.com --linkedin linkedin.com/in/janedoe
 Discover a domain + public emails for companies that don't have one yet, so `email_finder` has something to search against:
 
 ```bash
-pipeline.py find-domains --workspace acme [--limit N] [--force] [--dry-run] [--max-queries N] [--debug]
+pipeline.py find-domains --workspace acme [--tag T ...] [--exclude-tag T ...] [--limit N] [--force] [--dry-run] [--max-queries N] [--debug]
 ```
+
+**Targeting is workspace + tag scoped; every "already known?" check is org-wide.**
+`--tag` selects companies with at least one lead carrying any of those workspace tags (that lead also becomes the one the observation is filed against). `--exclude-tag` drops a company if *any* of its leads carries the tag — a domain is a company-level fact, so a per-lead exclusion would be incoherent. Use it to keep unqualified segments out of a paid run:
+
+```bash
+pipeline.py find-domains --workspace acme --tag assisted_living --dry-run
+pipeline.py find-domains --workspace acme --exclude-tag needs_review --max-queries 500
+```
+
+Tags narrow only what you pay to search. The freshness cache, the pre-flight identity/duplicate lookups, the `companies.domain` filter and `_attach_domain`'s clash guard all ignore workspace and tag, so a company resolved under one tag, workspace, or campaign is never searched again under another.
 
 **Credit discipline** (this runs across thousands of companies; every query is billable):
 

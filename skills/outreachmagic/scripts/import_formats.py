@@ -21,6 +21,7 @@ HEADER_ALIASES: dict[str, str] = {
     "last name": "last_name",
     "job title": "title",
     "linkedin url": "linkedin",
+    "linkedinurl": "linkedin",  # camelCase "LinkedInUrl" collapses to this after normalize_header_key()
     "corporate website": "company_domain",
     "linkedin industry": "industry",
     "linkedin employees": "headcount",
@@ -98,20 +99,20 @@ def detect_import_format(headers: set[str]) -> tuple[str, str]:
 
 def _pick_best_linkedin_from_raw(raw: dict[str, Any]) -> Optional[str]:
     """Prefer public linkedin.com/in/slug over Sales Nav hash URLs."""
-    from workspace_routing import is_sales_nav_hash_slug, normalize_linkedin
+    from workspace_routing import linkedin_url_is_hash, normalize_linkedin
 
     public = None
     for key, val in raw.items():
         if not key:
             continue
         nk = normalize_header_key(str(key))
-        if nk not in ("linkedin", "linkedin url", "linkedin_url", "profile_url"):
+        if nk not in ("linkedin", "linkedin url", "linkedin_url", "linkedinurl", "profile_url"):
             continue
         text = str(val or "").strip()
         if not text:
             continue
         norm = normalize_linkedin(text)
-        if norm and not is_sales_nav_hash_slug(norm.split("/")[-1]):
+        if norm and not linkedin_url_is_hash(norm):
             return text
         if not public:
             public = text

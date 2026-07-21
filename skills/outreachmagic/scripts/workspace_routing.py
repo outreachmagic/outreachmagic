@@ -436,10 +436,16 @@ def build_import_identities(
             add("external_id", namespaced)
 
     add("email", profile.get("email"))
-    li = profile.get("linkedin")
-    if li:
-        for itype, val in parse_linkedin_value(li):
-            add(itype, val)
+    # profile["linkedin"] is already hash/Sales-Nav filtered (that's the field
+    # written to leads.linkedin_url) -- fall back to the unfiltered
+    # profile["linkedin_raw"] so a Sales Nav URL that arrived ONLY through the
+    # linkedin/LinkedInUrl column (no separate sales-nav-id column) still
+    # yields a linkedin_sales_nav_id identity. add()'s (itype, norm) dedup
+    # means trying both candidates is safe even when they're the same value.
+    for li in (profile.get("linkedin"), profile.get("linkedin_raw")):
+        if li:
+            for itype, val in parse_linkedin_value(li):
+                add(itype, val)
     for extra_key in (
         "member linkedin sales nav id",
         "linkedin_sales_nav_id",
@@ -496,6 +502,17 @@ def find_match_method_for_lead(
 
 
 def linkedin_url_is_hash(url: Optional[str]) -> bool:
+    """True for a Sales Nav hash slug OR a bare Sales Nav URL. linkedin_in_slug()
+    only matches linkedin.com/in/<slug> -- a linkedin.com/sales/people/<token>
+    or /sales/lead/<token> URL (Apify's salesNavigatorUrl field, among others)
+    has no /in/ segment at all, so it fell through as "not a hash" and leaked
+    into the linkedin_url column verbatim. Every caller (_best_linkedin_from_row,
+    should_replace_linkedin_url, linkedin_url_field_conflict) treats this
+    function as the single gatekeeper for "is this safe to store as the public
+    linkedin_url", so the fix belongs here rather than at each call site."""
+    raw = (url or "").strip().lower()
+    if "linkedin.com/sales/people/" in raw or "linkedin.com/sales/lead/" in raw:
+        return True
     slug = linkedin_in_slug(url or "")
     return bool(slug and is_sales_nav_hash_slug(slug))
 

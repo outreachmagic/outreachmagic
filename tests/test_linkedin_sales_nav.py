@@ -11,6 +11,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import pipeline as om  # noqa: E402
 from workspace_routing import (  # noqa: E402
+    build_import_identities,
     is_sales_nav_hash_slug,
     linkedin_url_field_conflict,
     linkedin_url_is_hash,
@@ -19,6 +20,7 @@ from workspace_routing import (  # noqa: E402
     promote_linkedin_url_from_identities,
     upsert_identity_alias,
 )
+import import_formats as imf  # noqa: E402
 
 SALES = "ACwAABAK84YBQ6cs16Ta-YfqZidA8SX2ywuCxhI"
 
@@ -33,6 +35,53 @@ def test_parse_rejects_hash_as_public_url():
     parsed = dict(parse_linkedin_value(f"linkedin.com/in/{SALES}"))
     assert parsed.get("linkedin_sales_nav_id") == SALES
     assert "linkedin_url" not in parsed
+
+
+SALES_PEOPLE_URL = f"https://www.linkedin.com/sales/people/{SALES},NAME_SEARCH,kOmY"
+SALES_LEAD_URL = f"https://www.linkedin.com/sales/lead/{SALES},NAME_SEARCH,kOmY"
+
+
+def test_sales_people_url_detected_as_hash():
+    """linkedin_in_slug() only matches /in/<slug> -- a bare Apify
+    salesNavigatorUrl (linkedin.com/sales/people/<token>,...) has no /in/
+    segment, so it used to fall through linkedin_url_is_hash() as "not a
+    hash" and leak into linkedin_url verbatim. See
+    OM-IMPORT-FIELD-MAPPING-DESIGN.md, Bonus Bug."""
+    assert linkedin_url_is_hash(normalize_linkedin(SALES_PEOPLE_URL))
+    assert linkedin_url_is_hash(normalize_linkedin(SALES_LEAD_URL))
+
+
+def test_sales_people_url_not_picked_as_public_linkedin_url():
+    row = {"linkedin": SALES_PEOPLE_URL}
+    assert om._best_linkedin_from_row(row) is None
+
+
+def test_sales_people_url_still_yields_sales_nav_id_for_dedup():
+    """Rejecting the URL from linkedin_url must not cost the identity
+    system its dedup signal -- the Sales Nav ID extraction is a separate
+    code path from linkedin_url_is_hash() and must keep working."""
+    parsed = dict(parse_linkedin_value(SALES_PEOPLE_URL))
+    assert parsed.get("linkedin_sales_nav_id") == SALES
+    assert "linkedin_url" not in parsed
+
+
+def test_sales_nav_id_extracted_end_to_end_when_it_is_the_only_linkedin_column():
+    """Regression: profile["linkedin"] is (correctly) hash/Sales-Nav filtered
+    for the leads.linkedin_url column, but build_import_identities() used to
+    read that SAME filtered field for Sales Nav ID extraction. When the
+    Sales Nav URL arrives ONLY through the linkedin/LinkedInUrl column (no
+    separate "member linkedin sales nav id" column) -- Modern Storefront's
+    actual CSV shape -- linkedin_sales_nav_id was silently never extracted,
+    and dedup fell all the way to import_key (worse than the pre-fix
+    name_company fallback). profile["linkedin_raw"] (unfiltered) must cover
+    this. See OM-IMPORT-FIELD-MAPPING-DESIGN.md."""
+    raw = {"Name": "Jane", "LinkedInUrl": SALES_PEOPLE_URL}
+    row = imf.normalize_import_row(raw)
+    profile = om.normalize_profile_row(row)
+    assert profile.get("linkedin") is None  # still correctly rejected for the DB column
+
+    identities = dict(build_import_identities(profile, {}))
+    assert identities.get("linkedin_sales_nav_id") == SALES
 
 
 def _reset_db() -> None:

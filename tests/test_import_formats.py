@@ -31,6 +31,20 @@ VAYNE_ROW = {
 }
 
 
+def test_camelcase_linkedinurl_header_maps_to_canonical_linkedin_field():
+    """A CSV generator that emits "LinkedInUrl" (camelCase, no separator) --
+    seen from Modern Storefront's Apify categorization script -- used to be
+    silently dropped: normalize_header_key() only lowercases, so "LinkedInUrl"
+    collapses to "linkedinurl", which wasn't in HEADER_ALIASES or the
+    _pick_best_linkedin_from_raw() alias tuple (both only had the space/
+    underscore-delimited spellings). See OM-IMPORT-FIELD-MAPPING-DESIGN.md."""
+    row = impfmt.normalize_import_row({"Name": "Jane", "LinkedInUrl": "https://www.linkedin.com/in/real-handle"})
+    assert row["linkedin"] == "https://www.linkedin.com/in/real-handle"
+
+    picked = impfmt._pick_best_linkedin_from_raw({"LinkedInUrl": "https://www.linkedin.com/in/real-handle"})
+    assert picked == "https://www.linkedin.com/in/real-handle"
+
+
 def test_detect_sales_nav_format():
     fmt, conf = impfmt.detect_import_format(set(VAYNE_ROW.keys()))
     assert fmt == "sales_navigator"
@@ -91,6 +105,55 @@ def test_import_dry_run_preview_fields():
     assert summary["import_format"] == "sales_navigator"
     assert "first name" in summary["fields_mapped"]
     assert summary.get("sample_preview", {}).get("name") == "Lucia Stanković"
+
+
+def test_dry_run_suggests_fields_missing_from_this_csv():
+    """fields_available_but_not_present (OM-IMPORT-FIELD-MAPPING-DESIGN.md,
+    Fix D): fields the pipeline supports that this CSV doesn't have, so
+    someone building an import CSV can see "you could also send industry /
+    linkedin_bio / hq_city" without reading source."""
+    _reset_db()
+    row = {"name": "Jane Doe", "title": "VP Sales", "company": "Acme", "email": "jane@acme.com"}
+    summary = om.import_profiles([row], dry_run=True, import_format="auto")
+    missing = set(summary["fields_available_but_not_present"])
+    assert "industry" in missing
+    assert "linkedin_bio" in missing
+    assert "hq_city" in missing
+    # Present in the row -- must not also be "suggested".
+    assert "name" not in missing
+    assert "title" not in missing
+    assert "company" not in missing
+
+
+def test_dry_run_suggestion_resolves_aliases_not_raw_headers():
+    """The original design-doc sketch diffed KNOWN_IMPORTABLE_FIELDS against
+    raw un-aliased header strings -- a CSV column like "job title" would
+    still show canonical "title" as missing even though it's already present
+    via alias. Must diff against the resolved/normalized row keys instead."""
+    _reset_db()
+    row = dict(VAYNE_ROW)  # uses "job title", "linkedin url", "linkedin industry", etc.
+    summary = om.import_profiles([row], dry_run=True, import_format="sales_navigator")
+    missing = set(summary["fields_available_but_not_present"])
+    assert "title" not in missing
+    assert "linkedin" not in missing
+    assert "industry" not in missing
+
+
+def test_dry_run_suggestions_exclude_activity_and_duplicate_fields():
+    """IMPORT_EXTRA_FIELDS also has activity/derived fields (last_message_sent,
+    last_message_received, linkedin_connected_at) and duplicate Sales-Nav-ID
+    aliases (member linkedin sales nav id, sales_nav_id) -- suggesting those
+    as "you could add this column" would be noise, not guidance."""
+    _reset_db()
+    row = {"name": "Jane Doe"}
+    summary = om.import_profiles([row], dry_run=True, import_format="auto")
+    missing = set(summary["fields_available_but_not_present"])
+    assert "last_message_sent" not in missing
+    assert "last_message_received" not in missing
+    assert "linkedin_connected_at" not in missing
+    assert "member linkedin sales nav id" not in missing
+    assert "sales_nav_id" not in missing
+    assert "linkedin_sales_nav_id" in missing
 
 
 def test_plain_canonical_headers_not_reported_dropped():

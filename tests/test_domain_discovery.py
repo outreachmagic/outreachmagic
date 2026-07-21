@@ -1098,3 +1098,22 @@ def test_recall_patterns_from_real_data(name, domain, reason):
 def test_recall_patterns_do_not_over_match(name, domain):
     score, reason = dd.score_domain_match(name, domain)
     assert reason not in ("word_subset", "acronym", "acronym_prefix"), f"{name} -> {domain} ({reason})"
+
+
+@pytest.mark.parametrize("host, expected", [
+    ("https://www2.example.com/x", "example.com"),
+    ("https://www3.example.com/x", "example.com"),
+    ("https://www.example.com/x", "example.com"),
+    ("https://example.com/x", "example.com"),
+    # A meaningful subdomain is NOT a www variant and must survive.
+    ("https://careers.example.com/x", "careers.example.com"),
+])
+def test_www_numeric_prefixes_are_stripped(host, expected):
+    """www2.cortland.edu was stored as a company domain in its own right."""
+    assert dd._candidate_domain_from_link(host) == expected
+
+
+def test_normalize_company_domain_strips_numeric_www():
+    from pipeline_utils import normalize_company_domain
+    assert normalize_company_domain("www2.example.com") == "example.com"
+    assert normalize_company_domain("https://www3.example.com/") == "example.com"

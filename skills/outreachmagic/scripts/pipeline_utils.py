@@ -41,8 +41,9 @@ def normalize_company_domain(raw: Optional[str]) -> Optional[str]:
     for prefix in ("https://", "http://"):
         if text.startswith(prefix):
             text = text[len(prefix):]
-    if text.startswith("www."):
-        text = text[4:]
+    # www2./www3. are host prefixes exactly as www. is; leaving them on splits
+    # one real domain into two identities.
+    text = re.sub(r"^www\d*\.", "", text)
     text = text.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
     # Trailing dots: the FQDN root label ("acme.com.") is valid DNS but never
     # what gets stored, and scraped sources (a domain at the end of a snippet

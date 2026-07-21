@@ -182,11 +182,13 @@ def build_discovery_query(company_name: str, mode: str = "email") -> str:
     raise ValueError(f"unknown discovery query mode: {mode}")
 
 
+_WWW_PREFIX_RE = re.compile(r"^www\d*\.")
+
+
 def _candidate_domain_from_link(link: str) -> str:
-    netloc = urlparse(link).netloc.lower()
-    if netloc.startswith("www."):
-        netloc = netloc[4:]
-    return netloc
+    # www2./www3. are as much a bare host prefix as www. is; leaving them on
+    # stored www2.cortland.edu as a company domain in its own right.
+    return _WWW_PREFIX_RE.sub("", urlparse(link).netloc.lower())
 
 
 def extract_emails(serper_json: dict) -> list[dict[str, Any]]:

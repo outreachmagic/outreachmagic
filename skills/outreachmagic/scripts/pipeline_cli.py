@@ -704,6 +704,17 @@ def main():
     log_p.add_argument("--workspace", help="Workspace for this event (required in multi-workspace mode)")
     log_p.add_argument("--crm-sync", action="store_true", help="Trigger CRM sync after logging event")
 
+    fd_p = sub.add_parser(
+        "find-domains",
+        help="Discover company domains + public emails via Serper for undomained companies in a workspace",
+    )
+    fd_p.add_argument("--workspace", required=True, help="Workspace whose undomained companies to search")
+    fd_p.add_argument("--limit", type=int, help="Cap number of companies searched this run")
+    fd_p.add_argument("--force", action="store_true", help="Re-search companies that already have a domain or a cached lookup")
+    fd_p.add_argument("--dry-run", action="store_true", help="List target companies and worst-case query count without spending Serper credits")
+    fd_p.add_argument("--max-queries", type=int, help="Hard cap on Serper queries this run; stops cleanly when reached")
+    fd_p.add_argument("--debug", action="store_true", help="Store the full raw Serper response in the observation (large; off by default)")
+
     # ── Setup & relay commands ──
     login_p = sub.add_parser("login", help="Connect this machine via browser (device authorization)")
     login_p.add_argument(
@@ -3084,6 +3095,24 @@ def main():
         print(json.dumps(result))
         if getattr(args, "crm_sync", False) and ws_slug:
             _maybe_trigger_crm_sync(lead_id=args.lead_id, workspace_slug=ws_slug)
+    elif args.command == "find-domains":
+        result = _pipeline.find_domains_for_workspace(
+            args.workspace,
+            limit=getattr(args, "limit", None),
+            force=getattr(args, "force", False),
+            dry_run=getattr(args, "dry_run", False),
+            debug=getattr(args, "debug", False),
+            max_queries=getattr(args, "max_queries", None),
+        )
+        if result.get("status") == "error":
+            print(json.dumps(result))
+            sys.exit(1)
+        # Per-company rows are dropped from the normal summary (a real run is
+        # thousands of them), but --dry-run exists precisely to show which
+        # companies would be searched, so it keeps them.
+        drop = set() if getattr(args, "dry_run", False) else {"results"}
+        summary = {k: v for k, v in result.items() if k not in drop}
+        print(json.dumps(summary, indent=2))
     elif args.command == "review":
         if args.review_command == "templates" and args.templates_command == "list":
             print(json.dumps({"templates": ["dedup-review", "lead-review"]}, indent=2))

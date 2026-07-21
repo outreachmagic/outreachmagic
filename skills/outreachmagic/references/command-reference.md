@@ -112,6 +112,35 @@ pipeline.py merge-leads --keep 12 --merge 34
 pipeline.py merge-leads --email j@acme.com --linkedin linkedin.com/in/janedoe
 ```
 
+### Domain discovery (Serper)
+
+Discover a domain + public emails for companies that don't have one yet, so `email_finder` has something to search against:
+
+```bash
+pipeline.py find-domains --workspace acme [--limit N] [--force] [--dry-run] [--max-queries N] [--debug]
+```
+
+**Credit discipline** (this runs across thousands of companies; every query is billable):
+
+- 1 Serper query per company by default (name + "email", unquoted, legal-suffix stripped). A 2nd, domain-targeted query fires only when a domain was found with no email on it. A 3rd (alt-domain) fires only when query 1 returned results that merely failed to name-match — a query that came back completely empty is a dead end, and stops at one credit.
+- No query uses search operators (`site:` etc.), which free Serper accounts reject outright with an HTTP 400. A Serper failure is recorded as an `error` observation and the batch continues; one bad company costs one company.
+- `--max-queries N` hard-caps the run and stops cleanly, reporting `stopped_reason: "query_budget_exhausted"` and `companies_remaining`.
+- `--dry-run` lists target companies and `serper_queries_worst_case` without spending anything.
+- Every run reports `serper_queries_spent`.
+- Cached org-wide by `company_id` (30-day freshness), including negative results — a company already searched from any workspace is never re-queried; `--force` overrides. Companies whose names normalize identically are searched once per run.
+
+**Results:**
+
+- Prefers a domain with a real attached email over one that only looks like the company's website — a company can legitimately have more than one domain (website vs. email-sending vs. per-branch).
+- Name matching handles franchise/branch names (`Amada Senior Care North Atlanta` → `amadaseniorcare.com`) via prefix/containment/acronym/trigram scoring against both the raw and normalized company name. Each candidate carries a `reason` explaining its score.
+- A domain nothing matched by name is never promoted on ranking or a snippet mention alone — that is how directory sites used to win.
+- Free-provider domains (`gmail.com`, `yahoo.com`, …) can never become the company domain. The addresses themselves are still kept.
+- Discovered public emails land in `company_identities` as `identity_type='public_email'` with `role='corporate'|'free_provider'` and the source URL in `label`. They round-trip the relay and stay verifiable through the normal flow (`verify-email` against the company's rep lead).
+- Domains write into `company_identities` (not a new column) — the same multi-domain store `rank_company_domains()` / `email_finder`'s domain fallback already read. `companies.domain` is backfilled only when it was `NULL`.
+- Below a confidence floor the result is recorded and tagged but **not** attached — no `companies.domain`, no identity row, since nothing downstream corrects a wrong domain later. Status `low_confidence`.
+- Tags workspace leads `domain_found_<domain>` / `domain_low_confidence` / `domain_not_found` for the audit trail.
+- Observations store a lean summary (~0.5 KB) — ranked candidates with scores and reasons, found emails, top 3 links. `--debug` adds the full raw Serper response (~5-8 KB), which also crosses the relay wire, so it is off by default.
+
 ## Dedup (batch)
 
 ```bash

@@ -44,6 +44,12 @@ def normalize_company_domain(raw: Optional[str]) -> Optional[str]:
     if text.startswith("www."):
         text = text[4:]
     text = text.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
+    # Trailing dots: the FQDN root label ("acme.com.") is valid DNS but never
+    # what gets stored, and scraped sources (a domain at the end of a snippet
+    # sentence, an email regex that ran one char long) produce the same shape.
+    # Stripping here rather than at each call site keeps "acme.com" and
+    # "acme.com." from becoming two distinct company_identities rows.
+    text = text.strip(".")
     if not text or "." not in text or " " in text or len(text) > 253:
         return None
     return text

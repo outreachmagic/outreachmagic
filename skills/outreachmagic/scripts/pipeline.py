@@ -257,6 +257,7 @@ from pipeline_utils import (
     email_domain,
     furthest_stage,
     normalize_company_domain,
+    normalize_company_name,
     normalize_email,
     normalize_event_sender,
     normalize_tag,
@@ -767,6 +768,187 @@ def set_company_domain_label(company_id: int, domain: str, label: str) -> dict:
             return {"status": "error", "error": f"domain not known for company {company_id}: {domain_norm}"}
         conn.commit()
         return {"status": "ok", "company_id": company_id, "domain": domain_norm, "label": label}
+    finally:
+        conn.close()
+
+
+def find_domains_for_workspace(
+    workspace: str,
+    *,
+    limit: Optional[int] = None,
+    force: bool = False,
+    dry_run: bool = False,
+    debug: bool = False,
+    max_queries: Optional[int] = None,
+) -> dict:
+    """pipeline.py find-domains: discover domains + public emails (via Serper)
+    for companies in `workspace` that don't have one yet, and write results
+    into company_identities (see domain_discovery.run_company_domain_discovery
+    for why not a new companies column). Targets a workspace's companies, but
+    both the write and the org-wide cache in domain_discovery are keyed on
+    company_id, not workspace_id -- a company searched from any workspace
+    counts for all of them.
+    """
+    import enrich
+    import domain_discovery
+
+    conn = get_conn()
+    try:
+        ws_row = resolve_workspace_identity(conn, workspace)
+        if not ws_row:
+            return {"status": "error", "error": f"workspace not found: {workspace}"}
+
+        rows = conn.execute(
+            """SELECT c.id AS company_id, c.name AS company_name,
+                      MIN(l.id) AS rep_lead_id
+               FROM workspace_leads wl
+               JOIN leads l ON l.id = wl.lead_id
+               JOIN companies c ON c.id = l.company_id
+               WHERE wl.workspace_id = ? AND (c.domain IS NULL OR c.domain = '' OR ?)
+               GROUP BY c.id
+               ORDER BY c.id""",
+            (ws_row["id"], 1 if force else 0),
+        ).fetchall()
+        if limit:
+            rows = rows[: int(limit)]
+
+        cfg = enrich.load_config()
+        results: list[dict] = []
+        found = 0
+        found_no_email = 0
+        low_confidence = 0
+        resolved_from_db = 0
+        budget_exhausted = 0
+        not_found = 0
+        cached = 0
+        skipped = 0
+        queries_spent = 0
+        stopped_reason = None
+        # Two companies whose names normalize identically ("Acme Corp" and
+        # "Acme, Inc.") are one search, not two -- the DB cache is keyed on
+        # company_id and cannot see that, so memo it for the length of the run.
+        name_memo: dict[str, dict] = {}
+        # Built once: a per-company duplicate-name lookup would be a full
+        # table scan each time, O(n^2) across the workspace.
+        name_index = domain_discovery.build_company_name_index(conn)
+
+        if dry_run:
+            # Worst case is 2 queries/company (q1 + q2 or q3); report it so the
+            # spend is known before any credit is committed.
+            worst_case = len(rows) * 2
+            if max_queries:
+                worst_case = min(worst_case, int(max_queries))
+            for row in rows:
+                results.append({
+                    "company_id": row["company_id"],
+                    "company_name": row["company_name"] or "",
+                    "status": "dry_run",
+                })
+
+        for row in rows:
+            if dry_run:
+                break
+            company_id = row["company_id"]
+            company_name = row["company_name"] or ""
+            rep_lead_id = row["rep_lead_id"]
+
+            name_key = normalize_company_name(company_name)
+            memo = name_memo.get(name_key) if name_key else None
+            if memo is not None and not force:
+                outcome = {"status": "cached", "domain": memo.get("domain"),
+                           "reason": "same_name_resolved_this_run", "queries_run": []}
+            else:
+                # Deliberately does NOT break out of the loop when the budget
+                # is gone: the free paths (identity row, lead email domains,
+                # duplicate company) still resolve companies at zero cost, and
+                # stopping early would forfeit them.
+                budget = None if max_queries is None else int(max_queries) - queries_spent
+                outcome = domain_discovery.run_company_domain_discovery(
+                    conn, cfg,
+                    company_id=company_id, company_name=company_name,
+                    rep_lead_id=rep_lead_id, force=force,
+                    debug=debug, query_budget=budget, name_index=name_index,
+                )
+                if name_key:
+                    name_memo[name_key] = outcome
+            if outcome.get("status") == "budget_exhausted":
+                stopped_reason = "query_budget_exhausted"
+                budget_exhausted += 1
+                continue
+
+            queries_spent += len(outcome.get("queries_run") or [])
+            outcome["company_id"] = company_id
+            outcome["company_name"] = company_name
+            results.append(outcome)
+
+            status = outcome.get("status")
+            if status == "found":
+                found += 1
+            elif status == "found_no_email":
+                found_no_email += 1
+            elif status == "low_confidence":
+                low_confidence += 1
+            elif status == "resolved_from_db":
+                resolved_from_db += 1
+            elif status == "cached":
+                cached += 1
+            elif status == "skipped":
+                skipped += 1
+            else:
+                not_found += 1
+
+            lead_ids = [
+                r["lead_id"] for r in conn.execute(
+                    """SELECT l.id AS lead_id FROM workspace_leads wl
+                       JOIN leads l ON l.id = wl.lead_id
+                       WHERE wl.workspace_id = ? AND l.company_id = ?""",
+                    (ws_row["id"], company_id),
+                ).fetchall()
+            ]
+            if lead_ids:
+                if status == "low_confidence":
+                    # Deliberately not domain_found_*: nothing was written to
+                    # companies.domain, and the tag is the review queue.
+                    tag = "domain_low_confidence"
+                elif outcome.get("domain"):
+                    tag = f"domain_found_{outcome['domain']}"
+                else:
+                    tag = "domain_not_found"
+                for lead_id in lead_ids:
+                    tag_id = f"wlt_{ws_row['id']}_{lead_id}_{hashlib.md5(tag.encode()).hexdigest()[:8]}"
+                    try:
+                        conn.execute(
+                            """INSERT INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
+                               VALUES (?, ?, ?, ?)""",
+                            (tag_id, ws_row["id"], lead_id, tag),
+                        )
+                    except sqlite3.IntegrityError:
+                        pass
+
+            conn.commit()
+
+        summary = {
+            "status": "ok",
+            "workspace": ws_row["slug"],
+            "companies_targeted": len(rows),
+            "found": found,
+            "found_no_email": found_no_email,
+            "low_confidence": low_confidence,
+            "resolved_from_db": resolved_from_db,
+            "budget_exhausted": budget_exhausted,
+            "not_found": not_found,
+            "cached": cached,
+            "skipped": skipped,
+            "serper_queries_spent": queries_spent,
+            "dry_run": dry_run,
+            "results": results,
+        }
+        if dry_run:
+            summary["serper_queries_worst_case"] = worst_case
+        if stopped_reason:
+            summary["stopped_reason"] = stopped_reason
+            summary["companies_remaining"] = budget_exhausted
+        return summary
     finally:
         conn.close()
 
@@ -2361,8 +2543,6 @@ def _pick_profile_field(row: dict, keys: tuple[str, ...]) -> Optional[str]:
 
 def _best_linkedin_from_row(row: dict) -> Optional[str]:
     """Prefer a public LinkedIn URL over a Sales Nav hash when multiple columns are present."""
-    public = None
-    fallback = None
     for key in PROFILE_ALIASES["linkedin"]:
         val = row.get(key)
         if val is None:
@@ -2372,6 +2552,34 @@ def _best_linkedin_from_row(row: dict) -> Optional[str]:
             continue
         norm = normalize_linkedin(text)
         if norm and not linkedin_url_is_hash(norm):
+            return text
+    return None
+
+
+def _first_linkedin_candidate(row: dict) -> Optional[str]:
+    """First non-empty raw LinkedIn-ish value across all recognized columns,
+    with NO hash/Sales-Nav filtering -- used only as profile["linkedin_raw"],
+    which build_import_identities() falls back to for Sales Nav ID
+    extraction (parse_linkedin_value) when profile["linkedin"] itself was
+    rejected as a hash/Sales-Nav URL.
+
+    Why this exists: _best_linkedin_from_row() correctly rejects hash/Sales-
+    Nav URLs from profile["linkedin"] (that's the field written to
+    leads.linkedin_url -- must stay filtered). But build_import_identities()
+    reads that same filtered field for its Sales Nav ID extraction too, so
+    when the Sales Nav URL is the ONLY LinkedIn column present (no separate
+    sales-nav-id column -- Modern Storefront's actual CSV shape), the ID
+    extraction silently got nothing to work with, and dedup fell all the way
+    to import_key -- worse than the pre-fix name_company fallback. This
+    field is read ONLY by build_import_identities(), never written to
+    leads.linkedin_url (see upsert_lead_profile(): linkedin_url=
+    profile.get("linkedin"), not linkedin_raw)."""
+    for key in PROFILE_ALIASES["linkedin"]:
+        val = row.get(key)
+        if val is None:
+            continue
+        text = str(val).strip()
+        if text:
             return text
     return None
 
@@ -2386,6 +2594,9 @@ def normalize_profile_row(row: dict) -> dict[str, str]:
             val = _pick_profile_field(row, aliases)
         if val:
             out[canonical] = val
+    raw_li = _first_linkedin_candidate(row)
+    if raw_li:
+        out["linkedin_raw"] = raw_li
     first = _pick_profile_field(row, ("first_name", "first name"))
     last = _pick_profile_field(row, ("last_name", "last name"))
     if first and "name" not in out:
@@ -2606,6 +2817,23 @@ IMPORT_EXTRA_FIELDS = (
     "last_message_sent", "last_message_received",
     "member linkedin sales nav id", "linkedin_sales_nav_id", "sales_nav_id",
     "linkedin_headline", "linkedin_bio",
+)
+
+# Deliberately a curated SUBSET of IMPORT_EXTRA_FIELDS, not the whole tuple --
+# used for the import-profiles --dry-run "fields_available_but_not_present"
+# hint (see OM-IMPORT-FIELD-MAPPING-DESIGN.md, Fix D). IMPORT_EXTRA_FIELDS
+# also contains activity/derived fields nobody hand-populates in a fresh
+# import CSV (last_message_sent, last_message_received, linkedin_connected_at)
+# and duplicate Sales-Nav-ID aliases (member linkedin sales nav id,
+# sales_nav_id) that would just be noise ("you could add this!") next to the
+# canonical linkedin_sales_nav_id. Keep this list to fields worth suggesting.
+IMPORT_SUGGESTABLE_EXTRA_FIELDS = (
+    "company_domain", "hq_city", "hq_state", "hq_country",
+    "personalized_first_name", "personalized_company_name",
+    "external_id", "notes", "tags", "contact_order",
+    "lead_status", "lead_sentiment", "list_source", "import_name",
+    "is_connected_linkedin", "is_linkedin_request_pending",
+    "linkedin_headline", "linkedin_bio", "linkedin_sales_nav_id",
 )
 
 # Canonical → alias mapping applied before _extract_extra_import_fields.
@@ -3170,6 +3398,13 @@ def import_profiles(
         summary["fields_mapped"] = import_meta.get("fields_mapped") or []
         summary["fields_dropped"] = import_meta.get("fields_dropped") or []
         summary["sample_preview"] = import_meta.get("sample_preview") or {}
+        # Diffed against the NORMALIZED rows' own keys (post-alias-mapping),
+        # not the raw CSV headers -- a CSV column like "job title" already
+        # resolves to canonical "title" by this point, and diffing against
+        # raw header strings would wrongly re-suggest "title" as missing.
+        present = {k for row in rows for k, v in row.items() if v not in (None, "")}
+        suggestable = set(PROFILE_ALIASES.keys()) | set(IMPORT_SUGGESTABLE_EXTRA_FIELDS)
+        summary["fields_available_but_not_present"] = sorted(suggestable - present)
 
     workspace_id = None
     if workspace:

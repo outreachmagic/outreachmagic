@@ -342,10 +342,27 @@ def bounce_stats(*, since: Optional[str] = None) -> dict:
 def _compute_verification_status(conn: sqlite3.Connection, lead_id: int):
     """Compute consolidated verification status from all sources and materialize on leads."""
     rows = conn.execute(
-        """SELECT status, sub_status, source, verified_at FROM lead_email_verification
+        """SELECT status, sub_status, source, verified_at, email FROM lead_email_verification
            WHERE lead_id = ? ORDER BY verified_at DESC""",
         (lead_id,),
     ).fetchall()
+    if not rows:
+        return
+    # Only this lead's OWN address may set its status. Observations carry the
+    # address they were for, and verify_email() accepts an email_override, so
+    # a verification of some other address filed against this lead (a
+    # company's public contact address checked via the rep lead, a secondary
+    # address) would otherwise overwrite leads.email_verification_status with
+    # a result that was never about this lead's mailbox. Rows with no recorded
+    # email are legacy and still counted.
+    lead_row = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    lead_email = (lead_row["email"] or "").strip().lower() if lead_row else ""
+    if not lead_email:
+        return
+    rows = [
+        r for r in rows
+        if not (r["email"] or "").strip() or (r["email"] or "").strip().lower() == lead_email
+    ]
     if not rows:
         return
     tool_rows = [r for r in rows if r["source"] != "platform_bounce"]

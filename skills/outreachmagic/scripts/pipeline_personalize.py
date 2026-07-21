@@ -465,6 +465,26 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
             }
             for r in identity_rows
         ]
+    # Public emails discovered for the brand (domain_discovery.py writes these
+    # as identity_type='public_email'). Same reasoning as domain_identities
+    # above: without this they would exist only on the machine that found
+    # them, and a fresh install pulling the company down would silently lose
+    # the one contact address we managed to find.
+    public_email_rows = conn.execute(
+        "SELECT identity_value_normalized, role, label, verified_mx FROM company_identities "
+        "WHERE company_id = ? AND identity_type = 'public_email'",
+        (company_id,),
+    ).fetchall()
+    if public_email_rows:
+        payload["public_emails"] = [
+            {
+                "email": r["identity_value_normalized"],
+                "role": r["role"],
+                "label": r["label"],
+                "verified_mx": r["verified_mx"],
+            }
+            for r in public_email_rows
+        ]
     pers = _company_personalization_dict(conn, company_id)
     if pers:
         values, dates, at = _personalization_sync_payload(pers)
@@ -565,6 +585,25 @@ def apply_agent_company_sync_payload(company_id: int, payload: dict, *, conn=Non
                        VALUES (?, ?, 'domain', ?, 'relay_alias')""",
                     (DEFAULT_ORG_ID, target_id, domain_val),
                 )
+
+        # Public emails found for the brand, same reconstruction as above.
+        for entry in payload.get("public_emails") or []:
+            if not isinstance(entry, dict):
+                continue
+            email_val = (entry.get("email") or "").strip().lower()
+            if "@" not in email_val:
+                continue
+            conn.execute(
+                """INSERT INTO company_identities
+                       (org_id, company_id, identity_type, identity_value_normalized, role, label, verified_mx, source)
+                   VALUES (?, ?, 'public_email', ?, ?, ?, ?, 'relay_pull')
+                   ON CONFLICT (org_id, identity_type, identity_value_normalized) DO UPDATE SET
+                       role = COALESCE(excluded.role, company_identities.role),
+                       label = COALESCE(excluded.label, company_identities.label),
+                       verified_mx = COALESCE(excluded.verified_mx, company_identities.verified_mx)""",
+                (DEFAULT_ORG_ID, target_id, email_val, entry.get("role"),
+                 entry.get("label"), entry.get("verified_mx")),
+            )
 
     # Existing personalization logic
     _apply_personalization_payload(

@@ -35,8 +35,17 @@ KIND_EMAIL_VERIFICATION = "email_verification"
 KIND_EMAIL_FIND = "email_find"
 KIND_RESEARCH = "research"
 KIND_PLATFORM_BOUNCE = "platform_bounce"
+# Predates this module (2,373 legacy rows, provider='serper', written by an
+# earlier standalone script) -- kept as its own kind rather than folded into
+# KIND_RESEARCH so existing rows and new domain_discovery.py writes share one
+# lineage. record_observation() silently no-ops on any kind not listed here,
+# so this must stay in sync with every kind actually written anywhere.
+KIND_DOMAIN_LOOKUP = "domain_lookup"
 
-KINDS = frozenset({KIND_EMAIL_VERIFICATION, KIND_EMAIL_FIND, KIND_RESEARCH, KIND_PLATFORM_BOUNCE})
+KINDS = frozenset({
+    KIND_EMAIL_VERIFICATION, KIND_EMAIL_FIND, KIND_RESEARCH, KIND_PLATFORM_BOUNCE,
+    KIND_DOMAIN_LOOKUP,
+})
 
 ORIGIN_VERIFICATION = "verification"  # bounces.py: verify_email / record_platform_bounce
 ORIGIN_ATTEMPT = "attempt"           # pipeline_provider_attempts.py: record_provider_attempt

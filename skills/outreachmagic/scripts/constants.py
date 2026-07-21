@@ -73,6 +73,30 @@ NON_COMPANY_NAMES = frozenset({
     "independentcontracter", "indepentcontractor", "indpendantcontractor",
     "individual", "na", "none", "notapplicable", "unemployed", "unemployedlookingforwork",
     "retired", "retiree",
+    # Job-seeking / employment-status text, as it actually appears in LinkedIn
+    # Sales Navigator exports. Every entry below is an exact squashed value
+    # observed in a real export -- and exact-match is what makes them safe:
+    # "Kingsbridge Retirement Community", "Compass Self Storage" and "Wells
+    # Fargo Private Bank" are real companies in the same dataset and squash to
+    # entirely different keys.
+    "recentlyretired", "currentlyretired", "nowretired",
+    "seekingemployment", "seekingopportunities", "seekingnewopportunity",
+    "seekingnewopportunities", "currentlyseekingnewrole", "currentlyseekingemployment",
+    "activelyseekingemployment", "activelyseekingpermanentemployment",
+    "activelyseeking", "activelylooking", "opentoopportunities", "opentowork",
+    "opentonewopportunities", "jobseeker", "jobseeking", "betweenjobs", "betweenroles",
+    "careerbreak", "sabbatical", "notemployed", "nocompany", "nonecurrently",
+    # Placeholder employers -- a real name was withheld, so there is nothing to
+    # search for. Note "confidential" alone is included but multi-word variants
+    # must be listed explicitly; squashing never strips words.
+    "confidential", "confidentialemployer", "confidentialcompany",
+    "confidentialentity", "confidentialclient", "undisclosed", "undisclosedcompany",
+    "privatefamilyoffice", "privatehouseholds", "privateclient",
+    "various", "variouscompanies", "variousclients", "variousstartups",
+    "multiplecompanies", "multipleclients",
+    # Non-employment life status
+    "homemaker", "stayathomeparent", "stayathomemom", "stayathomedad",
+    "student", "fulltimestudent", "graduatestudent",
 })
 
 

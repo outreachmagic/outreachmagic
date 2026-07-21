@@ -41,6 +41,12 @@ from provider_observations import KIND_DOMAIN_LOOKUP, ORIGIN_ATTEMPT, record_obs
 from workspace_routing import DEFAULT_ORG_ID
 
 FRESHNESS_DAYS = 30
+# --retry-unresolved bypasses the 30-day cache so a scoring change can be
+# re-applied, but NOT all history: a run killed and restarted would otherwise
+# re-search every company it had just paid for. Anything searched inside this
+# window is still treated as done, which is long enough to cover a restart and
+# far shorter than any real "the logic changed" gap.
+RETRY_FRESHNESS_HOURS = 6
 MIN_SEARCH_NUM_RESULTS = 20
 
 # Below this, the winner is recorded and reviewable but NEVER written to
@@ -535,21 +541,22 @@ def compute_confidence(ranked_domains: list[dict[str, Any]]) -> float:
 
 
 def _recent_domain_lookup(
-    conn: sqlite3.Connection, company_id: int, *, force: bool,
+    conn: sqlite3.Connection, company_id: int, *, force: bool, window: str = "",
 ) -> Optional[dict[str, Any]]:
     """Org-wide cache: any workspace's prior search for this company_id
     counts, so the same company never gets re-searched just because a second
     campaign/workspace also wants its domain."""
     if force:
         return None
+    window = window or f"-{FRESHNESS_DAYS} days"
     row = conn.execute(
         f"""SELECT o.observed_at, o.domain, o.source_detail, o.metadata_json
             FROM lead_provider_observations o
             JOIN leads l ON l.id = o.lead_id
             WHERE l.company_id = ? AND o.kind = ? AND o.provider = 'serper'
-              AND o.observed_at >= datetime('now', '-{FRESHNESS_DAYS} days')
+              AND o.observed_at >= datetime('now', ?)
             ORDER BY o.observed_at DESC LIMIT 1""",
-        (company_id, KIND_DOMAIN_LOOKUP),
+        (company_id, KIND_DOMAIN_LOOKUP, window),
     ).fetchone()
     return dict(row) if row else None
 
@@ -1053,7 +1060,11 @@ def run_company_domain_discovery(
     # pre-flight above: the point is to re-evaluate a company the scoring
     # could not resolve, under current logic, without re-targeting the ones
     # that already succeeded (which is what --force does).
-    cached = _recent_domain_lookup(conn, company_id, force=force or retry_unresolved)
+    cached = _recent_domain_lookup(
+        conn, company_id,
+        force=force,
+        window=f"-{RETRY_FRESHNESS_HOURS} hours" if retry_unresolved else "",
+    )
     if cached is not None:
         return {"status": "cached", "domain": cached["domain"], "observed_at": cached["observed_at"]}
 

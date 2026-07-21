@@ -129,28 +129,46 @@ def test_same_domain_leads_are_spread_apart():
     assert all(a != b for a, b in zip(doms, doms[1:])), doms
 
 
-def test_spreading_does_not_cluster_at_the_tail():
-    """A plain round-robin spaces the head well and clusters the tail: once the
-    small domains run out, the big one runs consecutively -- exactly the burst
-    this exists to prevent.
+def test_biggest_domain_gets_its_maximum_possible_spacing():
+    """The property that matters. A domain with k leads in a run of n can, at
+    best, repeat every n/k slots; it must actually achieve roughly that.
 
-    With one domain far larger than the rest, perfect alternation is
-    arithmetically impossible (12 leads against 4 others must repeat at least
-    7 times). The guarantee is that it hits that floor rather than dumping the
-    remainder in one block.
+    The previous ordering took the largest bucket first to minimise adjacent
+    pairs, which minimises the wrong thing -- it front-loads exactly the
+    domains with the most leads. On the live 622-lead file a 29-lead domain
+    repeated every 2 slots while 300 other domains sat unused in the queue.
     """
-    queue = [(i, {"name": f"P{i}", "domain": "big.com"}) for i in range(12)]
-    queue += [(i + 100, {"name": f"Q{i}", "domain": "small1.com"}) for i in range(2)]
-    queue += [(i + 200, {"name": f"R{i}", "domain": "small2.com"}) for i in range(2)]
+    queue = [(i, {"name": f"P{i}", "domain": "big.com"}) for i in range(20)]
+    for d in range(60):                       # 60 single-lead domains
+        queue.append((1000 + d, {"name": f"Q{d}", "domain": f"small{d}.com"}))
 
     doms = _domains(batch_runner.spread_by_domain(queue))
-    adjacent = sum(1 for a, b in zip(doms, doms[1:]) if a == b)
-    floor = max(0, 12 - 1 - 4)          # biggest bucket, minus the separators available
-    assert adjacent == floor, f"{adjacent} adjacent pairs, optimum is {floor}: {doms}"
-    # ...and the crowding is at the end, after every other domain is spent.
-    assert doms[:8] == ["big.com", "small1.com", "big.com", "small2.com",
-                        "big.com", "small1.com", "big.com", "small2.com"], doms[:8]
+    positions = [i for i, x in enumerate(doms) if x == "big.com"]
+    gaps = [b - a for a, b in zip(positions, positions[1:])]
+    best = len(doms) // 20                    # 80 slots / 20 leads = 4
+    assert min(gaps) >= best - 1, f"min gap {min(gaps)}, best possible {best}: {gaps}"
+    assert sum(gaps) / len(gaps) >= best - 0.5
 
+
+def test_single_lead_domains_do_not_all_pile_up_together():
+    """Every domain of size 1 sharing one position left the ends of the run
+    sparse, which is where the big domains then bunched."""
+    queue = [(i, {"name": f"S{i}", "domain": f"solo{i}.com"}) for i in range(40)]
+    queue += [(500 + i, {"name": f"B{i}", "domain": "big.com"}) for i in range(10)]
+
+    doms = _domains(batch_runner.spread_by_domain(queue))
+    firsts = [i for i, x in enumerate(doms) if x == "big.com"]
+    # big.com's 10 leads should reach across the whole 50-slot run, not sit in
+    # one half of it.
+    assert firsts[0] < 12 and firsts[-1] > 38, firsts
+
+
+def test_reordering_is_deterministic():
+    """Same input, same order -- a salted hash would reshuffle between runs and
+    make a resumed batch look different from the one it is resuming."""
+    queue = [(i, {"name": f"P{i}", "domain": f"d{i % 9}.com"}) for i in range(45)]
+    assert _domains(batch_runner.spread_by_domain(queue)) == \
+        _domains(batch_runner.spread_by_domain(list(queue)))
 
 def test_spreading_loses_nothing_and_duplicates_nothing():
     queue = [(i, {"name": f"P{i}", "domain": f"d{i % 7}.com"}) for i in range(40)]

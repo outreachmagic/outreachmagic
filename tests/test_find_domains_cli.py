@@ -13,6 +13,7 @@ SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+import domain_discovery as dd  # noqa: E402
 import enrich  # noqa: E402
 import pipeline as om  # noqa: E402
 
@@ -241,6 +242,17 @@ def test_retry_unresolved_reworks_only_the_companies_without_a_domain():
     with mock.patch.object(enrich, "serper_search",
                            return_value={"organic": [], "knowledgeGraph": {}}):
         om.find_domains_for_workspace("storefront", tags=["seg"])
+
+    # Age it past the short retry window. --retry-unresolved deliberately still
+    # honours that window so a killed-and-restarted run does not re-spend on
+    # companies it searched minutes ago; the 30-day cache is what it bypasses.
+    conn = om.get_conn()
+    conn.execute(
+        "UPDATE lead_provider_observations SET observed_at = datetime('now', ?) "
+        "WHERE kind = 'domain_lookup'",
+        (f"-{dd.RETRY_FRESHNESS_HOURS + 2} hours",))
+    conn.commit()
+    conn.close()
 
     searched = []
     def fake(query, config):

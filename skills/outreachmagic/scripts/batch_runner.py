@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import subprocess
@@ -480,43 +481,59 @@ def bulk_dedup_map(
 def spread_by_domain(
     queue: list[tuple[int, dict[str, Any]]],
 ) -> list[tuple[int, dict[str, Any]]]:
-    """Reorder so leads sharing a domain land as far apart as possible.
+    """Reorder so each domain's leads are as far apart as the run allows.
 
-    Input order comes from the candidate query, which groups by company -- so
-    a domain with 6 leads arrives as 6 consecutive rows and, at 3 workers, gets
-    3 simultaneous lookups against one mail server. Providers verify by probing
-    SMTP, and a burst against a single host invites rate limiting, greylisting
-    and catch-all-looking responses: the domain reads as dead when what
-    actually happened is that we knocked too hard. ventronmanagement.com
-    arrived as runs of 6, 4 and 3 and scored 0/15.
+    Input order comes from the candidate query, which groups by company, so a
+    domain with 29 leads arrives as 29 consecutive rows. Providers verify by
+    probing SMTP, and repeated probes against one host in quick succession
+    invite rate limiting, greylisting and catch-all-shaped answers -- the
+    domain reads as unverifiable when the truth is that we knocked too fast.
 
-    Round-robins across domains, so N domains means roughly N leads between
-    consecutive hits on any one of them. Order within a domain is preserved,
-    and every input row appears exactly once -- resume keys are per-lead, so
-    reordering cannot cause a re-spend.
+    Placement is proportional, not round-robin. Each domain's i-th lead of k
+    gets the fractional position (i + 0.5) / k, and the queue is that ordering.
+    A domain with k leads therefore repeats about every n/k slots -- its
+    theoretical maximum -- and every domain is spread across the WHOLE run
+    rather than drained at one end.
+
+    An earlier version took the largest bucket first, aiming to minimise
+    adjacent pairs. That minimises the wrong thing: it front-loads exactly the
+    domains with the most leads, so the 29-lead domain repeated every 2 slots
+    while the queue still held 300 others to interleave with.
+
+    Order within a domain is preserved and every row appears exactly once;
+    resume keys are per-lead, so reordering can never cause a re-spend.
     """
-    from collections import OrderedDict
-
-    buckets: "OrderedDict[str, list]" = OrderedDict()
+    buckets: dict[str, list] = {}
     for item in queue:
         domain = (row_fields(item[1])[1] or "").lower()
         buckets.setdefault(domain, []).append(item)
 
-    # Greedy "most remaining first, never twice in a row". A plain round-robin
-    # spaces the head of the queue well but clusters the tail: once the small
-    # domains are exhausted, whatever is left runs consecutively, which is
-    # exactly the burst we are trying to avoid. Draining the largest bucket
-    # first keeps every domain in play as long as possible.
-    out: list[tuple[int, dict[str, Any]]] = []
-    previous = None
-    while buckets:
-        order = sorted(buckets, key=lambda d: (-len(buckets[d]), d))
-        pick = next((d for d in order if d != previous), order[0])
-        out.append(buckets[pick].pop(0))
-        previous = pick
-        if not buckets[pick]:
-            del buckets[pick]
-    return out
+    # Each domain gets a phase offset so its stride does not start at the same
+    # point as everyone else's. A constant (0.5) puts every single-lead domain
+    # on exactly one position -- hundreds piled mid-run, both ends left sparse,
+    # and the biggest domains bunching there. A hash spreads them but clumps
+    # like any random draw. The golden-ratio sequence is low-discrepancy: the
+    # j-th value is about as far as possible from all j-1 before it, so phases
+    # stay evenly spread at every count. Domains are ordered largest-first so
+    # the ones with the most to space get the earliest, best-separated phases.
+    placed: list[tuple[float, str, tuple[int, dict[str, Any]]]] = []
+    ordered = sorted(buckets.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    for j, (domain, items) in enumerate(ordered):
+        k = len(items)
+        phase = (j * 0.6180339887498949) % 1.0
+        for i, item in enumerate(items):
+            placed.append((((i + phase) / k) % 1.0, domain, item))
+    # Domain breaks position ties so the result is deterministic.
+    placed.sort(key=lambda t: (t[0], t[1]))
+
+    # Equal strides can still leave two of one domain adjacent (two positions
+    # of the same bucket with nothing landing between them). One local pass
+    # pushes the duplicate one slot later, which is enough in practice and
+    # cannot reorder anything else.
+    for i in range(len(placed) - 2):
+        if placed[i][1] == placed[i + 1][1] and placed[i + 1][1] != placed[i + 2][1]:
+            placed[i + 1], placed[i + 2] = placed[i + 2], placed[i + 1]
+    return [item for _pos, _domain, item in placed]
 
 
 def skip_resolved_before_api(

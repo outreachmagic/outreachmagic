@@ -168,7 +168,13 @@ def value_error_is_failover(exc: BaseException) -> bool:
     return False
 
 
+# (provider, slot) pairs already announced as a working fallback this process.
+_ANNOUNCED_FALLBACKS: set = set()
+
+
 def log_failover(*, provider: str, env_key: str, slot: int, code: int | str) -> None:
+    # Once a slot is retired the loop skips it, so this stops repeating on its
+    # own; the noise the operator sees is the run-up to retirement.
     print(
         f"[outreachmagic] {provider}: {env_key} slot {slot} failed ({code}), trying next",
         file=sys.stderr,
@@ -199,6 +205,19 @@ def call_with_key_pool(
             result = fn(key)
             record_key_usage(provider=provider, slot=slot, success=True)
             _record_success(provider, slot)
+            # Only failures used to print, so a run surviving on a backup key
+            # looked identical to a run that was simply broken -- pages of
+            # "slot 0 failed, trying next" and no indication anything worked.
+            # Announced once per provider+slot per process: the operator needs
+            # to know the fallback took over, not to be told on every call.
+            if slot > 0 and (provider, slot) not in _ANNOUNCED_FALLBACKS:
+                _ANNOUNCED_FALLBACKS.add((provider, slot))
+                print(
+                    f"[outreachmagic] {provider}: backup key (slot {slot}) is working "
+                    f"— proceeding normally.",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return result
         except urllib.error.HTTPError as exc:
             record_key_usage(provider=provider, slot=slot, success=False, error=f"HTTP {exc.code}")

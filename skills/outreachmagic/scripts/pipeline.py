@@ -50,6 +50,7 @@ import ast
 import sqlite3
 import json
 import os
+import signal
 import sys
 import csv
 import argparse
@@ -977,8 +978,36 @@ def find_domains_for_workspace(
                     "status": "dry_run",
                 })
 
-        for row in rows:
-            if dry_run:
+        # Per-company progress on STDERR (stdout stays clean JSON for callers
+        # that parse it). Without this the command printed four key-fallback
+        # lines and then nothing for minutes, so a working run and a hung one
+        # were indistinguishable -- the operator killed and restarted this
+        # three times, re-spending ~90-120 Serper queries to find out.
+        # SIGTERM/SIGINT: finish the company in flight, then fall out of the
+        # loop and return the summary through the normal path. Work was always
+        # committed per company, but a killed run printed nothing at all, so
+        # the operator could not tell what had been done or what it had cost.
+        interrupted: list[str] = []
+
+        def _on_signal(signum, _frame):
+            if not interrupted:
+                interrupted.append(signal.Signals(signum).name)
+                print(
+                    f"\n[outreachmagic] {interrupted[0]} received — finishing the current "
+                    f"company, then reporting what was done.",
+                    file=sys.stderr, flush=True,
+                )
+
+        previous_handlers = {}
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                previous_handlers[sig] = signal.signal(sig, _on_signal)
+            except (ValueError, OSError):
+                pass  # not the main thread, or unsupported on this platform
+
+        started = time.time()
+        for position, row in enumerate(rows, start=1):
+            if dry_run or interrupted:
                 break
             company_id = row["company_id"]
             company_name = row["company_name"] or ""
@@ -1013,6 +1042,28 @@ def find_domains_for_workspace(
             outcome["company_id"] = company_id
             outcome["company_name"] = company_name
             results.append(outcome)
+
+            status_label = str(outcome.get("status") or "?")
+            detail = outcome.get("domain") or ""
+            if status_label == "resolved_from_db":
+                detail = f"{detail} (free: {outcome.get('evidence', 'db')})"
+            elif status_label in ("cached", "skipped"):
+                detail = detail or str(outcome.get("reason") or "")
+            print(
+                f"[{position:>5}/{len(rows)}] {company_name[:34]:36} "
+                f"{status_label:<16} {detail}",
+                file=sys.stderr, flush=True,
+            )
+            if position % 25 == 0 or position == len(rows):
+                elapsed = max(time.time() - started, 0.001)
+                remaining = (len(rows) - position) / (position / elapsed)
+                print(
+                    f"    ── {position}/{len(rows)}  {int(elapsed // 60)}m {int(elapsed % 60)}s"
+                    f"  ETA {int(remaining // 60)}m  found {found}  from-db {resolved_from_db}"
+                    f"  held {low_confidence}  none {not_found}"
+                    f"  credits {queries_spent}",
+                    file=sys.stderr, flush=True,
+                )
 
             status = outcome.get("status")
             if status == "found":
@@ -1070,6 +1121,12 @@ def find_domains_for_workspace(
 
             conn.commit()
 
+        for sig, handler in previous_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+
         summary = {
             "status": "ok",
             "workspace": ws_row["slug"],
@@ -1090,7 +1147,10 @@ def find_domains_for_workspace(
         }
         if dry_run:
             summary["serper_queries_worst_case"] = worst_case
-        if stopped_reason:
+        if interrupted:
+            summary["stopped_reason"] = f"interrupted ({interrupted[0]})"
+            summary["companies_remaining"] = len(rows) - len(results)
+        elif stopped_reason:
             summary["stopped_reason"] = stopped_reason
             summary["companies_remaining"] = budget_exhausted
         return summary

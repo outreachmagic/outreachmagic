@@ -1117,3 +1117,53 @@ def test_normalize_company_domain_strips_numeric_www():
     from pipeline_utils import normalize_company_domain
     assert normalize_company_domain("www2.example.com") == "example.com"
     assert normalize_company_domain("https://www3.example.com/") == "example.com"
+
+
+def test_apex_domain_outranks_its_own_subdomains_for_email_finding():
+    """A TIEBREAK only, below real evidence. With no role/found signal to
+    separate them the apex is the better bet -- mailboxes live at
+    person@acme.edu, not person@support.acme.edu -- and since
+    run_find_with_domain_fallback stops at the first hit, a subdomain ranked
+    above the apex is a provider credit spent to learn nothing."""
+    conn = om.get_conn()
+    cid = om.ensure_company(conn, name="Acme University")
+    for d, role in [("support.acme.edu", None), ("ph.acme.edu", None), ("acme.edu", None)]:
+        conn.execute(
+            """INSERT INTO company_identities
+                   (org_id, company_id, identity_type, identity_value_normalized, role, source)
+               VALUES ('default', ?, 'domain', ?, ?, 'seed')""", (cid, d, role))
+    conn.commit()
+    assert om.rank_company_domains(conn, cid)[0] == "acme.edu"
+
+
+def test_observed_email_domain_still_beats_the_apex():
+    """role='email' means a real address was OBSERVED at that domain. That is
+    evidence, and it outranks the apex heuristic."""
+    conn = om.get_conn()
+    cid = om.ensure_company(conn, name="Gamma Co", domain="gamma.com")
+    conn.execute(
+        """INSERT INTO company_identities
+               (org_id, company_id, identity_type, identity_value_normalized, role, source)
+           VALUES ('default', ?, 'domain', 'mail.gamma.com', 'email', 'seed')""", (cid,))
+    conn.commit()
+    assert om.rank_company_domains(conn, cid)[0] == "mail.gamma.com"
+
+
+def test_subdomain_with_a_proven_track_record_still_wins():
+    """The apex preference is ranked below found_count -- evidence beats
+    heuristics."""
+    conn = om.get_conn()
+    cid = om.ensure_company(conn, name="Beta Corp")
+    for d in ("mail.beta.com", "beta.com"):
+        conn.execute(
+            """INSERT INTO company_identities
+                   (org_id, company_id, identity_type, identity_value_normalized, source)
+               VALUES ('default', ?, 'domain', ?, 'seed')""", (cid, d))
+    conn.commit()
+    rows = [
+        {"identity_value_normalized": "mail.beta.com", "found": 5, "role": None,
+         "verified_mx": None, "created_at": ""},
+        {"identity_value_normalized": "beta.com", "found": 0, "role": None,
+         "verified_mx": None, "created_at": ""},
+    ]
+    assert max(rows, key=om._domain_rank_score)["identity_value_normalized"] == "mail.beta.com"

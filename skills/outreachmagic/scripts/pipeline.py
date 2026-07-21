@@ -641,9 +641,20 @@ def company_domain_email_stats(conn: sqlite3.Connection, company_id: int) -> dic
 
 def _domain_rank_score(row: dict) -> tuple:
     found_count = row.get("found") or 0
+    domain = row.get("identity_value_normalized") or ""
+    # Prefer the apex domain over its own subdomains -- but only as a
+    # TIEBREAK, strictly below both forms of real evidence. found_count is a
+    # proven track record, and role='email' means an actual address was
+    # observed at that domain, which beats any guess about where mail lives.
+    # Among domains with equal evidence the apex is the better bet
+    # (person@ucla.edu, not person@support.ucla.edu), and since
+    # run_find_with_domain_fallback() tries these in order and stops at the
+    # first hit, every subdomain ranked above the apex is a provider credit
+    # spent to learn nothing.
+    is_apex = 1 if company_registrable_domain(domain) == domain else 0
     role_score = {"email": 2, "branch": 1, "website": 1}.get(row.get("role"), 0)
     verified_score = 1 if row.get("verified_mx") else 0
-    return (found_count, role_score, verified_score, row.get("created_at") or "")
+    return (found_count, role_score, is_apex, verified_score, row.get("created_at") or "")
 
 
 def rank_company_domains(conn: sqlite3.Connection, company_id: int) -> list[str]:

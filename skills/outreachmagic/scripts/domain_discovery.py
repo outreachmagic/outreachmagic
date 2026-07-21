@@ -527,9 +527,7 @@ def _attach_domain(
             # than guessing -- _log_company_merge_candidate is the existing
             # path for exactly this, feeding `pipeline.py company
             # merge-review`. Never auto-merged.
-            from pipeline import _log_company_merge_candidate
-
-            _log_company_merge_candidate(
+            _queue_merge_candidate(
                 conn,
                 existing_company_id=clash["id"],
                 candidate_company_id=company_id,
@@ -649,6 +647,41 @@ def domain_from_local_evidence(
     return None
 
 
+def _queue_merge_candidate(
+    conn: sqlite3.Connection,
+    *,
+    existing_company_id: int,
+    candidate_company_id: int,
+    reason: str,
+    payload: dict[str, Any],
+) -> bool:
+    """Log a company pair for human review, once.
+
+    _log_company_merge_candidate() mints a new id per call with no dedup, and
+    this pair can be reached twice in one company (the duplicate-name lookup
+    and the shared-domain backfill guard both see it) and again on every
+    subsequent run. Unchecked, a 3,000-company pass would bury the review
+    queue in thousands of rows describing a few hundred real merges.
+    """
+    already = conn.execute(
+        """SELECT 1 FROM company_merge_candidates
+           WHERE status = 'pending' AND existing_company_id = ? AND candidate_company_id = ?""",
+        (existing_company_id, candidate_company_id),
+    ).fetchone()
+    if already:
+        return False
+    from pipeline import _log_company_merge_candidate
+
+    _log_company_merge_candidate(
+        conn,
+        existing_company_id=existing_company_id,
+        candidate_company_id=candidate_company_id,
+        reason=reason,
+        payload=payload,
+    )
+    return True
+
+
 def _attach_public_emails(
     conn: sqlite3.Connection, company_id: int, emails: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -735,9 +768,7 @@ def run_company_domain_discovery(
             # attach.
             twin = local.get("duplicate_of_company_id")
             if twin:
-                from pipeline import _log_company_merge_candidate
-
-                _log_company_merge_candidate(
+                _queue_merge_candidate(
                     conn,
                     existing_company_id=twin,
                     candidate_company_id=company_id,

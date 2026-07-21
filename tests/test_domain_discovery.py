@@ -931,3 +931,26 @@ def test_twin_row_with_a_wrong_domain_is_not_propagated():
     # Same duplicate_name_key, so the row IS found -- and rejected on the domain.
     assert dd.duplicate_name_key("Dragon Con, Inc") == dd.duplicate_name_key("Dragon Con")
     assert dd.domain_from_local_evidence(conn, cid, "Dragon Con, Inc") is None
+
+
+def test_merge_candidate_is_queued_once_per_pair():
+    """Both code paths can see the same pair in one company, and every later
+    run sees it again. Unchecked, a 3,000-company pass buries the review queue
+    in thousands of rows describing a few hundred real merges."""
+    conn = om.get_conn()
+    twin = om.ensure_company(conn, name="Widgets Industrial Inc")
+    conn.execute("UPDATE companies SET domain = ? WHERE id = ?", ("widgetsindustrial.com", twin))
+    conn.commit()
+    cid, lead_id = _company_with_lead(conn, name="Widgets Industrial", person="Lee Poe")
+
+    for _ in range(3):
+        with mock.patch.object(enrich, "serper_search", side_effect=AssertionError("must not query")):
+            dd.run_company_domain_discovery(
+                conn, {}, company_id=cid, company_name="Widgets Industrial", rep_lead_id=lead_id,
+            )
+        conn.commit()
+
+    n = conn.execute(
+        """SELECT COUNT(*) c FROM company_merge_candidates
+           WHERE existing_company_id = ? AND candidate_company_id = ?""", (twin, cid)).fetchone()["c"]
+    assert n == 1

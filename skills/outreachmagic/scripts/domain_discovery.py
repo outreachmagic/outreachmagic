@@ -239,8 +239,14 @@ def score_domain_match(company_name: str, domain: str) -> tuple[int, str]:
     exact case scored the correct domain 0 while a directory site won. The raw
     collapsed form ("amadaseniorcarenorthatlanta") does match, as a prefix.
     """
-    label = (domain or "").split(".", 1)[0]
-    label = re.sub(r"[^a-z0-9]", "", label.lower())
+    # Score the REGISTRABLE domain's label, not the leftmost one. On
+    # health.usnews.com the leftmost label is "health", which is a substring
+    # of "autumn breeze healthcare" -- that scored 15 and handed a U.S. News
+    # directory page to a senior-living company. The brand lives in the
+    # registrable label ("usnews"), which matches nothing and is correctly
+    # rejected.
+    registrable = company_registrable_domain((domain or "").lower()) or (domain or "").lower()
+    label = re.sub(r"[^a-z0-9]", "", registrable.split(".", 1)[0])
     if not label:
         return (0, "no_domain_label")
 
@@ -277,7 +283,7 @@ def score_domain_match(company_name: str, domain: str) -> tuple[int, str]:
     if jaccard >= 0.4:
         return (6, f"trigram_{jaccard:.2f}")
 
-    label_tokens = set(re.sub(r"[^a-z0-9]+", " ", (domain or "").split(".", 1)[0].lower()).split())
+    label_tokens = set(re.sub(r"[^a-z0-9]+", " ", registrable.split(".", 1)[0]).split())
     overlap = label_tokens & norm_tokens
     if overlap:
         return (3 * len(overlap), f"token_overlap_{len(overlap)}")

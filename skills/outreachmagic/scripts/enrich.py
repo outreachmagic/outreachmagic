@@ -44,6 +44,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 import shared as cc
 from constants import is_non_company_name
+from pipeline_utils import company_registrable_domain
 from pipeline_utils import normalize_company_name as _canonical_normalize_company_name
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -196,6 +197,14 @@ def validate_company_domain(domain: str, company_name: str) -> tuple[str, str]:
     # Direct aggregator match
     if d in _AGGREGATOR_DOMAINS:
         return ("", f"Rejected aggregator domain: {d} (not the company's own site)")
+
+    # ...and any subdomain of one. Exact-host matching alone let
+    # health.usnews.com through while usnews.com was correctly rejected --
+    # aggregators routinely publish company listings on a vertical subdomain,
+    # so this is the common shape, not an edge case.
+    registrable = company_registrable_domain(d)
+    if registrable and registrable != d and registrable in _AGGREGATOR_DOMAINS:
+        return ("", f"Rejected aggregator domain: {d} (subdomain of {registrable})")
 
     # Wildcard aggregator match (e.g. sos.state.*.us)
     for bad in _AGGREGATOR_DOMAINS:

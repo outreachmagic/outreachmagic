@@ -1002,3 +1002,46 @@ def test_email_derived_domain_matching_the_company_name_still_wins():
 
     assert outcome["status"] == "found"
     assert outcome["domain"] == "sanziehealthcareservices.com"
+
+
+# ── Subdomains ───────────────────────────────────────────────────────────────
+# Live regression: "Autumn Breeze Healthcare" was assigned health.usnews.com.
+# Two independent failures had to line up -- the aggregator list matched only
+# exact hosts, and scoring used the leftmost label ("health"), a substring of
+# "autumn breeze healthcare".
+
+@pytest.mark.parametrize("host", [
+    "health.usnews.com", "money.usnews.com", "www.health.usnews.com",
+    "jobs.linkedin.com", "blog.medium.com", "business.yelp.com",
+])
+def test_aggregator_subdomains_are_rejected(host):
+    cleaned, warning = enrich.validate_company_domain(host, "Some Company")
+    assert cleaned == "", warning
+    assert "ggregator" in warning
+
+
+def test_scoring_uses_the_registrable_label_not_the_leftmost():
+    assert dd.score_domain_match("Autumn Breeze Healthcare", "health.usnews.com")[0] == 0
+    assert dd.score_domain_match("Some Health Co", "health.example-directory.com")[0] == 0
+    # A real company's own subdomain still scores on its brand.
+    assert dd.score_domain_match("Acme Widgets", "mail.acmewidgets.com")[1] == "exact"
+
+
+def test_aggregator_subdomain_never_becomes_the_company_domain():
+    conn = om.get_conn()
+    cid, lead_id = _company_with_lead(conn, name="Autumn Breeze Healthcare", person="Au Poe")
+    raw = {"organic": [{
+        "link": "https://health.usnews.com/best-senior-living/autumn-breeze",
+        "title": "Autumn Breeze Healthcare | US News",
+        "snippet": "Autumn Breeze Healthcare ratings and reviews.",
+    }], "knowledgeGraph": {}}
+
+    with mock.patch.object(enrich, "serper_search", side_effect=lambda q, c: raw):
+        outcome = dd.run_company_domain_discovery(
+            conn, {}, company_id=cid, company_name="Autumn Breeze Healthcare", rep_lead_id=lead_id,
+        )
+    conn.commit()
+
+    assert outcome["domain"] is None
+    assert conn.execute(
+        "SELECT domain FROM companies WHERE id = ?", (cid,)).fetchone()["domain"] is None

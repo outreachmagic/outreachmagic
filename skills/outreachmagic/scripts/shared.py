@@ -1010,6 +1010,7 @@ def run_verification_candidates(
     never_contacted: bool = False,
     timeout: int = 120,
     skill_dir: Optional[Path] = None,
+    tags: Optional[list] = None,
 ) -> dict[str, Any]:
     cmd = [
         sys.executable,
@@ -1026,6 +1027,9 @@ def run_verification_candidates(
     ]
     if never_contacted:
         cmd.append("--never-contacted")
+    if tags:
+        cmd.append("--tag")
+        cmd.extend(str(t) for t in tags)
     proc = subprocess.run(
         cmd,
         capture_output=True,

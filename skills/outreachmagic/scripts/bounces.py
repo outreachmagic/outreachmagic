@@ -606,8 +606,14 @@ def leads_needing_verification(
     limit: int = 5000,
     never_contacted_only: bool = False,
     skip_mv_attempted_tag: bool = True,
+    tags: Optional[list] = None,
 ) -> dict:
-    """Leads in a workspace whose emails need (re-)verification for MillionVerifier bulk."""
+    """Leads in a workspace whose emails need (re-)verification for MillionVerifier bulk.
+
+    `tags` narrows to leads carrying any of those workspace tags -- verification
+    is billed per email, so a campaign usually wants to verify the segment it is
+    about to send to, not every address in the workspace.
+    """
     from workspace_routing import resolve_workspace_identity
 
     conn = get_conn()
@@ -625,6 +631,17 @@ def leads_needing_verification(
                  AND (wl.last_contacted_at IS NULL OR TRIM(wl.last_contacted_at) = '')
                  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.lead_id = l.id)
             """
+        segment_filter = ""
+        segment_params: list = []
+        if tags:
+            segment_filter = f"""
+                 AND EXISTS (
+                     SELECT 1 FROM workspace_lead_tags st
+                     WHERE st.workspace_id = wl.workspace_id AND st.lead_id = l.id
+                       AND st.tag IN ({",".join("?" * len(tags))})
+                 )
+            """
+            segment_params = list(tags)
         tag_filter = ""
         if skip_mv_attempted_tag:
             # Org-wide lead_provider_attempts (not workspace-scoped) is the
@@ -656,6 +673,7 @@ def leads_needing_verification(
                        AND created_at > datetime('now', ?)
                  )
                  {tag_filter}
+                 {segment_filter}
                  {contact_filter}
                ORDER BY l.updated_at DESC
                LIMIT ?""",
@@ -664,6 +682,7 @@ def leads_needing_verification(
                 f"-{max_age_days} days",
                 f"-{skip_mv_days} days",
                 *([ws_id] if skip_mv_attempted_tag else []),
+                *segment_params,
                 limit,
             ),
         ).fetchall()
@@ -671,6 +690,7 @@ def leads_needing_verification(
         return {
             "status": "ok",
             "workspace": workspace,
+            "tags": list(tags) if tags else None,
             "count": len(leads),
             "leads": leads,
         }

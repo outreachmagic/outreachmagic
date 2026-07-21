@@ -593,6 +593,7 @@ def main():
     vc_p.add_argument("--max-age", type=int, default=30, dest="max_age")
     vc_p.add_argument("--skip-mv-days", type=int, default=7, dest="skip_mv_days")
     vc_p.add_argument("--limit", type=int, default=5000)
+    vc_p.add_argument("--tag", nargs="+", dest="tags", help="Only leads carrying any of these workspace tags")
     vc_p.add_argument(
         "--never-contacted",
         action="store_true",
@@ -2931,6 +2932,7 @@ def main():
                 limit=getattr(args, "limit", 5000),
                 never_contacted_only=getattr(args, "never_contacted", False),
                 skip_mv_attempted_tag=not getattr(args, "include_mv_attempted", False),
+                tags=getattr(args, "tags", None),
             ),
             indent=2,
         ))

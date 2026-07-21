@@ -97,10 +97,22 @@ def load_config() -> dict[str, Any]:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Env from portal-synced agent_secrets.env (via ensure_hermes_env_loaded)
-    serper = os.environ.get("SERPER_API_KEY", "").strip()
-    if serper:
-        cfg["serper_api_key"] = serper
+    # Env from portal-synced agent_secrets.env (via ensure_hermes_env_loaded).
+    # All provider keys, not just Serper: this function is named load_config()
+    # and is used as the general config loader (pipeline.py's find-domains
+    # calls it), so a caller reaching for cfg["millionverifier_api_key"] would
+    # get None while the env var was set the whole time. Mirrors the same
+    # block in email_finder.load_config().
+    for env_key, cfg_key in (
+        ("SERPER_API_KEY", "serper_api_key"),
+        ("TRYKITT_API_KEY", "trykitt_api_key"),
+        ("ICYPEAS_API_KEY", "icypeas_api_key"),
+        ("MILLIONVERIFIER_API_KEY", "millionverifier_api_key"),
+        ("SCRUBBY_API_KEY", "scrubby_api_key"),
+    ):
+        value = os.environ.get(env_key, "").strip()
+        if value:
+            cfg[cfg_key] = value
     if os.environ.get("OUTREACHMAGIC_HOME"):
         cfg["outreachmagic_home"] = os.environ["OUTREACHMAGIC_HOME"]
 

@@ -151,6 +151,16 @@ Tags narrow only what you pay to search. The freshness cache, the pre-flight ide
 - Tags workspace leads `domain_found_<domain>` / `domain_low_confidence` / `domain_not_found` for the audit trail.
 - Observations store a lean summary (~0.5 KB) — ranked candidates with scores and reasons, found emails, top 3 links. `--debug` adds the full raw Serper response (~5-8 KB), which also crosses the relay wire, so it is off by default.
 
+## Email verification (MillionVerifier bulk)
+
+```bash
+pipeline.py verification-candidates --workspace acme [--tag T ...]      # who is due
+email_finder.py verify-bulk --workspace acme --tag assisted_living --dry-run
+email_finder.py verify-bulk --workspace acme --tag assisted_living --poll
+```
+
+`--tag` scopes to leads carrying any of those workspace tags (OR, deduped). MillionVerifier bills per email, so a campaign usually wants to verify the segment it is about to send to rather than every address in the workspace — on one real workspace that is 80 versus 339. Always `--dry-run` first: it reports credits required against credits remaining without submitting.
+
 ## Dedup (batch)
 
 ```bash

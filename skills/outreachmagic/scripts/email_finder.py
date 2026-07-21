@@ -20,8 +20,8 @@ batch-find options:
 
 MillionVerifier (bulk email verification):
     email_finder.py verify EMAIL
-    email_finder.py verify-bulk [--workspace W | --file emails.csv] [--poll] [--output PATH]
-                                 [--dry-run] [--force] [--max-age N] [--skip-mv-days N]
+    email_finder.py verify-bulk [--workspace W [--tag T ...] | --file emails.csv] [--poll]
+                                 [--output PATH] [--dry-run] [--force] [--max-age N] [--skip-mv-days N]
     email_finder.py verify-status --file-id ID
     email_finder.py verify-list
     email_finder.py verify-download --file-id ID [--workspace W]
@@ -734,6 +734,7 @@ def _collect_verify_emails(
     max_age_days: int = 30,
     skip_mv_days: int = 7,
     cfg: Optional[dict[str, Any]] = None,
+    tags: Optional[list] = None,
 ) -> tuple[list[str], dict[str, Any]]:
     emails: list[str] = []
     candidate_meta: dict[str, Any] = {}
@@ -755,6 +756,7 @@ def _collect_verify_emails(
                 max_age_days=max_age_days,
                 skip_mv_days=skip_mv_days,
                 skill_dir=_find_skill_dir(),
+                tags=tags,
             )
         except RuntimeError as e:
             return [], {"error": str(e)}
@@ -786,6 +788,7 @@ def cmd_verify_bulk(
     force: bool = False,
     max_age_days: int = 30,
     skip_mv_days: int = 7,
+    tags: Optional[list] = None,
 ) -> None:
     cfg = load_config()
     mv = _mv_provider(cfg)
@@ -795,6 +798,7 @@ def cmd_verify_bulk(
         max_age_days=max_age_days,
         skip_mv_days=skip_mv_days,
         cfg=cfg,
+        tags=tags,
     )
     if candidate_meta.get("error"):
         print(json.dumps({"error": candidate_meta["error"]}))
@@ -1459,10 +1463,20 @@ def main() -> None:
             force = "--force" in sys.argv
             max_age = 30
             skip_mv = 7
+            tags: list[str] = []
             args = [a for a in sys.argv[2:] if a not in ("--poll", "--dry-run", "--force")]
             i = 0
             while i < len(args):
-                if args[i] == "--workspace" and i + 1 < len(args):
+                if args[i] == "--tag" and i + 1 < len(args):
+                    # nargs-style: consume every value until the next flag.
+                    i += 1
+                    while i < len(args) and not args[i].startswith("--"):
+                        tags.append(args[i])
+                        i += 1
+                elif args[i].startswith("--tag="):
+                    tags.extend(t for t in args[i].split("=", 1)[1].split(",") if t)
+                    i += 1
+                elif args[i] == "--workspace" and i + 1 < len(args):
                     workspace = args[i + 1]
                     i += 2
                 elif args[i].startswith("--workspace="):
@@ -1503,6 +1517,7 @@ def main() -> None:
                 force=force,
                 max_age_days=max_age,
                 skip_mv_days=skip_mv,
+                tags=tags or None,
             )
         elif cmd == "verify-status":
             file_id = ""

@@ -740,6 +740,7 @@ def _collect_verify_emails(
     file_path: str = "",
     max_age_days: int = 30,
     skip_mv_days: int = 7,
+    skip_mv_attempted_tag: bool = True,
     cfg: Optional[dict[str, Any]] = None,
     tags: Optional[list] = None,
 ) -> tuple[list[str], dict[str, Any]]:
@@ -762,6 +763,7 @@ def _collect_verify_emails(
                 workspace,
                 max_age_days=max_age_days,
                 skip_mv_days=skip_mv_days,
+                include_mv_attempted=not skip_mv_attempted_tag,
                 skill_dir=_find_skill_dir(),
                 tags=tags,
             )
@@ -793,10 +795,14 @@ def cmd_verify_bulk(
     poll: bool = False,
     dry_run: bool = False,
     force: bool = False,
+    verify_all: bool = False,
     max_age_days: int = 30,
     skip_mv_days: int = 7,
     tags: Optional[list] = None,
 ) -> None:
+    if verify_all:
+        max_age_days = 0
+        skip_mv_days = 0
     cfg = load_config()
     mv = _mv_provider(cfg)
     emails, candidate_meta = _collect_verify_emails(
@@ -804,6 +810,7 @@ def cmd_verify_bulk(
         file_path=file_path,
         max_age_days=max_age_days,
         skip_mv_days=skip_mv_days,
+        skip_mv_attempted_tag=not verify_all,
         cfg=cfg,
         tags=tags,
     )
@@ -1468,10 +1475,11 @@ def main() -> None:
             poll = "--poll" in sys.argv
             dry_run = "--dry-run" in sys.argv
             force = "--force" in sys.argv
+            verify_all = "--all" in sys.argv
             max_age = 30
             skip_mv = 7
             tags: list[str] = []
-            args = [a for a in sys.argv[2:] if a not in ("--poll", "--dry-run", "--force")]
+            args = [a for a in sys.argv[2:] if a not in ("--poll", "--dry-run", "--force", "--all")]
             i = 0
             while i < len(args):
                 if args[i] == "--tag" and i + 1 < len(args):
@@ -1522,6 +1530,7 @@ def main() -> None:
                 poll=poll,
                 dry_run=dry_run,
                 force=force,
+                verify_all=verify_all,
                 max_age_days=max_age,
                 skip_mv_days=skip_mv,
                 tags=tags or None,

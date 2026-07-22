@@ -1,5 +1,48 @@
 # Changelog
 
+## [1.5.0] — Domain discovery, pipeline refactor, cost controls
+
+### Added
+
+- **`find-domains`** — new command: resolve a company name to its authoritative domain(s) and claim any name-matched public email addresses before spending credits on paid providers.
+- **`claim-public-emails`** — standalone command to attach a verified-by-name-match public email to a lead without touching the waterfall.
+- **`--skip-catchall-after N`** — stop paying for email finding on domains that have already been confirmed as catch-all. Prevents repeated credit waste on unverifiable addresses.
+- **`--abandon-after N`** — give up on a domain after N failed provider attempts. Defaults to 0 (disabled) so existing installs are unaffected.
+- **`import-linkedin-connections`** — bulk-import LinkedIn Connections CSV exports into the pipeline.
+- **Outbox + dirty tracking** — SQLite triggers mark leads dirty on change; `outbox` command drains pending pushes reliably without cursor-drift.
+- **Provider attempt tracking** — org-wide per-lead record of every provider attempt, verdict, and cost. Feeds `--skip-catchall-after` and `--abandon-after` decisions.
+- **Blacklist monitor** (`blacklist_monitor.py`) — watches for leads that match blocklist entries and surfaces them.
+- **`query` CLI** — read-only SQL REPL over the local database for ad-hoc inspection.
+- **API key pool** (`api_key_pool.py`) — round-robin rotation across multiple API keys for providers that rate-limit per key.
+- **Event deduplication** (`event_dedup.py`) — idempotent relay ingest; duplicate webhook payloads are absorbed without creating duplicate events.
+- **Batch job tracking** — persisted job state for `scrubby-deep-submit`/`batch-find` so cross-session polling survives restarts.
+- **Junk lead cleanup** (`junk_cleanup.py`) — automated quarantine and deletion of weak-identity leads.
+- **Sync audit trail** (`sync_audit.py`, `sync_contract.py`) — per-column classification of what is and isn't synced to the relay; visible via `sync-debug`.
+
+### Changed
+
+- **`pipeline.py` refactored into 6 modules** — `pipeline_cli.py`, `pipeline_sync.py`, `pipeline_tags.py`, `pipeline_workspace.py`, `pipeline_migration.py`, `pipeline_utils.py`, `pipeline_update.py`, `pipeline_personalize.py`. Entry point is unchanged; all existing commands work as before.
+- **Domain scoring** — apex domains rank above their own subdomains; aggregator subdomains (`jobs.`, `careers.`, etc.) are rejected; `www2.`/`www3.` host prefixes are stripped. Name-match validates email-derived domains against the company name before accepting them.
+- **`domain_discovered` tag** — collapsed from one tag per domain (`domain_found_<domain>`) to a single `domain_discovered` flag. `reconcile-domain-tags` backfills existing installs.
+- **Tag normalization fix** — read and write paths now use the same canonical normalizer (`pipeline_utils.normalize_tag`). A divergence where the read path converted spaces to underscores caused `--tag` filters to silently return 0 results for any tag containing spaces.
+- **`personalized_` prefix** — replaces `mailmerge_` throughout the skill (personalization columns, CLI flags, exports).
+- **`--tag` / `--exclude-tag` scoping** — added to `verify-bulk` and `email-finding-candidates` so you can target verification runs by tag without exporting first.
+- **Sales Navigator ID casing** — IDs are now folded to lowercase; a one-time migration merges any case-split duplicates.
+- **Entity key is immutable** — relay `entity_key` (uid) cannot change after creation; write attempts raise an error rather than silently forking a lead.
+- **GHL CRM sync** — tracks `crm_note_id`, auto-generates an OM summary note on contact creation, and only pushes email events (not all event types).
+- **Relay event envelope** — unified 5-field format (`platform`, `entity_key`, `event_type`, `received_at`, `payload`) across webhook and agent-push events.
+- **Company snapshots** — relay now produces authoritative company snapshots; `pull` updates local `companies` table without relying on lead payloads for company-level fields.
+
+### Fixed
+
+- **`BrokenPipeError` in background batch runs** — progress output now silently drops when the parent agent disconnects stdout/stderr rather than crashing the process.
+- **Concurrent batch process SIGTERM** — `batch-find` now acquires an exclusive `flock()` lock at startup. A second concurrent batch from another agent session fails immediately with a clear message instead of blocking and getting killed by the host watchdog.
+- **`--skip-catchall-after` pre-flight seeding** — at batch start, domains already confirmed catch-all in `lead_provider_observations` are seeded into the in-memory skip table so the first lead from a known-bad domain is skipped without an API call, not just leads discovered mid-run.
+
+### Removed
+
+- `skills/email-finder/` and `skills/lead-enrich/` directories (consolidated in v1.4.0; residual exports cleaned up).
+
 ## [1.4.0] — Skill consolidation (lead-enrich + email-finder merged into outreachmagic)
 
 ### Added

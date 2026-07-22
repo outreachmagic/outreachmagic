@@ -106,6 +106,15 @@ def verdict_bucket(validity: Optional[str], email: Optional[str], status: str = 
     return _VERDICTS.get((validity or "").strip().lower(), ("unknown", "?  "))[0]
 
 
+def _safe_print(file, *args, **kwargs) -> None:
+    """print() that silently drops BrokenPipeError when stdout/stderr is gone."""
+    try:
+        print(*args, file=file, **kwargs)
+        file.flush()
+    except (BrokenPipeError, OSError):
+        pass
+
+
 def print_result_line(
     n: int,
     total: int,
@@ -136,11 +145,10 @@ def print_result_line(
     else:
         label, mark = "not found", "-  "
         detail = ""
-    print(
+    _safe_print(
+        file,
         f" {n:>4}/{total:<4} {mark} {label:<10} {str(name)[:24]:26}{str(domain)[:26]:28}{detail}",
-        file=file,
     )
-    file.flush()
 
 
 def print_progress(
@@ -188,8 +196,8 @@ def print_progress(
     if stats.get("errors"):
         parts.append(f"errors {stats['errors']}")
     line = "  ".join(parts)
-    print(file=file)
-    print(f"─── {line} " + "─" * max(4, 76 - len(line)), file=file)
+    _safe_print(file)
+    _safe_print(file, f"─── {line} " + "─" * max(4, 76 - len(line)))
 
     # Diagnostics on their own line, below the verdict split: useful when a run
     # stalls (slowest call, idle workers) but never the headline.
@@ -203,7 +211,7 @@ def print_progress(
             diag.append(f"slowest call: {slowest_call_s:.1f}s")
     if provider:
         diag.append(provider)
-    print("    " + "  ".join(diag), file=file)
+    _safe_print(file, "    " + "  ".join(diag))
 
     # Per-domain verdict split. "cousins.com 24/24" says nothing about whether
     # those 24 are usable: 24 valid addresses and 24 catch-alls are the same
@@ -214,7 +222,7 @@ def print_progress(
     if domain_stats:
         interesting = [
             (d, v) for d, v in domain_stats.items()
-            if v.get("found", 0) > 0 or v.get("tried", 0) > 2
+            if v.get("tried", 0) > 0
         ]
         interesting.sort(key=lambda kv: (-(kv[1].get("risky", 0) + kv[1].get("invalid", 0)),
                                          -kv[1].get("found", 0)))
@@ -238,16 +246,12 @@ def print_progress(
                 flag = "   <- none confirmed"
             elif v.get("tried", 0) >= 3 and not v.get("found"):
                 flag = "   <- no coverage"
-            print(
+            _safe_print(
+                file,
                 f"    {dom[:30]:32}{v.get('found', 0)}/{v.get('tried', 0):<6}"
                 f"{'  '.join(bits):<34}{flag}",
-                file=file,
             )
-    print(file=file)
-    # Piped/buffered output managers (e.g. `| tail -30`) don't see these lines
-    # until the stream is flushed -- without this, a running batch-find looks
-    # completely blank in a piped terminal tab until the whole process exits.
-    file.flush()
+    _safe_print(file)
 
 
 def _import_status_lines(

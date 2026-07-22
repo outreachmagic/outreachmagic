@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import shared as cc
+from db_conn import get_conn
 from health import (
     count_usable_find_providers,
     format_health_lines,
@@ -23,7 +25,7 @@ from health import (
     run_health_check,
 )
 from normalize import lead_resume_key, load_people_json, row_fields, sanitize_input_path, validate_domain
-from om_paths import default_working_root
+from om_paths import default_working_root, get_db_path
 from progress import (
     print_result_line,
     verdict_bucket,
@@ -813,7 +815,92 @@ def build_verify_batch(
     return verify_items
 
 
+def _load_catchall_exhausted_domains(threshold: int) -> dict[str, int]:
+    """Return {domain: risky_count} for domains whose historical observations show
+    >= threshold found results that are ALL risky/catch-all (no valid result).
+
+    These are seeded into domain_stats so _domain_is_catchall() fires on the
+    very first lead from a known-bad domain, not after rediscovering it mid-run.
+    Returns an empty dict if the DB is unavailable or has no schema yet.
+    """
+    if threshold <= 0:
+        return {}
+    try:
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT domain,
+                       SUM(CASE WHEN result_validity IN ('risky','valid-risky','catch_all') THEN 1 ELSE 0 END) AS risky_ct,
+                       SUM(CASE WHEN result_validity = 'valid' THEN 1 ELSE 0 END) AS valid_ct
+                   FROM lead_provider_observations
+                   WHERE status = 'found'
+                     AND domain IS NOT NULL AND domain != ''
+                     AND origin = 'attempt'
+                   GROUP BY domain
+                   HAVING risky_ct >= ? AND valid_ct = 0""",
+                (threshold,),
+            ).fetchall()
+            return {r["domain"].lower(): int(r["risky_ct"]) for r in rows}
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+
+
+def _acquire_batch_lock() -> Optional[object]:
+    """Try to acquire an exclusive flock on batch.lock. Returns the open file handle or None.
+
+    Uses LOCK_NB so a second concurrent batch operation fails immediately with a
+    clear message rather than blocking and getting SIGTERM'd by the agent host.
+    The lock is released automatically when the file handle is closed or the
+    process dies — no stale-lock cleanup needed.
+    """
+    lock_path = get_db_path().parent / "batch.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fh = open(lock_path, "w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fh
+    except BlockingIOError:
+        try:
+            fh.close()
+        except Exception:
+            pass
+        return None
+
+
 def run_batch(
+    input_path: str,
+    cfg: dict[str, Any],
+    om_dir: Optional[Path],
+    opts: BatchOptions,
+    *,
+    skill_dir: Path,
+    normalize_linkedin_fn: Callable[[str], str],
+    key_status_fn: Callable,
+) -> dict[str, Any]:
+    lock_fh = _acquire_batch_lock()
+    if lock_fh is None:
+        return {
+            "error": (
+                "Another OM batch operation is already running in a different session. "
+                "Wait for it to finish before starting a new batch-find run."
+            )
+        }
+    try:
+        return _run_batch_inner(input_path, cfg, om_dir, opts,
+                                skill_dir=skill_dir,
+                                normalize_linkedin_fn=normalize_linkedin_fn,
+                                key_status_fn=key_status_fn)
+    finally:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            lock_fh.close()
+        except Exception:
+            pass
+
+
+def _run_batch_inner(
     input_path: str,
     cfg: dict[str, Any],
     om_dir: Optional[Path],
@@ -1112,6 +1199,22 @@ def run_batch(
     # substrate for skip_catchall_after -- no separate tracking needed, since
     # this already buckets found results into valid/risky/invalid.
     domain_stats: dict[str, dict[str, int]] = {}
+    if skip_catchall_after > 0:
+        _preflight_catchall = _load_catchall_exhausted_domains(skip_catchall_after)
+        for _dom, _risky_ct in _preflight_catchall.items():
+            # Seed with found == risky so _domain_is_catchall() returns True
+            # on the very first lead from this domain.
+            _ct = max(_risky_ct, skip_catchall_after)
+            domain_stats[_dom] = {
+                "tried": 0, "found": _ct, "valid": 0,
+                "risky": _ct, "invalid": 0, "unknown": 0,
+            }
+        if _preflight_catchall:
+            print(
+                f"Pre-flight: skipping {len(_preflight_catchall)} domain(s) already confirmed "
+                f"catch-all in DB (--skip-catchall-after {skip_catchall_after}).",
+                file=sys.stderr, flush=True,
+            )
     skipped_no_coverage = 0
     skipped_catchall = 0
     domain_state_lock = threading.Lock()

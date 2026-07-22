@@ -9,7 +9,7 @@ Installs **outreachmagic** — the unified skill with pipeline sync, person rese
 Get started at [app.outreachmagic.io/onboarding](https://app.outreachmagic.io/onboarding).
 
 ```bash
-OM_VERSION=v1.4.0
+OM_VERSION=v1.5.0
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"

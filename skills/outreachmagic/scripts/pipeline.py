@@ -627,14 +627,37 @@ def company_domain_email_stats(conn: sqlite3.Connection, company_id: int) -> dic
     immediately after a pull with zero extra work, and merge_companies()
     needs no special-case summing logic -- leads already carry their own
     attempt history through a company_id reassignment."""
+    # Deliberately NOT the lead_provider_attempts compat VIEW, despite that
+    # being the natural way to express this. The view is
+    # ROW_NUMBER() OVER (PARTITION BY lead_id, provider ...) across the whole
+    # observations table, and SQLite cannot push an outer WHERE into a window
+    # function -- so `... FROM lead_provider_attempts WHERE company_id = ?`
+    # ranks all 39k rows and sorts them, then throws away all but one company's.
+    # At 130ms a call that made batch-lead-lookup O(leads x observations):
+    # 232 leads took 32s and blew the 58s dedup timeout, silently disabling
+    # dedup and spending provider credits on already-resolved leads.
+    #
+    # Inlining the view's logic with company_id inside the subquery means the
+    # window only ever sees that company's rows. The rn = 1 / domain filters
+    # stay OUTSIDE it, exactly as the view has them: filtering domain before
+    # the ranking would promote an older attempt whenever the newest one
+    # happened to have no domain, which is a different answer.
     rows = conn.execute(
-        """SELECT lpa.domain,
-                  SUM(CASE WHEN lpa.status = 'found' THEN 1 ELSE 0 END) AS found,
+        """SELECT domain,
+                  SUM(CASE WHEN status = 'found' THEN 1 ELSE 0 END) AS found,
                   COUNT(*) AS attempted
-           FROM lead_provider_attempts lpa
-           JOIN leads l ON l.id = lpa.lead_id
-           WHERE l.company_id = ? AND lpa.domain IS NOT NULL AND lpa.domain != ''
-           GROUP BY lpa.domain""",
+           FROM (
+               SELECT o.domain, o.status,
+                      ROW_NUMBER() OVER (
+                          PARTITION BY o.lead_id, o.provider
+                          ORDER BY o.observed_at DESC, o.obs_uid DESC
+                      ) AS rn
+               FROM lead_provider_observations o
+               JOIN leads l ON l.id = o.lead_id
+               WHERE l.company_id = ? AND o.origin = 'attempt'
+           )
+           WHERE rn = 1 AND domain IS NOT NULL AND domain != ''
+           GROUP BY domain""",
         (company_id,),
     ).fetchall()
     return {r["domain"]: {"found": r["found"], "attempted": r["attempted"]} for r in rows}

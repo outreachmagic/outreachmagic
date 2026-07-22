@@ -224,8 +224,7 @@ def print_progress(
             (d, v) for d, v in domain_stats.items()
             if v.get("tried", 0) > 0
         ]
-        interesting.sort(key=lambda kv: (-(kv[1].get("risky", 0) + kv[1].get("invalid", 0)),
-                                         -kv[1].get("found", 0)))
+        interesting.sort(key=lambda kv: -kv[1].get("last_seen", 0))
         for dom, v in interesting[:6]:
             bits = []
             for key in ("valid", "risky", "invalid"):

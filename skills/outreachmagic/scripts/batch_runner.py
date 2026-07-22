@@ -1245,8 +1245,9 @@ def _run_batch_inner(
             with domain_state_lock:
                 entry = domain_stats.setdefault(
                     key, {"tried": 0, "found": 0, "valid": 0, "risky": 0,
-                          "invalid": 0, "unknown": 0})
+                          "invalid": 0, "unknown": 0, "last_seen": 0.0})
                 entry["tried"] += 1
+                entry["last_seen"] = time.time()
                 if found:
                     entry["found"] += 1
                     # Bucketed here, not just counted: a domain answering every

@@ -295,3 +295,124 @@ def test_default_never_abandons_a_domain():
                                normalize_linkedin_fn=lambda s: s,
                                key_status_fn=lambda *a, **k: {})
     assert len(calls) == 29, "every lead should be tried; nothing pre-emptively skipped"
+
+
+# ── Catch-all domain skipping ─────────────────────────────────────────────────
+# Different economics from --abandon-after: a catch-all "found" result IS
+# billed (trykitt.py: credits_used = find_credits_used(found=bool(email)),
+# keyed on whether an email came back, not its verdict). Once a domain has
+# produced N results and every one is unconfirmable, further leads there are
+# paying real credits for addresses nobody can trust.
+
+def _run_with_verdicts(people_verdicts, skip_catchall_after=3, workers=1):
+    """people_verdicts: list of (domain, validity_or_None) -- None means
+    not_found. Drives run_batch with a stubbed provider returning that shape."""
+    calls = []
+
+    def fake_find(cfg, *, full_name, domain, linkedin="", provider_names=None):
+        validity = people_verdicts[len(calls)][1]
+        calls.append(domain)
+        if validity is None:
+            return {"status": "not_found", "email": None, "provider": "trykitt",
+                    "provider_attempts": []}
+        return {"status": "found", "email": f"x{len(calls)}@{domain}",
+                "validity": validity, "provider": "trykitt", "provider_attempts": []}
+
+    people = [{"name": f"P{i}", "domain": d} for i, (d, _v) in enumerate(people_verdicts)]
+    base = str(Path(tempfile.mkdtemp()) / f"run{next(_RUN_SEQ)}")
+    opts = batch_runner.BatchOptions(
+        workspace="w", workers=workers, no_save=True, skip_om=True, yes=True,
+        max_leads=500, delay=0, progress_every=10_000, output_base=base,
+        skip_catchall_after=skip_catchall_after,
+    )
+    with mock.patch.object(batch_runner, "run_find_with_fallback", side_effect=fake_find), \
+         mock.patch.object(batch_runner, "load_people_json", return_value=people), \
+         mock.patch.object(batch_runner, "prompt_batch_provider_plan", return_value=["trykitt"]), \
+         mock.patch.object(batch_runner, "bulk_dedup_map", return_value=({}, False)), \
+         mock.patch.object(batch_runner, "_mid_batch_credit_stop", return_value=False):
+        batch_runner.run_batch("in.json", {}, None, opts, skill_dir=SCRIPTS,
+                               normalize_linkedin_fn=lambda s: s,
+                               key_status_fn=lambda *a, **k: {})
+    return calls
+
+
+def test_domain_with_only_catchall_results_stops_after_the_threshold():
+    """8 leads, all risky, threshold 3 -- must not call all 8 (real example:
+    realtytrustgroup.com went 8/8 risky in production)."""
+    people = [("realtytrustgroup.com", "valid-risky")] * 8
+    calls = _run_with_verdicts(people, skip_catchall_after=3)
+    assert len(calls) == 3, calls
+
+
+def test_a_single_valid_result_keeps_the_domain_open():
+    """One confirmed-good address proves the domain is not a catch-all server
+    -- must not skip the rest."""
+    people = [("mixed.com", "valid-risky"), ("mixed.com", "valid-risky"),
+              ("mixed.com", "valid"), ("mixed.com", "valid-risky"),
+              ("mixed.com", "valid-risky")]
+    calls = _run_with_verdicts(people, skip_catchall_after=3)
+    assert len(calls) == 5
+
+
+def test_a_single_invalid_result_keeps_the_domain_open():
+    """A confirmed-invalid means the provider IS discriminating on this domain
+    -- a true catch-all server cannot say no to anything, so this is real
+    signal and must not be treated as noise."""
+    people = [("discriminating.com", "valid-risky"), ("discriminating.com", "invalid"),
+              ("discriminating.com", "valid-risky"), ("discriminating.com", "valid-risky")]
+    calls = _run_with_verdicts(people, skip_catchall_after=3)
+    assert len(calls) == 4
+
+
+def test_not_found_results_do_not_count_toward_the_catchall_threshold():
+    """Catch-all is about FOUND-but-unconfirmable results specifically -- a
+    domain that mostly returns nothing is --abandon-after's concern, not this
+    one's."""
+    people = [("sparse.com", None), ("sparse.com", None), ("sparse.com", "valid-risky"),
+              ("sparse.com", None), ("sparse.com", "valid-risky"), ("sparse.com", None),
+              ("sparse.com", "valid-risky")]
+    calls = _run_with_verdicts(people, skip_catchall_after=3)
+    assert len(calls) == 7, "only 2 of 7 are found+risky -- below the threshold of 3"
+
+
+def test_disabled_by_default():
+    people = [("allrisky.com", "valid-risky")] * 10
+    calls = _run_with_verdicts(people, skip_catchall_after=0)
+    assert len(calls) == 10
+
+
+def test_a_catchall_domain_does_not_stop_a_different_domain():
+    people = [("bad.com", "valid-risky")] * 5 + [("good.com", "valid")] * 5
+    calls = _run_with_verdicts(people, skip_catchall_after=3)
+    assert calls.count("good.com") == 5
+    assert calls.count("bad.com") == 3
+
+
+def test_readout_flags_a_domain_being_actively_skipped(capsys):
+    """Distinct from the passive "none confirmed" observation: once
+    skip_catchall_after is engaged and the threshold is crossed, the readout
+    says the remainder is actually being skipped, not merely worth a look."""
+    progress.print_progress(
+        10, 50, {"found": 3, "not_found": 2, "errors": 0,
+                 "verdicts": {"risky": 3}},
+        __import__("time").time() - 30, file=sys.stdout,
+        domain_stats={"cutoff.com": {"tried": 3, "found": 3, "valid": 0,
+                                     "risky": 3, "invalid": 0}},
+        catchall_threshold=3,
+    )
+    out = capsys.readouterr().out
+    assert "catch-all, skipping remainder" in out
+
+
+def test_readout_shows_none_confirmed_when_the_flag_is_not_engaged(capsys):
+    """Same data, catchall_threshold=0 (flag off) -- must fall back to the
+    passive observation, not claim something is being skipped when it is not."""
+    progress.print_progress(
+        10, 50, {"found": 3, "not_found": 2, "errors": 0, "verdicts": {"risky": 3}},
+        __import__("time").time() - 30, file=sys.stdout,
+        domain_stats={"cutoff.com": {"tried": 3, "found": 3, "valid": 0,
+                                     "risky": 3, "invalid": 0}},
+    )
+    out = capsys.readouterr().out
+    assert "none confirmed" in out
+    assert "skipping remainder" not in out

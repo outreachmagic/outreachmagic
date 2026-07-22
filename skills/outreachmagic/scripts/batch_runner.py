@@ -115,14 +115,18 @@ class BatchOptions:
     progress_every: int = 25
     json_checkpoint: int = 50
     retry_errors: bool = False
-    # Consecutive misses on one domain before the provider is treated as
-    # having no coverage for it and its remaining leads are skipped. 0 = off.
     # 0 = never pre-emptively skip. trykitt and icypeas are pay-per-FIND (see
     # credits.py: find_credits_used returns 0 for not_found) -- a domain that
     # is 1/18 or 2/16 across real production data is not "no coverage", it is
     # a low hit rate, and stopping after a handful of misses throws those hits
     # away for a $ saving that does not exist on either current provider.
     abandon_after: int = 0
+    # 0 = never pre-emptively skip. Different economics from abandon_after: a
+    # catch-all find IS billed (find_credits_used keys on whether an email
+    # came back at all, not its verdict), so once a domain has produced N
+    # results and every one is risky/catch-all, further leads there are paying
+    # real credits for addresses nobody can trust.
+    skip_catchall_after: int = 0
 
 
 def build_import_profile(
@@ -1101,11 +1105,15 @@ def run_batch(
     # operator who has a very large batch and independently knows some
     # domains are genuinely dead can still opt in with --abandon-after N.
     abandon_after = max(int(getattr(opts, "abandon_after", 0) or 0), 0)
+    skip_catchall_after = max(int(getattr(opts, "skip_catchall_after", 0) or 0), 0)
     domain_misses: dict[str, int] = {}
     # Feeds the progress readout: tried/found per domain, and the last few
-    # outcomes so the operator can see what is actually coming back.
+    # outcomes so the operator can see what is actually coming back. Also the
+    # substrate for skip_catchall_after -- no separate tracking needed, since
+    # this already buckets found results into valid/risky/invalid.
     domain_stats: dict[str, dict[str, int]] = {}
     skipped_no_coverage = 0
+    skipped_catchall = 0
     domain_state_lock = threading.Lock()
 
     def _domain_exhausted(domain: str) -> bool:
@@ -1113,6 +1121,20 @@ def run_batch(
             return False
         with domain_state_lock:
             return domain_misses.get(domain.lower(), 0) >= abandon_after
+
+    def _domain_is_catchall(domain: str) -> bool:
+        if skip_catchall_after <= 0 or not domain:
+            return False
+        with domain_state_lock:
+            entry = domain_stats.get(domain.lower())
+        if not entry or entry["found"] < skip_catchall_after:
+            return False
+        # Strict: every found result must be risky/catch-all, none valid AND
+        # none invalid. A single invalid result means the provider IS
+        # discriminating on this domain (it said no to a specific address,
+        # which a true catch-all server cannot do) -- that is real signal, not
+        # noise, and must not be treated the same as an unconfirmable one.
+        return entry["risky"] == entry["found"]
 
     def _note_domain_outcome(domain: str, found: bool, verdict: str = "") -> None:
         key = (domain or "").lower()
@@ -1148,6 +1170,14 @@ def run_batch(
                 "status": "skipped",
                 "batch_status": "skipped",
                 "skip_reason": "no_provider_coverage",
+                "domain": domain,
+                "provider_attempts": [],
+            }
+        if _domain_is_catchall(domain):
+            return idx, {
+                "status": "skipped",
+                "batch_status": "skipped",
+                "skip_reason": "catchall_domain",
                 "domain": domain,
                 "provider_attempts": [],
             }
@@ -1242,6 +1272,8 @@ def run_batch(
                 completed_in_chunk += 1
                 if result.get("skip_reason") == "no_provider_coverage":
                     skipped_no_coverage += 1
+                elif result.get("skip_reason") == "catchall_domain":
+                    skipped_catchall += 1
                 _lead_name, _lead_domain = row_fields(people[idx])[0], row_fields(people[idx])[1]
                 bucket = verdict_bucket(
                     result.get("validity"), result.get("email"),
@@ -1272,6 +1304,8 @@ def run_batch(
                         slowest_call_s=slowest_call_s,
                         domain_stats=dict(domain_stats),
                         skipped_no_coverage=skipped_no_coverage,
+                        skipped_catchall=skipped_catchall,
+                        catchall_threshold=skip_catchall_after,
                     )
         if credits_stop:
             _mark_credit_stop_remaining(pending_queue)

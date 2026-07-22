@@ -159,6 +159,8 @@ def print_progress(
     recent: Optional[list] = None,
     domain_stats: Optional[dict] = None,
     skipped_no_coverage: int = 0,
+    skipped_catchall: int = 0,
+    catchall_threshold: int = 0,
 ) -> None:
     """A rule between blocks of streamed per-lead lines -- not a dashboard.
 
@@ -181,6 +183,8 @@ def print_progress(
     parts.append(f"none {stats.get('not_found', 0)}")
     if skipped_no_coverage:
         parts.append(f"skipped {skipped_no_coverage}")
+    if skipped_catchall:
+        parts.append(f"catch-all skipped {skipped_catchall}")
     if stats.get("errors"):
         parts.append(f"errors {stats['errors']}")
     line = "  ".join(parts)
@@ -220,7 +224,17 @@ def print_progress(
                 if v.get(key):
                     bits.append(f"{key} {v[key]}")
             flag = ""
-            if v.get("found") and not v.get("valid"):
+            is_catchall = (
+                catchall_threshold > 0
+                and v.get("found", 0) >= catchall_threshold
+                and v.get("risky", 0) == v.get("found", 0)
+            )
+            if is_catchall:
+                # Supersedes "none confirmed" below: with skip_catchall_after
+                # engaged and the threshold crossed, this domain's remaining
+                # leads are actually being skipped, not merely worth a look.
+                flag = "   <- catch-all, skipping remainder"
+            elif v.get("found") and not v.get("valid"):
                 flag = "   <- none confirmed"
             elif v.get("tried", 0) >= 3 and not v.get("found"):
                 flag = "   <- no coverage"

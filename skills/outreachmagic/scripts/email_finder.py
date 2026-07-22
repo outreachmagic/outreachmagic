@@ -15,7 +15,8 @@ Usage:
 
 batch-find options:
     --workspace W --delay 8 --workers 1 --max 500 --provider trykitt|icypeas
-    --abandon-after N   stop calling a domain after N consecutive misses (default 0=off; trykitt/icypeas bill $0 for a miss, so this trades recall for wall-clock time, not cost)
+    --abandon-after N        stop calling a domain after N consecutive misses (default 0=off; trykitt/icypeas bill $0 for a miss, so this trades recall for wall-clock time, not cost)
+    --skip-catchall-after N  stop calling a domain after N found results are ALL risky/catch-all (default 0=off; unlike a miss, a catch-all find IS billed -- find_credits_used keys on whether an email came back, not its verdict)
     --output-base PATH --output-csv PATH --no-save --skip-om --dry-run --yes
 
 MillionVerifier (bulk email verification):
@@ -479,6 +480,12 @@ def _parse_batch_args(argv: list[str]) -> tuple[BatchOptions, str]:
             continue
         elif arg.startswith("--abandon-after="):
             opts.abandon_after = int(arg.split("=", 1)[1])
+        elif arg == "--skip-catchall-after" and i + 1 < len(argv):
+            opts.skip_catchall_after = int(argv[i + 1])
+            i += 2
+            continue
+        elif arg.startswith("--skip-catchall-after="):
+            opts.skip_catchall_after = int(arg.split("=", 1)[1])
         elif arg == "--output-base" and i + 1 < len(argv):
             opts.output_base = argv[i + 1]
             i += 2

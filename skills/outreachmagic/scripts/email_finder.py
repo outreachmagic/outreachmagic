@@ -15,7 +15,7 @@ Usage:
 
 batch-find options:
     --workspace W --delay 8 --workers 1 --max 500 --provider trykitt|icypeas
-    --abandon-after N   stop calling a domain after N consecutive misses (default 3, 0=off)
+    --abandon-after N   stop calling a domain after N consecutive misses (default 0=off; trykitt/icypeas bill $0 for a miss, so this trades recall for wall-clock time, not cost)
     --output-base PATH --output-csv PATH --no-save --skip-om --dry-run --yes
 
 MillionVerifier (bulk email verification):

@@ -7,6 +7,7 @@ Extracted from pipeline.py's "Database Operations" section.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from typing import Optional
 
@@ -427,6 +428,81 @@ def _collapse_domain_found_tags(conn: sqlite3.Connection) -> None:
         )
         conn.execute("DELETE FROM workspace_lead_tags WHERE id = ?", (row["id"],))
     conn.execute("INSERT INTO migration_flags (name) VALUES ('domain_found_tag_collapse')")
+
+
+def _reconcile_stale_domain_discovered_tags(conn: sqlite3.Connection) -> None:
+    """Retag domain_discovered where no domain actually backs it up.
+
+    domain_discovered means "a domain was found and attached for this
+    company" -- but the tag-collapse migration above (domain_found_tag_
+    collapse) rewrote it purely by STRING, from whatever domain_found_<domain>
+    tags predate it, without checking whether the current company record still
+    supports that claim. Those legacy tags came from the original, ungated
+    version of find-domains: no confidence floor at all, so it happily tagged
+    a company from a directory-site or wrong-address match with the same
+    domain_discovered later runs use to mean "trustworthy". A live production
+    example: RangeWater Residential's every domain_lookup observation, then
+    and now, was confidence 0.35 -- always below the 0.40 attach floor,
+    correctly tagged domain_low_confidence by every run of today's code -- but
+    also carried a fossil domain_discovered from before that floor existed.
+
+    A company genuinely mid-review (a real domain found, but parked behind a
+    pending merge because another company row already owns that identity) is
+    NOT touched: it has a company_identities row even though companies.domain
+    is empty, which is how it is told apart from a tag with nothing behind it
+    at all. Measured on one production workspace this way: 240 companies
+    matched "domain_discovered, no companies.domain" and 203 of them (85%)
+    were the legitimate pending-merge case; this migration only ever acts on
+    the other 15%.
+    """
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'domain_discovered_tag_reconcile'"
+    ).fetchone():
+        return
+    rows = conn.execute(
+        """SELECT t.id AS tag_id, t.workspace_id, t.lead_id, l.company_id
+           FROM workspace_lead_tags t
+           JOIN leads l ON l.id = t.lead_id
+           JOIN companies c ON c.id = l.company_id
+           WHERE t.tag = 'domain_discovered'
+             AND (c.domain IS NULL OR TRIM(c.domain) = '')
+             AND NOT EXISTS (
+                 SELECT 1 FROM company_identities ci
+                 WHERE ci.company_id = c.id AND ci.identity_type = 'domain'
+             )"""
+    ).fetchall()
+    for row in rows:
+        # Hardcoded rather than imported from domain_discovery.
+        # MIN_ATTACH_CONFIDENCE: this is reclassifying HISTORICAL observations
+        # written under whatever floor was in effect at the time (0.40 for
+        # every run this session), not re-scoring under whatever the constant
+        # happens to be on a future install where this migration first runs.
+        obs = conn.execute(
+            """SELECT o.metadata_json FROM lead_provider_observations o
+               JOIN leads l2 ON l2.id = o.lead_id
+               WHERE l2.company_id = ? AND o.kind = 'domain_lookup'
+               ORDER BY o.observed_at DESC LIMIT 1""",
+            (row["company_id"],),
+        ).fetchone()
+        replacement = None
+        if obs and obs["metadata_json"]:
+            try:
+                confidence = json.loads(obs["metadata_json"]).get("confidence")
+            except (ValueError, TypeError):
+                confidence = None
+            if isinstance(confidence, (int, float)) and confidence < 0.40:
+                replacement = "domain_low_confidence"
+        conn.execute("DELETE FROM workspace_lead_tags WHERE id = ?", (row["tag_id"],))
+        if replacement:
+            conn.execute(
+                """INSERT OR IGNORE INTO workspace_lead_tags (id, workspace_id, lead_id, tag)
+                   VALUES (?, ?, ?, ?)""",
+                (f"wlt_{row['workspace_id']}_{row['lead_id']}_domlow",
+                 row["workspace_id"], row["lead_id"], replacement),
+            )
+    conn.execute(
+        "INSERT INTO migration_flags (name) VALUES ('domain_discovered_tag_reconcile')"
+    )
 
 
 def _migrate_provider_observations(conn: sqlite3.Connection) -> None:
@@ -1533,6 +1609,11 @@ def migrate_db(conn=None):
     # Collapses per-domain domain_found_<domain> tags onto one flag. Runs
     # before ensure_outbox so the rewritten rows enqueue under the new trigger.
     _collapse_domain_found_tags(conn)
+
+    # Must run after the collapse above -- it retags a subset of exactly what
+    # that migration just produced -- and before ensure_outbox for the same
+    # reason: the rewritten rows need to enqueue under the new trigger.
+    _reconcile_stale_domain_discovered_tags(conn)
 
     # Must run after the uid columns above: the tombstone triggers read OLD.uid.
     ensure_outbox(conn)

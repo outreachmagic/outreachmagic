@@ -117,7 +117,12 @@ class BatchOptions:
     retry_errors: bool = False
     # Consecutive misses on one domain before the provider is treated as
     # having no coverage for it and its remaining leads are skipped. 0 = off.
-    abandon_after: int = 3
+    # 0 = never pre-emptively skip. trykitt and icypeas are pay-per-FIND (see
+    # credits.py: find_credits_used returns 0 for not_found) -- a domain that
+    # is 1/18 or 2/16 across real production data is not "no coverage", it is
+    # a low hit rate, and stopping after a handful of misses throws those hits
+    # away for a $ saving that does not exist on either current provider.
+    abandon_after: int = 0
 
 
 def build_import_profile(
@@ -1083,15 +1088,19 @@ def run_batch(
         api_providers = _api_providers_from_cfg(cfg, provider_names)
         return True
 
-    # Provider coverage is bimodal per domain, not uniform: measured over 342
-    # real leads, a domain either resolves almost every lead (voya.com 14/14,
-    # cortland.com 13/13, transwestern.com 17/18) or none at all
-    # (lincolnapts.com 0/29, ventronmanagement.com 0/15). The 0/29 cost 29
-    # calls to learn the same fact 29 times -- 58 of 342 calls in that run went
-    # to domains that never returned anything. After a few consecutive misses
-    # the domain is telling us the provider has no coverage for it, and every
-    # further lead there is a wasted credit.
-    abandon_after = max(int(getattr(opts, "abandon_after", 3) or 0), 0)
+    # Opt-in only (default 0 = disabled). The original version of this
+    # justified skipping on COST -- "wasted credit" -- which is wrong for both
+    # providers this gates: find_credits_used()/icypeas_credits_for_status()
+    # bill 0 for a not_found call. There is no $ saved by skipping.
+    #
+    # What abandoning actually trades is WALL-CLOCK TIME against RECALL, and
+    # that trade is not obviously worth it: measured on real production data,
+    # pegasusresidential.com was 1/18 and rampartnersllc.com was 2/16 -- a
+    # domain can have a real, low hit rate rather than "no coverage", and a
+    # 3-miss default silently discarded those hits for zero dollars saved. An
+    # operator who has a very large batch and independently knows some
+    # domains are genuinely dead can still opt in with --abandon-after N.
+    abandon_after = max(int(getattr(opts, "abandon_after", 0) or 0), 0)
     domain_misses: dict[str, int] = {}
     # Feeds the progress readout: tried/found per domain, and the last few
     # outcomes so the operator can see what is actually coming back.

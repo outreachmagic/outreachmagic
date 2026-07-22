@@ -261,3 +261,37 @@ def test_domain_block_shows_the_verdict_split_not_just_a_count(capsys):
     assert "cousins.com" in out and "valid 22" in out
     assert "none confirmed" in out          # all-catch-all domain is called out
     assert "no coverage" in out
+
+
+def test_default_never_abandons_a_domain():
+    """The default changed from 3 to 0 (disabled). trykitt/icypeas bill $0 for
+    a miss (credits.py: find_credits_used returns 0 when not found), so the
+    original justification -- 'wasted credit' -- was wrong for both providers
+    this gates. Real production data shows domains with a genuine low-but-
+    nonzero hit rate (pegasusresidential.com 1/18, rampartnersllc.com 2/16)
+    that a 3-miss default silently threw away for zero dollars saved."""
+    people = _people("lincolnapts.com", 29)
+    calls = []
+
+    def fake_find(cfg, *, full_name, domain, linkedin="", provider_names=None):
+        calls.append(domain)
+        return {"status": "not_found", "email": None, "provider": "trykitt",
+                "provider_attempts": []}
+
+    base = str(Path(tempfile.mkdtemp()) / f"run{next(_RUN_SEQ)}")
+    opts = batch_runner.BatchOptions(
+        workspace="w", workers=1, no_save=True, skip_om=True, yes=True,
+        max_leads=500, delay=0, progress_every=10_000, output_base=base,
+        # abandon_after intentionally omitted -- exercising the dataclass default.
+    )
+    assert opts.abandon_after == 0
+
+    with mock.patch.object(batch_runner, "run_find_with_fallback", side_effect=fake_find), \
+         mock.patch.object(batch_runner, "load_people_json", return_value=people), \
+         mock.patch.object(batch_runner, "prompt_batch_provider_plan", return_value=["trykitt"]), \
+         mock.patch.object(batch_runner, "bulk_dedup_map", return_value=({}, False)), \
+         mock.patch.object(batch_runner, "_mid_batch_credit_stop", return_value=False):
+        batch_runner.run_batch("in.json", {}, None, opts, skill_dir=SCRIPTS,
+                               normalize_linkedin_fn=lambda s: s,
+                               key_status_fn=lambda *a, **k: {})
+    assert len(calls) == 29, "every lead should be tried; nothing pre-emptively skipped"

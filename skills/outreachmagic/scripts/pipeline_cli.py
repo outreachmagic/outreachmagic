@@ -1585,8 +1585,61 @@ def main():
     q_assign.add_argument("--id", required=True, help="Queue item id")
     q_assign.add_argument("--workspace", required=True, help="Workspace slug")
     q_replay = q_sub.add_parser("replay", help="Replay pending items locally after campaign-map rules")
-    q_replay.add_argument("--workspace")
+    q_replay.add_argument(
+        "--workspace",
+        help="FILTER: only replay rows whose campaign resolves to this workspace via campaign_map rules. "
+             "Use with --force to instead force-assign every row (legacy behavior).",
+    )
     q_replay.add_argument("--limit", type=int, default=100)
+    q_replay.add_argument(
+        "--campaign",
+        help="LIKE pattern applied to campaign_name_normalized (case-insensitive). "
+             "e.g. --campaign 'storefront%%'",
+    )
+    q_replay.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print per-campaign preview without writing anything",
+    )
+    q_replay.add_argument(
+        "--force",
+        action="store_true",
+        help="Force-assign every pending row to --workspace, bypassing campaign_map rules. "
+             "Requires --workspace. Use with care — this is the pre-fix behavior.",
+    )
+
+    q_audit = q_sub.add_parser(
+        "audit",
+        help="Read-only: list campaigns attached to a workspace and mark each match/mismatch/unmapped",
+    )
+    q_audit.add_argument("--workspace", required=True, help="Workspace slug to audit")
+    q_audit.add_argument("--json", action="store_true")
+
+    q_req = q_sub.add_parser(
+        "requarantine",
+        help="Move already-assigned events back to quarantine pending (undoes bad workspace assignments)",
+    )
+    q_req.add_argument("--workspace", required=True, help="Workspace slug the events are currently in")
+    q_req.add_argument("--campaign-id", type=int, help="Local campaigns.id to move")
+    q_req.add_argument(
+        "--campaign-name",
+        help="SQL LIKE pattern on campaigns.name (case-insensitive). e.g. 'storefront%%'",
+    )
+    q_req.add_argument("--event-id", type=int, help="Single events.id")
+    q_req.add_argument(
+        "--event-ids",
+        help="Comma-separated events.id list, e.g. 12,45,88",
+    )
+    q_req.add_argument(
+        "--event-ids-file",
+        help="Path to a file containing one events.id per line",
+    )
+    q_req.add_argument("--reason", help="Free-text reason recorded on the requarantined queue rows")
+    q_req.add_argument(
+        "--yes",
+        action="store_true",
+        help="Actually execute. Without --yes the command runs as --dry-run.",
+    )
 
     reprocess_p = sub.add_parser("reprocess", help="Re-apply current extractors to ingested data")
     reprocess_p.add_argument(
@@ -4009,7 +4062,63 @@ def main():
         elif args.quarantine_cmd == "assign":
             print(json.dumps(_pipeline.assign_quarantine(args.id, args.workspace), indent=2))
         elif args.quarantine_cmd == "replay":
-            print(json.dumps(_pipeline.replay_pending_quarantine(args.workspace, args.limit), indent=2))
+            print(json.dumps(
+                _pipeline.replay_pending_quarantine(
+                    args.workspace,
+                    args.limit,
+                    campaign_filter=getattr(args, "campaign", None),
+                    dry_run=getattr(args, "dry_run", False),
+                    force=getattr(args, "force", False),
+                ),
+                indent=2,
+            ))
+        elif args.quarantine_cmd == "audit":
+            result = _pipeline.audit_workspace_campaigns(args.workspace)
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2))
+            else:
+                if result.get("status") != "ok":
+                    print(f"Error: {result.get('error')}")
+                    sys.exit(1)
+                summary = result["summary"]
+                print(
+                    f"Workspace '{args.workspace}': {summary['total']} campaign(s) attached — "
+                    f"{summary['match']} ✅ match, {summary['mismatch']} ❌ mismatch, "
+                    f"{summary['unmapped']} ❌ unmapped"
+                )
+                for c in result["campaigns"]:
+                    marker = {
+                        "match": "✅",
+                        "mismatch": "❌ mismatch",
+                        "unmapped": "❌ unmapped",
+                    }[c["status"]]
+                    resolved = c.get("resolved_workspace_slug") or "—"
+                    print(
+                        f"  [{c['campaign_id']:>4}] {c['campaign_name']}  "
+                        f"({c['event_count']} events, {c['lead_count']} leads)  "
+                        f"→ resolves to '{resolved}'  {marker}"
+                    )
+        elif args.quarantine_cmd == "requarantine":
+            event_ids: list[int] = []
+            if getattr(args, "event_id", None):
+                event_ids.append(int(args.event_id))
+            if getattr(args, "event_ids", None):
+                event_ids.extend(int(x) for x in args.event_ids.split(",") if x.strip())
+            if getattr(args, "event_ids_file", None):
+                with open(args.event_ids_file, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if line:
+                            event_ids.append(int(line))
+            result = _pipeline.requarantine_events(
+                workspace_slug=args.workspace,
+                campaign_id=getattr(args, "campaign_id", None),
+                campaign_name_like=getattr(args, "campaign_name", None),
+                event_ids=event_ids or None,
+                reason=getattr(args, "reason", None),
+                dry_run=not getattr(args, "yes", False),
+            )
+            print(json.dumps(result, indent=2))
         else:
             status = getattr(args, "status", "pending") or "pending"
             _pipeline.print_freshness_stderr(_pipeline.get_last_pull())

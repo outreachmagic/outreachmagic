@@ -2644,6 +2644,313 @@ def assign_quarantine(queue_id: str, workspace_slug: str) -> dict:
     }
 
 
+def audit_workspace_campaigns(workspace_slug: str) -> dict:
+    """List every campaign whose events are attached to leads in this workspace,
+    marking each with campaign-map matching status.
+
+    ✅ matches means: the campaign's normalized name resolves via active
+    campaign_workspace_map rules to *this same* workspace.
+    ❌ mismatch means: it resolves to a different workspace.
+    ❌ unmapped means: no rule matches this campaign name/id.
+    """
+    from workspace_routing import (
+        CampaignContext,
+        _campaign_name_matches_rule,
+        extract_campaign_context,
+    )
+
+    conn = get_conn()
+    ws = conn.execute(
+        "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
+        (DEFAULT_ORG_ID, workspace_slug),
+    ).fetchone()
+    if not ws:
+        conn.close()
+        return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
+    ws_id = ws["id"]
+
+    # Campaigns actually attached to leads in this workspace via events.
+    rows = conn.execute(
+        """SELECT c.id AS campaign_id,
+                  c.name AS campaign_name,
+                  COUNT(DISTINCT e.id) AS event_count,
+                  COUNT(DISTINCT e.lead_id) AS lead_count
+             FROM events e
+             JOIN campaigns c ON c.id = e.campaign_id
+             JOIN workspace_leads wl
+                  ON wl.lead_id = e.lead_id AND wl.workspace_id = ?
+            GROUP BY c.id, c.name
+            ORDER BY event_count DESC""",
+        (ws_id,),
+    ).fetchall()
+
+    rules = conn.execute(
+        """SELECT id, workspace_id, match_strategy,
+                  campaign_platform_id, campaign_name_normalized, source_platform
+             FROM campaign_workspace_map
+            WHERE org_id = ? AND is_active = 1
+            ORDER BY priority ASC""",
+        (DEFAULT_ORG_ID,),
+    ).fetchall()
+
+    ws_slug_by_id = {
+        r["id"]: r["slug"]
+        for r in conn.execute(
+            "SELECT id, slug FROM workspaces WHERE org_id = ?", (DEFAULT_ORG_ID,)
+        ).fetchall()
+    }
+    conn.close()
+
+    def _resolve_for_name(name: Optional[str]) -> Optional[str]:
+        norm = (name or "").strip().lower()
+        for rule in rules:
+            strategy = rule["match_strategy"]
+            if strategy == "name_exact" and rule["campaign_name_normalized"] == norm:
+                return rule["workspace_id"]
+            if strategy in ("rule_contains", "rule_prefix", "rule_regex"):
+                pattern = rule["campaign_name_normalized"] or ""
+                if _campaign_name_matches_rule(strategy, pattern, norm):
+                    return rule["workspace_id"]
+        return None
+
+    out = []
+    for row in rows:
+        resolved_ws = _resolve_for_name(row["campaign_name"])
+        if resolved_ws is None:
+            status = "unmapped"
+        elif resolved_ws == ws_id:
+            status = "match"
+        else:
+            status = "mismatch"
+        out.append({
+            "campaign_id": row["campaign_id"],
+            "campaign_name": row["campaign_name"],
+            "event_count": row["event_count"],
+            "lead_count": row["lead_count"],
+            "resolved_workspace_slug": ws_slug_by_id.get(resolved_ws),
+            "status": status,
+        })
+
+    return {
+        "status": "ok",
+        "workspace": workspace_slug,
+        "workspace_id": ws_id,
+        "campaigns": out,
+        "summary": {
+            "total": len(out),
+            "match": sum(1 for c in out if c["status"] == "match"),
+            "mismatch": sum(1 for c in out if c["status"] == "mismatch"),
+            "unmapped": sum(1 for c in out if c["status"] == "unmapped"),
+        },
+    }
+
+
+def requarantine_events(
+    workspace_slug: str,
+    *,
+    campaign_id: Optional[int] = None,
+    campaign_name_like: Optional[str] = None,
+    event_ids: Optional[list[int]] = None,
+    reason: Optional[str] = None,
+    dry_run: bool = True,
+) -> dict:
+    """Move already-assigned events back to quarantine `pending`.
+
+    Selects events attached (via workspace_leads) to `workspace_slug` matching
+    the given selector(s). For each event:
+      - detach lead from workspace (delete workspace_lead_events for this event
+        in this workspace; delete workspace_leads if no more workspace events
+        remain for this lead in this workspace)
+      - flip the source quarantine row (matched via events.relay_id ==
+        unmapped_campaign_queue.external_event_id) back to `status='pending'`
+      - delete the events row and its relay_ingested marker so a subsequent
+        `quarantine replay` can re-ingest cleanly.
+
+    Events with no matching quarantine row (i.e. not ingested via replay)
+    are skipped and reported under `unrequarantinable` — those need manual
+    handling because we don't have the original relay payload.
+    """
+    selectors = [s for s in (campaign_id, campaign_name_like, event_ids) if s]
+    if not selectors:
+        return {
+            "status": "error",
+            "error": "at least one of --campaign-id, --campaign-name, --event-id(s) is required",
+        }
+
+    conn = get_conn()
+    ws = conn.execute(
+        "SELECT id FROM workspaces WHERE org_id = ? AND slug = ?",
+        (DEFAULT_ORG_ID, workspace_slug),
+    ).fetchone()
+    if not ws:
+        conn.close()
+        return {"status": "error", "error": f"workspace not found: {workspace_slug}"}
+    ws_id = ws["id"]
+
+    where = []
+    params: list = []
+    if campaign_id is not None:
+        where.append("e.campaign_id = ?")
+        params.append(campaign_id)
+    if campaign_name_like:
+        where.append("LOWER(c.name) LIKE ?")
+        params.append(campaign_name_like.lower())
+    if event_ids:
+        placeholders = ",".join("?" for _ in event_ids)
+        where.append(f"e.id IN ({placeholders})")
+        params.extend(event_ids)
+
+    extra_where = (" AND " + " AND ".join(where)) if where else ""
+    sql = f"""
+        SELECT e.id AS event_id, e.lead_id, e.relay_id, e.campaign_id,
+               c.name AS campaign_name
+          FROM events e
+          LEFT JOIN campaigns c ON c.id = e.campaign_id
+          JOIN workspace_leads wl
+               ON wl.lead_id = e.lead_id AND wl.workspace_id = ?
+         WHERE 1=1{extra_where}
+    """
+    rows = conn.execute(sql, [ws_id] + params).fetchall()
+
+    now = datetime.now(timezone.utc).isoformat()
+    preview: list[dict] = []
+    unrequarantinable: list[dict] = []
+    would_requarantine = 0
+    would_orphan_leads = 0
+
+    lead_event_counts: dict[int, int] = {}
+
+    for row in rows:
+        event_id = row["event_id"]
+        lead_id = row["lead_id"]
+        relay_id = row["relay_id"]
+
+        queue_row = None
+        if relay_id is not None:
+            queue_row = conn.execute(
+                """SELECT id FROM unmapped_campaign_queue
+                    WHERE org_id = ? AND external_event_id = ?
+                    ORDER BY received_at DESC LIMIT 1""",
+                (DEFAULT_ORG_ID, str(relay_id)),
+            ).fetchone()
+
+        entry = {
+            "event_id": event_id,
+            "lead_id": lead_id,
+            "relay_id": relay_id,
+            "campaign_id": row["campaign_id"],
+            "campaign_name": row["campaign_name"],
+            "queue_id": queue_row["id"] if queue_row else None,
+        }
+
+        if not queue_row:
+            unrequarantinable.append(entry)
+            continue
+
+        preview.append(entry)
+        would_requarantine += 1
+        lead_event_counts[lead_id] = lead_event_counts.get(lead_id, 0) + 1
+
+    for lead_id, removing in lead_event_counts.items():
+        total = conn.execute(
+            "SELECT COUNT(*) AS n FROM workspace_lead_events WHERE workspace_id = ? AND lead_id = ?",
+            (ws_id, lead_id),
+        ).fetchone()["n"]
+        if total - removing <= 0:
+            would_orphan_leads += 1
+
+    if dry_run:
+        conn.close()
+        return {
+            "status": "ok",
+            "dry_run": True,
+            "workspace": workspace_slug,
+            "would_requarantine": would_requarantine,
+            "would_orphan_leads": would_orphan_leads,
+            "unrequarantinable_count": len(unrequarantinable),
+            "preview": preview,
+            "unrequarantinable": unrequarantinable,
+        }
+
+    from relay_ingest import relay_dedupe_key, relay_dedupe_hash
+
+    requarantined = 0
+    orphaned_leads = 0
+    for entry in preview:
+        event_id = entry["event_id"]
+        lead_id = entry["lead_id"]
+        queue_id = entry["queue_id"]
+
+        payload_row = conn.execute(
+            "SELECT payload_json FROM unmapped_campaign_queue WHERE id = ?",
+            (queue_id,),
+        ).fetchone()
+
+        # 1. Flip queue row back to pending, stamped with reason.
+        conn.execute(
+            """UPDATE unmapped_campaign_queue
+                  SET status = 'pending',
+                      resolved_at = NULL,
+                      assigned_workspace = NULL,
+                      reason = COALESCE(?, reason)
+                WHERE id = ?""",
+            (
+                f"requarantined_from_{workspace_slug}: {reason}" if reason else None,
+                queue_id,
+            ),
+        )
+
+        # 2. Detach event from workspace.
+        conn.execute(
+            "DELETE FROM workspace_lead_events WHERE workspace_id = ? AND event_id = ?",
+            (ws_id, event_id),
+        )
+
+        # 3. Remove the exact relay_ingested marker so ingest_relay_event's
+        #    dedup check on the queue row's payload will pass through cleanly.
+        if payload_row and payload_row["payload_json"]:
+            try:
+                original = json.loads(payload_row["payload_json"])
+                dhash = relay_dedupe_hash(relay_dedupe_key(original))
+                conn.execute(
+                    "DELETE FROM relay_ingested WHERE dedupe_hash = ?",
+                    (dhash,),
+                )
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass
+
+        # 4. Delete the events row itself so replay's re-ingest recreates it.
+        conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+
+        requarantined += 1
+
+    # 5. Clean up orphaned workspace_leads rows.
+    for lead_id in lead_event_counts:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS n FROM workspace_lead_events WHERE workspace_id = ? AND lead_id = ?",
+            (ws_id, lead_id),
+        ).fetchone()["n"]
+        if remaining == 0:
+            conn.execute(
+                "DELETE FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
+                (ws_id, lead_id),
+            )
+            orphaned_leads += 1
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "ok",
+        "dry_run": False,
+        "workspace": workspace_slug,
+        "requarantined": requarantined,
+        "orphaned_leads_detached": orphaned_leads,
+        "unrequarantinable_count": len(unrequarantinable),
+        "unrequarantinable": unrequarantinable,
+    }
+
+
 def build_quarantine_resolution_sync_payload(row: dict) -> Optional[dict]:
     """The quarantine-resolution relay entry for one resolved queue row, or None if unpushable.
 

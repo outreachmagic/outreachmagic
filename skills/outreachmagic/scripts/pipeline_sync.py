@@ -206,43 +206,149 @@ def _replay_quarantine_row(queue_id: str, workspace_id: str) -> dict:
     return {"status": "ok", "queue_id": queue_id, "lead_id": lead_id}
 
 
-def replay_pending_quarantine(workspace_slug: Optional[str] = None, limit: int = 100) -> dict:
+def replay_pending_quarantine(
+    workspace_slug: Optional[str] = None,
+    limit: int = 100,
+    *,
+    campaign_filter: Optional[str] = None,
+    dry_run: bool = False,
+    force: bool = False,
+) -> dict:
+    """Replay pending quarantine rows through the routing rules.
+
+    workspace_slug (default): FILTER — only rows whose campaign resolves
+        (via campaign_workspace_map) to this workspace are replayed. Others
+        are skipped with reason='workspace_mismatch' or 'unmapped'.
+    workspace_slug + force=True: FORCE — assign every processed row to this
+        workspace regardless of routing rules. Preserves the old behavior
+        as an opt-in escape hatch.
+    campaign_filter: SQL LIKE pattern applied to campaign_name_normalized
+        (case-insensitive via COLLATE NOCASE). Narrows the candidate set
+        before routing.
+    dry_run: no writes; return the per-campaign preview instead.
+    """
     from pipeline import list_quarantine
 
+    force_ws_id: Optional[str] = None
+    if workspace_slug:
+        slug_cache = qres.WorkspaceSlugCache()
+        force_ws_id = slug_cache.workspace_id(workspace_slug)
+        if not force_ws_id:
+            return {
+                "status": "error",
+                "error": f"workspace not found: {workspace_slug}",
+            }
+
+    if force and not workspace_slug:
+        return {
+            "status": "error",
+            "error": "--force requires --workspace",
+        }
+
     pending = list_quarantine(status="pending", limit=limit)
+
+    if campaign_filter:
+        pattern = campaign_filter.lower()
+
+        def _matches(item: dict) -> bool:
+            name = (item.get("campaign_name_normalized") or "").lower()
+            if "%" in pattern or "_" in pattern:
+                import fnmatch
+                return fnmatch.fnmatchcase(name, pattern.replace("%", "*").replace("_", "?"))
+            return pattern in name
+
+        pending = [i for i in pending if _matches(i)]
+
     replayed = skipped = 0
-    slug_cache = qres.WorkspaceSlugCache()
+    by_campaign: dict[tuple[str, str], dict] = {}
+
+    def _bucket(item: dict) -> tuple[str, str]:
+        return (
+            item.get("source_platform") or "unknown",
+            item.get("campaign_name_normalized") or item.get("campaign_platform_id") or "unknown",
+        )
+
     for item in pending:
-        if workspace_slug:
-            ws_id = slug_cache.workspace_id(workspace_slug)
+        conn = get_conn()
+        campaign_name = item.get("campaign_name_raw") or item.get("campaign_name_normalized")
+        if not campaign_name and not item.get("campaign_platform_id"):
+            campaign_name = "unknown"
+        ctx = extract_campaign_context(
+            item["source_platform"],
+            {},
+            {
+                "campaign_id": item.get("campaign_platform_id"),
+                "campaign_name": campaign_name,
+            },
+        )
+        routing = resolve_workspace(conn, DEFAULT_ORG_ID, ctx)
+        conn.close()
+
+        resolved_ws_id = routing.workspace_id if routing else None
+        action: str
+        target_ws_id: Optional[str]
+
+        if force and force_ws_id:
+            target_ws_id = force_ws_id
+            action = "force_assign"
+        elif workspace_slug:
+            if resolved_ws_id == force_ws_id:
+                target_ws_id = resolved_ws_id
+                action = "replay"
+            elif resolved_ws_id is None:
+                target_ws_id = None
+                action = "skip_unmapped"
+            else:
+                target_ws_id = None
+                action = "skip_workspace_mismatch"
         else:
-            conn = get_conn()
-            campaign_name = item.get("campaign_name_raw") or item.get("campaign_name_normalized")
-            if not campaign_name and not item.get("campaign_platform_id"):
-                campaign_name = "unknown"
-            ctx = extract_campaign_context(
-                item["source_platform"],
-                {},
-                {
-                    "campaign_id": item.get("campaign_platform_id"),
-                    "campaign_name": campaign_name,
-                },
-            )
-            routing = resolve_workspace(conn, DEFAULT_ORG_ID, ctx)
-            conn.close()
-            if not routing:
-                skipped += 1
-                continue
-            ws_id = routing.workspace_id
-        if not ws_id:
+            if resolved_ws_id is None:
+                target_ws_id = None
+                action = "skip_unmapped"
+            else:
+                target_ws_id = resolved_ws_id
+                action = "replay"
+
+        key = _bucket(item)
+        bucket = by_campaign.setdefault(
+            key,
+            {
+                "source_platform": key[0],
+                "campaign": key[1],
+                "resolved_workspace_id": resolved_ws_id,
+                "replayed": 0,
+                "skipped": 0,
+                "action": action,
+            },
+        )
+
+        if target_ws_id is None:
             skipped += 1
+            bucket["skipped"] += 1
             continue
-        r = _replay_quarantine_row(item["id"], ws_id)
+
+        if dry_run:
+            bucket["replayed"] += 1
+            replayed += 1
+            continue
+
+        r = _replay_quarantine_row(item["id"], target_ws_id)
         if r.get("status") == "ok":
             replayed += 1
+            bucket["replayed"] += 1
         else:
             skipped += 1
-    return {"replayed": replayed, "skipped": skipped}
+            bucket["skipped"] += 1
+
+    return {
+        "replayed": replayed,
+        "skipped": skipped,
+        "dry_run": dry_run,
+        "workspace_filter": workspace_slug,
+        "campaign_filter": campaign_filter,
+        "force": force,
+        "by_campaign": list(by_campaign.values()),
+    }
 
 
 # Relay ingest lives in relay_ingest.py (imported above).

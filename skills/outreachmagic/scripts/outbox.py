@@ -123,14 +123,79 @@ def drop_clean(
         )
 
 
+LEGACY_SHADOW_ENTITY_TYPES = ("lead_core", "lead_workspace", "company")
+
+
+def legacy_shadow_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """Legacy natural-key sync_shadow rows for entity types the relay keys by
+    uid only. Pull seeds shadow under whatever entity_key the relay event
+    carries, which can still be a pre-migration natural key; push always
+    writes uid: keys. Nothing prunes the legacy side, so these rows just
+    accumulate as orphaned local metadata that inflates sync_shadow totals
+    without ever reflecting what the relay actually holds.
+    """
+    rows = conn.execute(
+        "SELECT entity_type, COUNT(*) AS n FROM sync_shadow "
+        "WHERE entity_type IN (?, ?, ?) AND entity_key NOT LIKE 'uid:%' "
+        "GROUP BY entity_type",
+        LEGACY_SHADOW_ENTITY_TYPES,
+    ).fetchall()
+    return {r["entity_type"]: r["n"] for r in rows}
+
+
+def prune_legacy_shadow(conn: sqlite3.Connection, *, dry_run: bool = True) -> dict:
+    """Preview or delete legacy-key sync_shadow rows for uid-migrated entity
+    types. D1 is 100% uid-keyed for leads/companies, so a legacy-key shadow
+    row never matches a real relay row -- deleting it can't make a synced
+    entity look unsynced.
+    """
+    counts = legacy_shadow_counts(conn)
+    total = sum(counts.values())
+    if not dry_run and total:
+        conn.execute(
+            "DELETE FROM sync_shadow WHERE entity_type IN (?, ?, ?) "
+            "AND entity_key NOT LIKE 'uid:%'",
+            LEGACY_SHADOW_ENTITY_TYPES,
+        )
+        conn.commit()
+    return {"dry_run": dry_run, "by_type": counts, "total": total}
+
+
 def record_failure(
-    conn: sqlite3.Connection, entity_type: str, entity_ids: Iterable[str], error: str
+    conn: sqlite3.Connection,
+    entity_type: str,
+    entity_ids: Iterable[str],
+    error: str,
+    *,
+    op: str = "upsert",
 ) -> None:
     """Backoff: the row stays dirty, but stops being retried on every pass."""
     for entity_id in entity_ids:
         conn.execute(
             "UPDATE outbox SET attempts = attempts + 1, last_error = ?, "
             "dirty_at = datetime('now', '+' || MIN(POWER(2, attempts + 1), 60) || ' minutes') "
-            "WHERE entity_type = ? AND entity_id = ? AND op = 'upsert'",
-            (error[:500], entity_type, entity_id),
+            "WHERE entity_type = ? AND entity_id = ? AND op = ?",
+            (error[:500], entity_type, entity_id, op),
+        )
+
+
+def record_deleted(
+    conn: sqlite3.Connection,
+    entity_type: str,
+    records: Iterable[tuple[str, str, Optional[str]]],
+) -> None:
+    """After a relay delete lands: drop the outbox tombstone, and any shadow
+    row for the same key -- a deleted entity has no content for a future
+    push to compare against, so a lingering shadow row is now stale.
+
+    records: (entity_id, entity_key, workspace_slug)
+    """
+    for entity_id, entity_key, ws_slug in records:
+        conn.execute(
+            "DELETE FROM outbox WHERE entity_type = ? AND entity_id = ? AND op = 'delete'",
+            (entity_type, entity_id),
+        )
+        conn.execute(
+            "DELETE FROM sync_shadow WHERE entity_type = ? AND entity_key = ? AND workspace_slug = ?",
+            (entity_type, entity_key, ws_slug or ""),
         )

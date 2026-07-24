@@ -14,6 +14,7 @@ from typing import Any
 
 import agent_secrets_cloud
 import db_health
+import lead_actions
 import pipeline_dedup
 import pipeline_lead_review
 import query_cli
@@ -875,6 +876,10 @@ def main():
 
     whoami_p = sub.add_parser("whoami", help="Show connected account email, org, and plan")
     whoami_p.add_argument("--json", action="store_true", help="JSON output for agents")
+    dash_p = sub.add_parser("dashboard", help="Serve the local web dashboard (default http://127.0.0.1:8765)")
+    dash_p.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1; no auth — keep it loopback)")
+    dash_p.add_argument("--port", type=int, default=8765, help="Port (default 8765)")
+    dash_p.add_argument("--no-browser", action="store_true", help="Don't open a browser tab on start")
     sync_p = sub.add_parser("sync", help="Push pending workspaces and routing rules to the webapp")
     sync_p.add_argument("--status", action="store_true", help="Show what needs syncing without pushing")
     sync_p.add_argument("--json", action="store_true", help="JSON-only output (use with --status)")
@@ -1727,6 +1732,26 @@ def main():
     outbox_p.add_argument("--dry-run", action="store_true", help="Show counts, write nothing")
     outbox_p.add_argument("--json", action="store_true")
 
+    shadow_p = sub.add_parser(
+        "shadow", help="sync_shadow hygiene: legacy natural-key rows vs uid: rows"
+    )
+    shadow_p.add_argument(
+        "--prune-legacy",
+        action="store_true",
+        help="Delete legacy natural-key sync_shadow rows for lead_core/lead_workspace/"
+             "company. D1 is uid-only for these types, so legacy shadow rows are "
+             "orphaned local metadata, not a real parity signal.",
+    )
+    shadow_p.add_argument("--dry-run", action="store_true", help="Preview counts, write nothing")
+    shadow_p.add_argument("--json", action="store_true")
+
+    sync_health_p = sub.add_parser(
+        "sync-health",
+        help="Local sync health in one screen: per-entity local count, outbox "
+             "backlog, legacy shadow rows",
+    )
+    sync_health_p.add_argument("--json", action="store_true")
+
     junk_p = sub.add_parser(
         "cleanup-junk-leads",
         help="Stage 9: quarantine + delete the weak-identity junk leads. Destructive.",
@@ -1923,6 +1948,13 @@ def main():
             print(f"  {key:16} → {paths[key]}")
         print()
         print("Next: ask Outreach Magic to connect (login step).")
+        return
+
+    if args.command == "dashboard":
+        import dashboard_server
+
+        dashboard_server.run(
+            host=args.host, port=args.port, open_browser=not args.no_browser)
         return
 
     # Commands that only talk to the app API (no local DB required)
@@ -3044,123 +3076,31 @@ def main():
             print(json.dumps(result, indent=2))
     elif args.command == "update-stage":
         ws_slug = getattr(args, "workspace", None)
-        conn = _pipeline.get_conn()
-        routing_config = _pipeline.get_org_routing_config(conn, _pipeline.DEFAULT_ORG_ID)
-        ws_row = None
-        if routing_config.mode == _pipeline.WORKSPACE_ROUTING_MULTI:
-            if not ws_slug:
-                conn.close()
-                print(json.dumps({"error": "Multi-workspace mode: --workspace is required for update-stage"}))
-                sys.exit(1)
-            ws_row = _pipeline.resolve_workspace_identity(conn, ws_slug)
-            if not ws_row:
-                conn.close()
-                print(json.dumps({"error": f"workspace not found: {ws_slug}"}))
-                sys.exit(1)
-        elif ws_slug:
-            ws_row = _pipeline.resolve_workspace_identity(conn, ws_slug)
-        conn.close()
-
-        _pipeline.update_lead_stage(args.id, args.stage, args.next_action)
-
-        result = {"status": "updated", "id": args.id, "stage": args.stage}
-        if ws_row:
-            conn = _pipeline.get_conn()
-            ws_lead_id = _pipeline.upsert_workspace_lead(
-                conn, _pipeline.DEFAULT_ORG_ID, ws_row["id"], args.id, status=args.stage,
-                current_status_label=getattr(args, "label", None),
-                current_status_sentiment=getattr(args, "sentiment", None))
-            stage_ts = datetime.now(timezone.utc).isoformat()
-            update_sets = ["status = ?", "stage_entered_at = ?"]
-            update_params = [args.stage, stage_ts]
-            sentiment_val = getattr(args, "sentiment", None)
-            label_val = getattr(args, "label", None)
-            if sentiment_val:
-                update_sets.append("current_status_sentiment = ?")
-                update_params.append(sentiment_val)
-            if label_val:
-                update_sets.append("current_status_label = ?")
-                update_params.append(label_val)
-            update_params.append(ws_lead_id)
-            conn.execute(
-                f"UPDATE workspace_leads SET {', '.join(update_sets)} WHERE id = ?",
-                update_params)
-            conn.commit()
-            conn.close()
-            result["workspace"] = ws_row["slug"]
-
-        # Log an event for the stage change
-        event_metadata = {
-            "lead_status_raw": args.stage,
-            "lead_status_display": args.stage.replace("_", " "),
-        }
-        if getattr(args, "sentiment", None):
-            event_metadata["lead_status_sentiment"] = args.sentiment
-        if getattr(args, "label", None):
-            event_metadata["lead_status_display"] = args.label
-        _pipeline.log_event(
-            lead_id=args.id,
-            event_type="lead_status_updated",
-            direction="inbound",
-            metadata=event_metadata,
-        )
-
+        try:
+            result = lead_actions.change_stage_scoped(
+                args.id, args.stage,
+                workspace_slug=ws_slug,
+                label=getattr(args, "label", None),
+                sentiment=getattr(args, "sentiment", None),
+                next_action=args.next_action)
+        except lead_actions.WorkspaceResolutionError as exc:
+            print(json.dumps({"error": str(exc)}))
+            sys.exit(1)
         print(json.dumps(result))
         if getattr(args, "crm_sync", False) and ws_slug:
             _maybe_trigger_crm_sync(lead_id=args.id, stage=args.stage, workspace_slug=ws_slug)
     elif args.command == "log-event":
         ws_slug = getattr(args, "workspace", None)
-        conn = _pipeline.get_conn()
-        routing_config = _pipeline.get_org_routing_config(conn, _pipeline.DEFAULT_ORG_ID)
-        ws_row = None
-        if routing_config.mode == _pipeline.WORKSPACE_ROUTING_MULTI:
-            if not ws_slug:
-                conn.close()
-                print(json.dumps({"error": "Multi-workspace mode: --workspace is required for log-event"}))
-                sys.exit(1)
-            ws_row = _pipeline.resolve_workspace_identity(conn, ws_slug)
-            if not ws_row:
-                conn.close()
-                print(json.dumps({"error": f"workspace not found: {ws_slug}"}))
-                sys.exit(1)
-        elif ws_slug:
-            ws_row = _pipeline.resolve_workspace_identity(conn, ws_slug)
-        conn.close()
-
         metadata = json.loads(args.metadata) if getattr(args, "metadata", None) else None
-        logged_event_id = _pipeline.log_event(
-                  lead_id=args.lead_id, event_type=args.event_type, direction=args.direction,
-                  channel=args.channel, subject=args.subject, body_preview=args.body,
-                  metadata=metadata)
-
-        result = {"status": "logged", "lead_id": args.lead_id}
-        if ws_row:
-            conn = _pipeline.get_conn()
-            status_defaults = {
-                "email_sent": "contacted",
-                "linkedin_connect": "contacted",
-                "linkedin_message": "contacted",
-                "email_reply": "replied",
-                "linkedin_reply": "replied",
-                "linkedin_connection_accepted": "replied",
-                "meeting_booked": "scheduled",
-            }
-            initial_status = status_defaults.get(args.event_type, "prospecting")
-            _pipeline.upsert_workspace_lead(
-                conn, _pipeline.DEFAULT_ORG_ID, ws_row["id"], args.lead_id,
-                status=initial_status)
-            idem_key = f"agent_cli_{args.lead_id}_{args.event_type}_{datetime.now(timezone.utc).isoformat()}"
-            # The subject/body/channel written just above by log_event are the
-            # record; this row only indexes it into the workspace.
-            _pipeline.append_workspace_event(
-                conn, _pipeline.DEFAULT_ORG_ID, ws_row["id"], args.lead_id,
-                event_id=logged_event_id,
-                event_type=args.event_type,
-                event_at=_pipeline.utc_now_for_storage(),
-                idempotency_key=idem_key)
-            conn.commit()
-            conn.close()
-            result["workspace"] = ws_row["slug"]
+        try:
+            result = lead_actions.log_event_scoped(
+                args.lead_id, args.event_type,
+                direction=args.direction, channel=args.channel,
+                subject=args.subject, body=args.body,
+                metadata=metadata, workspace_slug=ws_slug)
+        except lead_actions.WorkspaceResolutionError as exc:
+            print(json.dumps({"error": str(exc)}))
+            sys.exit(1)
         print(json.dumps(result))
         if getattr(args, "crm_sync", False) and ws_slug:
             _maybe_trigger_crm_sync(lead_id=args.lead_id, workspace_slug=ws_slug)
@@ -4262,6 +4202,61 @@ def main():
                 for k, n in sorted(counts.items()):
                     print(f"  {k:24} {n:>9,}")
                 print(f"sync_shadow rows: {shadow:,}")
+
+    elif args.command == "shadow":
+        import outbox as _outbox
+        from db_conn import get_conn as _get_conn
+
+        c = _get_conn()
+        try:
+            if args.prune_legacy:
+                result = _outbox.prune_legacy_shadow(c, dry_run=getattr(args, "dry_run", False))
+                if getattr(args, "json", False):
+                    print(json.dumps(result, indent=2))
+                else:
+                    verb = "Would delete" if result["dry_run"] else "Deleted"
+                    for entity_type, n in sorted(result["by_type"].items()):
+                        print(f"  {entity_type:16} {n:>9,}")
+                    print(f"{verb} {result['total']:,} legacy-key sync_shadow rows.")
+            else:
+                legacy = _outbox.legacy_shadow_counts(c)
+                total = c.execute("SELECT COUNT(*) AS n FROM sync_shadow").fetchone()["n"]
+                legacy_total = sum(legacy.values())
+                if getattr(args, "json", False):
+                    print(json.dumps(
+                        {"sync_shadow_total": total, "legacy": legacy, "legacy_total": legacy_total},
+                        indent=2,
+                    ))
+                else:
+                    print(f"sync_shadow rows: {total:,}")
+                    print(f"legacy-key rows: {legacy_total:,}")
+                    for entity_type, n in sorted(legacy.items()):
+                        print(f"  {entity_type:16} {n:>9,}")
+                    if legacy_total:
+                        print("Run `shadow --prune-legacy --dry-run` to preview cleanup.")
+        finally:
+            c.close()
+
+    elif args.command == "sync-health":
+        result = _pipeline.sync_health()
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"{'Entity':16} {'Local':>10} {'Outbox':>10} {'Legacy shadow':>14}")
+            for e in result["entities"]:
+                print(
+                    f"{e['entity_type']:16} {e['local']:>10,} "
+                    f"{e['outbox_upserts']:>10,} {e['legacy_shadow']:>14,}"
+                )
+            print(
+                f"\nsync_shadow rows: {result['sync_shadow_total']:,} "
+                f"(legacy: {result['legacy_shadow_total']:,})"
+            )
+            print(f"Status: {result['status']}")
+            if result["status"] == "BACKLOG":
+                print("Run `pipeline.py sync` to drain the outbox.")
+            elif result["status"] == "SHADOW_STALE":
+                print("Run `pipeline.py shadow --prune-legacy --dry-run` to preview cleanup.")
 
     elif args.command == "cleanup-junk-leads":
         import junk_cleanup

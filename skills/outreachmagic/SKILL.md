@@ -148,6 +148,7 @@ Setup portal: https://app.outreachmagic.io/onboarding. Account errors (`account_
 | "Export to Google Sheets" | `whoami --json` → `share_email`, then `sheets export ...` |
 | "Connect Smartlead / Instantly" | `connections create --platform ...` and share webhook URL |
 | "Push leads to our CRM" | `crm-sync sync --workspace W --dry-run` first, then without `--dry-run` (GHL / HubSpot) |
+| "Open the dashboard" | `dashboard` — local web UI at http://127.0.0.1:8765 (deliverability, pipeline, campaigns; stage/enrich/log-event actions) |
 
 `whoami --json` returns account email, org, and plan. `init` creates the local DB. Sync dashboard API keys: `pipeline.py sync-secrets`.
 
@@ -187,7 +188,7 @@ Updates are user-triggered only. The CLI may print a notice when a newer release
 - **Analytics format:** (1) human table, (2) preset name or SQL used, (3) freshness note. Offer `pull` if they need latest data.
 - **Do not run `pull` before local time-window analytics** unless user asks for latest/refresh.
 - **Run `pull` first** when showing live activity (`show`, `history` for "what just happened").
-- **Never run `sync` unless the user asked.** Never run `archive --purge` without explicit confirm after `--dry-run`.
+- **Never run `sync` unless the user asked.** Never run `archive --purge` without explicit confirm after `--dry-run`. (A user clicking the dashboard's "Push to relay" button counts as asking.)
 - **Answer with `pipeline.py version`** when user asks about version (authoritative).
 - **Pipeline stages:** `prospecting` → `contacted` → `replied` → `interested` → `scheduled` → `won` | `not_interested` | `lost`.
 
@@ -253,6 +254,7 @@ pipeline.py crm-sync sync --workspace W --dry-run # preview CRM push (GHL/HubSpo
 pipeline.py crm-sync sync --workspace W           # push leads to CRM
 pipeline.py crm-sync sync --workspace W --max-age 30d  # only leads active in last 30 days
 pipeline.py sync                                  # push to relay
+pipeline.py dashboard                             # local web dashboard (http://127.0.0.1:8765)
 pipeline.py refresh --yes                         # backup + rebuild DB
 ```
 

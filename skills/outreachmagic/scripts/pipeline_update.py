@@ -355,7 +355,7 @@ def update_download_names(manifest: Optional[dict] = None) -> list[str]:
         return sorted(
             name for name in files
             if name != "manifest.json" and not name.endswith((".md", ".sh", ".txt"))
-            and (name.endswith(".py") or name == "VERSION")
+            and (name.endswith((".py", ".html")) or name == "VERSION")
         )
     return list(UPDATE_MANIFEST_FILES)
 

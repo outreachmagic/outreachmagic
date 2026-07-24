@@ -3936,8 +3936,11 @@ from pipeline_tags import (
 from pipeline_workspace import (
     _push_agent_events_to_relay,
     _push_pending_company_merge_deletes,
+    _push_pending_company_outbox_deletes,
     _push_pending_company_updates,
+    _push_pending_lead_core_outbox_deletes,
     _push_pending_lead_snapshots,
+    _push_pending_lead_workspace_outbox_deletes,
     _push_pending_merge_deletes,
     _push_pending_quarantine_resolutions,
     _push_pending_sender_account_updates,
@@ -3983,6 +3986,7 @@ from pipeline_workspace import (
     skip_quarantine_bulk,
     sync_agent_secrets_cli,
     sync_all,
+    sync_health,
     sync_workspaces_to_cloud,
 )
 

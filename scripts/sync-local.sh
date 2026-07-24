@@ -17,6 +17,7 @@ sync_skill() {
   mkdir -p "$dest/scripts" "$dest/references" "$dest/databases" "$dest/config"
   cp "$src/SKILL.md" "$dest/SKILL.md"
   cp "$src/scripts/"*.py "$dest/scripts/"
+  cp "$src/scripts/"*.html "$dest/scripts/" 2>/dev/null || true
   cp "$src/scripts/VERSION" "$dest/scripts/VERSION" 2>/dev/null || true
   for ref in "$src/references/"*; do
     [[ -f "$ref" ]] || continue

@@ -1,0 +1,1790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outreach Magic Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb; --page: #f9f9f7;
+  --ink-1: #0b0b0b; --ink-2: #52514e; --ink-muted: #898781;
+  --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  --status-good: #0ca30c; --status-warning: #fab219;
+  --status-serious: #ec835a; --status-critical: #d03b3b;
+  --good-text: #006300;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --page: #0d0d0d;
+    --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+    --good-text: #0ca30c;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink-1);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 20px; background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 16px; margin: 0 8px 0 0; }
+select, input, button, textarea {
+  font: inherit; color: var(--ink-1); background: var(--surface-1);
+  border: 1px solid var(--baseline); border-radius: 6px; padding: 5px 9px;
+}
+button { cursor: pointer; }
+button.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+button.small { padding: 2px 8px; font-size: 12px; }
+button:disabled { opacity: .5; cursor: default; }
+.pill {
+  padding: 3px 10px; border-radius: 999px; font-size: 12px;
+  border: 1px solid var(--border); color: var(--ink-2); white-space: nowrap;
+}
+.pill.running { border-color: var(--series-1); color: var(--series-1); }
+.pill.error { border-color: var(--status-critical); color: var(--status-critical); }
+.spacer { flex: 1; }
+.stale { color: var(--ink-muted); font-size: 12px; }
+main { max-width: 1240px; margin: 0 auto; padding: 16px 20px 60px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.tile .label { font-size: 12px; color: var(--ink-2); }
+.tile .value { font-size: 24px; font-weight: 600; margin-top: 2px; }
+nav.tabs { display: flex; gap: 4px; margin-bottom: 14px; flex-wrap: wrap; }
+nav.tabs button { border: none; background: none; color: var(--ink-2); padding: 7px 12px; border-radius: 8px; font-weight: 500; }
+nav.tabs button.active { background: var(--surface-1); color: var(--ink-1); border: 1px solid var(--border); }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+.card h2 { font-size: 14px; margin: 0 0 10px; }
+.card h2 .sub { color: var(--ink-muted); font-weight: 400; font-size: 12px; margin-left: 8px; }
+.chart-wrap { position: relative; height: 220px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+td.wrap { white-space: normal; }
+th { color: var(--ink-2); font-weight: 500; font-size: 12px; user-select: none; }
+th.sortable { cursor: pointer; }
+th.sortable:hover { color: var(--ink-1); }
+th .arrow { font-size: 10px; }
+td.num, th.num { text-align: right; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: color-mix(in srgb, var(--series-1) 7%, transparent); }
+.flag { font-size: 12px; font-weight: 600; }
+.flag.bad { color: var(--status-critical); }
+.flag.warn { color: var(--status-serious); }
+.flag.ok { color: var(--good-text); }
+.empty { color: var(--ink-muted); padding: 14px 4px; }
+.controls { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.controls label { color: var(--ink-2); font-size: 12px; display: flex; gap: 5px; align-items: center; }
+.tfilter { margin-bottom: 8px; }
+.tfilter input { width: 220px; }
+/* timeline (lead history) */
+.timeline { border-top: 1px solid var(--grid); }
+.tl-event { padding: 9px 2px; border-bottom: 1px solid var(--grid); }
+.tl-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); }
+.tl-type { font-weight: 600; color: var(--ink-1); }
+.tl-preview { margin: 4px 0 0; font-size: 13px; color: var(--ink-2); white-space: pre-wrap; }
+.tl-body { margin: 6px 0 0; padding: 8px 10px; background: var(--page); border: 1px solid var(--grid); border-radius: 6px; font-size: 13px; white-space: pre-wrap; max-height: 340px; overflow-y: auto; }
+.copy-body { margin: 6px 0; padding: 8px 10px; background: var(--page); border: 1px solid var(--grid); border-radius: 6px; font-size: 13px; white-space: pre-wrap; max-height: 340px; overflow-y: auto; }
+/* slide-over */
+#overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: none; z-index: 9; }
+#slideover, #editPanel {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 96vw);
+  background: var(--surface-1); border-left: 1px solid var(--border);
+  padding: 18px; overflow-y: auto; display: none; z-index: 11;
+}
+#slideover h2, #editPanel h2 { margin: 0 0 2px; font-size: 16px; }
+#slideover .meta, #editPanel .meta { color: var(--ink-2); font-size: 13px; margin-bottom: 10px; }
+#edit-body form { border-top: 1px solid var(--grid); padding: 12px 0; }
+#edit-body h3 { font-size: 13px; margin: 0 0 8px; }
+#edit-body .row { display: flex; gap: 8px; margin-bottom: 8px; }
+#edit-body .row > * { flex: 1; min-width: 0; }
+.domain-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; margin: 0 5px 5px 0;
+  border: 1px solid var(--border); border-radius: 999px; font-size: 12px; }
+.domain-chip .role { color: var(--ink-muted); }
+.merge-item { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.merge-item .pair { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.merge-item .vs { color: var(--ink-muted); font-size: 12px; }
+#slideover form { border-top: 1px solid var(--grid); padding: 12px 0; }
+#slideover form h3, #slideover .history h3 { font-size: 13px; margin: 0 0 8px; }
+#slideover .row { display: flex; gap: 8px; margin-bottom: 8px; }
+#slideover .row > * { flex: 1; min-width: 0; }
+#slideover .msg { font-size: 12px; min-height: 16px; }
+#slideover .msg.ok { color: var(--good-text); }
+#slideover .msg.err { color: var(--status-critical); }
+#toast {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  background: var(--ink-1); color: var(--page); padding: 8px 16px;
+  border-radius: 8px; font-size: 13px; display: none; z-index: 20;
+}
+.banner { padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; border: 1px solid var(--border); }
+.banner.warn { border-color: var(--status-serious); }
+code { background: var(--page); border: 1px solid var(--grid); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Outreach Magic</h1>
+  <select id="workspace" title="Workspace"></select>
+  <label class="stale">Range
+    <select id="range">
+      <option value="7d">Last 7 days</option>
+      <option value="14d">Last 14 days</option>
+      <option value="30d" selected>Last 30 days</option>
+      <option value="90d">Last 90 days</option>
+      <option value="custom">Custom…</option>
+    </select>
+  </label>
+  <span id="custom-range" hidden>
+    <input type="date" id="range-since" title="From"> –
+    <input type="date" id="range-until" title="To">
+    <button class="small" id="range-apply">Apply</button>
+  </span>
+  <span id="sync-pill" class="pill">idle</span>
+  <button id="pull-btn">Pull latest</button>
+  <button id="push-btn">Push to relay</button>
+  <span class="spacer"></span>
+  <span id="staleness" class="stale"></span>
+</header>
+
+<main>
+  <div class="tiles" id="tiles"></div>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="deliverability" class="active">Deliverability</button>
+    <button data-tab="pipeline">Pipeline</button>
+    <button data-tab="contacts">Contacts</button>
+    <button data-tab="companies">Companies</button>
+    <button data-tab="quality">Data quality</button>
+    <button data-tab="campaigns">Campaigns</button>
+    <button data-tab="attributes">Attributes</button>
+    <button data-tab="crm">CRM</button>
+    <button data-tab="activity">Activity</button>
+    <button data-tab="sync">Sync</button>
+  </nav>
+
+  <section id="tab-contacts" hidden>
+    <div class="card">
+      <h2>Contacts <span class="sub">search name / email / domain / LinkedIn / company / title</span></h2>
+      <div class="controls">
+        <input id="contacts-q" placeholder="Search…" style="width:280px">
+        <select id="contacts-status">
+          <option value="">Any stage</option>
+        </select>
+        <select id="contacts-missing">
+          <option value="">All contacts</option>
+          <option value="email">Missing email</option>
+          <option value="company">Missing company</option>
+          <option value="title">Missing title</option>
+          <option value="name">Unknown / no name</option>
+        </select>
+        <select id="contacts-sort">
+          <option value="last_activity">Sort: recent activity</option>
+          <option value="name">Sort: name</option>
+          <option value="company">Sort: company</option>
+        </select>
+        <span class="spacer"></span>
+        <span id="contacts-count" class="stale"></span>
+      </div>
+      <div id="contacts-table"></div>
+      <div class="controls">
+        <button id="contacts-prev" class="small">‹ Prev</button>
+        <span id="contacts-page" class="stale"></span>
+        <button id="contacts-next" class="small">Next ›</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-deliverability">
+    <div class="card">
+      <h2>Bounce rate <span class="sub">daily — hover for sent/bounced counts</span></h2>
+      <div class="chart-wrap"><canvas id="bounce-chart"></canvas></div>
+      <div id="bounce-fallback"></div>
+    </div>
+    <div class="card">
+      <h2>Mailboxes <span class="sub">click a mailbox to edit provider / name / limit / status</span></h2>
+      <div class="controls">
+        <label>Activity
+          <select id="deliv-age">
+            <option value="all">All</option>
+            <option value="active90">Sent in last 3 mo</option>
+            <option value="stale90">Not sent in 3 mo+</option>
+            <option value="stale180">Not sent in 6 mo+</option>
+            <option value="stale365">Not sent in 12 mo+</option>
+            <option value="never">Never sent</option>
+          </select>
+        </label>
+        <span class="spacer"></span>
+        <span id="deliv-count" class="stale"></span>
+      </div>
+      <div id="mailboxes"></div>
+    </div>
+    <div class="card"><h2>Sending domains <span class="sub">click a domain for reseller / pricing / notes / edit</span></h2><div id="domains"></div></div>
+    <div class="card" id="domain-detail-card" hidden>
+      <h2 id="domain-detail-title">Domain</h2>
+      <div id="domain-detail"></div>
+    </div>
+  </section>
+
+  <section id="tab-pipeline" hidden>
+    <div class="card">
+      <h2>Leads per stage <span class="sub" id="pipeline-sub">click a stage to drill down</span></h2>
+      <div class="chart-wrap"><canvas id="stage-chart"></canvas></div>
+      <div id="stage-list"></div>
+    </div>
+    <div class="card" id="stage-leads-card" hidden>
+      <h2 id="stage-leads-title">Leads</h2>
+      <div id="stage-leads"></div>
+      <div class="controls"><button id="leads-more" hidden>Load more</button></div>
+    </div>
+  </section>
+
+  <section id="tab-companies" hidden>
+    <div class="card">
+      <h2>Companies <span class="sub">click a company to edit, see branches &amp; leads</span></h2>
+      <div class="controls">
+        <input id="companies-q" placeholder="Search name / domain / industry…" style="width:280px">
+        <select id="companies-sort">
+          <option value="leads">Sort: most leads</option>
+          <option value="name">Sort: name</option>
+        </select>
+        <span class="spacer"></span>
+        <button id="merge-toggle" class="small">Review merges</button>
+      </div>
+      <div id="companies-table"></div>
+      <div class="controls">
+        <button id="companies-prev" class="small">‹ Prev</button>
+        <span id="companies-page" class="stale"></span>
+        <button id="companies-next" class="small">Next ›</button>
+      </div>
+    </div>
+    <div class="card" id="merge-card" hidden>
+      <h2>Needs review — company merges <span class="sub">ambiguous / duplicate matches queued for a decision</span></h2>
+      <div id="merge-list"></div>
+    </div>
+  </section>
+
+  <section id="tab-quality" hidden>
+    <div class="card">
+      <h2>Data quality <span class="sub" id="quality-sub">under-enriched leads — click a bucket to work it</span></h2>
+      <div class="tiles" id="quality-tiles"></div>
+    </div>
+    <div class="card" id="quality-list-card" hidden>
+      <h2 id="quality-list-title">Leads</h2>
+      <div class="controls">
+        <label><input type="checkbox" id="quality-all"> select all on page</label>
+        <span id="quality-selected" class="stale"></span>
+        <span class="spacer"></span>
+        <span id="quality-actions"></span>
+      </div>
+      <div id="quality-table"></div>
+      <div class="controls">
+        <button id="quality-prev" class="small">‹ Prev</button>
+        <span id="quality-page" class="stale"></span>
+        <button id="quality-next" class="small">Next ›</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Cleanup empty leads <span class="sub">org-wide — name "unknown", no email / LinkedIn / events</span></h2>
+      <div id="quality-cleanup">
+        <button class="small" id="cleanup-preview-btn">Preview cleanup</button>
+        <span id="cleanup-summary" class="stale"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-campaigns" hidden>
+    <div class="card">
+      <h2>Daily activity <span class="sub">every event type per day (UTC)</span></h2>
+      <div class="controls">
+        <label>Campaign
+          <select id="daily-campaign"><option value="">All campaigns</option></select>
+        </label>
+      </div>
+      <div class="chart-wrap"><canvas id="daily-chart"></canvas></div>
+      <div id="daily-matrix"></div>
+    </div>
+    <div class="card">
+      <h2>Campaigns <span class="sub">click a campaign for senders, subject lines &amp; copy</span></h2>
+      <div id="campaigns"></div>
+    </div>
+    <div class="card" id="campaign-detail-card" hidden>
+      <h2 id="campaign-detail-title">Campaign</h2>
+      <div id="campaign-detail"></div>
+      <h3 style="font-size:13px">Leads in this campaign <span class="sub">click a lead for full history &amp; actions</span></h3>
+      <div class="controls">
+        <input id="campaign-leads-q" placeholder="Search these leads…" style="width:240px">
+        <span class="spacer"></span>
+        <span id="campaign-leads-count" class="stale"></span>
+      </div>
+      <div id="campaign-leads"></div>
+      <div class="controls">
+        <button id="campaign-leads-prev" class="small">‹ Prev</button>
+        <span id="campaign-leads-page" class="stale"></span>
+        <button id="campaign-leads-next" class="small">Next ›</button>
+      </div>
+      <h3 style="font-size:13px;margin-top:14px">Subject lines &amp; copy <span class="sub">expand to audit the exact copy sent</span></h3>
+      <div id="subjects"></div>
+    </div>
+  </section>
+
+  <section id="tab-attributes" hidden>
+    <div class="card">
+      <h2>Best-performing lead attributes <span class="sub">case-insensitive grouping</span></h2>
+      <div class="controls">
+        <label>Attribute
+          <select id="attr-field">
+            <option value="industry">Industry</option>
+            <option value="title">Title</option>
+            <option value="headcount">Headcount</option>
+            <option value="location_country">Country</option>
+            <option value="source">Source platform</option>
+          </select>
+        </label>
+        <label>Campaign
+          <select id="attr-campaign"><option value="">All campaigns</option></select>
+        </label>
+        <label>Min contacted <input id="attr-min" type="number" value="20" min="1" style="width:70px"></label>
+      </div>
+      <div id="attributes"></div>
+    </div>
+  </section>
+
+  <section id="tab-crm" hidden>
+    <div id="crm-banner"></div>
+    <div class="tiles" id="crm-tiles"></div>
+    <div class="card">
+      <h2>Eligible, not yet synced <span class="sub">interested / replied / scheduled / won / not_interested / lost</span></h2>
+      <div class="controls">
+        <label>Activity window
+          <select id="crm-max-age">
+            <option value="">Any</option>
+            <option value="7d">7d</option>
+            <option value="30d" selected>30d</option>
+            <option value="90d">90d</option>
+          </select>
+        </label>
+        <button class="primary" id="crm-sync-all">Sync eligible now</button>
+      </div>
+      <div id="crm-pending"></div>
+    </div>
+    <div class="card"><h2>Synced to CRM</h2><div id="crm-synced"></div></div>
+    <div class="card"><h2>Recent sync runs</h2><div id="crm-runs"></div></div>
+  </section>
+
+  <section id="tab-activity" hidden>
+    <div class="card">
+      <h2>Activity <span class="sub" id="activity-sub">searches the whole range — filter by type or by lead / company</span></h2>
+      <div class="controls">
+        <label>Event type
+          <select id="activity-type"><option value="">All types</option></select>
+        </label>
+        <input id="activity-q" placeholder="Search name / email / domain / LinkedIn / company…" style="width:320px">
+        <span class="spacer"></span>
+        <span id="activity-count" class="stale"></span>
+      </div>
+      <div id="activity"></div>
+      <div class="controls"><button id="activity-more" hidden>Load more</button></div>
+    </div>
+  </section>
+
+  <section id="tab-sync" hidden>
+    <div class="card">
+      <h2>Pending push to Outreach Magic <span class="sub">the outbox — local changes queued for the relay</span></h2>
+      <div class="controls">
+        <label><input type="checkbox" id="outbox-ws-only"> this workspace only</label>
+        <button class="small" id="outbox-refresh">Refresh</button>
+      </div>
+      <div id="outbox-summary"></div>
+      <div id="outbox-groups"></div>
+      <div class="controls" style="margin-top:14px">
+        <h3 style="font-size:13px;margin:0">Queued entries <span class="sub">click a group above to drill in; click a row for its record + payload</span></h3>
+        <span class="spacer"></span>
+        <span id="outbox-filter" class="stale"></span>
+        <span id="outbox-rowcount" class="stale"></span>
+      </div>
+      <div id="outbox-rows"></div>
+    </div>
+  </section>
+</main>
+
+<div id="overlay"></div>
+<aside id="slideover">
+  <button style="float:right" onclick="closeLead()">✕</button>
+  <h2 id="lead-name"></h2>
+  <div class="meta" id="lead-meta"></div>
+
+  <form id="stage-form">
+    <h3>Change stage</h3>
+    <div class="row">
+      <select id="stage-select"></select>
+      <select id="sentiment-select">
+        <option value="">no sentiment</option>
+        <option>positive</option><option>negative</option>
+        <option>neutral</option><option>autoreply</option><option>invalid</option>
+      </select>
+    </div>
+    <div class="row"><input id="stage-label" placeholder="Status label (optional)"></div>
+    <div class="row"><button class="primary">Update stage</button></div>
+    <div class="msg" id="stage-msg"></div>
+  </form>
+
+  <form id="enrich-form">
+    <h3>Edit attributes <span class="sub" style="font-weight:400;color:var(--ink-muted)">(fills empty fields; check to overwrite)</span></h3>
+    <div class="row"><input name="title" placeholder="Title"><input name="industry" placeholder="Industry"></div>
+    <div class="row"><input name="company" placeholder="Company"><input name="headcount" placeholder="Headcount"></div>
+    <div class="row">
+      <label style="flex:2"><input type="checkbox" id="enrich-overwrite"> overwrite existing values</label>
+      <button class="primary">Save</button>
+    </div>
+    <div class="msg" id="enrich-msg"></div>
+  </form>
+
+  <form id="event-form">
+    <h3>Log event</h3>
+    <div class="row">
+      <select id="event-type">
+        <option>email_sent</option><option>email_reply</option>
+        <option>linkedin_connect</option><option>linkedin_message</option>
+        <option>meeting_booked</option>
+      </select>
+      <select id="event-direction"><option>outbound</option><option>inbound</option></select>
+    </div>
+    <div class="row"><input id="event-subject" placeholder="Subject (optional)"></div>
+    <div class="row"><button class="primary">Log event</button></div>
+    <div class="msg" id="event-msg"></div>
+  </form>
+
+  <div id="lead-enrich" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+
+  <div id="lead-company" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+
+  <div class="history">
+    <h3 style="border-top:1px solid var(--grid);padding-top:12px">Event history</h3>
+    <div id="lead-history" class="timeline"></div>
+  </div>
+</aside>
+<aside id="editPanel">
+  <button style="float:right" onclick="closeEditPanel()">✕</button>
+  <h2 id="edit-title"></h2>
+  <div class="meta" id="edit-meta"></div>
+  <div id="edit-body"></div>
+</aside>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const state = {
+  workspace: params.get("workspace") || localStorage.getItem("om_workspace") || null,
+  tab: params.get("tab") || "deliverability",
+  since: "30d", until: null,
+  lead: null,
+  syncState: "idle",
+  activityCursor: null,
+  leadsOffset: 0, leadsStatus: null,
+  charts: {},
+  campaigns: [],
+};
+const STAGES = ["prospecting","contacted","replied","interested","scheduled","won","not_interested","lost"];
+
+async function api(path, opts = {}) {
+  const headers = opts.method === "POST"
+    ? { "X-OM-Dashboard": "1", "Content-Type": "application/json" } : {};
+  const resp = await fetch(path, { ...opts, headers });
+  const payload = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(payload.error || `HTTP ${resp.status}`);
+  return payload;
+}
+function withRange(path) {
+  const p = [];
+  if (state.since) p.push("since=" + encodeURIComponent(state.since));
+  if (state.until) p.push("until=" + encodeURIComponent(state.until));
+  if (!p.length) return path;
+  return path + (path.includes("?") ? "&" : "?") + p.join("&");
+}
+const get = (path) => api(path + (path.includes("?") ? "&" : "?") + "workspace=" + encodeURIComponent(state.workspace));
+const getR = (path) => get(withRange(path));
+function rangeLabel() {
+  if (state.until) return `${state.since} → ${state.until}`;
+  const m = { "7d": "last 7 days", "14d": "last 14 days", "30d": "last 30 days", "90d": "last 90 days" };
+  return m[state.since] || `since ${state.since}`;
+}
+const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body) });
+
+function toast(msg) {
+  const el = $("toast");
+  el.textContent = msg; el.style.display = "block";
+  clearTimeout(el._t); el._t = setTimeout(() => el.style.display = "none", 2800);
+}
+const fmt = (n) => (n ?? 0).toLocaleString();
+const pct = (r) => r == null ? "–" : (r * 100).toFixed(1) + "%";
+const dt = (s) => (s ?? "").replace("T", " ").slice(0, 16);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function chartInk() {
+  const css = getComputedStyle(document.documentElement);
+  return { ink: css.getPropertyValue("--ink-muted").trim(),
+           grid: css.getPropertyValue("--grid").trim(),
+           s1: css.getPropertyValue("--series-1").trim(),
+           s2: css.getPropertyValue("--series-2").trim(),
+           s3: css.getPropertyValue("--series-3").trim() };
+}
+
+/* ---------- generic sortable / filterable table ---------- */
+// cols: [{key, label, num?, render?(row) -> html, sortVal?(row)}]
+// opts: {onRowClick(row), filter: true, empty: "message"}
+function renderTable(container, cols, rows, opts = {}) {
+  const el = typeof container === "string" ? $(container) : container;
+  if (!rows.length) {
+    el.innerHTML = `<div class="empty">${esc(opts.empty || "Nothing here yet.")}</div>`;
+    return;
+  }
+  const st = el._tstate = el._tstate || { sortKey: null, sortDir: 1, filter: "" };
+  const draw = () => {
+    let view = rows;
+    if (st.filter) {
+      const f = st.filter.toLowerCase();
+      view = rows.filter(r => cols.some(c => String(r[c.key] ?? "").toLowerCase().includes(f)));
+    }
+    if (st.sortKey) {
+      const col = cols.find(c => c.key === st.sortKey);
+      view = [...view].sort((a, b) => {
+        const av = col.sortVal ? col.sortVal(a) : a[col.key];
+        const bv = col.sortVal ? col.sortVal(b) : b[col.key];
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        return (typeof av === "number" && typeof bv === "number"
+          ? av - bv : String(av).localeCompare(String(bv))) * st.sortDir;
+      });
+    }
+    const head = cols.map(c => {
+      const arrow = st.sortKey === c.key ? `<span class="arrow">${st.sortDir > 0 ? "▲" : "▼"}</span>` : "";
+      return `<th class="sortable ${c.num ? "num" : ""}" data-key="${c.key}">${esc(c.label)} ${arrow}</th>`;
+    }).join("");
+    const body = view.map((r, i) => {
+      const cells = cols.map(c =>
+        `<td class="${c.num ? "num" : ""}${c.wrap ? " wrap" : ""}">${c.render ? c.render(r) : esc(r[c.key] ?? "")}</td>`
+      ).join("");
+      return `<tr class="${opts.onRowClick ? "clickable" : ""}" data-i="${rows.indexOf(r)}">${cells}</tr>`;
+    }).join("");
+    el.innerHTML =
+      (opts.filter !== false && rows.length > 8
+        ? `<div class="tfilter"><input placeholder="Filter…" value="${esc(st.filter)}"></div>` : "") +
+      `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    const filterInput = el.querySelector(".tfilter input");
+    if (filterInput) {
+      filterInput.oninput = () => { st.filter = filterInput.value; draw(); restoreFocus(); };
+      function restoreFocus() {
+        const inp = el.querySelector(".tfilter input");
+        inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      }
+    }
+    el.querySelectorAll("th.sortable").forEach(th => th.onclick = () => {
+      const key = th.dataset.key;
+      if (st.sortKey === key) st.sortDir *= -1; else { st.sortKey = key; st.sortDir = 1; }
+      draw();
+    });
+    if (opts.onRowClick) el.querySelectorAll("tbody tr").forEach(tr =>
+      tr.onclick = (ev) => {
+        if (ev.target.closest("button, a, input, label")) return;
+        opts.onRowClick(rows[+tr.dataset.i]);
+      });
+    if (opts.onDraw) opts.onDraw(el);
+  };
+  draw();
+}
+
+/* ---------- header: workspaces, range, sync ---------- */
+async function loadWorkspaces() {
+  const data = await api("/api/workspaces");
+  const sel = $("workspace");
+  sel.innerHTML = data.workspaces.map(w =>
+    `<option value="${esc(w.slug)}">${esc(w.name)}</option>`).join("");
+  if (!data.workspaces.some(w => w.slug === state.workspace)) {
+    state.workspace = data.workspaces[0]?.slug || null;
+  }
+  sel.value = state.workspace;
+}
+
+async function refreshSummary() {
+  if (!state.workspace) return;
+  try {
+    const [s, sync] = await Promise.all([getR("/api/summary"), api("/api/sync/status")]);
+    $("tiles").innerHTML = [
+      ["Leads", fmt(s.total_leads)],
+      ["Sent", fmt(s.sent)],
+      ["Replied", fmt(s.replied)],
+      ["Bounced", fmt(s.bounced)],
+      ["Interested", fmt(s.stages.interested)],
+    ].map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
+    $("staleness").textContent = s.latest_event_at
+      ? "latest event: " + dt(s.latest_event_at) + " UTC" : "no events pulled yet";
+    updateSyncPill(sync);
+  } catch (e) { /* transient poll error; pill shows state */ }
+}
+
+function updateSyncPill(sync) {
+  const pill = $("sync-pill");
+  pill.className = "pill" + (sync.state === "running" ? " running" : sync.state === "error" ? " error" : "");
+  pill.textContent = sync.state === "running" ? `${sync.kind}…`
+    : sync.state === "error" ? `${sync.kind} failed`
+    : sync.state === "done" ? `${sync.kind} done` : "idle";
+  pill.title = sync.error || "";
+  ["pull-btn", "push-btn"].forEach(id => $(id).disabled = sync.state === "running");
+  if (state.syncState === "running" && sync.state === "done") { toast(`${sync.kind} finished`); loadTab(); }
+  if (state.syncState === "running" && sync.state === "error") toast(`${sync.kind} failed: ${sync.error}`);
+  state.syncState = sync.state;
+}
+
+$("pull-btn").onclick = () => post("/api/sync/pull", {}).then(updateSyncPill).catch(e => toast(e.message));
+$("push-btn").onclick = () => {
+  if (!confirm("Push pending local changes to the relay?")) return;
+  post("/api/sync/push", {}).then(updateSyncPill).catch(e => toast(e.message));
+};
+$("workspace").onchange = (e) => {
+  state.workspace = e.target.value;
+  localStorage.setItem("om_workspace", state.workspace);
+  state.activityCursor = null; state.campaigns = [];
+  closeDetails();
+  refreshSummary(); loadTab();
+};
+$("range").onchange = (e) => {
+  if (e.target.value === "custom") { $("custom-range").hidden = false; return; }
+  $("custom-range").hidden = true;
+  state.since = e.target.value; state.until = null;
+  refreshSummary(); loadTab();
+};
+$("range-apply").onclick = () => {
+  if (!$("range-since").value) { toast("Pick a start date"); return; }
+  state.since = $("range-since").value;
+  state.until = $("range-until").value || null;
+  refreshSummary(); loadTab();
+};
+
+function closeDetails() {
+  $("campaign-detail-card").hidden = true;
+  $("domain-detail-card").hidden = true;
+  $("stage-leads-card").hidden = true;
+}
+
+/* ---------- tabs ---------- */
+$("tabs").onclick = (e) => {
+  const btn = e.target.closest("button[data-tab]");
+  if (!btn) return;
+  state.tab = btn.dataset.tab;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b === btn));
+  document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + state.tab);
+  loadTab();
+};
+
+function loadTab() {
+  ({ deliverability: loadDeliverability, pipeline: loadPipeline,
+     contacts: loadContacts, companies: loadCompanies, quality: loadQuality,
+     campaigns: loadCampaigns,
+     attributes: loadAttributes, crm: loadCrm,
+     activity: () => loadActivity(true), sync: loadOutbox })[state.tab]();
+}
+
+/* shared lead columns for any lead table (contacts, campaign leads) */
+function leadColumns() {
+  return [
+    { key: "name", label: "Name", render: r => esc(r.name || "—") },
+    { key: "company", label: "Company", render: r => esc(r.company ?? "") + (r.company_id ? "" : ' <span class="flag warn" title="not linked to a company record">⚠</span>') },
+    { key: "title", label: "Title", render: r => esc(r.title ?? "") },
+    { key: "email", label: "Email", render: r => r.email ? esc(r.email) : '<span class="flag warn">no email</span>' },
+    { key: "status", label: "Stage" },
+    { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
+    { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
+  ];
+}
+
+/* ---------- deliverability ---------- */
+function agePredicate(mode) {
+  const now = Date.now();
+  const days = (ts) => ts ? (now - new Date(ts.replace(" ", "T") + "Z").getTime()) / 86400000 : Infinity;
+  return ({
+    all: () => true,
+    active90: r => days(r.last_outbound_at) <= 90,
+    stale90: r => days(r.last_outbound_at) > 90,
+    stale180: r => days(r.last_outbound_at) > 180,
+    stale365: r => days(r.last_outbound_at) > 365,
+    never: r => !r.last_outbound_at,
+  })[mode] || (() => true);
+}
+
+async function loadDeliverability() {
+  const d = await getR("/api/deliverability").catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  state.deliv = d;
+  renderBounceChart(d.series);
+  renderDeliv();
+}
+$("deliv-age").onchange = () => { if (state.deliv) renderDeliv(); };
+
+function renderDeliv() {
+  const d = state.deliv;
+  const pred = agePredicate($("deliv-age").value);
+  const mailboxes = d.mailboxes.filter(pred);
+  const domains = d.domains.filter(pred);
+  $("deliv-count").textContent = `${mailboxes.length} of ${d.mailboxes.length} mailboxes`;
+  renderTable("mailboxes", [
+    { key: "email", label: "Mailbox" },
+    { key: "warmup_status", label: "Warmup", render: r => esc(r.warmup_status ?? "–") },
+    { key: "spf_status", label: "SPF/DKIM/DMARC",
+      render: r => ["spf_status","dkim_status","dmarc_status"].map(k => esc(r[k] ?? "?")).join(" / ") },
+    { key: "overall_health_score", label: "Health", num: true, render: r => r.overall_health_score ?? "–" },
+    { key: "bounce_rate", label: "Bounce rate", num: true, render: r => r.bounce_rate != null ? pct(r.bounce_rate) : "–" },
+    { key: "last_outbound_at", label: "Last send", render: r => dt(r.last_outbound_at) || "never" },
+    { key: "trending_down", label: "Status", sortVal: r => r.trending_down ? 0 : 1,
+      render: r => r.trending_down ? '<span class="flag bad">▲ trending down</span>' : '<span class="flag ok">✓ ok</span>' },
+  ], mailboxes, { empty: "No mailboxes match this filter.", onRowClick: r => openSenderEdit(r) });
+  renderTable("domains", [
+    { key: "domain", label: "Domain" },
+    { key: "mailboxes", label: "Mailboxes", num: true },
+    { key: "avg_health", label: "Avg health", num: true, render: r => r.avg_health ?? "–" },
+    { key: "last_outbound_at", label: "Last send", render: r => dt(r.last_outbound_at) || "–" },
+    { key: "reseller", label: "Reseller", render: r => esc(r.reseller ?? "–") },
+    { key: "dnsbl_summary", label: "Blacklist (DNSBL)" },
+    { key: "listed", label: "Status", sortVal: r => r.listed ? 0 : 1,
+      render: r => r.listed ? '<span class="flag bad">✖ listed</span>'
+        : r.registered ? '<span class="flag ok">✓ clean</span>' : '<span class="flag warn">not monitored</span>' },
+  ], domains, { empty: "No sending domains match this filter.", onRowClick: r => showDomain(r.domain) });
+}
+
+function openSenderEdit(sa) {
+  openEditPanel(esc(sa.email), `${esc(sa.email_domain ?? "")} · ${sa.last_outbound_at ? "last send " + dt(sa.last_outbound_at) : "never sent"}`);
+  $("edit-body").innerHTML = `
+    <form id="sender-edit-form">
+      <h3>Edit mailbox <span class="sub" style="font-weight:400;color:var(--ink-muted)">health/warmup metrics stay sync-owned</span></h3>
+      <div class="row"><input name="first_name" placeholder="First name" value="${esc(sa.first_name ?? "")}"><input name="last_name" placeholder="Last name" value="${esc(sa.last_name ?? "")}"></div>
+      <div class="row"><input name="provider" placeholder="Provider (google / microsoft / …)" value="${esc(sa.provider ?? "")}"></div>
+      <div class="row">
+        <input name="daily_limit" type="number" placeholder="Daily limit" value="${sa.daily_limit ?? ""}">
+        <select name="status">
+          <option value="">status…</option>
+          ${["active","paused","disabled","error"].map(s => `<option ${sa.status === s ? "selected" : ""}>${s}</option>`).join("")}
+        </select>
+      </div>
+      <div class="row"><button class="primary">Save mailbox</button></div>
+      <div class="msg" id="sender-msg"></div>
+    </form>`;
+  $("sender-edit-form").onsubmit = (e) => {
+    e.preventDefault();
+    const body = { email: sa.email };
+    for (const inp of e.target.querySelectorAll("[name]")) if (inp.value.trim()) body[inp.name] = inp.value.trim();
+    formResult("sender-msg", post("/api/senders/edit", body), loadDeliverability);
+  };
+}
+
+function openDomainEdit(dom, reg) {
+  openEditPanel(esc(dom), "sending domain");
+  $("edit-body").innerHTML = `
+    <form id="domain-edit-form">
+      <h3>Edit domain <span class="sub" style="font-weight:400;color:var(--ink-muted)">reseller / pricing / notes</span></h3>
+      <div class="row"><input name="reseller" placeholder="Reseller" value="${esc(reg?.reseller ?? "")}"></div>
+      <div class="row">
+        <input name="domain_cost" type="number" step="0.01" placeholder="Cost (whole domain)" value="${reg?.domain_cost ?? ""}">
+        <input name="currency" placeholder="Currency" value="${esc(reg?.currency ?? "USD")}">
+      </div>
+      <div class="row"><input name="sending_ip" placeholder="Sending IP" value="${esc(reg?.sending_ip ?? "")}"></div>
+      <div class="row"><textarea name="notes" placeholder="Notes" rows="2">${esc(reg?.notes ?? "")}</textarea></div>
+      <div class="row"><button class="primary">Save domain</button></div>
+      <div class="msg" id="domain-msg"></div>
+    </form>`;
+  $("domain-edit-form").onsubmit = (e) => {
+    e.preventDefault();
+    const body = { domain: dom };
+    for (const inp of e.target.querySelectorAll("[name]")) {
+      const v = inp.value.trim();
+      if (v) body[inp.name] = inp.name === "domain_cost" ? parseFloat(v) : v;
+    }
+    formResult("domain-msg", post("/api/domains/edit", body), loadDeliverability);
+  };
+}
+
+async function showDomain(domain) {
+  const d = await get(`/api/domains/detail?domain=${encodeURIComponent(domain)}`)
+    .catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  $("domain-detail-card").hidden = false;
+  $("domain-detail-title").innerHTML = `${esc(domain)} <button class="small" id="edit-domain-btn">Edit domain</button>`;
+  const reg = d.registration;
+  const bs = d.bounce_summary || {};
+  let html = "";
+  if (reg) {
+    html += `<div class="table-wrap"><table><tbody>
+      <tr><th>Reseller</th><td>${esc(reg.reseller ?? "–")}</td>
+          <th>Cost</th><td>${reg.domain_cost != null ? esc(reg.domain_cost) + " " + esc(reg.currency ?? "") : "–"}</td></tr>
+      <tr><th>Sending IP</th><td>${esc(reg.sending_ip ?? "–")}</td>
+          <th>Blacklist</th><td>${esc(reg.dnsbl_summary ?? "–")}${reg.dnsbl_checked_at ? ` <span class="stale">(checked ${dt(reg.dnsbl_checked_at)})</span>` : ""}</td></tr>
+      <tr><th>Notes</th><td colspan="3" class="wrap">${esc(reg.notes ?? "–")}</td></tr>
+    </tbody></table></div>`;
+  } else {
+    html += `<div class="banner warn">Not registered in <code>sender_domains</code> — no reseller/pricing/blacklist data. Add it with <code>pipeline.py sender-domains</code>.</div>`;
+  }
+  html += `<p class="stale">Bounces from this domain: ${fmt(bs.total_bounces)} across ${fmt(bs.leads_bounced)} leads${bs.last_bounce_at ? ", last " + dt(bs.last_bounce_at) : ""}</p>`;
+  html += `<div id="domain-mailboxes"></div>`;
+  $("domain-detail").innerHTML = html;
+  renderTable("domain-mailboxes", [
+    { key: "email", label: "Mailbox" },
+    { key: "warmup_status", label: "Warmup", render: r => esc(r.warmup_status ?? "–") },
+    { key: "daily_limit", label: "Daily limit", num: true },
+    { key: "overall_health_score", label: "Health", num: true, render: r => r.overall_health_score ?? "–" },
+    { key: "bounce_rate", label: "Bounce rate", num: true, render: r => r.bounce_rate != null ? pct(r.bounce_rate) : "–" },
+    { key: "last_outbound_at", label: "Last send", render: r => dt(r.last_outbound_at) || "–" },
+  ], d.mailboxes, { empty: "No mailboxes on this domain in this workspace." });
+  $("edit-domain-btn").onclick = () => openDomainEdit(domain, reg);
+  $("domain-detail-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function renderBounceChart(series) {
+  $("bounce-fallback").innerHTML = series.length ? "" : '<div class="empty">No send events in range.</div>';
+  if (!window.Chart) return;
+  const { ink, grid, s1 } = chartInk();
+  state.charts.bounce?.destroy();
+  state.charts.bounce = new Chart($("bounce-chart"), {
+    type: "line",
+    data: { labels: series.map(p => p.date),
+      datasets: [{ label: "Bounce rate", data: series.map(p => (p.bounce_rate ?? 0) * 100),
+        borderColor: s1, backgroundColor: s1, borderWidth: 2,
+        pointRadius: 3, pointHoverRadius: 5, tension: 0.15, _raw: series }] },
+    options: { maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: (ctx) => {
+          const p = ctx.dataset._raw[ctx.dataIndex];
+          return ` ${ctx.parsed.y.toFixed(1)}% — ${p.bounced} bounced of ${p.sent} sent`;
+        } } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: ink, maxTicksLimit: 8 } },
+        y: { beginAtZero: true, grid: { color: grid }, border: { display: false },
+             ticks: { color: ink, callback: v => v + "%" } } } }
+  });
+}
+
+/* ---------- pipeline ---------- */
+async function loadPipeline() {
+  const d = await getR("/api/pipeline").catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  const stages = d.stages;
+  $("pipeline-sub").textContent = d.range_active
+    ? `leads active in ${rangeLabel()} — click a stage to drill down`
+    : "click a stage to drill down";
+  if (window.Chart) {
+    const { ink, grid, s1 } = chartInk();
+    state.charts.stages?.destroy();
+    state.charts.stages = new Chart($("stage-chart"), {
+      type: "bar",
+      data: { labels: stages.map(s => s.stage.replace("_", " ")),
+        datasets: [{ data: stages.map(s => s.count), backgroundColor: s1,
+          borderRadius: { topLeft: 4, topRight: 4 }, maxBarThickness: 46 }] },
+      options: { maintainAspectRatio: false, animation: false,
+        onClick: (_, els) => { if (els.length) showStageLeads(stages[els[0].index].stage); },
+        plugins: { legend: { display: false } },
+        scales: { x: { grid: { display: false }, ticks: { color: ink } },
+                  y: { beginAtZero: true, grid: { color: grid }, border: { display: false },
+                       ticks: { color: ink, precision: 0 } } } }
+    });
+  }
+  $("stage-list").innerHTML = "<div class='table-wrap'><table><tbody>" + stages.map(s =>
+    `<tr class="clickable" onclick="showStageLeads('${s.stage}')">
+       <td>${esc(s.stage.replace("_", " "))}</td><td class="num">${fmt(s.count)}</td></tr>`).join("") + "</tbody></table></div>";
+}
+
+async function showStageLeads(status, more = false) {
+  if (!more) { state.leadsStatus = status; state.leadsOffset = 0; }
+  const d = await getR(`/api/pipeline/leads?status=${encodeURIComponent(status)}&limit=50&offset=${state.leadsOffset}`)
+    .catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  $("stage-leads-card").hidden = false;
+  $("stage-leads-title").textContent = `Leads — ${status.replace("_", " ")} (${fmt(d.total)})`;
+  state.stageLeads = more ? state.stageLeads.concat(d.leads) : d.leads;
+  renderTable("stage-leads", [
+    { key: "name", label: "Name" },
+    { key: "company", label: "Company" },
+    { key: "title", label: "Title" },
+    { key: "email", label: "Email" },
+    { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
+    { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
+  ], state.stageLeads, { empty: "No leads in this stage.", onRowClick: r => openLead(r.lead_id) });
+  state.leadsOffset += d.leads.length;
+  $("leads-more").hidden = state.leadsOffset >= d.total;
+  if (!more) $("stage-leads-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+$("leads-more").onclick = () => showStageLeads(state.leadsStatus, true);
+
+/* ---------- contacts (Section B) ---------- */
+const contactsState = { offset: 0, limit: 50, total: 0 };
+let contactsTimer = null;
+
+function contactsQuery() {
+  const p = new URLSearchParams({
+    q: $("contacts-q").value.trim(),
+    status: $("contacts-status").value,
+    missing: $("contacts-missing").value,
+    sort: $("contacts-sort").value,
+    limit: contactsState.limit, offset: contactsState.offset,
+  });
+  return "/api/contacts?" + p.toString();
+}
+async function loadContacts(resetOffset = true) {
+  if (resetOffset) contactsState.offset = 0;
+  if ($("contacts-status").options.length <= 1) {
+    $("contacts-status").innerHTML = '<option value="">Any stage</option>' +
+      STAGES.map(s => `<option>${s}</option>`).join("");
+  }
+  const d = await getR(contactsQuery()).catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  contactsState.total = d.total;
+  renderTable("contacts-table", leadColumns(), d.leads,
+    { empty: "No contacts match.", filter: false, onRowClick: r => openLead(r.lead_id) });
+  const from = d.total ? contactsState.offset + 1 : 0;
+  const to = contactsState.offset + d.leads.length;
+  $("contacts-count").textContent = `${fmt(d.total)} contacts`;
+  $("contacts-page").textContent = `${from}–${to} of ${fmt(d.total)}`;
+  $("contacts-prev").disabled = contactsState.offset === 0;
+  $("contacts-next").disabled = to >= d.total;
+}
+$("contacts-q").oninput = () => { clearTimeout(contactsTimer); contactsTimer = setTimeout(() => loadContacts(), 300); };
+$("contacts-status").onchange = $("contacts-missing").onchange = $("contacts-sort").onchange = () => loadContacts();
+$("contacts-prev").onclick = () => { contactsState.offset = Math.max(0, contactsState.offset - contactsState.limit); loadContacts(false); };
+$("contacts-next").onclick = () => { contactsState.offset += contactsState.limit; loadContacts(false); };
+
+/* ---------- companies (Section C) ---------- */
+const companiesState = { offset: 0, limit: 50 };
+let companiesTimer = null;
+
+async function loadCompanies(resetOffset = true) {
+  if (resetOffset) companiesState.offset = 0;
+  const p = new URLSearchParams({
+    q: $("companies-q").value.trim(), sort: $("companies-sort").value,
+    limit: companiesState.limit, offset: companiesState.offset,
+  });
+  const d = await get("/api/companies?" + p.toString()).catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  renderTable("companies-table", [
+    { key: "name", label: "Company", render: r => esc(r.name || "—") },
+    { key: "domain", label: "Primary domain", render: r => esc(r.domain ?? "–") },
+    { key: "domains", label: "Branches", num: true,
+      render: r => r.domains > 1 ? `<b>${r.domains}</b>` : (r.domains || 0) },
+    { key: "industry", label: "Industry", render: r => esc(r.industry ?? "–") },
+    { key: "headcount", label: "Size", render: r => esc(r.headcount ?? "–") },
+    { key: "leads", label: "Leads", num: true, render: r => fmt(r.leads) },
+  ], d.companies, { empty: "No companies match.", filter: false,
+    onRowClick: r => openCompany(r.id) });
+  $("companies-page").textContent = `${companiesState.offset + 1}–${companiesState.offset + d.companies.length}`;
+  $("companies-prev").disabled = companiesState.offset === 0;
+  $("companies-next").disabled = !d.has_more;
+}
+$("companies-q").oninput = () => { clearTimeout(companiesTimer); companiesTimer = setTimeout(() => loadCompanies(), 300); };
+$("companies-sort").onchange = () => loadCompanies();
+$("companies-prev").onclick = () => { companiesState.offset = Math.max(0, companiesState.offset - companiesState.limit); loadCompanies(false); };
+$("companies-next").onclick = () => { companiesState.offset += companiesState.limit; loadCompanies(false); };
+
+async function openCompany(companyId) {
+  const d = await get(`/api/companies/${companyId}`).catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  const c = d.company;
+  openEditPanel(esc(c.name || "Company"),
+    [c.industry, c.headcount && c.headcount + " employees", [c.hq_city, c.hq_country].filter(Boolean).join(", ")]
+      .filter(Boolean).join(" · ") || "—");
+  const domainChips = d.domains.length
+    ? d.domains.map(x => `<span class="domain-chip">${esc(x.value)}${x.role ? `<span class="role">${esc(x.role)}</span>` : ""}${x.is_verified ? " ✓" : ""}</span>`).join("")
+    : '<span class="stale">no branch domains recorded</span>';
+  const emailChips = d.public_emails.length
+    ? d.public_emails.map(x => `<span class="domain-chip">${esc(x.value)}</span>`).join("") : "";
+  $("edit-body").innerHTML = `
+    ${d.pending_merges ? `<div class="banner warn">${d.pending_merges} pending merge candidate(s) involve this company — see Review merges.</div>` : ""}
+    <form id="company-edit-form">
+      <h3>Edit company <span class="sub" style="font-weight:400;color:var(--ink-muted)">authoritative — overwrites</span></h3>
+      <div class="row"><input name="name" placeholder="Name" value="${esc(c.name ?? "")}"></div>
+      <div class="row"><input name="industry" placeholder="Industry" value="${esc(c.industry ?? "")}"><input name="headcount" placeholder="Headcount" value="${esc(c.headcount ?? "")}"></div>
+      <div class="row"><input name="hq_city" placeholder="HQ city" value="${esc(c.hq_city ?? "")}"><input name="hq_country" placeholder="HQ country" value="${esc(c.hq_country ?? "")}"></div>
+      <div class="row"><button class="primary">Save company</button></div>
+      <div class="msg" id="company-msg"></div>
+    </form>
+    <div style="border-top:1px solid var(--grid);padding-top:12px">
+      <h3 style="font-size:13px">Domains &amp; branches</h3>
+      <div>${domainChips}</div>
+      ${emailChips ? `<h3 style="font-size:13px;margin-top:10px">Public emails</h3><div>${emailChips}</div>` : ""}
+    </div>
+    <div style="border-top:1px solid var(--grid);padding-top:12px">
+      <h3 style="font-size:13px">Leads at this company (${d.lead_count}${d.lead_count >= 200 ? "+" : ""})</h3>
+      <div id="company-leads"></div>
+    </div>`;
+  renderTable("company-leads", [
+    { key: "name", label: "Name", render: r => esc(r.name || "—") },
+    { key: "title", label: "Title", render: r => esc(r.title ?? "") },
+    { key: "status", label: "Stage" },
+  ], d.leads, { empty: "No leads in this workspace.", filter: d.leads.length > 8,
+    onRowClick: r => { closeEditPanel(); openLead(r.lead_id); } });
+  $("company-edit-form").onsubmit = (e) => {
+    e.preventDefault();
+    const body = {};
+    for (const inp of e.target.querySelectorAll("input[name]")) if (inp.value.trim()) body[inp.name] = inp.value.trim();
+    formResult("company-msg", post(`/api/companies/${companyId}/edit`, body), () => loadCompanies(false));
+  };
+}
+
+$("merge-toggle").onclick = () => {
+  const card = $("merge-card");
+  card.hidden = !card.hidden;
+  $("merge-toggle").textContent = card.hidden ? "Review merges" : "Hide merges";
+  if (!card.hidden) {
+    $("merge-list").innerHTML = '<div class="empty">Loading…</div>';
+    card.scrollIntoView({ behavior: "smooth", block: "start" });
+    loadMergeReview();
+  }
+};
+async function loadMergeReview() {
+  const d = await api("/api/merge-candidates?limit=50").catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  const items = d.candidates || [];
+  $("merge-list").innerHTML = items.length ? items.map(m => {
+    const p = m.payload || {};
+    const a = p.existing_name || `company #${m.existing_company_id}`;
+    const aD = p.existing_domain ? ` <span class="stale">${esc(p.existing_domain)}</span>` : "";
+    const b = p.incoming_name || p.candidate_name || (m.candidate_company_id ? `company #${m.candidate_company_id}` : "—");
+    const bD = (p.incoming_domain || p.candidate_domain) ? ` <span class="stale">${esc(p.incoming_domain || p.candidate_domain)}</span>` : "";
+    const conf = p.confidence ? `<span class="flag ${p.confidence === "HIGH" ? "ok" : p.confidence === "LOW" ? "bad" : "warn"}">${esc(p.confidence)}</span>` : "";
+    return `<div class="merge-item" data-id="${esc(m.id)}">
+      <div class="pair"><b>${esc(a)}</b>${aD} <span class="vs">↔</span> <b>${esc(b)}</b>${bD}
+        ${conf} <span class="stale">${esc(m.reason || "")}</span></div>
+      <div class="controls" style="margin:8px 0 0">
+        <button class="primary small" data-act="approve">Merge</button>
+        <button class="small" data-act="reject">Keep separate</button>
+      </div></div>`;
+  }).join("") : '<div class="empty">Nothing queued for review — no ambiguous company matches.</div>';
+  $("merge-list").querySelectorAll("button[data-act]").forEach(btn => btn.onclick = () => {
+    const id = btn.closest(".merge-item").dataset.id;
+    const approve = btn.dataset.act === "approve";
+    if (approve && !confirm("Merge these two companies? This reassigns all leads and cannot be undone here.")) return;
+    post(`/api/merge-candidates/${encodeURIComponent(id)}/resolve`, { approve })
+      .then(() => { toast(approve ? "Merged" : "Kept separate"); loadMergeReview(); loadCompanies(false); })
+      .catch(e => toast(e.message));
+  });
+}
+
+function openEditPanel(title, meta) {
+  $("edit-title").innerHTML = title;
+  $("edit-meta").textContent = meta || "";
+  $("edit-body").innerHTML = "";
+  $("overlay").style.display = "block";
+  $("editPanel").style.display = "block";
+}
+function closeEditPanel() {
+  $("editPanel").style.display = "none";
+  if ($("slideover").style.display !== "block") $("overlay").style.display = "none";
+}
+
+/* ---------- data quality (Section D) ---------- */
+const QUALITY_BUCKETS = {
+  missing_email: "Missing email",
+  linkable: "Linkable (company text, unlinked)",
+  missing_company: "Missing company",
+  missing_title: "Missing title",
+  unknown_name: "Unknown / no name",
+};
+const qualityState = { bucket: null, missing: null, offset: 0, limit: 50, total: 0, rows: [], sel: new Set() };
+
+async function loadQuality() {
+  const d = await getR("/api/data-quality").catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  $("quality-sub").textContent = d.range_active
+    ? `leads active in ${rangeLabel()} — click a bucket to work it`
+    : "under-enriched leads — click a bucket to work it";
+  const byKey = Object.fromEntries(d.buckets.map(b => [b.key, b]));
+  $("quality-tiles").innerHTML = Object.entries(QUALITY_BUCKETS).map(([key, label]) => {
+    const b = byKey[key] || { count: 0, missing: key };
+    const active = qualityState.bucket === key ? " style='outline:2px solid var(--series-1)'" : "";
+    return `<div class="tile clickable" data-key="${key}" data-missing="${b.missing}"${active}>
+      <div class="label">${label}</div><div class="value">${fmt(b.count)}</div></div>`;
+  }).join("") + `<div class="tile"><div class="label">Total leads</div><div class="value">${fmt(d.total)}</div></div>`;
+  $("quality-tiles").querySelectorAll(".tile.clickable").forEach(t =>
+    t.style.cursor = "pointer", t.onclick = () => openBucket(t.dataset.key, t.dataset.missing));
+  $("cleanup-summary").textContent = d.junk_deletable
+    ? `${fmt(d.junk_deletable)} truly-empty leads are deletable — preview first.`
+    : "No empty leads to clean up.";
+}
+
+async function openBucket(key, missing, resetOffset = true) {
+  if (resetOffset) { qualityState.offset = 0; qualityState.sel = new Set(); }
+  qualityState.bucket = key; qualityState.missing = missing;
+  const p = new URLSearchParams({ missing, limit: qualityState.limit, offset: qualityState.offset, sort: "recent" });
+  const d = await getR("/api/contacts?" + p.toString()).catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  qualityState.total = d.total; qualityState.rows = d.leads;
+  $("quality-list-card").hidden = false;
+  $("quality-list-title").textContent = `${QUALITY_BUCKETS[key]} — ${fmt(d.total)}`;
+  $("quality-all").checked = false;
+  renderTable("quality-table", [
+    { key: "_sel", label: "", sortVal: () => 0,
+      render: r => `<input type="checkbox" class="qsel" data-id="${r.lead_id}" ${qualityState.sel.has(r.lead_id) ? "checked" : ""}>` },
+    ...leadColumns(),
+  ], d.leads, { empty: "Nothing in this bucket.", filter: false,
+    onRowClick: r => openLead(r.lead_id),
+    onDraw: (el) => el.querySelectorAll(".qsel").forEach(cb => cb.onchange = () => {
+      const id = +cb.dataset.id;
+      cb.checked ? qualityState.sel.add(id) : qualityState.sel.delete(id);
+      renderQualityActions();
+    }) });
+  const to = qualityState.offset + d.leads.length;
+  $("quality-page").textContent = d.total ? `${qualityState.offset + 1}–${to} of ${fmt(d.total)}` : "";
+  $("quality-prev").disabled = qualityState.offset === 0;
+  $("quality-next").disabled = to >= d.total;
+  renderQualityActions();
+  loadQuality();  // refresh tile highlight
+  if (resetOffset) $("quality-list-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function renderQualityActions() {
+  const n = qualityState.sel.size;
+  $("quality-selected").textContent = n ? `${n} selected` : "";
+  const box = $("quality-actions");
+  const btns = [];
+  if (qualityState.bucket === "linkable")
+    btns.push(`<button class="primary small" id="q-link" ${n ? "" : "disabled"}>Link ${n} to companies</button>`);
+  if (qualityState.bucket === "missing_email")
+    btns.push(`<button class="primary small" id="q-find" ${n ? "" : "disabled"}>Find ${n} emails</button>`);
+  btns.push(`<button class="small" id="q-serper" ${n ? "" : "disabled"}>Research ${n} (Serper)</button>`);
+  box.innerHTML = btns.join(" ");
+  const link = $("q-link"), find = $("q-find"), serper = $("q-serper");
+  if (link) link.onclick = doBulkLink;
+  if (find) find.onclick = doFindEmails;
+  if (serper) serper.onclick = doSerper;
+}
+$("quality-all").onchange = (e) => {
+  qualityState.rows.forEach(r => e.target.checked ? qualityState.sel.add(r.lead_id) : qualityState.sel.delete(r.lead_id));
+  openBucket(qualityState.bucket, qualityState.missing, false);
+};
+$("quality-prev").onclick = () => { qualityState.offset = Math.max(0, qualityState.offset - qualityState.limit); openBucket(qualityState.bucket, qualityState.missing, false); };
+$("quality-next").onclick = () => { qualityState.offset += qualityState.limit; openBucket(qualityState.bucket, qualityState.missing, false); };
+
+function selectedIds() { return [...qualityState.sel]; }
+
+async function doBulkLink() {
+  const ids = selectedIds();
+  if (!ids.length) return;
+  if (!confirm(`Link ${ids.length} lead(s) to a company from their company text? Creates the company record if needed.`)) return;
+  try {
+    const r = await post("/api/leads/bulk-link-company", { lead_ids: ids });
+    toast(`Linked ${r.linked}, skipped ${r.skipped}`);
+    qualityState.sel = new Set();
+    openBucket(qualityState.bucket, qualityState.missing, false);
+  } catch (e) { toast(e.message); }
+}
+
+async function doFindEmails() {
+  const ids = selectedIds();
+  if (!ids.length) return;
+  // Preview domain resolution first so the credit spend is informed.
+  let targets = null;
+  try { targets = await getR(`/api/enrich/targets?lead_ids=${ids.join(",")}`); } catch (e) {}
+  const t = targets?.targets || [];
+  const noDom = t.filter(x => x.no_domain).length;
+  const multi = t.filter(x => x.multi_domain).length;
+  const runnable = ids.length - noDom;
+  const warn = `Run the email finder on ${runnable} lead(s)? This spends provider credits.`
+    + (noDom ? `\n\n${noDom} have no resolvable domain and will be skipped.` : "")
+    + (multi ? `\n${multi} have multiple company domains — the primary/verified one is tried first.` : "");
+  if (!runnable) { toast("None of the selected leads have a resolvable domain."); return; }
+  if (!confirm(warn)) return;
+  post("/api/enrich/email-finder", { workspace: state.workspace, lead_ids: ids })
+    .then(updateSyncPill).catch(e => toast(e.message));
+}
+
+async function doSerper() {
+  const ids = selectedIds();
+  if (!ids.length) return;
+  if (!confirm(`Run Serper web research on ${ids.length} lead(s)? Results appear in the sync status for the agent to map. This spends Serper credits.`)) return;
+  post("/api/enrich/serper", { workspace: state.workspace, lead_ids: ids })
+    .then(updateSyncPill).catch(e => toast(e.message));
+}
+
+$("cleanup-preview-btn").onclick = async () => {
+  try {
+    const d = await api("/api/cleanup/preview");
+    if (!d.selected) { $("cleanup-summary").textContent = "No empty leads to clean up."; return; }
+    const top = (d.distribution?.top_sources || []).slice(0, 3)
+      .map(s => `${esc(s.source_detail)} (${s.count})`).join(", ");
+    $("cleanup-summary").innerHTML = `<b>${fmt(d.selected)}</b> deletable${top ? ` — top sources: ${top}` : ""}. `
+      + `<button class="small" id="cleanup-run-btn">Delete ${fmt(d.selected)} empty leads</button>`;
+    $("cleanup-run-btn").onclick = async () => {
+      if (!confirm(`Permanently delete ${d.selected} empty leads? They are quarantined first, but this cannot be undone from here.`)) return;
+      try {
+        const r = await post("/api/cleanup/run", {});
+        toast(`Deleted ${r.deleted} (quarantined ${r.quarantined})`);
+        loadQuality();
+      } catch (e) { toast(e.message); }
+    };
+  } catch (e) { toast(e.message); }
+};
+
+/* ---------- campaigns ---------- */
+async function loadCampaigns() {
+  const [audit, daily] = await Promise.all([
+    getR("/api/campaigns"),
+    getR("/api/campaigns/daily" + ($("daily-campaign").value ? `?campaign_id=${$("daily-campaign").value}` : "")),
+  ]).catch(e => { toast(e.message); return [null, null]; });
+  if (!audit) return;
+  state.campaigns = audit.campaigns;
+  fillCampaignSelects();
+  renderDaily(daily);
+  renderTable("campaigns", [
+    { key: "name", label: "Campaign" },
+    { key: "status", label: "Status" },
+    { key: "sent", label: "Sent", num: true, render: r => fmt(r.sent) },
+    { key: "replies", label: "Replies", num: true, render: r => fmt(r.replies) },
+    { key: "reply_rate", label: "Reply rate", num: true, render: r => pct(r.reply_rate) },
+    { key: "positive_rate", label: "Positive rate", num: true, render: r => pct(r.positive_rate) },
+    { key: "bounce_rate", label: "Bounce rate", num: true,
+      render: r => r.bounce_rate != null && r.bounce_rate >= 0.05
+        ? `<span class="flag bad">${pct(r.bounce_rate)}</span>` : pct(r.bounce_rate) },
+  ], audit.campaigns, { empty: "No campaigns with activity in this workspace.",
+    onRowClick: r => showCampaign(r.id, r.name) });
+}
+
+function fillCampaignSelects() {
+  for (const id of ["daily-campaign", "attr-campaign"]) {
+    const sel = $(id), cur = sel.value;
+    sel.innerHTML = '<option value="">All campaigns</option>' + state.campaigns.map(c =>
+      `<option value="${c.id}">${esc(c.name)}</option>`).join("");
+    sel.value = cur;
+  }
+}
+$("daily-campaign").onchange = loadCampaigns;
+
+const DAILY_LABELS = {
+  email_sent: "Email sent", email_received: "Email received",
+  dm_sent: "DM sent", dm_received: "DM received",
+  connects_sent: "Connects sent", connects_accepted: "Connects accepted",
+  bounces: "Bounces", interested: "Interested", not_interested: "Not interested",
+  meetings: "Meetings",
+};
+
+function renderDaily(d) {
+  if (!d) return;
+  if (window.Chart) {
+    const { ink, grid, s1, s2, s3 } = chartInk();
+    state.charts.daily?.destroy();
+    state.charts.daily = new Chart($("daily-chart"), {
+      type: "line",
+      data: { labels: d.days.map(p => p.date), datasets: [
+        { label: "Email sent", data: d.days.map(p => p.email_sent), borderColor: s1, backgroundColor: s1 },
+        { label: "Replies (email + DM)", data: d.days.map(p => p.email_received + p.dm_received), borderColor: s3, backgroundColor: s3 },
+        { label: "Bounces", data: d.days.map(p => p.bounces), borderColor: s2, backgroundColor: s2 },
+      ].map(ds => ({ ...ds, borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.15 })) },
+      options: { maintainAspectRatio: false, animation: false,
+        plugins: { legend: { labels: { color: ink, boxWidth: 12 } } },
+        scales: { x: { grid: { display: false }, ticks: { color: ink, maxTicksLimit: 10 } },
+                  y: { beginAtZero: true, grid: { color: grid }, border: { display: false },
+                       ticks: { color: ink, precision: 0 } } } }
+    });
+  }
+  const cols = [{ key: "date", label: "Date" }].concat(
+    d.columns.map(k => ({ key: k, label: DAILY_LABELS[k] || k, num: true })));
+  const rows = [...d.days].reverse();
+  if (rows.length) rows.push({ date: "TOTAL", ...d.totals });
+  renderTable("daily-matrix", cols, rows, { empty: "No activity in range.", filter: false });
+}
+
+const campaignLeadsState = { campaignId: null, name: "", offset: 0, limit: 50, total: 0 };
+let campaignLeadsTimer = null;
+
+async function showCampaign(campaignId, name) {
+  campaignLeadsState.campaignId = campaignId;
+  campaignLeadsState.name = name;
+  campaignLeadsState.offset = 0;
+  $("campaign-leads-q").value = "";
+  const [detail, subjects] = await Promise.all([
+    getR(`/api/campaigns/detail?campaign_id=${campaignId}`),
+    get(`/api/campaigns/subjects?campaign_id=${campaignId}&limit=25`),
+  ]).catch(e => { toast(e.message); return [null, null]; });
+  if (!detail) return;
+  $("campaign-detail-card").hidden = false;
+  $("campaign-detail-title").textContent = name;
+  const a = detail.activity || {};
+  const stagesLine = detail.lead_statuses.filter(s => s.count > 0)
+    .map(s => `${esc(s.stage.replace("_", " "))}: <b>${fmt(s.count)}</b>`).join(" · ");
+  $("campaign-detail").innerHTML = `
+    <p class="stale">${fmt(a.events)} events · ${fmt(a.leads_touched)} leads active in ${esc(rangeLabel())} ·
+       ${dt(a.first_activity_at) || "?"} → ${dt(a.last_activity_at) || "?"} UTC
+       <span title="senders now live on the Deliverability tab">· senders → Deliverability</span></p>
+    <p>${stagesLine || ""}</p>`;
+  loadCampaignLeads();
+  renderSubjects(subjects);
+  $("campaign-detail-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function loadCampaignLeads(resetOffset = false) {
+  if (resetOffset) campaignLeadsState.offset = 0;
+  const c = campaignLeadsState;
+  const p = new URLSearchParams({
+    campaign_id: c.campaignId, q: $("campaign-leads-q").value.trim(),
+    limit: c.limit, offset: c.offset,
+  });
+  const d = await getR("/api/campaigns/leads?" + p.toString())
+    .catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  c.total = d.total;
+  renderTable("campaign-leads", leadColumns(), d.leads,
+    { empty: "No leads active in this campaign for the selected range.", filter: false,
+      onRowClick: r => openLead(r.lead_id) });
+  const to = c.offset + d.leads.length;
+  $("campaign-leads-count").textContent = `${fmt(d.total)} leads`;
+  $("campaign-leads-page").textContent = d.total ? `${c.offset + 1}–${to} of ${fmt(d.total)}` : "";
+  $("campaign-leads-prev").disabled = c.offset === 0;
+  $("campaign-leads-next").disabled = to >= d.total;
+}
+$("campaign-leads-q").oninput = () => { clearTimeout(campaignLeadsTimer); campaignLeadsTimer = setTimeout(() => loadCampaignLeads(true), 300); };
+$("campaign-leads-prev").onclick = () => { campaignLeadsState.offset = Math.max(0, campaignLeadsState.offset - campaignLeadsState.limit); loadCampaignLeads(); };
+$("campaign-leads-next").onclick = () => { campaignLeadsState.offset += campaignLeadsState.limit; loadCampaignLeads(); };
+
+function renderSubjects(d) {
+  if (!d) return;
+  renderTable("subjects", [
+    { key: "subject", label: "Subject", wrap: true },
+    { key: "sends", label: "Sends", num: true, render: r => fmt(r.sends) },
+    { key: "replies", label: "Replies", num: true, render: r => fmt(r.replies) },
+    { key: "reply_rate", label: "Reply rate", num: true, render: r => pct(r.reply_rate) },
+    { key: "sample_event_id", label: "Copy", sortVal: () => 0,
+      render: r => r.sample_event_id
+        ? `<button class="small" onclick="toggleCopy(this, ${r.sample_event_id})">View full copy</button>` : "–" },
+  ], d.subjects, { empty: "No subjects recorded for this campaign." });
+}
+
+window.toggleCopy = async function (btn, eventId) {
+  const tr = btn.closest("tr");
+  const existing = tr.nextElementSibling;
+  if (existing && existing.classList.contains("copy-row")) { existing.remove(); btn.textContent = "View full copy"; return; }
+  btn.textContent = "Loading…";
+  try {
+    const d = await api(`/api/events/${eventId}/body`);
+    const row = document.createElement("tr");
+    row.className = "copy-row";
+    row.innerHTML = `<td colspan="${tr.children.length}" class="wrap">
+      <div class="copy-body">${esc(d.body || "(empty body)")}</div>
+      <div class="stale">${esc(d.event_type)} · ${dt(d.created_at)} UTC · from ${esc(d.sender ?? "?")}${d.body_truncated ? " · (stored copy truncated)" : ""}</div></td>`;
+    tr.after(row);
+    btn.textContent = "Hide copy";
+  } catch (e) { toast(e.message); btn.textContent = "View full copy"; }
+};
+
+/* ---------- attributes ---------- */
+async function loadAttributes() {
+  if (!state.campaigns.length) {
+    try { state.campaigns = (await getR("/api/campaigns")).campaigns; fillCampaignSelects(); } catch (e) {}
+  }
+  const field = $("attr-field").value, min = $("attr-min").value || 1;
+  const cid = $("attr-campaign").value;
+  const d = await get(`/api/attributes?field=${field}&min_sample=${min}${cid ? `&campaign_id=${cid}` : ""}`)
+    .catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  renderTable("attributes", [
+    { key: "value", label: "Value", wrap: true },
+    { key: "contacted", label: "Contacted", num: true, render: r => fmt(r.contacted) },
+    { key: "replied", label: "Replied", num: true, render: r => fmt(r.replied) },
+    { key: "reply_rate", label: "Reply rate", num: true, render: r => pct(r.reply_rate) },
+    { key: "positive", label: "Positive", num: true, render: r => fmt(r.positive) },
+    { key: "positive_rate", label: "Positive rate", num: true, render: r => pct(r.positive_rate) },
+  ], d.rows, { empty: `No values with ≥${min} contacted leads. Lower the threshold?` });
+}
+$("attr-field").onchange = $("attr-min").onchange = $("attr-campaign").onchange = loadAttributes;
+
+/* ---------- CRM ---------- */
+async function loadCrm() {
+  const d = await get("/api/crm").catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  $("crm-banner").innerHTML = d.configured
+    ? `<div class="banner">CRM: ${d.configs.map(c => `<b>${esc(c.platform)}</b>${c.enabled ? "" : " (disabled)"}`).join(", ")}</div>`
+    : `<div class="banner warn">No CRM configured for this workspace — set one up with <code>pipeline.py crm-sync setup</code>. Views below still show eligibility.</div>`;
+  $("crm-tiles").innerHTML = [
+    ["Synced", fmt(d.counts.synced)],
+    ["Needs update", fmt(d.counts.stale)],
+    ["Eligible, unsynced", fmt(d.counts.pending)],
+    ["Errors", fmt(d.counts.errors)],
+  ].map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
+  $("crm-sync-all").disabled = !d.configured;
+  renderTable("crm-pending", [
+    { key: "name", label: "Name" },
+    { key: "company", label: "Company" },
+    { key: "email", label: "Email" },
+    { key: "status", label: "Stage" },
+    { key: "sentiment", label: "Sentiment", render: r => esc(r.sentiment ?? "–") },
+    { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
+    { key: "lead_id", label: "", sortVal: () => 0,
+      render: r => d.configured ? `<button class="small" onclick="crmSyncLead(${r.lead_id})">Sync</button>` : "" },
+  ], d.pending, { empty: "Nothing eligible is waiting to sync.", onRowClick: r => openLead(r.lead_id) });
+  renderTable("crm-synced", [
+    { key: "name", label: "Name" },
+    { key: "company", label: "Company" },
+    { key: "status", label: "Stage" },
+    { key: "platform", label: "CRM" },
+    { key: "has_deal", label: "Objects", sortVal: r => (r.has_contact + r.has_deal + r.has_note),
+      render: r => [r.has_contact && "contact", r.has_deal && "deal", r.has_note && "note"].filter(Boolean).join(", ") || "–" },
+    { key: "last_synced_at", label: "Last synced", render: r => dt(r.last_synced_at) },
+    { key: "stale", label: "State", sortVal: r => (r.last_sync_status === "error" ? 0 : r.stale ? 1 : 2),
+      render: r => r.last_sync_status === "error"
+        ? `<span class="flag bad" title="${esc(r.sync_error ?? "")}">✖ error</span>`
+        : r.stale ? '<span class="flag warn">▲ needs update</span>' : '<span class="flag ok">✓ in sync</span>' },
+    { key: "lead_id", label: "", sortVal: () => 0,
+      render: r => d.configured ? `<button class="small" onclick="crmSyncLead(${r.lead_id})">Update</button>` : "" },
+  ], d.synced, { empty: "Nothing synced to a CRM yet.", onRowClick: r => openLead(r.lead_id) });
+  renderTable("crm-runs", [
+    { key: "started_at", label: "Started", render: r => dt(r.started_at) },
+    { key: "platform", label: "CRM" },
+    { key: "status", label: "Status" },
+    { key: "leads_checked", label: "Checked", num: true },
+    { key: "contacts_created", label: "Created", num: true },
+    { key: "contacts_updated", label: "Updated", num: true },
+    { key: "events_pushed", label: "Events", num: true },
+    { key: "errors", label: "Errors", num: true,
+      render: r => r.errors ? `<span class="flag bad" title="${esc(r.error_details ?? "")}">${r.errors}</span>` : "0" },
+  ], d.recent_runs, { empty: "No sync runs recorded yet.", filter: false });
+}
+
+window.crmSyncLead = function (leadId) {
+  if (!confirm(`Sync lead #${leadId} to the CRM now?`)) return;
+  post("/api/crm/sync", { workspace: state.workspace, lead_id: leadId })
+    .then(updateSyncPill).catch(e => toast(e.message));
+};
+$("crm-sync-all").onclick = () => {
+  const maxAge = $("crm-max-age").value || null;
+  if (!confirm(`Sync all eligible leads${maxAge ? ` active in the last ${maxAge}` : ""} to the CRM?`)) return;
+  post("/api/crm/sync", { workspace: state.workspace, max_age: maxAge })
+    .then(updateSyncPill).catch(e => toast(e.message));
+};
+
+/* ---------- activity (Section G: search the whole range) ---------- */
+let activityTimer = null;
+function activityParams() {
+  const p = new URLSearchParams({ limit: 50 });
+  const q = $("activity-q").value.trim();
+  const t = $("activity-type").value;
+  if (q) p.set("q", q);
+  if (t) p.set("event_type", t);
+  return p;
+}
+async function loadActivityTypes() {
+  try {
+    const d = await getR("/api/activity/types");
+    const sel = $("activity-type"), cur = sel.value;
+    sel.innerHTML = '<option value="">All types</option>' +
+      d.event_types.map(t => `<option value="${esc(t.event_type)}">${esc(t.event_type)} (${fmt(t.n)})</option>`).join("");
+    sel.value = cur;
+  } catch (e) { /* dropdown stays as-is on transient error */ }
+}
+async function loadActivity(reset) {
+  if (reset) { state.activityCursor = null; state.activityRows = []; loadActivityTypes(); }
+  const p = activityParams();
+  if (state.activityCursor) p.set("before", state.activityCursor);
+  const d = await getR("/api/activity?" + p.toString()).catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  state.activityRows = (state.activityRows || []).concat(d.events);
+  renderTable("activity", [
+    { key: "event_at", label: "When (UTC)", render: r => dt(r.event_at) },
+    { key: "event_type", label: "Event", render: r => esc(r.event_type) + (r.direction === "inbound" ? " ↩" : "") },
+    { key: "lead_name", label: "Lead", render: r => esc(r.lead_name ?? "#" + r.lead_id) },
+    { key: "company", label: "Company",
+      render: r => esc(r.company ?? "") + (r.company_domain ? ` <span class="stale">${esc(r.company_domain)}</span>` : "") },
+    { key: "subject", label: "Subject / campaign", wrap: true, render: r => esc(r.subject ?? r.campaign_name ?? "") },
+  ], state.activityRows, { empty: "No activity matches — adjust the search, type, or range.",
+    filter: false, onRowClick: r => r.lead_id && openLead(r.lead_id) });
+  $("activity-count").textContent = `${fmt(state.activityRows.length)}${d.next_before ? "+" : ""} shown · ${rangeLabel()}`;
+  state.activityCursor = d.next_before;
+  $("activity-more").hidden = !d.next_before;
+}
+$("activity-more").onclick = () => loadActivity(false);
+$("activity-q").oninput = () => { clearTimeout(activityTimer); activityTimer = setTimeout(() => loadActivity(true), 300); };
+$("activity-type").onchange = () => loadActivity(true);
+
+/* ---------- sync / outbox ---------- */
+const outboxState = { entity_type: null, op: null };
+
+function outboxUrl() {
+  const p = new URLSearchParams();
+  if ($("outbox-ws-only").checked) p.set("workspace", state.workspace);
+  if (outboxState.entity_type) p.set("entity_type", outboxState.entity_type);
+  if (outboxState.op) p.set("op", outboxState.op);
+  const qs = p.toString();
+  return "/api/outbox" + (qs ? "?" + qs : "");
+}
+
+async function loadOutbox() {
+  const d = await api(outboxUrl()).catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  // Be honest about what "Push to relay" actually sends: every upsert, plus
+  // deletes for entity types the relay has a delete action for (lead/company/
+  // workspace-membership). sender_account/sender_domain deletes have no
+  // relay-side handler at all and can never push by any mechanism.
+  const parts = [];
+  if (d.pushable_total) parts.push(`<b>${fmt(d.pushable_total)}</b> change(s) will push on <b>Push to relay</b>`);
+  else parts.push("No pending changes to push");
+  if (d.delete_total) parts.push(`<b>${fmt(d.delete_total)}</b> delete tombstone(s) are local-only — <b>not sent by Push</b> (the relay has no delete action for these entity types)`);
+  $("outbox-summary").innerHTML = `<div class="banner">${parts.join(" · ")}</div>`;
+  renderTable("outbox-groups", [
+    { key: "entity_type", label: "Entity" },
+    { key: "op", label: "Op", render: r => r.op === "delete"
+      ? `<span class="flag warn">delete</span>` : esc(r.op) },
+    { key: "n", label: "Pending", num: true, render: r => fmt(r.n) },
+    { key: "oldest", label: "Oldest", render: r => dt(r.oldest) },
+    { key: "newest", label: "Newest", render: r => dt(r.newest) },
+    { key: "with_errors", label: "With errors", num: true,
+      render: r => r.with_errors ? `<span class="flag bad">${fmt(r.with_errors)}</span>` : "0" },
+  ], d.groups, { empty: `Outbox is empty — everything is pushed. (total: ${fmt(d.total)})`,
+    filter: false, onRowClick: r => { outboxState.entity_type = r.entity_type; outboxState.op = r.op; loadOutbox(); } });
+
+  // Filter status + honest truncation label (the row list is a LIMIT slice).
+  const f = $("outbox-filter");
+  if (outboxState.entity_type || outboxState.op) {
+    f.innerHTML = `filtered: <b>${esc(outboxState.entity_type ?? "any")} / ${esc(outboxState.op ?? "any")}</b> `
+      + `<button class="small" id="outbox-clear">clear</button>`;
+    $("outbox-clear").onclick = () => { outboxState.entity_type = null; outboxState.op = null; loadOutbox(); };
+  } else { f.textContent = "showing newest across all groups — click a group to drill in"; }
+  $("outbox-rowcount").textContent = d.matched > d.showing
+    ? `showing ${fmt(d.showing)} of ${fmt(d.matched)} — narrow with a group`
+    : `${fmt(d.matched)} row${d.matched === 1 ? "" : "s"}`;
+
+  renderTable("outbox-rows", [
+    { key: "entity_type", label: "Entity" },
+    { key: "entity_id", label: "ID", wrap: true },
+    { key: "op", label: "Op", render: r => r.op === "delete"
+      ? `<span class="flag warn">delete</span>` : esc(r.op) },
+    { key: "entity_key", label: "Key (deletes)", wrap: true, render: r => esc(r.entity_key ?? "–") },
+    { key: "workspace_slug", label: "Workspace", render: r => esc(r.workspace_slug ?? "–") },
+    { key: "dirty_at", label: "Dirty since", render: r => dt(r.dirty_at) },
+    { key: "attempts", label: "Attempts", num: true },
+    { key: "last_error", label: "Last error", wrap: true, render: r => esc(r.last_error ?? "") },
+  ], d.rows, { empty: "Nothing pending.", filter: false, onRowClick: r => openOutboxItem(r) });
+}
+
+async function openOutboxItem(row) {
+  const p = new URLSearchParams({ entity_type: row.entity_type, entity_id: row.entity_id });
+  if (row.op) p.set("op", row.op);
+  const d = await api("/api/outbox/detail?" + p.toString()).catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  openEditPanel(`${esc(d.entity_type)} <span class="stale">${esc(d.entity_id)}</span>`,
+    row.workspace_slug ? `workspace: ${esc(row.workspace_slug)}` : "org-wide entity");
+  const kv = (obj) => Object.entries(obj || {}).map(([k, v]) =>
+    `<tr><th>${esc(k)}</th><td class="wrap">${v && typeof v === "object" ? esc(JSON.stringify(v)) : esc(v ?? "–")}</td></tr>`).join("");
+  const queueRows = d.outbox.map(o => `<tr>
+      <td>${o.op === "delete" ? '<span class="flag warn">delete</span>' : esc(o.op)}</td>
+      <td class="wrap">${esc(o.entity_key ?? "–")}</td>
+      <td>${dt(o.dirty_at)}</td>
+      <td class="num">${o.attempts}</td>
+      <td class="wrap">${o.last_error ? `<span class="flag bad">${esc(o.last_error)}</span>` : "–"}</td>
+    </tr>`).join("");
+  const isDelete = d.outbox.length && d.outbox.every(o => o.op === "delete");
+  const delKey = d.outbox.find(o => o.entity_key)?.entity_key || d.entity_id;
+  // A delete pushes a tombstone keyed by entity_key, not a content body — so an
+  // empty payload here is expected, not a failure. Say so explicitly.
+  const payloadSection = isDelete
+    ? `<div class="banner">Delete / tombstone — no content body is sent. The relay is told to remove the record with key <code>${esc(delKey)}</code>.</div>`
+    : `${d.payload_error ? `<div class="banner warn">Could not build payload: ${esc(d.payload_error)}</div>` : ""}
+       <div class="copy-body">${esc(JSON.stringify(d.payload, null, 2) || "{}")}</div>`;
+  $("edit-body").innerHTML = `
+    <h3 style="font-size:13px">Queued operations</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Op</th><th>Key</th><th>Dirty since</th><th class="num">Attempts</th><th>Last error</th></tr></thead>
+      <tbody>${queueRows}</tbody></table></div>
+    <div style="border-top:1px solid var(--grid);padding-top:12px;margin-top:12px">
+      <h3 style="font-size:13px">Current record ${d.record_exists ? "" : (isDelete ? '<span class="flag warn">— deleted locally</span>' : '<span class="flag warn">— not found</span>')}</h3>
+      ${d.record_exists ? `<div class="table-wrap"><table><tbody>${kv(d.record)}</tbody></table></div>`
+        : `<div class="stale">${isDelete ? "No live record — it was deleted locally; the push will tombstone it on the relay." : "No live record found for this entity."}</div>`}
+    </div>
+    <div style="border-top:1px solid var(--grid);padding-top:12px;margin-top:12px">
+      <h3 style="font-size:13px">Payload that will push</h3>
+      ${payloadSection}
+    </div>`;
+}
+$("outbox-refresh").onclick = loadOutbox;
+$("outbox-ws-only").onchange = loadOutbox;
+
+/* ---------- lead slide-over ---------- */
+async function openLead(leadId) {
+  const d = await get(`/api/leads/${leadId}/history`).catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  const lead = d.lead;
+  state.lead = lead;
+  $("lead-name").textContent = lead.name;
+  $("lead-meta").textContent = [lead.title, lead.company, lead.email].filter(Boolean).join(" · ")
+    + ` — stage: ${lead.stage ?? "?"}`;
+  $("stage-select").innerHTML = STAGES.map(s =>
+    `<option ${s === lead.stage ? "selected" : ""}>${s}</option>`).join("");
+  document.querySelectorAll("#slideover .msg").forEach(m => { m.textContent = ""; m.className = "msg"; });
+  $("enrich-form").reset(); $("event-form").reset();
+  $("lead-history").innerHTML = d.events.length ? d.events.map(ev => `
+    <div class="tl-event">
+      <div class="tl-head">
+        <span class="tl-type">${esc(ev.event_type)}${ev.direction === "inbound" ? " ↩" : " →"}</span>
+        <span>${dt(ev.created_at)} UTC</span>
+        ${ev.campaign_name ? `<span>· ${esc(ev.campaign_name)}</span>` : ""}
+        ${ev.sender ? `<span>· ${esc(ev.sender)}</span>` : ""}
+        ${ev.status_display ? `<span>· status → <b>${esc(ev.status_display)}</b>${ev.status_sentiment ? ` (${esc(ev.status_sentiment)})` : ""}</span>` : ""}
+      </div>
+      ${ev.subject ? `<div class="tl-preview"><b>${esc(ev.subject)}</b></div>` : ""}
+      ${ev.body_preview ? `<div class="tl-preview">${esc(ev.body_preview)}</div>` : ""}
+      ${ev.has_body ? `<button class="small" style="margin-top:5px" onclick="toggleHistoryBody(this, ${ev.id})">Show full message</button>` : ""}
+    </div>`).join("") : '<div class="empty">No events for this lead yet.</div>';
+  renderLeadEnrich(lead);
+  renderCompanyLink(lead);
+  $("overlay").style.display = "block";
+  $("slideover").style.display = "block";
+}
+
+function renderLeadEnrich(lead) {
+  const hasEmail = !!(lead.email && String(lead.email).trim());
+  const domain = lead.email_domain || lead.linked_company_domain;
+  $("lead-enrich").innerHTML = `
+    <h3 style="font-size:13px;margin:0 0 6px">Enrich <span class="sub" style="font-weight:400;color:var(--ink-muted)">runs a background job — watch the sync pill</span></h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="small" id="lead-find-email" ${hasEmail ? "disabled" : ""} title="${hasEmail ? "already has an email" : (domain ? "find via " + esc(domain) : "no domain resolved — may be skipped")}">Find email</button>
+      <button class="small" id="lead-serper">Research (Serper)</button>
+      ${hasEmail ? `<span class="stale">has email — ${esc(lead.email)}</span>`
+        : domain ? `<span class="stale">domain: ${esc(domain)}</span>`
+        : `<span class="flag warn">no domain — link a company first for best results</span>`}
+    </div>
+    <div class="msg" id="lead-enrich-msg"></div>`;
+  const startJob = (path, label) => {
+    const msg = $("lead-enrich-msg");
+    msg.textContent = "starting…"; msg.className = "msg";
+    post(path, { workspace: state.workspace, lead_ids: [lead.id] })
+      .then(s => { updateSyncPill(s); msg.textContent = `${label} started — watch the sync pill.`; msg.className = "msg ok"; })
+      .catch(e => { msg.textContent = e.message; msg.className = "msg err"; });
+  };
+  const fe = $("lead-find-email"), sr = $("lead-serper");
+  if (fe && !hasEmail) fe.onclick = () => {
+    if (!confirm("Run the email finder on this lead? Spends provider credits. Result saves to the lead.")) return;
+    startJob("/api/enrich/email-finder", "Email finder");
+  };
+  if (sr) sr.onclick = () => {
+    if (!confirm("Run Serper web research on this lead? Spends Serper credits. Results appear in the sync status for review.")) return;
+    startJob("/api/enrich/serper", "Serper research");
+  };
+}
+
+function renderCompanyLink(lead) {
+  const linked = lead.company_id
+    ? `Linked: <b>${esc(lead.linked_company_name || lead.company || "?")}</b>${lead.linked_company_domain ? ` <span class="stale">${esc(lead.linked_company_domain)}</span>` : ""}`
+    : `<span class="flag warn">Not linked to a company record</span>${lead.company ? ` — text: "${esc(lead.company)}"` : ""}`;
+  $("lead-company").innerHTML = `
+    <h3 style="font-size:13px;margin:0 0 6px">Company</h3>
+    <div style="margin-bottom:6px">${linked}</div>
+    <div class="row" style="display:flex;gap:8px">
+      <input id="link-company-q" placeholder="Search a company to link…" style="flex:2" autocomplete="off">
+      <button class="small" id="link-company-btn">Link</button>
+    </div>
+    <div id="link-company-results" style="margin-top:4px"></div>
+    <div class="msg" id="link-company-msg"></div>`;
+  let picked = null;
+  const q = $("link-company-q"), results = $("link-company-results");
+  let t = null;
+  q.oninput = () => {
+    picked = null;
+    clearTimeout(t);
+    const term = q.value.trim();
+    if (term.length < 2) { results.innerHTML = ""; return; }
+    t = setTimeout(async () => {
+      const d = await api(`/api/companies/search?q=${encodeURIComponent(term)}`).catch(() => null);
+      if (!d) return;
+      results.innerHTML = d.companies.map(c =>
+        `<div class="merge-item" style="padding:5px 9px;cursor:pointer" data-id="${c.id}" data-name="${esc(c.name)}">
+           ${esc(c.name)} <span class="stale">${esc(c.domain ?? "")} · ${fmt(c.leads)} leads</span></div>`).join("")
+        || '<div class="stale">No matches — type a full name and click Link to create it.</div>';
+      results.querySelectorAll(".merge-item").forEach(el => el.onclick = () => {
+        picked = { id: +el.dataset.id, name: el.dataset.name };
+        q.value = el.dataset.name; results.innerHTML = "";
+      });
+    }, 250);
+  };
+  $("link-company-btn").onclick = () => {
+    const body = picked ? { company_id: picked.id } : { company_name: q.value.trim() };
+    if (!picked && !q.value.trim()) { toast("Type or pick a company"); return; }
+    formResult("link-company-msg", post(`/api/leads/${lead.id}/link-company`, body), () => {
+      openLead(lead.id);
+      if (state.tab === "contacts") loadContacts(false);
+    });
+  };
+}
+
+window.toggleHistoryBody = async function (btn, eventId) {
+  const existing = btn.parentElement.querySelector(".tl-body");
+  if (existing) { existing.remove(); btn.textContent = "Show full message"; return; }
+  btn.textContent = "Loading…";
+  try {
+    const d = await api(`/api/events/${eventId}/body`);
+    const div = document.createElement("div");
+    div.className = "tl-body";
+    div.textContent = d.body || "(empty body)";
+    btn.after(div);
+    btn.textContent = "Hide full message";
+  } catch (e) { toast(e.message); btn.textContent = "Show full message"; }
+};
+function closeLead() {
+  $("slideover").style.display = "none";
+  state.lead = null;
+  if ($("editPanel").style.display !== "block") $("overlay").style.display = "none";
+}
+$("overlay").onclick = () => { closeLead(); closeEditPanel(); };
+
+function formResult(msgId, promise, refresh) {
+  const msg = $(msgId);
+  msg.textContent = "…"; msg.className = "msg";
+  promise.then(() => {
+    msg.textContent = "Saved."; msg.className = "msg ok";
+    refresh?.();
+  }).catch((e) => { msg.textContent = e.message; msg.className = "msg err"; });
+}
+
+$("stage-form").onsubmit = (e) => {
+  e.preventDefault();
+  formResult("stage-msg", post(`/api/leads/${state.lead.id}/stage`, {
+    stage: $("stage-select").value,
+    workspace: state.workspace,
+    sentiment: $("sentiment-select").value || null,
+    label: $("stage-label").value || null,
+  }), () => { refreshSummary(); if (["pipeline", "crm"].includes(state.tab)) loadTab(); });
+};
+$("enrich-form").onsubmit = (e) => {
+  e.preventDefault();
+  const body = { overwrite: $("enrich-overwrite").checked };
+  for (const input of e.target.querySelectorAll("input[name]")) {
+    if (input.value.trim()) body[input.name] = input.value.trim();
+  }
+  formResult("enrich-msg", post(`/api/leads/${state.lead.id}/enrich`, body));
+};
+$("event-form").onsubmit = (e) => {
+  e.preventDefault();
+  formResult("event-msg", post(`/api/leads/${state.lead.id}/events`, {
+    event_type: $("event-type").value,
+    direction: $("event-direction").value,
+    subject: $("event-subject").value || null,
+    workspace: state.workspace,
+  }), () => { refreshSummary(); openLead(state.lead.id); });
+};
+
+/* ---------- boot ---------- */
+(async function boot() {
+  try {
+    await loadWorkspaces();
+  } catch (e) { toast("Failed to load workspaces: " + e.message); return; }
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === state.tab));
+  document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + state.tab);
+  await refreshSummary();
+  await loadTab();
+  if (params.get("merges") && state.tab === "companies") $("merge-toggle").click();
+  setInterval(refreshSummary, 4000);
+  setInterval(() => { if (document.visibilityState === "visible" && !document.querySelector(".tfilter input:focus")) loadTab(); }, 60000);
+})();
+</script>
+</body>
+</html>

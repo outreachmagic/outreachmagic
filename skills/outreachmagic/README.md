@@ -82,6 +82,28 @@ Once it's installed, try prompts like these:
 | "Export my best performing copy to Sheets" | Pulls campaign stats, exports to Google Sheets |
 | "Analyse my most recent bounces" | `bounce-list` / `bounce-stats` — filter by bounce reason, domain, etc. |
 | "Find emails for everyone in leads.csv" | `batch-find` with OM dedup — skips leads already found |
+| "Open the dashboard" | Local web UI at `http://127.0.0.1:8765` — see below |
+
+## Local dashboard
+
+```bash
+python3 scripts/pipeline.py dashboard
+```
+
+Serves a zero-dependency (Python stdlib only, no `pip install`) web dashboard
+over the same local database the agent uses. Pick a workspace and see:
+deliverability (daily bounce trend, mailbox health with SPF/DKIM/DMARC and
+7-day bounce flags, domain blacklist status), pipeline stages with lead
+drill-down, best-performing lead attributes, per-campaign reply/bounce rates
+with top subject lines, and a live activity feed. From the same UI you can
+change a lead's stage, edit attributes, log events, and trigger pull/push —
+all through the exact code paths the CLI uses, so relay round-trips stay
+consistent.
+
+**Known limitations:** no authentication (binds `127.0.0.1` only — don't
+expose it on a shared network); no open/click/spam-complaint metrics (the
+platforms don't deliver them to the local DB); campaign-level copy insights
+only. Details: [references/command-reference.md](references/command-reference.md#local-dashboard).
 
 ## Install
 

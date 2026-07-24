@@ -16,7 +16,8 @@
         "README.md",
         "install.sh",
         "SECURITY.md",
-        "references/command-reference.md"
+        "references/command-reference.md",
+        "scripts/dashboard.html"
       ],
       "install_required": []
     }

@@ -47,16 +47,38 @@ class PipelineImportSmokeTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
+    def test_shadow_help_exits_zero(self):
+        proc = subprocess.run(
+            [sys.executable, str(PIPELINE), "shadow", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(ROOT),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("prune-legacy", proc.stdout)
+
+    def test_sync_health_help_exits_zero(self):
+        proc = subprocess.run(
+            [sys.executable, str(PIPELINE), "sync-health", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(ROOT),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
     def test_manifest_script_files_exist(self):
         data = json.loads(MANIFEST.read_text(encoding="utf-8"))
         skill_root = ROOT / "skills" / "outreachmagic"
         for rel in data.get("files", {}):
-            if rel in ("SKILL.md", "README.md", "install.sh", "SECURITY.md"):
+            # Script entries are scripts/-relative; extra_files entries
+            # (SKILL.md, references/*, scripts/dashboard.html) are
+            # skill-root-relative — mirror resolve_manifest_path by
+            # accepting whichever location the file actually lives at.
+            path = SCRIPTS / rel
+            if not path.is_file():
                 path = skill_root / rel
-            elif rel.startswith("references/"):
-                path = skill_root / rel
-            else:
-                path = SCRIPTS / rel
             self.assertTrue(path.is_file(), f"missing manifest file: {rel} -> {path}")
 
 

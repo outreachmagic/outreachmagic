@@ -377,3 +377,91 @@ pipeline.py import-profiles --file changes.csv --overwrite
 - `relay_untracked_leads`: imported/local leads with no relay pull history (normal after CSV).
 - `pending_lead_snapshots`: rows with `updated_at` > last sync — run `sync`.
 - `local_agent_events`: agent-originated events not yet on relay.
+
+## Local dashboard
+
+```bash
+pipeline.py dashboard                       # serve http://127.0.0.1:8765 and open a browser
+pipeline.py dashboard --port 9000           # different port
+pipeline.py dashboard --no-browser          # don't auto-open a browser tab
+```
+
+A zero-dependency (stdlib-only) local web UI over the same SQLite database and
+the same mutation functions the CLI uses. A global date range (presets or a
+custom from/to) applies across views; tables are sortable (click headers) and
+filterable. Per-workspace views:
+
+- **Deliverability** — daily bounce-rate trend, per-mailbox health
+  (warmup, SPF/DKIM/DMARC, health score, 7-day bounce trend flags), and
+  sending domains derived from the workspace's mailboxes with DNSBL status;
+  click a domain for reseller, pricing, notes, and its mailboxes.
+- **Pipeline** — leads per stage with drill-down; click a lead for its full
+  event timeline (previews + expandable full message bodies) and actions.
+- **Contacts** — server-side lead search across name / email / email-domain /
+  LinkedIn / company / title (whole range, paginated, sortable); row click
+  opens the lead slide-over with edit, history, and a company-link control.
+- **Companies** — company search + list (name, domain, branch count, industry,
+  leads); click for attributes edit, all domains/branches, associated leads,
+  and the pending company-merge review queue (approve / keep-separate).
+- **Data quality** — under-enriched-lead buckets (missing email / company /
+  title, unknown name, linkable) with counts. Select leads to **link** them to
+  a company from their company text, **find emails** (company/multi-domain
+  aware — previews no-domain/multi-domain before spending credits), or run
+  **Serper research** as a background job (formatted results surface in the
+  sync status for the agent to map to fields). Plus an org-wide **cleanup** of
+  truly-empty (event-less, name-"unknown") leads: dry-run preview, then a
+  confirmed delete.
+- **Campaigns** — daily activity matrix (email sent/received, DM
+  sent/received, connects sent/accepted, bounces, interested, not
+  interested, meetings — filterable by campaign), sent / reply / positive /
+  bounce rates per campaign, and a campaign click-through with sender
+  accounts, activity span, lead stages, and subject lines with expandable
+  full copy for auditing.
+- **Attributes** — reply / positive-reply rate ranked by industry, title,
+  headcount, country, or source platform; case-insensitive value grouping,
+  minimum-sample threshold, filterable by campaign.
+- **CRM** — synced / needs-update / eligible / error counts, synced-lead
+  table with per-lead "Update", eligible-lead table with per-lead "Sync",
+  bulk "Sync eligible now" (optional activity window), recent run log.
+  Reuses `crm_sync.sync_workspace`; requires a `crm-sync setup` config.
+- **Activity** — chronological workspace event feed, searched server-side
+  across the whole date range: an event-type filter (distinct types + counts)
+  plus text search over lead name / email / email-domain / LinkedIn / company /
+  company-domain. Click through to leads.
+- **Sync** — outbox audit: everything queued to push back to Outreach Magic.
+  A group table (every entity_type/op with counts) plus a row list that is a
+  LIMIT slice — click a group to drill the rows into that entity_type/op
+  server-side; the row count states `showing N of M` so truncation is explicit.
+  Rows show the tombstone `entity_key`. Click a row for a detail slide-over —
+  its queued operations, the resolved live record, and the exact payload the
+  push will send (rebuilt with the same `sync_contract` builders `sync_all`
+  uses). Deletes are labeled tombstones: no content body is sent, just the key
+  to remove. The summary splits **pushable** rows (`op='upsert'` — what **Push
+  to relay** actually drains) from **delete tombstones** (`op='delete'` — local
+  trigger artifacts the push never sends; real relay deletes travel via
+  `lead_merges` / company merges). A large residual delete count after a
+  successful push is expected, not a stuck push — the upserts drained and the
+  tombstones stay.
+
+Write actions (all routed through the same code paths as `update-stage`,
+`log-event`, and `enrich`, so outbox triggers queue them for relay push):
+change a lead's stage, edit lead attributes, log an event, trigger `pull`,
+trigger `sync` and CRM sync (each asks for confirmation; the button click
+counts as the user asking).
+
+API endpoints live under `/api/*` (JSON; `?workspace=SLUG` on workspace-scoped
+reads). POSTs require the `X-OM-Dashboard: 1` header.
+
+**Limitations**
+
+- **No authentication.** Binds `127.0.0.1` by default; the Host-header check
+  and POST header are hardening, not auth. Do not bind `0.0.0.0` on shared
+  networks.
+- **No open/click/spam-complaint metrics** — the sequencer platforms do not
+  deliver them to the local DB; deliverability is bounce + mailbox health +
+  blacklist based.
+- **Campaign-level copy insights only** (subject lines from stored events;
+  there is no per-variant/step attribution).
+- One dashboard-initiated sync at a time; a concurrently running CLI sync in
+  another terminal is still possible (WAL + busy timeouts keep that safe).
+- Data freshness = last `pull`; the header shows the latest event timestamp.

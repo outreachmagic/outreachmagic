@@ -41,10 +41,10 @@ class TestUpdateManifest(unittest.TestCase):
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         skill_root = ROOT / "skills" / "outreachmagic"
         for name in manifest.get("files") or {}:
-            if name in ("SKILL.md", "README.md", "install.sh", "SECURITY.md"):
+            # Script entries are scripts/-relative; extra_files entries
+            # (SKILL.md, references/*, scripts/dashboard.html) are
+            # skill-root-relative — accept whichever location exists.
+            path = SCRIPTS / name
+            if not path.is_file():
                 path = skill_root / name
-            elif name.startswith("references/"):
-                path = skill_root / name
-            else:
-                path = SCRIPTS / name
             self.assertTrue(path.is_file(), f"missing manifest file: {path}")

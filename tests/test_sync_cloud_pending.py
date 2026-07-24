@@ -492,6 +492,43 @@ class TimestampSyncTests(unittest.TestCase):
             "stale-never-synced@example.com", core_entry["payload"].get("aliases", [])
         )
 
+    def test_synced_lead_not_pending_despite_updated_at_after_last_sync(self):
+        """P3-1: get_sync_status must derive leads/workspace pending counts from
+        the outbox, not `updated_at > last_sync`. A lead whose outbox rows have
+        already been cleared (genuinely synced) must not be reported pending
+        just because its updated_at happens to be newer than an earlier
+        last_sync — the old cursor would have called this pending forever."""
+        result = om.resolve_lead(
+            email="already-synced@example.com", name="Synced", company="Acme",
+            source="csv", source_platform="csv",
+        )
+        lead_id = result["id"]
+        conn = om.get_conn()
+        ws_row = om.resolve_workspace_identity(conn, "default")
+        om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws_row["id"], lead_id)
+        conn.commit()
+        # Simulate a completed push: clear the outbox rows the inserts queued,
+        # as record_synced() does on a real ack.
+        conn.execute("DELETE FROM outbox WHERE entity_type IN ('lead_core', 'lead_workspace')")
+        conn.commit()
+        conn.close()
+
+        # last_sync predates the lead's updated_at (set moments ago by
+        # resolve_lead/upsert_workspace_lead) -- under the old cursor this alone
+        # would mark the lead pending regardless of the (now-empty) outbox.
+        om.set_last_sync("2020-01-01T00:00:00Z")
+
+        with mock.patch.object(om, "get_agent_key", return_value="om_agent_test"):
+            with mock.patch.object(om.routing_cloud, "cloud_routing_enabled", return_value=True):
+                with mock.patch.object(
+                    om.routing_cloud, "fetch_routing_bundle",
+                    return_value={"workspaces": [], "campaignMaps": []},
+                ):
+                    status = om.get_sync_status()
+
+        self.assertEqual(status["leads_pending"], 0)
+        self.assertEqual(status["workspace_leads_pending"], 0)
+
     def test_export_local_changes_sample_limit_caps_lead_entries(self):
         """agent-changes --limit threads through to _export_local_lead_entries."""
         for i in range(6):

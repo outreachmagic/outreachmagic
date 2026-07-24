@@ -535,31 +535,20 @@ def get_sync_status(org_id: str = DEFAULT_ORG_ID) -> dict:
     local_event_count = conn2.execute(
         f"SELECT COUNT(*) AS n FROM events e WHERE {unsynced_event_clause('e')}"
     ).fetchone()["n"]
+    # Pending lead/workspace counts come from the outbox, not a re-derived
+    # updated_at cursor: the cursor is corrupt for ~40% of rows (see outbox.py's
+    # module docstring) and reports pending/synced independent of what the
+    # outbox actually has queued to push.
     last_sync = get_last_sync()
+    dirty = outbox.count_dirty(conn2)
+    pending_lead_core_count = dirty.get("lead_core:upsert", 0)
+    pending_workspace_count = dirty.get("lead_workspace:upsert", 0)
     if last_sync:
-        pending_lead_core_count = conn2.execute(
-            f"""SELECT COUNT(*) AS n FROM leads l
-                WHERE (l.updated_at > ? AND NOT {relay_bump_explained_clause('l.id', 'l.updated_at')})
-                   OR {unsynced_lead_clause('l')}""",
-            (last_sync,),
-        ).fetchone()["n"]
-        pending_workspace_count = conn2.execute(
-            f"""SELECT COUNT(*) AS n FROM workspace_leads wl
-                WHERE (wl.updated_at > ? AND NOT {relay_bump_explained_clause('wl.lead_id', 'wl.updated_at')})
-                   OR {unsynced_workspace_lead_clause('wl')}""",
-            (last_sync,),
-        ).fetchone()["n"]
         pending_quarantine_count = conn2.execute(
             """SELECT COUNT(*) AS n FROM unmapped_campaign_queue
                WHERE resolved_at > ? AND status IN ('skipped', 'assigned')""", (last_sync,)
         ).fetchone()["n"]
     else:
-        pending_lead_core_count = conn2.execute(
-            "SELECT COUNT(*) AS n FROM leads"
-        ).fetchone()["n"]
-        pending_workspace_count = conn2.execute(
-            "SELECT COUNT(*) AS n FROM workspace_leads"
-        ).fetchone()["n"]
         pending_quarantine_count = conn2.execute(
             """SELECT COUNT(*) AS n FROM unmapped_campaign_queue
                WHERE status IN ('skipped', 'assigned')"""
@@ -672,6 +661,55 @@ def get_local_pending_counts(org_id: str = DEFAULT_ORG_ID) -> dict:
     }
 
 
+# entity_type -> (local table, outbox count_dirty key)
+SYNC_HEALTH_ENTITIES = (
+    ("lead_core", "leads", "lead_core:upsert"),
+    ("lead_workspace", "workspace_leads", "lead_workspace:upsert"),
+    ("company", "companies", "company:upsert"),
+    ("sender_account", "sender_accounts", "sender_account:upsert"),
+    ("sender_domain", "sender_domains", "sender_domain:upsert"),
+)
+
+
+def sync_health() -> dict:
+    """One local screen: per-entity local count, outbox backlog, legacy shadow
+    rows. Local-only -- no relay call, so it can't diff against D1. Replaces
+    the raw sync_shadow total (which double-counts legacy + uid keys for the
+    same entity and is not a usable parity signal on its own) as the thing an
+    operator checks first.
+    """
+    conn = get_conn()
+    dirty = outbox.count_dirty(conn)
+    legacy = outbox.legacy_shadow_counts(conn)
+    shadow_total = conn.execute("SELECT COUNT(*) AS n FROM sync_shadow").fetchone()["n"]
+    entities = []
+    for entity_type, table, dirty_key in SYNC_HEALTH_ENTITIES:
+        local_count = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+        entities.append({
+            "entity_type": entity_type,
+            "local": local_count,
+            "outbox_upserts": dirty.get(dirty_key, 0),
+            "legacy_shadow": legacy.get(entity_type, 0),
+        })
+    conn.close()
+
+    legacy_total = sum(legacy.values())
+    total_upserts = sum(e["outbox_upserts"] for e in entities)
+    if total_upserts > 0:
+        status = "BACKLOG"
+    elif legacy_total > 0:
+        status = "SHADOW_STALE"
+    else:
+        status = "IN_PARITY"
+
+    return {
+        "entities": entities,
+        "sync_shadow_total": shadow_total,
+        "legacy_shadow_total": legacy_total,
+        "status": status,
+    }
+
+
 def format_local_sync_hint(counts: dict) -> str:
     """One-line hint about unsynced items. Pure local check, no network."""
     if counts["total"] == 0:
@@ -715,8 +753,11 @@ def sync_all(
         get_sync_status,
         _push_agent_events_to_relay,
         _push_pending_company_merge_deletes,
+        _push_pending_company_outbox_deletes,
         _push_pending_company_updates,
+        _push_pending_lead_core_outbox_deletes,
         _push_pending_lead_snapshots,
+        _push_pending_lead_workspace_outbox_deletes,
         _push_pending_merge_deletes,
         _push_pending_quarantine_resolutions,
         _push_pending_sender_account_updates,
@@ -879,6 +920,23 @@ def sync_all(
         if company_merge_delete_push.get("error"):
             results["company_merge_deletes_error"] = company_merge_delete_push["error"]
 
+        # Deletes outside of a merge (a direct delete, a workspace removal) --
+        # the only other way an entity ever leaves the relay's copy.
+        lead_core_delete_push = _push_pending_lead_core_outbox_deletes(agent_key, bulk=transport["bulk"])
+        results["lead_core_outbox_deletes_pushed"] = int(lead_core_delete_push.get("pushed", 0) or 0)
+        if lead_core_delete_push.get("error"):
+            results["lead_core_outbox_deletes_error"] = lead_core_delete_push["error"]
+
+        lead_workspace_delete_push = _push_pending_lead_workspace_outbox_deletes(agent_key, bulk=transport["bulk"])
+        results["lead_workspace_outbox_deletes_pushed"] = int(lead_workspace_delete_push.get("pushed", 0) or 0)
+        if lead_workspace_delete_push.get("error"):
+            results["lead_workspace_outbox_deletes_error"] = lead_workspace_delete_push["error"]
+
+        company_outbox_delete_push = _push_pending_company_outbox_deletes(agent_key, bulk=transport["bulk"])
+        results["company_outbox_deletes_pushed"] = int(company_outbox_delete_push.get("pushed", 0) or 0)
+        if company_outbox_delete_push.get("error"):
+            results["company_outbox_deletes_error"] = company_outbox_delete_push["error"]
+
         lead_push = _push_pending_lead_snapshots(agent_key, bulk=transport["bulk"], workspace=workspace)
         leads_pushed = int(lead_push.get("pushed", 0) or 0)
         results["lead_snapshots_pushed"] = leads_pushed
@@ -978,6 +1036,15 @@ def preview_sync(
     )
     merge_preview = _push_pending_merge_deletes(tok, sample_limit=sample_size, dry_run=True)
     company_merge_preview = _push_pending_company_merge_deletes(tok, sample_limit=sample_size, dry_run=True)
+    lead_core_outbox_delete_preview = _push_pending_lead_core_outbox_deletes(
+        tok, sample_limit=sample_size, dry_run=True,
+    )
+    lead_workspace_outbox_delete_preview = _push_pending_lead_workspace_outbox_deletes(
+        tok, sample_limit=sample_size, dry_run=True,
+    )
+    company_outbox_delete_preview = _push_pending_company_outbox_deletes(
+        tok, sample_limit=sample_size, dry_run=True,
+    )
     company_preview = _push_pending_company_updates(tok, sample_limit=sample_size, dry_run=True)
     sender_account_preview = _push_pending_sender_account_updates(tok, sample_limit=sample_size, dry_run=True)
     sender_domain_preview = _push_pending_sender_domain_updates(tok, sample_limit=sample_size, dry_run=True)
@@ -992,6 +1059,9 @@ def preview_sync(
             "leads_workspace_pending": status.get("workspace_leads_pending", 0),
             "merge_deletes_pending": merge_preview.get("total_pending", 0),
             "company_merge_deletes_pending": company_merge_preview.get("total_pending", 0),
+            "lead_core_outbox_deletes_pending": lead_core_outbox_delete_preview.get("total_pending", 0),
+            "lead_workspace_outbox_deletes_pending": lead_workspace_outbox_delete_preview.get("total_pending", 0),
+            "company_outbox_deletes_pending": company_outbox_delete_preview.get("total_pending", 0),
             "company_updates_pending": company_preview.get("total_pending", 0),
             "sender_account_updates_pending": sender_account_preview.get("total_pending", 0),
             "sender_domain_updates_pending": sender_domain_preview.get("total_pending", 0),
@@ -1001,8 +1071,11 @@ def preview_sync(
             "event_log": events_export.get("entries", []),
             "lead_core_update": lead_preview.get("sample_core_entries", []),
             "lead_workspace_update": lead_preview.get("sample_ws_entries", []),
-            "lead_core_delete": merge_preview.get("sample_entries", []),
-            "company_core_delete": company_merge_preview.get("sample_entries", []),
+            "lead_core_delete": merge_preview.get("sample_entries", [])
+            + lead_core_outbox_delete_preview.get("sample_entries", []),
+            "lead_workspace_delete": lead_workspace_outbox_delete_preview.get("sample_entries", []),
+            "company_core_delete": company_merge_preview.get("sample_entries", [])
+            + company_outbox_delete_preview.get("sample_entries", []),
             "company_update": company_preview.get("sample_entries", []),
             "sender_account_update": sender_account_preview.get("sample_entries", []),
             "sender_domain_update": sender_domain_preview.get("sample_entries", []),
@@ -1541,6 +1614,149 @@ def _push_pending_company_merge_deletes(
     )
     result["total_pending"] = total_pending
     return result
+
+
+_SNAPSHOT_DELETE_ACTIONS = {
+    "lead_core": "lead_core_delete",
+    "lead_workspace": "lead_workspace_delete",
+    "company": "company_core_delete",
+}
+
+
+def _push_outbox_delete(
+    agent_key: str,
+    *,
+    entity_type: str,
+    action: str,
+    stream_label: str,
+    bulk: bool = False,
+    sample_limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Drain one entity_type's op='delete' outbox tombstones: tell the relay
+    to drop its copy of a lead / workspace membership / company that was
+    deleted locally outside of a merge (a direct delete, a workspace
+    removal). Until this existed, nothing ever told the relay about these --
+    only merges got a delete pushed, via the separate lead_merges/
+    company_merges path -- so the relay held a permanent ghost copy of every
+    such entity. Unlike the upsert path there is no live row left to rebuild
+    a payload from; the BEFORE DELETE trigger already captured everything
+    needed (entity_key, workspace_slug) on the outbox row itself.
+    """
+    from pipeline import _relay_push_batches
+
+    conn = get_conn()
+    # Uncapped total so a --dry-run preview (which caps the row fetch at
+    # sample_limit) still reports the real backlog size, not just the sample.
+    total_pending = conn.execute(
+        "SELECT COUNT(*) AS n FROM outbox WHERE entity_type = ? AND op = 'delete' "
+        "AND dirty_at <= datetime('now')",
+        (entity_type,),
+    ).fetchone()["n"]
+    dirty = outbox.select_dirty(conn, entity_type, op="delete", limit=sample_limit)
+    conn.close()
+    if not dirty:
+        return {"pushed": 0, "error": None, "throttled": False,
+                "total_pending": total_pending, "sample_entries": []}
+
+    now_ts = datetime.now(timezone.utc).isoformat()
+    entries: list[dict] = []
+    synced: list[tuple] = []
+    for row in dirty:
+        raw_key = row["entity_key"]
+        if not raw_key:
+            continue  # nothing captured to tell the relay to delete
+        # The trigger captures the bare uid column, not the uid: prefix every
+        # other push path puts on the wire and the relay actually stores as
+        # entity_key. Sending the raw form would match zero relay rows --
+        # a silent no-op that looks like a successful push.
+        entity_key = raw_key if raw_key.startswith("uid:") else f"uid:{raw_key}"
+        entry = {
+            "action": action,
+            "entity_key": entity_key,
+            "timestamp": now_ts,
+            "payload": {"reason": "deleted"},
+        }
+        if entity_type == "lead_workspace":
+            entry["workspace"] = row["workspace_slug"] or ""
+        entries.append(entry)
+        synced.append((row["entity_id"], entity_key, row["workspace_slug"]))
+
+    if dry_run:
+        return {"pushed": 0, "error": None, "throttled": False,
+                "total_pending": total_pending, "sample_entries": entries}
+    if not entries:
+        return {"pushed": 0, "error": None, "throttled": False,
+                "total_pending": total_pending, "sample_entries": []}
+
+    client_id = get_or_create_client_id()
+
+    def _settle_batch(cleared: list) -> None:
+        c = get_conn()
+        try:
+            outbox.record_deleted(c, entity_type, cleared)
+            c.commit()
+        finally:
+            c.close()
+
+    push_result = _relay_push_batches(
+        agent_key,
+        entries,
+        client_id,
+        stream_label=stream_label,
+        bulk=bulk,
+        snapshot_bulk=True,
+        mark_ids=synced,
+        on_mark_cleared=_settle_batch,
+    )
+
+    # Partial success is the normal case on a long drain -- settle what
+    # landed. _settle_batch above already recorded every batch that fully
+    # succeeded; this is the safety net for a batch that only partially
+    # landed, which on_mark_cleared skips by design.
+    pushed_n = int(push_result.get("pushed", 0) or 0)
+    ok, failed = synced[:pushed_n], synced[pushed_n:]
+    c = get_conn()
+    try:
+        if ok:
+            outbox.record_deleted(c, entity_type, ok)
+        if failed and push_result.get("error"):
+            outbox.record_failure(
+                c, entity_type, [r[0] for r in failed], str(push_result["error"]), op="delete",
+            )
+        c.commit()
+    finally:
+        c.close()
+
+    push_result.setdefault("total_pending", total_pending)
+    return push_result
+
+
+def _push_pending_lead_core_outbox_deletes(
+    agent_key: str, *, bulk: bool = False, sample_limit: Optional[int] = None, dry_run: bool = False,
+) -> dict:
+    return _push_outbox_delete(
+        agent_key, entity_type="lead_core", action="lead_core_delete",
+        stream_label="lead_core_delete", bulk=bulk, sample_limit=sample_limit, dry_run=dry_run,
+    )
+
+
+def _push_pending_lead_workspace_outbox_deletes(
+    agent_key: str, *, bulk: bool = False, sample_limit: Optional[int] = None, dry_run: bool = False,
+) -> dict:
+    return _push_outbox_delete(
+        agent_key, entity_type="lead_workspace", action="lead_workspace_delete",
+        stream_label="lead_workspace_delete", bulk=bulk, sample_limit=sample_limit, dry_run=dry_run,
+    )
+
+
+def _push_pending_company_outbox_deletes(
+    agent_key: str, *, bulk: bool = False, sample_limit: Optional[int] = None, dry_run: bool = False,
+) -> dict:
+    return _push_outbox_delete(
+        agent_key, entity_type="company", action="company_core_delete",
+        stream_label="company_core_delete", bulk=bulk, sample_limit=sample_limit, dry_run=dry_run,
+    )
 
 
 def _log_selector_divergence(conn, outbox_core: int, outbox_ws: int) -> None:

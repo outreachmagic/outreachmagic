@@ -1237,6 +1237,13 @@ def ingest_relay_event(
             commit=False,
             refresh_activity=False,
         )
+        # Keep campaigns.workspace_id current — self-healing for old rows and
+        # ensures new campaigns written during ingest carry the FK immediately.
+        if campaign_name_for_event and workspace_id:
+            conn.execute(
+                "UPDATE campaigns SET workspace_id = ? WHERE name = ? AND workspace_id IS NULL",
+                (workspace_id, campaign_name_for_event),
+            )
 
     event_time = event_at or None
     with _phase("workspace_stage", phase_timer):
@@ -1281,6 +1288,40 @@ def ingest_relay_event(
                 "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
                 (target_stage, stage_ts, ws_lead_id),
             )
+        elif metadata.get("is_auto_reply"):
+            # Compensating event: email_sent may have already bumped the lead to
+            # `contacted` before this OOO arrived. The email was never read by a
+            # human, so roll back to `prospecting` — but only from `contacted`,
+            # never from a higher stage (replied/interested/not_interested).
+            cur = conn.execute(
+                "SELECT stage FROM leads WHERE id = ?", (lead_id,)
+            ).fetchone()
+            if (cur["stage"] if cur else None) == "contacted":
+                revert_ts = event_time or om.utc_now_for_storage()
+                om.log_event(
+                    lead_id=lead_id,
+                    event_type="stage_reverted",
+                    direction="internal",
+                    channel=channel,
+                    metadata={
+                        "reason": "auto_reply_detected",
+                        "reverted_from": "contacted",
+                        "reverted_to": "prospecting",
+                        "triggering_event_id": event_id,
+                    },
+                    campaign=campaign_name_for_event,
+                    event_at=revert_ts,
+                    conn=conn,
+                    commit=False,
+                    refresh_activity=False,
+                )
+                om.update_lead_stage(
+                    lead_id, "prospecting", event_at=revert_ts, conn=conn, commit=False,
+                )
+                conn.execute(
+                    "UPDATE workspace_leads SET status = 'prospecting', stage_entered_at = ? WHERE id = ?",
+                    (revert_ts, ws_lead_id),
+                )
         # No payload: the content was just written to events by log_event above,
         # and event_id points at it. See append_workspace_event.
         om.append_workspace_event(

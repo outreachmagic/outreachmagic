@@ -1498,44 +1498,12 @@ def upsert_workspace_lead(
     current_status_sentiment: Optional[str] = None,
     contact_priority: Optional[int] = None,
 ) -> str:
-    row = conn.execute(
-        """SELECT id, status, current_status_label, current_status_sentiment, contact_priority
-           FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?""",
-        (workspace_id, lead_id),
-    ).fetchone()
-    if row:
-        extra_sets = []
-        extra_params = []
-        # Only bump updated_at (and therefore mark this row as needing a push)
-        # when a provided field actually differs from what's stored — an UPDATE
-        # that changes nothing is not a local change, and treating it as one is
-        # exactly the self-bump loop in bug-pending-sync-self-bump.md (relay
-        # syncs echoing back data we already have, forever, never settling).
-        changed = False
-        if current_status_label is not None and current_status_label != row["current_status_label"]:
-            extra_sets.append("current_status_label = ?")
-            extra_params.append(current_status_label)
-            changed = True
-        if current_status_sentiment is not None and current_status_sentiment != row["current_status_sentiment"]:
-            extra_sets.append("current_status_sentiment = ?")
-            extra_params.append(current_status_sentiment)
-            changed = True
-        if contact_priority is not None and contact_priority != row["contact_priority"]:
-            extra_sets.append("contact_priority = ?")
-            extra_params.append(contact_priority)
-            changed = True
-        if not changed:
-            return row["id"]
-        sets = "updated_at = datetime('now'), " + ", ".join(extra_sets)
-        conn.execute(
-            f"UPDATE workspace_leads SET {sets} WHERE id = ?",
-            (*extra_params, row["id"]),
-        )
-        return row["id"]
-
+    # INSERT OR IGNORE is atomic — eliminates the SELECT→INSERT race that causes
+    # "UNIQUE constraint failed: workspace_leads.id" when parallel pull batches
+    # both see no row and both attempt to create the same wl_{ws}_{lead} id.
     ws_lead_id = f"wl_{workspace_id}_{lead_id}"
     conn.execute(
-        """INSERT INTO workspace_leads (
+        """INSERT OR IGNORE INTO workspace_leads (
                id, org_id, workspace_id, lead_id, status, owner_user_id,
                current_status_label, current_status_sentiment, contact_priority,
                stage_entered_at, last_activity_at, created_at, updated_at
@@ -1544,7 +1512,34 @@ def upsert_workspace_lead(
         (ws_lead_id, org_id, workspace_id, lead_id, status, owner_user_id,
          current_status_label, current_status_sentiment, contact_priority),
     )
-    return ws_lead_id
+    row = conn.execute(
+        """SELECT id, current_status_label, current_status_sentiment, contact_priority
+           FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?""",
+        (workspace_id, lead_id),
+    ).fetchone()
+    if row is None:
+        return ws_lead_id
+    # Only bump updated_at when a provided field actually differs from what's
+    # stored — an UPDATE that changes nothing is not a local change, and treating
+    # it as one is exactly the self-bump loop in bug-pending-sync-self-bump.md.
+    extra_sets: list[str] = []
+    extra_params: list = []
+    if current_status_label is not None and current_status_label != row["current_status_label"]:
+        extra_sets.append("current_status_label = ?")
+        extra_params.append(current_status_label)
+    if current_status_sentiment is not None and current_status_sentiment != row["current_status_sentiment"]:
+        extra_sets.append("current_status_sentiment = ?")
+        extra_params.append(current_status_sentiment)
+    if contact_priority is not None and contact_priority != row["contact_priority"]:
+        extra_sets.append("contact_priority = ?")
+        extra_params.append(contact_priority)
+    if extra_sets:
+        sets = "updated_at = datetime('now'), " + ", ".join(extra_sets)
+        conn.execute(
+            f"UPDATE workspace_leads SET {sets} WHERE id = ?",
+            (*extra_params, row["id"]),
+        )
+    return row["id"]
 
 
 def append_workspace_event(

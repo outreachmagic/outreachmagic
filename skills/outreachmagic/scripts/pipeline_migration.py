@@ -829,6 +829,41 @@ def _install_provenance_transport_guard(conn: sqlite3.Connection) -> None:
             """)
 
 
+def _add_campaigns_workspace_id(conn: sqlite3.Connection) -> None:
+    """Add workspace_id FK to campaigns and backfill from the name prefix.
+
+    Campaign names use the convention '{workspace_slug} | {campaign_name}'.
+    This migration is idempotent: it re-runs the backfill on each call so that
+    campaigns added after the first migration run also get their workspace_id set.
+    Campaigns without a matching prefix are left as NULL.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(campaigns)").fetchall()}
+    if "workspace_id" not in cols:
+        conn.execute("ALTER TABLE campaigns ADD COLUMN workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL")
+
+    ws_rows = conn.execute(
+        "SELECT id, slug FROM workspaces WHERE slug != 'default'"
+    ).fetchall()
+    slug_to_id = {row["slug"]: row["id"] for row in ws_rows}
+    if not slug_to_id:
+        return
+
+    campaigns = conn.execute(
+        "SELECT id, name FROM campaigns WHERE workspace_id IS NULL"
+    ).fetchall()
+    for camp in campaigns:
+        name = camp["name"] or ""
+        if " | " not in name:
+            continue
+        prefix = name.split(" | ", 1)[0].strip().lower()
+        ws_id = slug_to_id.get(prefix)
+        if ws_id:
+            conn.execute(
+                "UPDATE campaigns SET workspace_id = ? WHERE id = ?",
+                (ws_id, camp["id"]),
+            )
+
+
 def migrate_db(conn=None):
     """Apply incremental schema changes and backfill derived data."""
     own_conn = conn is None
@@ -1293,6 +1328,7 @@ def migrate_db(conn=None):
         conn.execute(
             "INSERT INTO migration_flags (name) VALUES ('bounce_events_backfill')"
         )
+    _add_campaigns_workspace_id(conn)
     from pipeline import maybe_backfill_null_campaign_quarantine
 
     maybe_backfill_null_campaign_quarantine(quiet=True, conn=conn)

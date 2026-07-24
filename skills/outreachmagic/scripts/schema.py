@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     name            TEXT NOT NULL UNIQUE,
     description     TEXT,
     status          TEXT NOT NULL DEFAULT 'active',
+    workspace_id    TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

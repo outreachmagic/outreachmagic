@@ -1434,7 +1434,22 @@ def get_campaign_stats():
                     JOIN leads l ON l.id = cl2.lead_id
                     WHERE cl2.campaign_id = c.id
                       AND l.stage = 'interested'
-                  ) AS interested_count
+                  ) AS interested_count,
+                  (
+                    SELECT COUNT(DISTINCT e.lead_id)
+                    FROM events e
+                    WHERE e.campaign_id = c.id
+                      AND LOWER(e.event_type) IN ('email_reply', 'linkedin_reply')
+                      AND (CAST(json_extract(e.metadata_json, '$.is_auto_reply') AS INTEGER) != 1
+                           OR json_extract(e.metadata_json, '$.is_auto_reply') IS NULL)
+                  ) AS human_reply_count,
+                  (
+                    SELECT COUNT(DISTINCT e.lead_id)
+                    FROM events e
+                    WHERE e.campaign_id = c.id
+                      AND LOWER(e.event_type) IN ('email_reply', 'linkedin_reply')
+                      AND CAST(json_extract(e.metadata_json, '$.is_auto_reply') AS INTEGER) = 1
+                  ) AS auto_reply_count
            FROM campaigns c
            ORDER BY event_count DESC, c.name"""
     ).fetchall()
@@ -1530,6 +1545,8 @@ def get_campaign_stats():
         )
         item["last_event_at"] = last_event_at
         item["event_summary"] = "; ".join(summary_parts) if summary_parts else "No events recorded."
+        item["human_reply_count"] = int(item.get("human_reply_count") or 0)
+        item["auto_reply_count"] = int(item.get("auto_reply_count") or 0)
         workspace = ""
         campaign_name = item.get("campaign") or ""
         if "|" in campaign_name:

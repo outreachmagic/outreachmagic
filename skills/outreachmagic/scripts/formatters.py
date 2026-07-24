@@ -150,20 +150,28 @@ def format_campaign_stats(stats, include_header=False):
     workspace_w = max(workspace_w, len("Workspace"), 9)
     name_w = max((len(c.get("campaign_name") or c.get("campaign") or "") for c in campaigns), default=12)
     name_w = max(name_w, len("(no campaign)"), len("Campaign"), 12)
+    # Column widths: Events, Leads, Replies (human), OOO (auto-reply), Interested (stage)
     lines.append(
-        f"{'Workspace':<{workspace_w}}  {'Campaign':<{name_w}}  {'Events':>7}  {'Leads':>6}  {'Interested':>10}"
+        f"{'Workspace':<{workspace_w}}  {'Campaign':<{name_w}}"
+        f"  {'Events':>7}  {'Leads':>6}  {'Replies':>7}  {'OOO':>5}  {'Interested(stage)':>17}"
     )
-    lines.append("-" * (workspace_w + name_w + 31))
+    lines.append("-" * (workspace_w + name_w + 51))
     for row in campaigns:
         workspace = row.get("workspace") or "-"
         campaign_name = row.get("campaign_name") or row.get("campaign") or ""
         interested = int(row.get("interested_count") or 0)
+        human_replies = int(row.get("human_reply_count") or 0)
+        auto_replies = int(row.get("auto_reply_count") or 0)
         lines.append(
-            f"{workspace:<{workspace_w}}  {campaign_name:<{name_w}}  "
-            f"{row['event_count']:>7}  {row['lead_count']:>6}  {interested:>10}"
+            f"{workspace:<{workspace_w}}  {campaign_name:<{name_w}}"
+            f"  {row['event_count']:>7}  {row['lead_count']:>6}"
+            f"  {human_replies:>7}  {auto_replies:>5}  {interested:>17}"
         )
     if no_campaign:
-        lines.append(f"{'-':<{workspace_w}}  {'(no campaign)':<{name_w}}  {no_campaign:>7}  {'-':>6}  {'-':>10}")
+        lines.append(
+            f"{'-':<{workspace_w}}  {'(no campaign)':<{name_w}}"
+            f"  {no_campaign:>7}  {'-':>6}  {'-':>7}  {'-':>5}  {'-':>17}"
+        )
     return lines
 
 

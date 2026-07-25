@@ -69,8 +69,16 @@ nav.tabs button.active { background: var(--surface-1); color: var(--ink-1); bord
 table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
 td.wrap { white-space: normal; }
-th { color: var(--ink-2); font-weight: 500; font-size: 12px; user-select: none; }
+/* clip: cap a column's width so one long value (a title, a subject) can't
+   stretch the whole table; full value stays available via the title tooltip. */
+td.clip, th.clip { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+th { color: var(--ink-2); font-weight: 500; font-size: 12px; user-select: none; position: relative; }
 th.sortable { cursor: pointer; }
+/* drag handle on the right edge of a header cell to resize its column */
+th .col-resize { position: absolute; top: 0; right: 0; width: 7px; height: 100%;
+  cursor: col-resize; user-select: none; }
+th .col-resize:hover { background: color-mix(in srgb, var(--series-1) 30%, transparent); }
+body.col-resizing { cursor: col-resize; user-select: none; }
 th.sortable:hover { color: var(--ink-1); }
 th .arrow { font-size: 10px; }
 td.num, th.num { text-align: right; }
@@ -119,11 +127,31 @@ tr.clickable:hover td { background: color-mix(in srgb, var(--series-1) 7%, trans
 #slideover .msg { font-size: 12px; min-height: 16px; }
 #slideover .msg.ok { color: var(--good-text); }
 #slideover .msg.err { color: var(--status-critical); }
+#sync-console {
+  position: fixed; bottom: 14px; right: 14px; width: min(560px, 94vw); height: 300px;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  display: none; flex-direction: column; z-index: 18; box-shadow: 0 8px 30px rgba(0,0,0,.25);
+}
+#sync-console.open { display: flex; }
+#sync-console .sc-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border-bottom: 1px solid var(--grid); font-size: 13px; font-weight: 600; }
+#console-body { margin: 0; padding: 10px; flex: 1; overflow: auto; font-size: 12px;
+  line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--ink-2); }
 #toast {
   position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
   background: var(--ink-1); color: var(--page); padding: 8px 16px;
   border-radius: 8px; font-size: 13px; display: none; z-index: 20;
 }
+button.linklike { border: none; background: none; padding: 0; font: inherit; font-weight: 600;
+  color: var(--series-1); cursor: pointer; text-decoration: underline; }
+.tag-chip { display: inline-block; padding: 1px 7px; margin: 0 3px 2px 0; font-size: 11px;
+  border: 1px solid var(--border); border-radius: 999px; color: var(--ink-2); }
+.stat-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.stat-cell { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; cursor: pointer; min-width: 96px; }
+.stat-cell:hover { background: color-mix(in srgb, var(--series-1) 8%, transparent); }
+.stat-cell .label { color: var(--ink-muted); font-size: 11px; }
+.stat-cell .value { font-size: 18px; font-weight: 600; }
+.tile { cursor: pointer; }
 .banner { padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; border: 1px solid var(--border); }
 .banner.warn { border-color: var(--status-serious); }
 code { background: var(--page); border: 1px solid var(--grid); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
@@ -139,6 +167,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <option value="14d">Last 14 days</option>
       <option value="30d" selected>Last 30 days</option>
       <option value="90d">Last 90 days</option>
+      <option value="all">All available</option>
       <option value="custom">Custom…</option>
     </select>
   </label>
@@ -150,6 +179,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
   <span id="sync-pill" class="pill">idle</span>
   <button id="pull-btn">Pull latest</button>
   <button id="push-btn">Push to relay</button>
+  <button id="console-btn" class="small" title="Show sync console">Console</button>
   <span class="spacer"></span>
   <span id="staleness" class="stale"></span>
 </header>
@@ -172,6 +202,10 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
 
   <section id="tab-contacts" hidden>
     <div class="card">
+      <h2>Stats <span class="sub">email &amp; LinkedIn readiness by tag — click any number to filter</span></h2>
+      <div id="contacts-stats"></div>
+    </div>
+    <div class="card">
       <h2>Contacts <span class="sub">search name / email / domain / LinkedIn / company / title</span></h2>
       <div class="controls">
         <input id="contacts-q" placeholder="Search…" style="width:280px">
@@ -190,8 +224,27 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           <option value="name">Sort: name</option>
           <option value="company">Sort: company</option>
         </select>
+        <label><input type="checkbox" id="contacts-connected"> 1st-degree only</label>
+        <select id="contacts-sender" title="Filter to a LinkedIn sender's connections">
+          <option value="">Any sender</option>
+        </select>
         <span class="spacer"></span>
         <span id="contacts-count" class="stale"></span>
+      </div>
+      <div id="contacts-active-filters" style="margin-bottom:8px"></div>
+      <div id="contacts-bulk" class="controls" style="display:none;background:var(--page);padding:8px 10px;border-radius:8px">
+        <b id="contacts-sel-count">0 selected</b>
+        <select id="bulk-op">
+          <option value="stage">Set stage</option>
+          <option value="sentiment">Set sentiment</option>
+          <option value="tag_add">Add tag</option>
+          <option value="tag_remove">Remove tag</option>
+          <option value="email_finder">Run email finder</option>
+        </select>
+        <input id="bulk-value" placeholder="value" style="width:160px">
+        <button class="small primary" id="bulk-apply">Apply</button>
+        <button class="small" id="bulk-clear">Clear</button>
+        <span class="msg" id="bulk-msg"></span>
       </div>
       <div id="contacts-table"></div>
       <div class="controls">
@@ -309,7 +362,19 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         </label>
       </div>
       <div class="chart-wrap"><canvas id="daily-chart"></canvas></div>
+      <div class="stale" style="margin-top:4px">Tip: click a day (chart point or table row) to filter everything to that date.</div>
       <div id="daily-matrix"></div>
+    </div>
+    <div class="card">
+      <h2>Replies <span class="sub">actual inbound replies — all campaigns by default, for the selected range</span></h2>
+      <div class="controls">
+        <label>Campaign
+          <select id="replies-campaign"><option value="">All campaigns</option></select>
+        </label>
+        <span class="spacer"></span>
+        <span id="replies-count" class="stale"></span>
+      </div>
+      <div id="replies-table"></div>
     </div>
     <div class="card">
       <h2>Campaigns <span class="sub">click a campaign for senders, subject lines &amp; copy</span></h2>
@@ -417,7 +482,8 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
 
 <div id="overlay"></div>
 <aside id="slideover">
-  <button style="float:right" onclick="closeLead()">✕</button>
+  <button style="float:right" onclick="dismissPanels()">✕</button>
+  <button id="lead-back" class="small" style="display:none;margin-bottom:8px" onclick="navBack()">← Back</button>
   <h2 id="lead-name"></h2>
   <div class="meta" id="lead-meta"></div>
 
@@ -436,16 +502,22 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
     <div class="msg" id="stage-msg"></div>
   </form>
 
-  <form id="enrich-form">
-    <h3>Edit attributes <span class="sub" style="font-weight:400;color:var(--ink-muted)">(fills empty fields; check to overwrite)</span></h3>
-    <div class="row"><input name="title" placeholder="Title"><input name="industry" placeholder="Industry"></div>
-    <div class="row"><input name="company" placeholder="Company"><input name="headcount" placeholder="Headcount"></div>
-    <div class="row">
-      <label style="flex:2"><input type="checkbox" id="enrich-overwrite"> overwrite existing values</label>
-      <button class="primary">Save</button>
+  <form id="identity-form">
+    <h3>Identity</h3>
+    <div class="row"><input name="name" placeholder="Full name"></div>
+    <div class="row"><input name="title" placeholder="Title"></div>
+    <div class="row"><input name="linkedin" placeholder="LinkedIn URL or Sales Navigator id / URL"></div>
+    <div class="row" style="align-items:center">
+      <button class="primary">Save identity</button>
+      <a id="lead-linkedin-link" target="_blank" rel="noopener" style="display:none;flex:1;font-size:12px">Open LinkedIn ↗</a>
     </div>
-    <div class="msg" id="enrich-msg"></div>
+    <div class="msg" id="identity-msg"></div>
   </form>
+
+  <div id="lead-company-facts" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+  <div id="lead-emails" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+  <div id="lead-custom" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+  <div id="lead-runs" style="border-top:1px solid var(--grid);padding-top:12px"></div>
 
   <form id="event-form">
     <h3>Log event</h3>
@@ -472,11 +544,21 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
   </div>
 </aside>
 <aside id="editPanel">
-  <button style="float:right" onclick="closeEditPanel()">✕</button>
+  <button style="float:right" onclick="dismissPanels()">✕</button>
+  <button id="company-back" class="small" style="display:none;margin-bottom:8px" onclick="navBack()">← Back</button>
   <h2 id="edit-title"></h2>
   <div class="meta" id="edit-meta"></div>
   <div id="edit-body"></div>
 </aside>
+<div id="sync-console">
+  <div class="sc-head">
+    <span>Sync console</span>
+    <span style="flex:1"></span>
+    <button class="small" id="console-clear">Clear</button>
+    <button class="small" id="console-close">✕</button>
+  </div>
+  <pre id="console-body"></pre>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -493,6 +575,7 @@ const state = {
   leadsOffset: 0, leadsStatus: null,
   charts: {},
   campaigns: [],
+  navStack: [],  // back-stack for lead ↔ company slide-over navigation
 };
 const STAGES = ["prospecting","contacted","replied","interested","scheduled","won","not_interested","lost"];
 
@@ -540,14 +623,67 @@ function chartInk() {
 }
 
 /* ---------- generic sortable / filterable table ---------- */
-// cols: [{key, label, num?, render?(row) -> html, sortVal?(row)}]
-// opts: {onRowClick(row), filter: true, empty: "message"}
+// cols: [{key, label, num?, wrap?, maxw?, render?(row) -> html, sortVal?(row)}]
+// opts: {onRowClick(row), filter: true, empty: "message", tableKey: "id"}
+// tableKey enables per-column drag-resize persisted to localStorage.
+function loadColW(tableKey) {
+  if (!tableKey) return {};
+  try { return JSON.parse(localStorage.getItem("om_colw") || "{}")[tableKey] || {}; }
+  catch (e) { return {}; }
+}
+function saveColW(tableKey, key, px) {
+  if (!tableKey) return;
+  let all = {};
+  try { all = JSON.parse(localStorage.getItem("om_colw") || "{}"); } catch (e) {}
+  all[tableKey] = all[tableKey] || {};
+  all[tableKey][key] = Math.round(px);
+  localStorage.setItem("om_colw", JSON.stringify(all));
+}
+// Plain-text fallback for the tooltip when a column has no custom renderer.
+function cellText(c, r) {
+  if (c.render) return "";
+  const v = r[c.key];
+  return v == null ? "" : String(v);
+}
+// Drag-to-resize a column: live-updates every cell in the column, persists the
+// final width per (tableKey, colKey). Works with the default auto table layout
+// because the width is applied as max-width (the same lever .clip uses).
+function wireColResize(el, cols, tableKey, redraw) {
+  el.querySelectorAll(".col-resize").forEach(handle => {
+    handle.onmousedown = (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const ci = +handle.dataset.ci;
+      const th = el.querySelector(`th[data-ci="${ci}"]`);
+      const cells = el.querySelectorAll(`[data-ci="${ci}"]`);
+      const startX = ev.clientX;
+      const startW = th.offsetWidth;
+      let finalW = startW;
+      document.body.classList.add("col-resizing");
+      const move = (e) => {
+        finalW = Math.max(60, startW + (e.clientX - startX));
+        cells.forEach(c => { c.style.maxWidth = finalW + "px"; });
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+        document.body.classList.remove("col-resizing");
+        saveColW(tableKey, cols[ci].key, finalW);
+      };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    };
+  });
+}
 function renderTable(container, cols, rows, opts = {}) {
   const el = typeof container === "string" ? $(container) : container;
   if (!rows.length) {
     el.innerHTML = `<div class="empty">${esc(opts.empty || "Nothing here yet.")}</div>`;
     return;
   }
+  // Default the resize-persistence key to the container id, so every table
+  // gets drag-resizable columns without each call site opting in.
+  const tableKey = opts.tableKey || (typeof container === "string" ? container : null);
+  const widths = loadColW(tableKey);
   const st = el._tstate = el._tstate || { sortKey: null, sortDir: 1, filter: "" };
   const draw = () => {
     let view = rows;
@@ -567,20 +703,33 @@ function renderTable(container, cols, rows, opts = {}) {
           ? av - bv : String(av).localeCompare(String(bv))) * st.sortDir;
       });
     }
-    const head = cols.map(c => {
+    // Resolve each column's clip width: persisted drag width wins, else the
+    // column's own maxw hint, else the default 320px from the .clip rule.
+    const clipCol = c => !c.num && !c.wrap;
+    const colStyle = (c) => {
+      const w = widths[c.key] != null ? widths[c.key] : c.maxw;
+      return w != null ? `max-width:${w}px;` : "";
+    };
+    const head = cols.map((c, ci) => {
       const arrow = st.sortKey === c.key ? `<span class="arrow">${st.sortDir > 0 ? "▲" : "▼"}</span>` : "";
-      return `<th class="sortable ${c.num ? "num" : ""}" data-key="${c.key}">${esc(c.label)} ${arrow}</th>`;
+      const cls = `sortable ${c.num ? "num" : ""}${clipCol(c) ? " clip" : ""}`;
+      const handle = tableKey ? `<span class="col-resize" data-ci="${ci}"></span>` : "";
+      return `<th class="${cls}" data-key="${c.key}" data-ci="${ci}" style="${colStyle(c)}">${esc(c.label)} ${arrow}${handle}</th>`;
     }).join("");
     const body = view.map((r, i) => {
-      const cells = cols.map(c =>
-        `<td class="${c.num ? "num" : ""}${c.wrap ? " wrap" : ""}">${c.render ? c.render(r) : esc(r[c.key] ?? "")}</td>`
-      ).join("");
+      const cells = cols.map((c, ci) => {
+        const cls = `${c.num ? "num" : ""}${c.wrap ? " wrap" : ""}${clipCol(c) ? " clip" : ""}`;
+        const txt = cellText(c, r);
+        const title = txt ? ` title="${esc(txt)}"` : "";
+        return `<td class="${cls}" data-ci="${ci}" style="${colStyle(c)}"${title}>${c.render ? c.render(r) : esc(r[c.key] ?? "")}</td>`;
+      }).join("");
       return `<tr class="${opts.onRowClick ? "clickable" : ""}" data-i="${rows.indexOf(r)}">${cells}</tr>`;
     }).join("");
     el.innerHTML =
       (opts.filter !== false && rows.length > 8
         ? `<div class="tfilter"><input placeholder="Filter…" value="${esc(st.filter)}"></div>` : "") +
       `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    if (tableKey) wireColResize(el, cols, tableKey, draw);
     const filterInput = el.querySelector(".tfilter input");
     if (filterInput) {
       filterInput.oninput = () => { st.filter = filterInput.value; draw(); restoreFocus(); };
@@ -589,7 +738,8 @@ function renderTable(container, cols, rows, opts = {}) {
         inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
       }
     }
-    el.querySelectorAll("th.sortable").forEach(th => th.onclick = () => {
+    el.querySelectorAll("th.sortable").forEach(th => th.onclick = (ev) => {
+      if (ev.target.closest(".col-resize")) return;  // dragging to resize, not sorting
       const key = th.dataset.key;
       if (st.sortKey === key) st.sortDir *= -1; else { st.sortKey = key; st.sortDir = 1; }
       draw();
@@ -620,13 +770,18 @@ async function refreshSummary() {
   if (!state.workspace) return;
   try {
     const [s, sync] = await Promise.all([getR("/api/summary"), api("/api/sync/status")]);
-    $("tiles").innerHTML = [
-      ["Leads", fmt(s.total_leads)],
-      ["Sent", fmt(s.sent)],
-      ["Replied", fmt(s.replied)],
-      ["Bounced", fmt(s.bounced)],
-      ["Interested", fmt(s.stages.interested)],
-    ].map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
+    // Each tile drills into the section + filter that produced the number, so
+    // the count is auditable (fixes "Interested says 1 but I can't find it").
+    const tiles = [
+      ["Leads", fmt(s.total_leads), () => switchTab("contacts")],
+      ["Sent", fmt(s.sent), () => switchTab("campaigns")],
+      ["Replied", fmt(s.replied), () => switchTab("campaigns")],
+      ["Bounced", fmt(s.bounced), () => switchTab("deliverability")],
+      ["Interested", fmt(s.stages.interested), () => { $("contacts-status").value = "interested"; switchTab("contacts"); loadContacts(); }],
+    ];
+    $("tiles").innerHTML = tiles.map(([l, v], i) =>
+      `<div class="tile" data-i="${i}"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
+    $("tiles").querySelectorAll(".tile").forEach(t => t.onclick = () => tiles[+t.dataset.i][2]());
     $("staleness").textContent = s.latest_event_at
       ? "latest event: " + dt(s.latest_event_at) + " UTC" : "no events pulled yet";
     updateSyncPill(sync);
@@ -646,15 +801,48 @@ function updateSyncPill(sync) {
   state.syncState = sync.state;
 }
 
-$("pull-btn").onclick = () => post("/api/sync/pull", {}).then(updateSyncPill).catch(e => toast(e.message));
+/* ---------- sync console (streams the same lines the terminal shows) ---------- */
+function openConsole(reset) {
+  $("sync-console").classList.add("open");
+  $("console-btn").classList.add("active");
+  if (reset) $("console-body").textContent = "";
+}
+function closeConsole() { $("sync-console").classList.remove("open"); $("console-btn").classList.remove("active"); }
+async function pollConsoleOnce() {
+  const d = await api(`/api/sync/log?after=${state.logOffset || 0}`).catch(() => null);
+  if (!d) return;
+  if (d.text) {
+    const b = $("console-body");
+    const atBottom = b.scrollTop + b.clientHeight >= b.scrollHeight - 20;
+    b.textContent += d.text;
+    if (atBottom) b.scrollTop = b.scrollHeight;
+  }
+  state.logOffset = d.offset;
+}
+$("console-btn").onclick = () => {
+  const el = $("sync-console");
+  if (el.classList.contains("open")) closeConsole();
+  else { openConsole(false); pollConsoleOnce(); }
+};
+$("console-close").onclick = closeConsole;
+$("console-clear").onclick = () => { $("console-body").textContent = ""; };
+function startSyncJob(path) {
+  return post(path, {}).then(s => {
+    state.logOffset = s.log_offset || 0;
+    openConsole(true);
+    updateSyncPill(s);
+  }).catch(e => toast(e.message));
+}
+$("pull-btn").onclick = () => startSyncJob("/api/sync/pull");
 $("push-btn").onclick = () => {
   if (!confirm("Push pending local changes to the relay?")) return;
-  post("/api/sync/push", {}).then(updateSyncPill).catch(e => toast(e.message));
+  startSyncJob("/api/sync/push");
 };
 $("workspace").onchange = (e) => {
   state.workspace = e.target.value;
   localStorage.setItem("om_workspace", state.workspace);
   state.activityCursor = null; state.campaigns = [];
+  sendersLoaded = false;  // sender list is per-workspace
   closeDetails();
   refreshSummary(); loadTab();
 };
@@ -670,6 +858,14 @@ $("range-apply").onclick = () => {
   state.until = $("range-until").value || null;
   refreshSummary(); loadTab();
 };
+// Click one day (chart point or matrix row) to narrow the range to that day.
+function setRangeToDay(dateStr) {
+  if (!dateStr || dateStr === "TOTAL" || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return;
+  state.since = dateStr; state.until = dateStr;
+  $("range").value = "custom"; $("custom-range").hidden = false;
+  $("range-since").value = dateStr; $("range-until").value = dateStr;
+  refreshSummary(); loadTab();
+}
 
 function closeDetails() {
   $("campaign-detail-card").hidden = true;
@@ -678,13 +874,16 @@ function closeDetails() {
 }
 
 /* ---------- tabs ---------- */
+function switchTab(tab) {
+  if (!tab) return;
+  state.tab = tab;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + tab);
+  loadTab();
+}
 $("tabs").onclick = (e) => {
   const btn = e.target.closest("button[data-tab]");
-  if (!btn) return;
-  state.tab = btn.dataset.tab;
-  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b === btn));
-  document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + state.tab);
-  loadTab();
+  if (btn) switchTab(btn.dataset.tab);
 };
 
 function loadTab() {
@@ -696,6 +895,14 @@ function loadTab() {
 }
 
 /* shared lead columns for any lead table (contacts, campaign leads) */
+// Best openable LinkedIn URL for a lead row: public URL, else synthesized Sales
+// Navigator URL from the stored member token. Mirrors linkedin_display_url server-side.
+function leadLiUrl(r) {
+  if (r.linkedin_display_url) return r.linkedin_display_url;
+  if (r.linkedin_url) return r.linkedin_url.startsWith("http") ? r.linkedin_url : "https://" + r.linkedin_url.replace(/^\/+/, "");
+  if (r.linkedin_sales_nav_id) return "https://www.linkedin.com/sales/lead/" + r.linkedin_sales_nav_id;
+  return null;
+}
 function leadColumns() {
   return [
     { key: "name", label: "Name", render: r => esc(r.name || "—") },
@@ -704,6 +911,8 @@ function leadColumns() {
     { key: "email", label: "Email", render: r => r.email ? esc(r.email) : '<span class="flag warn">no email</span>' },
     { key: "status", label: "Stage" },
     { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
+    { key: "tags", label: "Tags", render: r => r.tags ? r.tags.split(",").map(t => `<span class="tag-chip">${esc(t)}</span>`).join("") : "" },
+    { key: "li", label: "LinkedIn", sortVal: () => 0, render: r => { const u = leadLiUrl(r); return u ? `<a href="${esc(u)}" target="_blank" rel="noopener">↗</a>` : ""; } },
     { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
   ];
 }
@@ -925,6 +1134,10 @@ $("leads-more").onclick = () => showStageLeads(state.leadsStatus, true);
 /* ---------- contacts (Section B) ---------- */
 const contactsState = { offset: 0, limit: 50, total: 0 };
 let contactsTimer = null;
+// Extra filters set by the stats section's click-to-filter (tag / verify /
+// qualify_finding / has_linkedin). Cleared via the active-filters chip.
+const contactsFilters = {};
+const contactsSel = new Set();
 
 function contactsQuery() {
   const p = new URLSearchParams({
@@ -934,7 +1147,43 @@ function contactsQuery() {
     sort: $("contacts-sort").value,
     limit: contactsState.limit, offset: contactsState.offset,
   });
+  const sender = $("contacts-sender").value;
+  // A chosen sender only makes sense among that sender's 1st-degree connections,
+  // so it implies connected=1 even if the checkbox is off.
+  if ($("contacts-connected").checked || sender) p.set("connected", "1");
+  if (sender) p.set("sender", sender);
+  for (const [k, v] of Object.entries(contactsFilters)) if (v != null && v !== "") p.set(k, v);
   return "/api/contacts?" + p.toString();
+}
+let sendersLoaded = false;
+async function fillSenderSelect() {
+  if (sendersLoaded) return;
+  sendersLoaded = true;
+  const d = await getR("/api/linkedin/senders").catch(() => null);
+  if (!d || !d.linkedin_senders) return;
+  const sel = $("contacts-sender"), cur = sel.value;
+  sel.innerHTML = '<option value="">Any sender</option>' + d.linkedin_senders
+    .filter(s => s.sender_profile)
+    .map(s => `<option value="${esc(s.sender_profile)}">${esc(s.sender_slug || s.sender_profile)} (${fmt(s.connected)})</option>`).join("");
+  sel.value = cur;
+}
+function renderActiveFilters() {
+  const chips = [];
+  for (const [k, v] of Object.entries(contactsFilters)) {
+    chips.push(`<span class="tag-chip" style="cursor:pointer" data-clear="${esc(k)}">${esc(k)}: ${esc(String(v))} ✕</span>`);
+  }
+  const el = $("contacts-active-filters");
+  el.innerHTML = chips.length ? "Filters: " + chips.join(" ") : "";
+  el.querySelectorAll("[data-clear]").forEach(c => c.onclick = () => {
+    delete contactsFilters[c.dataset.clear]; renderActiveFilters(); loadContacts();
+  });
+}
+function setContactsFilter(patch) {
+  Object.assign(contactsFilters, patch);
+  // mutually-exclusive verify/qualify: clearing empties
+  for (const k of Object.keys(patch)) if (patch[k] == null) delete contactsFilters[k];
+  state.tab !== "contacts" && switchTab("contacts");
+  renderActiveFilters(); loadContacts();
 }
 async function loadContacts(resetOffset = true) {
   if (resetOffset) contactsState.offset = 0;
@@ -942,20 +1191,76 @@ async function loadContacts(resetOffset = true) {
     $("contacts-status").innerHTML = '<option value="">Any stage</option>' +
       STAGES.map(s => `<option>${s}</option>`).join("");
   }
+  fillSenderSelect();
   const d = await getR(contactsQuery()).catch(e => { toast(e.message); return null; });
   if (!d) return;
   contactsState.total = d.total;
-  renderTable("contacts-table", leadColumns(), d.leads,
-    { empty: "No contacts match.", filter: false, onRowClick: r => openLead(r.lead_id) });
+  const selCol = { key: "__sel", label: "", sortVal: () => 0,
+    render: r => `<input type="checkbox" class="row-sel" data-id="${r.lead_id}" ${contactsSel.has(r.lead_id) ? "checked" : ""}>` };
+  renderTable("contacts-table", [selCol].concat(leadColumns()), d.leads,
+    { empty: "No contacts match.", filter: false, onRowClick: r => openLead(r.lead_id),
+      onDraw: el => {
+        el.querySelectorAll(".row-sel").forEach(cb => cb.onchange = () => {
+          const id = +cb.dataset.id;
+          cb.checked ? contactsSel.add(id) : contactsSel.delete(id);
+          updateBulkBar();
+        });
+      } });
   const from = d.total ? contactsState.offset + 1 : 0;
   const to = contactsState.offset + d.leads.length;
   $("contacts-count").textContent = `${fmt(d.total)} contacts`;
   $("contacts-page").textContent = `${from}–${to} of ${fmt(d.total)}`;
   $("contacts-prev").disabled = contactsState.offset === 0;
   $("contacts-next").disabled = to >= d.total;
+  updateBulkBar();
+  loadContactsStats();
+}
+function updateBulkBar() {
+  const bar = $("contacts-bulk");
+  bar.style.display = contactsSel.size ? "" : "none";
+  $("contacts-sel-count").textContent = `${contactsSel.size} selected`;
+}
+$("bulk-clear").onclick = () => { contactsSel.clear(); updateBulkBar(); loadContacts(false); };
+$("bulk-apply").onclick = () => {
+  const op = $("bulk-op").value;
+  const value = $("bulk-value").value.trim();
+  if (op !== "email_finder" && !value) { toast("Enter a value"); return; }
+  if (!confirm(`Apply "${op}"${value ? ` = "${value}"` : ""} to ${contactsSel.size} contacts?`)) return;
+  formResult("bulk-msg", post("/api/contacts/bulk",
+    { lead_ids: [...contactsSel], op, value, workspace: state.workspace }),
+    () => { contactsSel.clear(); loadContacts(false); refreshSummary(); });
+};
+
+async function loadContactsStats() {
+  const d = await getR("/api/contacts/stats").catch(() => null);
+  if (!d) return;
+  const cell = (label, value, patch) =>
+    `<div class="stat-cell" data-patch='${esc(JSON.stringify(patch))}'><div class="label">${label}</div><div class="value">${fmt(value || 0)}</div></div>`;
+  const grid = (o) => `<div class="stat-grid">
+    ${cell("Valid email", o.valid_email, { verify: "valid" })}
+    ${cell("Catch-all", o.catch_all_email, { verify: "catch_all" })}
+    ${cell("No email", o.no_email, { verify: "none" })}
+    ${cell("Find-eligible", o.qualify_finding, { qualify_finding: "1" })}
+    ${cell("Has LinkedIn", o.has_linkedin, { has_linkedin: "1" })}
+  </div>`;
+  const tagBlocks = d.by_tag.map(t => `<div style="margin-top:10px">
+    <div class="stale" style="margin-bottom:4px"><b>${esc(t.tag)}</b> · ${fmt(t.total)} leads
+      <button class="linklike" style="font-size:11px" data-tag="${esc(t.tag)}">filter to tag</button></div>
+    ${grid(t)}</div>`).join("");
+  $("contacts-stats").innerHTML = `
+    <div class="stale" style="margin-bottom:4px">All contacts · ${fmt(d.overall.total)} leads</div>
+    ${grid(d.overall)}${tagBlocks}`;
+  $("contacts-stats").querySelectorAll(".stat-cell").forEach(c => c.onclick = () => {
+    const patch = JSON.parse(c.dataset.patch);
+    // clear the other verify/qualify keys so filters stay coherent
+    ["verify", "qualify_finding", "has_linkedin"].forEach(k => delete contactsFilters[k]);
+    setContactsFilter(patch);
+  });
+  $("contacts-stats").querySelectorAll("[data-tag]").forEach(b => b.onclick = () =>
+    setContactsFilter({ tag: b.dataset.tag }));
 }
 $("contacts-q").oninput = () => { clearTimeout(contactsTimer); contactsTimer = setTimeout(() => loadContacts(), 300); };
-$("contacts-status").onchange = $("contacts-missing").onchange = $("contacts-sort").onchange = () => loadContacts();
+$("contacts-status").onchange = $("contacts-missing").onchange = $("contacts-sort").onchange = $("contacts-connected").onchange = $("contacts-sender").onchange = () => loadContacts();
 $("contacts-prev").onclick = () => { contactsState.offset = Math.max(0, contactsState.offset - contactsState.limit); loadContacts(false); };
 $("contacts-next").onclick = () => { contactsState.offset += contactsState.limit; loadContacts(false); };
 
@@ -1017,21 +1322,57 @@ async function openCompany(companyId) {
       <div>${domainChips}</div>
       ${emailChips ? `<h3 style="font-size:13px;margin-top:10px">Public emails</h3><div>${emailChips}</div>` : ""}
     </div>
+    <div id="company-domains" style="border-top:1px solid var(--grid);padding-top:12px"></div>
     <div style="border-top:1px solid var(--grid);padding-top:12px">
       <h3 style="font-size:13px">Leads at this company (${d.lead_count}${d.lead_count >= 200 ? "+" : ""})</h3>
       <div id="company-leads"></div>
     </div>`;
+  renderCompanyDomains(companyId);
   renderTable("company-leads", [
     { key: "name", label: "Name", render: r => esc(r.name || "—") },
     { key: "title", label: "Title", render: r => esc(r.title ?? "") },
     { key: "status", label: "Stage" },
   ], d.leads, { empty: "No leads in this workspace.", filter: d.leads.length > 8,
-    onRowClick: r => { closeEditPanel(); openLead(r.lead_id); } });
+    onRowClick: r => { navPush("company", companyId); closeEditPanel(); openLead(r.lead_id); } });
   $("company-edit-form").onsubmit = (e) => {
     e.preventDefault();
     const body = {};
     for (const inp of e.target.querySelectorAll("input[name]")) if (inp.value.trim()) body[inp.name] = inp.value.trim();
     formResult("company-msg", post(`/api/companies/${companyId}/edit`, body), () => loadCompanies(false));
+  };
+  updateBackBtns();
+}
+
+const DOMAIN_PURPOSES = ["sending", "branch", "email_finding"];
+async function renderCompanyDomains(companyId) {
+  const el = $("company-domains");
+  el.innerHTML = '<h3 style="font-size:13px">Sending domains</h3><div class="stale">Loading…</div>';
+  const d = await api(`/api/companies/${companyId}/domains`).catch(() => null);
+  if (!d) { el.innerHTML = ""; return; }
+  const rows = d.domains.map(dm => {
+    const opts = DOMAIN_PURPOSES.map(p => `<option ${p === (dm.purpose || "sending") ? "selected" : ""}>${p}</option>`).join("");
+    return `<div style="display:flex;gap:8px;align-items:center;padding:3px 0">
+      <span style="flex:1">${esc(dm.domain)}</span>
+      <select data-domain="${esc(dm.domain)}" class="dom-purpose">${opts}</select></div>`;
+  }).join("");
+  el.innerHTML = `<h3 style="font-size:13px">Sending domains <span class="sub" style="font-weight:400;color:var(--ink-muted)">purpose = what it's used for</span></h3>
+    ${rows || '<div class="stale">No domains linked to this company yet.</div>'}
+    <div class="row" style="display:flex;gap:8px;margin-top:6px">
+      <input id="add-domain-input" placeholder="Add a domain…" style="flex:2">
+      <select id="add-domain-purpose">${DOMAIN_PURPOSES.map(p => `<option>${p}</option>`).join("")}</select>
+      <button class="small" id="add-domain-btn">Add</button>
+    </div>
+    <div class="msg" id="company-domains-msg"></div>`;
+  el.querySelectorAll(".dom-purpose").forEach(sel => sel.onchange = () =>
+    formResult("company-domains-msg",
+      post(`/api/companies/${companyId}/domains`, { domain: sel.dataset.domain, purpose: sel.value }),
+      () => renderCompanyDomains(companyId)));
+  $("add-domain-btn").onclick = () => {
+    const v = $("add-domain-input").value.trim();
+    if (!v) { toast("Enter a domain"); return; }
+    formResult("company-domains-msg",
+      post(`/api/companies/${companyId}/domains`, { domain: v, purpose: $("add-domain-purpose").value }),
+      () => renderCompanyDomains(companyId));
   };
 }
 
@@ -1239,12 +1580,15 @@ async function loadCampaigns() {
   state.campaigns = audit.campaigns;
   fillCampaignSelects();
   renderDaily(daily);
+  loadReplies();
   renderTable("campaigns", [
     { key: "name", label: "Campaign" },
     { key: "status", label: "Status" },
     { key: "sent", label: "Sent", num: true, render: r => fmt(r.sent) },
     { key: "replies", label: "Replies", num: true, render: r => fmt(r.replies) },
     { key: "reply_rate", label: "Reply rate", num: true, render: r => pct(r.reply_rate) },
+    { key: "positive", label: "Positives", num: true, render: r => fmt(r.positive) },
+    { key: "meetings", label: "Meetings", num: true, render: r => fmt(r.meetings) },
     { key: "positive_rate", label: "Positive rate", num: true, render: r => pct(r.positive_rate) },
     { key: "bounce_rate", label: "Bounce rate", num: true,
       render: r => r.bounce_rate != null && r.bounce_rate >= 0.05
@@ -1254,7 +1598,7 @@ async function loadCampaigns() {
 }
 
 function fillCampaignSelects() {
-  for (const id of ["daily-campaign", "attr-campaign"]) {
+  for (const id of ["daily-campaign", "attr-campaign", "replies-campaign"]) {
     const sel = $(id), cur = sel.value;
     sel.innerHTML = '<option value="">All campaigns</option>' + state.campaigns.map(c =>
       `<option value="${c.id}">${esc(c.name)}</option>`).join("");
@@ -1262,6 +1606,29 @@ function fillCampaignSelects() {
   }
 }
 $("daily-campaign").onchange = loadCampaigns;
+
+const SENTIMENT_FLAG = { positive: "ok", negative: "bad", autoreply: "warn", invalid: "warn", neutral: "" };
+async function loadReplies() {
+  const cid = $("replies-campaign").value;
+  const d = await getR("/api/campaigns/replies" + (cid ? `?campaign_id=${cid}` : ""))
+    .catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  $("replies-count").textContent = `${fmt(d.replies.length)} repl${d.replies.length === 1 ? "y" : "ies"}`;
+  renderTable("replies-table", [
+    { key: "lead_name", label: "Lead", render: r => esc(r.lead_name || "—") },
+    { key: "sentiment", label: "Sentiment", render: r => r.sentiment
+        ? `<span class="flag ${SENTIMENT_FLAG[r.sentiment.toLowerCase()] ?? ""}">${esc(r.sentiment)}</span>` : "—" },
+    { key: "subject", label: "Subject", render: r => esc(r.subject || "—") },
+    { key: "campaign_name", label: "Campaign", render: r => esc(r.campaign_name || "—") },
+    { key: "event_at", label: "When", render: r => dt(r.event_at), sortVal: r => r.event_at || "" },
+    { key: "li", label: "LinkedIn", sortVal: () => 0, render: r => r.linkedin_display_url
+        ? `<a href="${esc(r.linkedin_display_url)}" target="_blank" rel="noopener">open ↗</a>` : "" },
+    { key: "copy", label: "Copy", sortVal: () => 0, render: r => r.has_body
+        ? `<button class="small" onclick="toggleCopy(this, ${r.event_id})">View</button>` : "" },
+  ], d.replies, { empty: "No replies in this range.",
+    onRowClick: r => openLead(r.lead_id) });
+}
+$("replies-campaign").onchange = loadReplies;
 
 const DAILY_LABELS = {
   email_sent: "Email sent", email_received: "Email received",
@@ -1284,6 +1651,9 @@ function renderDaily(d) {
         { label: "Bounces", data: d.days.map(p => p.bounces), borderColor: s2, backgroundColor: s2 },
       ].map(ds => ({ ...ds, borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.15 })) },
       options: { maintainAspectRatio: false, animation: false,
+        onClick: (evt, els) => {
+          if (els && els.length) setRangeToDay(d.days[els[0].index]?.date);
+        },
         plugins: { legend: { labels: { color: ink, boxWidth: 12 } } },
         scales: { x: { grid: { display: false }, ticks: { color: ink, maxTicksLimit: 10 } },
                   y: { beginAtZero: true, grid: { color: grid }, border: { display: false },
@@ -1294,7 +1664,8 @@ function renderDaily(d) {
     d.columns.map(k => ({ key: k, label: DAILY_LABELS[k] || k, num: true })));
   const rows = [...d.days].reverse();
   if (rows.length) rows.push({ date: "TOTAL", ...d.totals });
-  renderTable("daily-matrix", cols, rows, { empty: "No activity in range.", filter: false });
+  renderTable("daily-matrix", cols, rows, { empty: "No activity in range.", filter: false,
+    onRowClick: r => setRangeToDay(r.date) });
 }
 
 const campaignLeadsState = { campaignId: null, name: "", offset: 0, limit: 50, total: 0 };
@@ -1621,7 +1992,19 @@ async function openLead(leadId) {
   $("stage-select").innerHTML = STAGES.map(s =>
     `<option ${s === lead.stage ? "selected" : ""}>${s}</option>`).join("");
   document.querySelectorAll("#slideover .msg").forEach(m => { m.textContent = ""; m.className = "msg"; });
-  $("enrich-form").reset(); $("event-form").reset();
+  $("event-form").reset();
+  // Identity form (name / title / LinkedIn) prefilled from the lead.
+  $("identity-form").querySelector('[name=name]').value = lead.name || "";
+  $("identity-form").querySelector('[name=title]').value = lead.title || "";
+  $("identity-form").querySelector('[name=linkedin]').value =
+    lead.linkedin_url || lead.linkedin_sales_nav_id || "";
+  const liLink = $("lead-linkedin-link");
+  if (lead.linkedin_display_url) { liLink.href = lead.linkedin_display_url; liLink.style.display = ""; }
+  else liLink.style.display = "none";
+  renderLeadCompanyFacts(lead);
+  renderLeadEmails(lead.id);
+  renderLeadCustomFields(lead.id);
+  renderLeadProviderRuns(lead.id);
   $("lead-history").innerHTML = d.events.length ? d.events.map(ev => `
     <div class="tl-event">
       <div class="tl-head">
@@ -1639,6 +2022,7 @@ async function openLead(leadId) {
   renderCompanyLink(lead);
   $("overlay").style.display = "block";
   $("slideover").style.display = "block";
+  updateBackBtns();
 }
 
 function renderLeadEnrich(lead) {
@@ -1652,29 +2036,134 @@ function renderLeadEnrich(lead) {
       ${hasEmail ? `<span class="stale">has email — ${esc(lead.email)}</span>`
         : domain ? `<span class="stale">domain: ${esc(domain)}</span>`
         : `<span class="flag warn">no domain — link a company first for best results</span>`}
+      <span id="lead-enrich-hint" class="stale"></span>
     </div>
     <div class="msg" id="lead-enrich-msg"></div>`;
-  const startJob = (path, label) => {
+  // startJob consults the re-run guard (state.leadRuns, loaded by
+  // renderLeadProviderRuns): if this capability already ran, it demands a
+  // second confirm and sends force:true so the backend actually re-spends.
+  const startJob = (path, label, capability) => {
+    const runs = state.leadRuns || {};
+    const prior = runs[capability];
+    let force = false;
+    if (prior && prior.ran) {
+      if (!confirm(`${label} already ran on this lead${prior.last_attempted_at ? " (" + prior.last_attempted_at + ")" : ""}. Run again anyway? Spends credits.`)) return;
+      force = true;
+    } else if (!confirm(`Run ${label} on this lead? Spends provider credits.`)) return;
     const msg = $("lead-enrich-msg");
     msg.textContent = "starting…"; msg.className = "msg";
-    post(path, { workspace: state.workspace, lead_ids: [lead.id] })
+    post(path, { workspace: state.workspace, lead_ids: [lead.id], force })
       .then(s => { updateSyncPill(s); msg.textContent = `${label} started — watch the sync pill.`; msg.className = "msg ok"; })
       .catch(e => { msg.textContent = e.message; msg.className = "msg err"; });
   };
   const fe = $("lead-find-email"), sr = $("lead-serper");
-  if (fe && !hasEmail) fe.onclick = () => {
-    if (!confirm("Run the email finder on this lead? Spends provider credits. Result saves to the lead.")) return;
-    startJob("/api/enrich/email-finder", "Email finder");
+  if (fe && !hasEmail) fe.onclick = () => startJob("/api/enrich/email-finder", "Email finder", "email_finding");
+  if (sr) sr.onclick = () => startJob("/api/enrich/serper", "Serper research", "research");
+}
+
+/* ---------- lead panel: company facts, emails, custom fields, provider runs ---------- */
+function renderLeadCompanyFacts(lead) {
+  const el = $("lead-company-facts");
+  const facts = [["Industry", lead.industry], ["Headcount", lead.headcount]].filter(x => x[1]);
+  el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Company facts <span class="sub" style="font-weight:400;color:var(--ink-muted)">from the linked company</span></h3>
+    ${facts.length ? facts.map(f => `<div><span class="stale">${f[0]}:</span> ${esc(String(f[1]))}</div>`).join("")
+      : '<div class="stale">No industry / headcount on the company yet.</div>'}
+    ${lead.company_id ? '<button class="linklike" id="facts-edit-company" style="margin-top:4px;font-size:12px">Edit on company →</button>' : ""}`;
+  const btn = $("facts-edit-company");
+  if (btn) btn.onclick = () => { navPush("lead", lead.id); closeLead(); openCompany(lead.company_id); };
+}
+
+async function renderLeadEmails(leadId) {
+  const el = $("lead-emails");
+  el.innerHTML = '<h3 style="font-size:13px;margin:0 0 6px">Emails</h3><div class="stale">Loading…</div>';
+  const d = await api(`/api/leads/${leadId}/emails`).catch(() => null);
+  if (!d) { el.innerHTML = ""; return; }
+  const rows = d.emails.map(e => {
+    const v = e.verification;
+    const vtxt = v ? `<span class="stale">${esc(v.status || "?")}${v.provider ? " · " + esc(v.provider) : ""}</span>`
+      : '<span class="stale">unverified</span>';
+    const right = e.is_primary ? '<span class="flag ok">primary</span>'
+      : `<button class="small" data-promote="${esc(e.email)}">make primary</button>`;
+    return `<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:3px 0">
+      <span>${esc(e.email)} ${vtxt}</span>${right}</div>`;
+  }).join("");
+  el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Emails</h3>${rows}
+    <div class="row" style="display:flex;gap:8px;margin-top:6px">
+      <input id="add-email-input" placeholder="Add another email…" style="flex:2">
+      <button class="small" id="add-email-btn">Add</button>
+    </div>
+    <div class="msg" id="emails-msg"></div>`;
+  el.querySelectorAll("[data-promote]").forEach(b => b.onclick = () =>
+    formResult("emails-msg", post(`/api/leads/${leadId}/emails`, { op: "promote", email: b.dataset.promote }),
+      () => { renderLeadEmails(leadId); if (state.tab === "contacts") loadContacts(false); }));
+  $("add-email-btn").onclick = () => {
+    const v = $("add-email-input").value.trim();
+    if (!v) { toast("Enter an email"); return; }
+    formResult("emails-msg", post(`/api/leads/${leadId}/emails`, { op: "add", email: v }), () => renderLeadEmails(leadId));
   };
-  if (sr) sr.onclick = () => {
-    if (!confirm("Run Serper web research on this lead? Spends Serper credits. Results appear in the sync status for review.")) return;
-    startJob("/api/enrich/serper", "Serper research");
+}
+
+async function renderLeadCustomFields(leadId) {
+  const el = $("lead-custom");
+  el.innerHTML = '<h3 style="font-size:13px;margin:0 0 6px">Custom fields</h3><div class="stale">Loading…</div>';
+  const d = await api(`/api/leads/${leadId}/custom-fields`).catch(() => null);
+  if (!d) { el.innerHTML = ""; return; }
+  const line = (scope, f) => `<div style="display:flex;gap:8px;align-items:center;padding:2px 0">
+     <span style="flex:1"><span class="stale">${esc(f.field)}:</span> ${esc(f.value || "")}</span>
+     <button class="small" data-scope="${scope}" data-field="${esc(f.field)}" data-val="${esc(f.value || "")}">edit</button></div>`;
+  el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Custom fields</h3>
+    ${d.lead.length ? `<div class="stale" style="margin:4px 0">Lead</div>${d.lead.map(f => line("lead", f)).join("")}` : ""}
+    ${d.company.length ? `<div class="stale" style="margin:4px 0">Company</div>${d.company.map(f => line("company", f)).join("")}` : ""}
+    ${(!d.lead.length && !d.company.length) ? '<div class="stale">No custom fields.</div>' : ""}
+    <div class="row" style="display:flex;gap:6px;margin-top:6px">
+      <select id="cf-scope" style="flex:0 0 90px"><option value="lead">lead</option>${d.company_id ? '<option value="company">company</option>' : ""}</select>
+      <input id="cf-field" placeholder="field" style="flex:1">
+      <input id="cf-value" placeholder="value" style="flex:2">
+      <button class="small" id="cf-add">Set</button>
+    </div>
+    <div class="msg" id="cf-msg"></div>`;
+  el.querySelectorAll("[data-field]").forEach(b => b.onclick = () => {
+    $("cf-scope").value = b.dataset.scope; $("cf-field").value = b.dataset.field; $("cf-value").value = b.dataset.val;
+    $("cf-value").focus();
+  });
+  $("cf-add").onclick = () => {
+    const field = $("cf-field").value.trim();
+    if (!field) { toast("Enter a field name"); return; }
+    formResult("cf-msg", post(`/api/leads/${leadId}/custom-fields`,
+      { scope: $("cf-scope").value, field, value: $("cf-value").value }), () => renderLeadCustomFields(leadId));
   };
+}
+
+async function renderLeadProviderRuns(leadId) {
+  const el = $("lead-runs");
+  el.innerHTML = '<h3 style="font-size:13px;margin:0 0 6px">Provider runs &amp; verification</h3><div class="stale">Loading…</div>';
+  const d = await api(`/api/leads/${leadId}/provider-runs`).catch(() => null);
+  if (!d) { el.innerHTML = ""; return; }
+  state.leadRuns = d.summary || {};
+  const hint = $("lead-enrich-hint");
+  if (hint) {
+    const ran = Object.entries(state.leadRuns).filter(([, v]) => v.ran).map(([k]) => k.replace("_", " "));
+    hint.textContent = ran.length ? "⟳ already ran: " + ran.join(", ") : "";
+  }
+  const capLabel = { email_finding: "Email finding", research: "Research", email_verification: "Verification" };
+  const caps = Object.entries(d.summary || {}).map(([k, v]) =>
+    `<div style="margin:2px 0">${capLabel[k] || k}: ${v.ran
+      ? `<b>ran</b> ${v.last_status ? "(" + esc(v.last_status) + ")" : ""} <span class="stale">${esc(v.providers.join(", "))}${v.last_attempted_at ? " · " + dt(v.last_attempted_at) : ""}</span>`
+      : '<span class="stale">not run</span>'}</div>`).join("");
+  el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Provider runs &amp; verification</h3>${caps}
+    <div id="lead-runs-log" style="margin-top:8px"></div>`;
+  renderTable("lead-runs-log", [
+    { key: "provider", label: "Provider" },
+    { key: "status", label: "Status" },
+    { key: "domain", label: "Domain", render: r => esc(r.domain || "—") },
+    { key: "result_email", label: "Result", render: r => esc(r.result_email || "") },
+    { key: "attempted_at", label: "When", render: r => r.attempted_at ? dt(r.attempted_at) : "" },
+  ], d.runs || [], { empty: "No provider runs recorded.", filter: false });
 }
 
 function renderCompanyLink(lead) {
   const linked = lead.company_id
-    ? `Linked: <b>${esc(lead.linked_company_name || lead.company || "?")}</b>${lead.linked_company_domain ? ` <span class="stale">${esc(lead.linked_company_domain)}</span>` : ""}`
+    ? `Linked: <button class="linklike" id="open-company-btn">${esc(lead.linked_company_name || lead.company || "?")}</button>${lead.linked_company_domain ? ` <span class="stale">${esc(lead.linked_company_domain)}</span>` : ""}`
     : `<span class="flag warn">Not linked to a company record</span>${lead.company ? ` — text: "${esc(lead.company)}"` : ""}`;
   $("lead-company").innerHTML = `
     <h3 style="font-size:13px;margin:0 0 6px">Company</h3>
@@ -1685,6 +2174,10 @@ function renderCompanyLink(lead) {
     </div>
     <div id="link-company-results" style="margin-top:4px"></div>
     <div class="msg" id="link-company-msg"></div>`;
+  const openCoBtn = $("open-company-btn");
+  if (openCoBtn) openCoBtn.onclick = () => {
+    navPush("lead", lead.id); closeLead(); openCompany(lead.company_id);
+  };
   let picked = null;
   const q = $("link-company-q"), results = $("link-company-results");
   let t = null;
@@ -1734,7 +2227,25 @@ function closeLead() {
   state.lead = null;
   if ($("editPanel").style.display !== "block") $("overlay").style.display = "none";
 }
-$("overlay").onclick = () => { closeLead(); closeEditPanel(); };
+/* ---------- lead ↔ company back-stack ---------- */
+// navPush records the panel you're leaving so navBack can return to it. Only the
+// cross-panel links call it — a fresh openLead/openCompany doesn't grow the stack.
+function navPush(type, id) { if (id != null) state.navStack.push({ type, id: +id }); }
+function navBack() {
+  const prev = state.navStack.pop();
+  if (!prev) { updateBackBtns(); return; }
+  if (prev.type === "lead") { closeEditPanel(); openLead(prev.id); }
+  else { closeLead(); openCompany(prev.id); }
+}
+function updateBackBtns() {
+  const has = state.navStack.length > 0;
+  const lb = $("lead-back"), cb = $("company-back");
+  if (lb) lb.style.display = ($("slideover").style.display === "block" && has) ? "" : "none";
+  if (cb) cb.style.display = ($("editPanel").style.display === "block" && has) ? "" : "none";
+}
+// Full dismiss (✕ / overlay): close both panels and drop the whole back-stack.
+function dismissPanels() { state.navStack = []; closeLead(); closeEditPanel(); updateBackBtns(); }
+$("overlay").onclick = () => dismissPanels();
 
 function formResult(msgId, promise, refresh) {
   const msg = $(msgId);
@@ -1754,13 +2265,14 @@ $("stage-form").onsubmit = (e) => {
     label: $("stage-label").value || null,
   }), () => { refreshSummary(); if (["pipeline", "crm"].includes(state.tab)) loadTab(); });
 };
-$("enrich-form").onsubmit = (e) => {
+$("identity-form").onsubmit = (e) => {
   e.preventDefault();
-  const body = { overwrite: $("enrich-overwrite").checked };
-  for (const input of e.target.querySelectorAll("input[name]")) {
-    if (input.value.trim()) body[input.name] = input.value.trim();
-  }
-  formResult("enrich-msg", post(`/api/leads/${state.lead.id}/enrich`, body));
+  const body = {};
+  for (const input of e.target.querySelectorAll("input[name]")) body[input.name] = input.value.trim();
+  formResult("identity-msg", post(`/api/leads/${state.lead.id}/identity`, body), () => {
+    openLead(state.lead.id);
+    if (state.tab === "contacts") loadContacts(false);
+  });
 };
 $("event-form").onsubmit = (e) => {
   e.preventDefault();
@@ -1784,6 +2296,9 @@ $("event-form").onsubmit = (e) => {
   if (params.get("merges") && state.tab === "companies") $("merge-toggle").click();
   setInterval(refreshSummary, 4000);
   setInterval(() => { if (document.visibilityState === "visible" && !document.querySelector(".tfilter input:focus")) loadTab(); }, 60000);
+  // Stream the sync log into the console while it's open (fast tick; the read
+  // is a cheap byte-range tail on the server).
+  setInterval(() => { if ($("sync-console").classList.contains("open")) pollConsoleOnce(); }, 1000);
 })();
 </script>
 </body>

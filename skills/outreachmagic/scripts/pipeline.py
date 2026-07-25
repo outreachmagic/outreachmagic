@@ -3944,6 +3944,7 @@ from pipeline_workspace import (
     _push_pending_merge_deletes,
     _push_pending_quarantine_resolutions,
     _push_pending_sender_account_updates,
+    _push_pending_sender_domain_outbox_deletes,
     _push_pending_sender_domain_updates,
     _relay_log,
     _relay_push_batches,

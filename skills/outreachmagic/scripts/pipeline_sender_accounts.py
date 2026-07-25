@@ -23,6 +23,21 @@ from pipeline_utils import email_domain, normalize_email
 from read_queries import _since_clause
 from workspace_routing import DEFAULT_ORG_ID, parse_linkedin_value
 
+
+def normalize_domain(domain: Optional[str]) -> str:
+    """Lowercase + trim a domain and strip stray surrounding quotes.
+
+    register/upsert paths only did .strip().lower(), so a value pasted with
+    quotes (e.g. `"example.com"`) leaked the quote chars into the primary key —
+    the two dead `meetpopcam.com"` / `popcam.net"` tombstones are exactly that
+    bug. Strip quotes defensively everywhere a domain is keyed or stored.
+    """
+    return (domain or "").strip().strip('"').strip("'").strip().lower()
+
+
+# Domain uses the company panel can label/group additional domains by.
+SENDER_DOMAIN_PURPOSES = ("sending", "branch", "email_finding")
+
 # PlusVibe export columns we intentionally ignore -- SMTP/IMAP connection
 # config, not deliverability data, and we don't use those.
 _IGNORED_CSV_COLUMNS = frozenset({
@@ -594,9 +609,11 @@ def sender_insights(conn: sqlite3.Connection, workspace: Optional[str] = None, s
 def set_sender_domain_cost(
     domain: str, *, reseller: Optional[str] = None, domain_cost: Optional[float] = None,
     currency: Optional[str] = None, notes: Optional[str] = None,
-    sending_ip: Optional[str] = None,
+    sending_ip: Optional[str] = None, purpose: Optional[str] = None,
+    company_id: Optional[int] = None,
 ) -> dict:
-    """Set/update the flat cost, reseller, and/or notes for a domain.
+    """Set/update the flat cost, reseller, notes, purpose, and/or owning company
+    for a domain.
 
     domain_cost is a single hand-computed number covering every mailbox on
     that domain (e.g. $3.50/mailbox x 2 mailboxes = $7), not a per-account
@@ -607,10 +624,17 @@ def set_sender_domain_cost(
     haven't set any sender accounts up on yet. `notes` is a single
     freeform field (e.g. "blacklisted in Azure") -- setting it again
     overwrites the previous note, it isn't a history log.
+
+    `purpose` labels what the domain is for (sending / branch / email_finding);
+    `company_id` optionally links it to an owning company so the company panel
+    can list multiple domains.
     """
-    domain = (domain or "").strip().lower()
+    domain = normalize_domain(domain)
     if not domain:
         return {"status": "error", "error": "domain is required"}
+    if purpose is not None and purpose not in SENDER_DOMAIN_PURPOSES:
+        return {"status": "error",
+                "error": f"purpose must be one of {', '.join(SENDER_DOMAIN_PURPOSES)}"}
     conn = get_conn()
     try:
         existing = conn.execute("SELECT domain FROM sender_domains WHERE domain = ?", (domain,)).fetchone()
@@ -632,16 +656,35 @@ def set_sender_domain_cost(
             if sending_ip is not None:
                 sets.append("sending_ip = ?")
                 params.append(sending_ip)
+            if purpose is not None:
+                sets.append("purpose = ?")
+                params.append(purpose)
+            if company_id is not None:
+                sets.append("company_id = ?")
+                params.append(company_id)
             conn.execute(f"UPDATE sender_domains SET {', '.join(sets)} WHERE domain = ?", params + [domain])
         else:
             conn.execute(
-                "INSERT INTO sender_domains (domain, reseller, domain_cost, currency, notes, sending_ip) VALUES (?, ?, ?, ?, ?, ?)",
-                (domain, reseller, domain_cost, currency or "USD", notes, sending_ip),
+                "INSERT INTO sender_domains (domain, reseller, domain_cost, currency, notes, sending_ip, purpose, company_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (domain, reseller, domain_cost, currency or "USD", notes, sending_ip,
+                 purpose or "sending", company_id),
             )
         conn.commit()
     finally:
         conn.close()
     return {"status": "ok", "domain": domain}
+
+
+def company_domains(conn: sqlite3.Connection, company_id: int) -> list[dict]:
+    """All sending domains owned by a company, with purpose + cost, for the
+    company panel's domains list."""
+    rows = conn.execute(
+        """SELECT domain, purpose, reseller, domain_cost, currency, notes, sending_ip
+           FROM sender_domains WHERE company_id = ? ORDER BY purpose, domain""",
+        (company_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_sender_domains_for_scan(domain: Optional[str] = None) -> list[dict]:
@@ -654,7 +697,7 @@ def get_sender_domains_for_scan(domain: Optional[str] = None) -> list[dict]:
     conn = get_conn()
     try:
         if domain:
-            target = (domain or "").strip().lower()
+            target = normalize_domain(domain)
             rows = conn.execute(
                 """SELECT d.domain AS domain, sd.sending_ip AS sending_ip, sd.dnsbl_status AS dnsbl_status
                    FROM (
@@ -682,13 +725,14 @@ def get_sender_domains_for_scan(domain: Optional[str] = None) -> list[dict]:
 
 def update_sender_domain_blacklist_status(domain: str, dnsbl_block: dict) -> dict:
     """Write only the dnsbl_status column for a domain (own column, no read-merge with notes)."""
-    domain = (domain or "").strip().lower()
+    domain = normalize_domain(domain)
     if not domain:
         return {"status": "error", "error": "domain is required"}
     payload = json.dumps(dnsbl_block)
     conn = get_conn()
     try:
         conn.execute("INSERT OR IGNORE INTO sender_domains (domain) VALUES (?)", (domain,))
+        # (domain already quote-stripped above via normalize_domain)
         conn.execute(
             "UPDATE sender_domains SET dnsbl_status = ?, updated_at = datetime('now') WHERE domain = ?",
             (payload, domain),
@@ -801,13 +845,13 @@ _SENDER_DOMAIN_SYNC_COLUMNS = ("reseller", "domain_cost", "currency", "notes", "
 
 
 def sender_domain_entity_key(domain: str) -> str:
-    return f"sender_domain:{(domain or '').strip().lower()}"
+    return f"sender_domain:{normalize_domain(domain)}"
 
 
 def resolve_sender_domain_from_entity_key(conn: sqlite3.Connection, entity_key: str) -> Optional[str]:
     if not entity_key.startswith("sender_domain:"):
         return None
-    domain = entity_key.split(":", 1)[1]
+    domain = normalize_domain(entity_key.split(":", 1)[1])
     if not domain:
         return None
     row = conn.execute("SELECT domain FROM sender_domains WHERE domain = ?", (domain,)).fetchone()

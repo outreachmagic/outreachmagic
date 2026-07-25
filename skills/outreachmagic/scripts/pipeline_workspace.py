@@ -937,6 +937,16 @@ def sync_all(
         if company_outbox_delete_push.get("error"):
             results["company_outbox_deletes_error"] = company_outbox_delete_push["error"]
 
+        sender_domain_delete_push = _push_pending_sender_domain_outbox_deletes(agent_key, bulk=transport["bulk"])
+        sd_deletes = int(sender_domain_delete_push.get("pushed", 0) or 0)
+        results["sender_domain_outbox_deletes_pushed"] = sd_deletes
+        if sender_domain_delete_push.get("error"):
+            results["sender_domain_outbox_deletes_error"] = sender_domain_delete_push["error"]
+        if sd_deletes > 0:
+            # Give the console/log a line (the generic delete drainer emits none).
+            _relay_log(f"{_ARROW_PUSH} pushed {sd_deletes} sender-domain delete(s)")
+            parts.append(f"Pushed {sd_deletes} sender domain delete{'s' if sd_deletes != 1 else ''} to relay.")
+
         lead_push = _push_pending_lead_snapshots(agent_key, bulk=transport["bulk"], workspace=workspace)
         leads_pushed = int(lead_push.get("pushed", 0) or 0)
         results["lead_snapshots_pushed"] = leads_pushed
@@ -1620,7 +1630,24 @@ _SNAPSHOT_DELETE_ACTIONS = {
     "lead_core": "lead_core_delete",
     "lead_workspace": "lead_workspace_delete",
     "company": "company_core_delete",
+    "sender_domain": "sender_domain_delete",
 }
+
+
+def _delete_wire_entity_key(entity_type: str, raw_key: str) -> str:
+    """Turn a trigger-captured tombstone key into the entity_key the relay stores.
+
+    leads/companies/workspace_leads are uid-keyed (the trigger captures the bare
+    uid, the wire form is uid:<uid>). sender_domains are keyed by the domain
+    itself (sender_domain:<domain>), never uid — so the blanket uid: prefix that
+    works for the others would send a key that matches zero relay rows.
+    """
+    if entity_type == "sender_domain":
+        from pipeline_sender_accounts import sender_domain_entity_key
+        # sender_domain_entity_key also strips stray quotes (the dead
+        # meetpopcam.com" / popcam.net" tombstones), so a bad key still resolves.
+        return sender_domain_entity_key(raw_key)
+    return raw_key if raw_key.startswith("uid:") else f"uid:{raw_key}"
 
 
 def _push_outbox_delete(
@@ -1666,11 +1693,11 @@ def _push_outbox_delete(
         raw_key = row["entity_key"]
         if not raw_key:
             continue  # nothing captured to tell the relay to delete
-        # The trigger captures the bare uid column, not the uid: prefix every
-        # other push path puts on the wire and the relay actually stores as
-        # entity_key. Sending the raw form would match zero relay rows --
-        # a silent no-op that looks like a successful push.
-        entity_key = raw_key if raw_key.startswith("uid:") else f"uid:{raw_key}"
+        # The trigger captures the bare key column, not the wire form the relay
+        # stores as entity_key. Sending the raw form would match zero relay rows
+        # -- a silent no-op that looks like a successful push. The transform is
+        # per entity type (uid: for leads/companies, sender_domain: for domains).
+        entity_key = _delete_wire_entity_key(entity_type, raw_key)
         entry = {
             "action": action,
             "entity_key": entity_key,
@@ -1756,6 +1783,15 @@ def _push_pending_company_outbox_deletes(
     return _push_outbox_delete(
         agent_key, entity_type="company", action="company_core_delete",
         stream_label="company_core_delete", bulk=bulk, sample_limit=sample_limit, dry_run=dry_run,
+    )
+
+
+def _push_pending_sender_domain_outbox_deletes(
+    agent_key: str, *, bulk: bool = False, sample_limit: Optional[int] = None, dry_run: bool = False,
+) -> dict:
+    return _push_outbox_delete(
+        agent_key, entity_type="sender_domain", action="sender_domain_delete",
+        stream_label="sender_domain_delete", bulk=bulk, sample_limit=sample_limit, dry_run=dry_run,
     )
 
 

@@ -161,6 +161,22 @@ def handle_link_company(match, query, body):
         company_name=body.get("company_name"))
 
 
+def handle_company_domains(match, query, body):
+    import pipeline_sender_accounts as psa
+    conn = get_conn()
+    try:
+        return 200, {"company_id": int(match.group(1)),
+                     "domains": psa.company_domains(conn, int(match.group(1)))}
+    finally:
+        conn.close()
+
+
+def handle_set_company_domain(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.set_company_domain(
+        int(match.group(1)), body.get("domain") or "", purpose=body.get("purpose"))
+
+
 def handle_edit_sender(match, query, body):
     body = body or {}
     email = body.pop("email", None)
@@ -232,6 +248,11 @@ def handle_campaign_detail(conn, ws_id, match, query):
         since=_q(query, "since"), until=_q(query, "until"))
 
 
+def _bool_q(query, name):
+    v = _q(query, name)
+    return str(v).lower() in ("1", "true", "yes") if v is not None else None
+
+
 @_workspace_scoped
 def handle_contacts(conn, ws_id, match, query):
     campaign_id = _q(query, "campaign_id")
@@ -242,8 +263,36 @@ def handle_contacts(conn, ws_id, match, query):
         missing=_q(query, "missing"),
         since=_q(query, "since"), until=_q(query, "until"),
         sort=_q(query, "sort", "last_activity"),
+        tag=_q(query, "tag"),
+        connected=_bool_q(query, "connected"),
+        sender=_q(query, "sender"),
+        has_linkedin=_bool_q(query, "has_linkedin"),
+        verify=_q(query, "verify"),
+        qualify_finding=_bool_q(query, "qualify_finding"),
         limit=_int_q(query, "limit", 50, lo=1, hi=200),
         offset=_int_q(query, "offset", 0, hi=10_000_000))
+
+
+@_workspace_scoped
+def handle_contacts_stats(conn, ws_id, match, query):
+    return dashboard_queries.contacts_stats(conn, ws_id)
+
+
+@_workspace_scoped
+def handle_linkedin_senders(conn, ws_id, match, query):
+    # LinkedIn sender accounts + their connection counts, for the contacts
+    # 1st-degree sender picker.
+    import pipeline_tags
+    return pipeline_tags.linkedin_status_summary(ws_id, conn=conn)
+
+
+def handle_contacts_bulk(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.bulk_edit_contacts(
+        body.get("lead_ids") or [], body.get("op") or "",
+        value=body.get("value"),
+        workspace_slug=body.get("workspace"),
+        force=bool(body.get("force")))
 
 
 @_workspace_scoped
@@ -282,7 +331,8 @@ def handle_email_finder(match, query, body):
     status = dashboard_actions.sync_manager.start_email_finder(
         body.get("workspace") or "",
         body.get("lead_ids") or [],
-        domains=body.get("domains"))
+        domains=body.get("domains"),
+        force=bool(body.get("force")))
     if status is None:
         return 409, {"error": "a sync is already running"}
     return 202, status
@@ -291,7 +341,8 @@ def handle_email_finder(match, query, body):
 def handle_serper(match, query, body):
     body = body or {}
     status = dashboard_actions.sync_manager.start_serper(
-        body.get("workspace") or "", body.get("lead_ids") or [])
+        body.get("workspace") or "", body.get("lead_ids") or [],
+        force=bool(body.get("force")))
     if status is None:
         return 409, {"error": "a sync is already running"}
     return 202, status
@@ -317,6 +368,17 @@ def handle_campaign_subjects(conn, ws_id, match, query):
         raise ValueError("campaign_id query parameter is required")
     return dashboard_queries.campaign_subjects(
         conn, ws_id, int(campaign_id), limit=_int_q(query, "limit", 10, lo=1, hi=100))
+
+
+@_workspace_scoped
+def handle_campaign_replies(conn, ws_id, match, query):
+    # campaign_id is optional here: omitted = all campaigns for the range.
+    campaign_id = _q(query, "campaign_id")
+    return dashboard_queries.campaign_replies(
+        conn, ws_id,
+        campaign_id=int(campaign_id) if campaign_id else None,
+        since=_q(query, "since"), until=_q(query, "until"),
+        limit=_int_q(query, "limit", 200, lo=1, hi=500))
 
 
 @_workspace_scoped
@@ -348,6 +410,48 @@ def handle_event_body(match, query, body):
         return 200, dashboard_queries.event_body(conn, int(match.group(1)))
     finally:
         conn.close()
+
+
+def handle_lead_emails(match, query, body):
+    import lead_emails
+    return 200, lead_emails.list_lead_emails(int(match.group(1)))
+
+
+def handle_lead_custom_fields(match, query, body):
+    conn = get_conn()
+    try:
+        return 200, dashboard_queries.lead_custom_fields(conn, int(match.group(1)))
+    finally:
+        conn.close()
+
+
+def handle_lead_provider_runs(match, query, body):
+    conn = get_conn()
+    try:
+        return 200, dashboard_queries.lead_provider_runs(conn, int(match.group(1)))
+    finally:
+        conn.close()
+
+
+def handle_lead_identity(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.update_lead_identity(
+        int(match.group(1)),
+        name=body.get("name"), title=body.get("title"),
+        linkedin=body.get("linkedin"))
+
+
+def handle_lead_custom_field_set(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.set_lead_custom_field(
+        int(match.group(1)), body.get("scope") or "lead",
+        body.get("field") or "", body.get("value") or "")
+
+
+def handle_lead_email_action(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.lead_email_action(
+        int(match.group(1)), body.get("op") or "", body.get("email") or "")
 
 
 @_workspace_scoped
@@ -395,6 +499,11 @@ def handle_crm_sync(match, query, body):
 
 def handle_sync_status(match, query, body):
     return 200, dashboard_actions.sync_manager.status()
+
+
+def handle_sync_log(match, query, body):
+    return 200, dashboard_actions.sync_manager.read_log(
+        after=_int_q(query, "after", 0, hi=1_000_000_000))
 
 
 def handle_sync_pull(match, query, body):
@@ -451,19 +560,27 @@ ROUTES = [
     ("GET", re.compile(r"^/api/attributes$"), handle_attributes),
     ("GET", re.compile(r"^/api/campaigns$"), handle_campaigns),
     ("GET", re.compile(r"^/api/campaigns/subjects$"), handle_campaign_subjects),
+    ("GET", re.compile(r"^/api/campaigns/replies$"), handle_campaign_replies),
     ("GET", re.compile(r"^/api/campaigns/daily$"), handle_campaign_daily),
     ("GET", re.compile(r"^/api/campaigns/detail$"), handle_campaign_detail),
     ("GET", re.compile(r"^/api/campaigns/leads$"), handle_campaign_leads),
     ("GET", re.compile(r"^/api/contacts$"), handle_contacts),
+    ("GET", re.compile(r"^/api/contacts/stats$"), handle_contacts_stats),
+    ("GET", re.compile(r"^/api/linkedin/senders$"), handle_linkedin_senders),
+    ("POST", re.compile(r"^/api/contacts/bulk$"), handle_contacts_bulk),
     ("GET", re.compile(r"^/api/data-quality$"), handle_data_quality),
     ("GET", re.compile(r"^/api/enrich/targets$"), handle_enrich_targets),
     ("GET", re.compile(r"^/api/cleanup/preview$"), handle_cleanup_preview),
     ("GET", re.compile(r"^/api/companies$"), handle_companies),
     ("GET", re.compile(r"^/api/companies/search$"), handle_company_search),
     ("GET", re.compile(r"^/api/companies/(\d+)$"), handle_company_detail),
+    ("GET", re.compile(r"^/api/companies/(\d+)/domains$"), handle_company_domains),
     ("GET", re.compile(r"^/api/merge-candidates$"), handle_merge_candidates),
     ("GET", re.compile(r"^/api/domains/detail$"), handle_domain_detail),
     ("GET", re.compile(r"^/api/leads/(\d+)/history$"), handle_lead_history),
+    ("GET", re.compile(r"^/api/leads/(\d+)/emails$"), handle_lead_emails),
+    ("GET", re.compile(r"^/api/leads/(\d+)/custom-fields$"), handle_lead_custom_fields),
+    ("GET", re.compile(r"^/api/leads/(\d+)/provider-runs$"), handle_lead_provider_runs),
     ("GET", re.compile(r"^/api/events/(\d+)/body$"), handle_event_body),
     ("GET", re.compile(r"^/api/crm$"), handle_crm),
     ("GET", re.compile(r"^/api/outbox$"), handle_outbox),
@@ -472,10 +589,14 @@ ROUTES = [
     ("GET", re.compile(r"^/api/activity$"), handle_activity),
     ("GET", re.compile(r"^/api/activity/types$"), handle_activity_types),
     ("GET", re.compile(r"^/api/sync/status$"), handle_sync_status),
+    ("GET", re.compile(r"^/api/sync/log$"), handle_sync_log),
     ("POST", re.compile(r"^/api/sync/pull$"), handle_sync_pull),
     ("POST", re.compile(r"^/api/sync/push$"), handle_sync_push),
     ("POST", re.compile(r"^/api/leads/(\d+)/stage$"), handle_change_stage),
     ("POST", re.compile(r"^/api/leads/(\d+)/enrich$"), handle_enrich),
+    ("POST", re.compile(r"^/api/leads/(\d+)/identity$"), handle_lead_identity),
+    ("POST", re.compile(r"^/api/leads/(\d+)/custom-fields$"), handle_lead_custom_field_set),
+    ("POST", re.compile(r"^/api/leads/(\d+)/emails$"), handle_lead_email_action),
     ("POST", re.compile(r"^/api/leads/(\d+)/events$"), handle_log_event),
     ("POST", re.compile(r"^/api/leads/(\d+)/link-company$"), handle_link_company),
     ("POST", re.compile(r"^/api/leads/bulk-link-company$"), handle_bulk_link_company),
@@ -483,6 +604,7 @@ ROUTES = [
     ("POST", re.compile(r"^/api/enrich/email-finder$"), handle_email_finder),
     ("POST", re.compile(r"^/api/enrich/serper$"), handle_serper),
     ("POST", re.compile(r"^/api/companies/(\d+)/edit$"), handle_update_company),
+    ("POST", re.compile(r"^/api/companies/(\d+)/domains$"), handle_set_company_domain),
     ("POST", re.compile(r"^/api/senders/edit$"), handle_edit_sender),
     ("POST", re.compile(r"^/api/domains/edit$"), handle_edit_domain),
     ("POST", re.compile(r"^/api/merge-candidates/([\w-]+)/resolve$"), handle_resolve_merge),

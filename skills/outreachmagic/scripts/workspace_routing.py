@@ -228,6 +228,38 @@ def extract_sales_nav_id_from_linkedin_url(value: str) -> Optional[str]:
     return normalize_linkedin_sales_nav_id(m.group(1))
 
 
+def build_sales_nav_url(nav_id: str) -> Optional[str]:
+    """Synthesize a Sales Navigator lead URL from a stored member token.
+
+    Inverse of extract_sales_nav_id_from_linkedin_url: given a normalized
+    ACwAA.../ACoAA... token (or anything normalize_linkedin_sales_nav_id
+    accepts), return the linkedin.com/sales/lead/<token> URL a user can open.
+    Returns None when the value isn't a valid Sales Navigator id.
+    """
+    norm = normalize_linkedin_sales_nav_id(nav_id)
+    if not norm:
+        return None
+    return f"https://www.linkedin.com/sales/lead/{norm}"
+
+
+def linkedin_display_url(
+    linkedin_url: Optional[str] = None,
+    linkedin_sales_nav_id: Optional[str] = None,
+) -> Optional[str]:
+    """The best openable LinkedIn URL for a lead: prefer the public profile
+    URL, else synthesize a Sales Navigator URL from the stored member token.
+
+    Accepts the two columns directly so callers can pass a sqlite row's fields
+    without building a dict. Returns None when neither is usable.
+    """
+    public = (linkedin_url or "").strip()
+    if public:
+        if public.startswith(("http://", "https://")):
+            return public
+        return f"https://{public.lstrip('/')}"
+    return build_sales_nav_url(linkedin_sales_nav_id or "")
+
+
 def normalize_linkedin_member_id(value: str) -> Optional[str]:
     raw = (value or "").strip()
     if not raw:

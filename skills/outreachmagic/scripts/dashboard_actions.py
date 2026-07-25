@@ -8,13 +8,16 @@ non-blocking lock so at most one dashboard-initiated sync runs at a time.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
+from pathlib import Path
 from typing import Optional
 
 import lead_actions
 from constants import PIPELINE_STAGES
 from db_conn import get_conn
+from om_paths import get_db_path
 from pipeline_update import utc_now_for_storage
 
 ENRICH_FIELDS = ("name", "title", "industry", "company", "headcount")
@@ -83,6 +86,96 @@ def log_event(
         lead_id, event_type.strip(), direction=direction, channel=channel,
         subject=subject, body=body, metadata=metadata,
         workspace_slug=workspace_slug, idempotency_prefix="dashboard")
+
+
+def update_lead_identity(
+    lead_id: int, *, name: Optional[str] = None, title: Optional[str] = None,
+    linkedin: Optional[str] = None,
+) -> dict:
+    """Authoritatively set a lead's name/title, and store a LinkedIn value into
+    the correct column (public URL -> linkedin_url, Sales Navigator token ->
+    linkedin_sales_nav_id) via the identity path so dedup stays consistent.
+
+    Unlike enrich() this overwrites — it's a direct edit, not a fill-if-empty.
+    """
+    _require_lead(lead_id)
+    from workspace_routing import (
+        DEFAULT_ORG_ID, parse_linkedin_value, upsert_identity_alias,
+    )
+
+    conn = get_conn()
+    try:
+        sets: list[str] = []
+        params: list = []
+        if name is not None and name.strip():
+            sets.append("name = ?")
+            params.append(name.strip())
+        if title is not None:
+            sets.append("title = ?")
+            params.append(title.strip() or None)
+        if sets:
+            sets.append("updated_at = datetime('now')")
+            conn.execute(
+                f"UPDATE leads SET {', '.join(sets)} WHERE id = ?", params + [lead_id])
+        linkedin_written: list[str] = []
+        if linkedin is not None and linkedin.strip():
+            pairs = parse_linkedin_value(linkedin)
+            if not pairs:
+                raise ValueError(
+                    f"could not read a LinkedIn URL or Sales Navigator id from: {linkedin!r}")
+            # upsert_identity_alias writes the identity row and promotes the value
+            # onto leads.linkedin_url / leads.linkedin_sales_nav_id; it raises on a
+            # cross-lead identity conflict, which surfaces as a 400.
+            for itype, value in pairs:
+                upsert_identity_alias(
+                    conn, DEFAULT_ORG_ID, lead_id, itype, value, source="dashboard")
+                linkedin_written.append(itype)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "updated", "id": lead_id, "linkedin": linkedin_written}
+
+
+def set_lead_custom_field(
+    lead_id: int, scope: str, field: str, value: str,
+) -> dict:
+    """Write one personalization/custom field for a lead (scope='lead') or its
+    linked company (scope='company'). Reuses pipeline_personalize so the write
+    flows through the normal outbox path."""
+    import pipeline_personalize as pp
+
+    field = (field or "").strip()
+    if not field:
+        raise ValueError("field is required")
+    if scope == "lead":
+        result = pp.personalize_set(lead_id, field, value or "")
+    elif scope == "company":
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        finally:
+            conn.close()
+        if not row or not row["company_id"]:
+            raise ValueError("lead has no linked company — cannot set a company field")
+        result = pp.company_personalize_set(
+            field, value or "", company_id=row["company_id"])
+    else:
+        raise ValueError("scope must be 'lead' or 'company'")
+    if result.get("status") == "error":
+        raise ValueError(result["error"])
+    return result
+
+
+def lead_email_action(lead_id: int, op: str, email: str) -> dict:
+    """Add a secondary email or promote one to primary (op in {add, promote})."""
+    import lead_emails
+
+    if op == "add":
+        return lead_emails.add_lead_email(lead_id, email)
+    if op == "promote":
+        return lead_emails.promote_lead_email(lead_id, email)
+    raise ValueError("op must be 'add' or 'promote'")
 
 
 COMPANY_EDITABLE_FIELDS = (
@@ -184,6 +277,100 @@ def edit_sender_domain(domain: str, fields: dict) -> dict:
     return result
 
 
+BULK_OPS = ("stage", "lead_status", "sentiment", "tag_add", "tag_remove", "email_finder")
+
+
+def bulk_edit_contacts(
+    lead_ids: list, op: str, value: Optional[str] = None,
+    *, workspace_slug: Optional[str] = None, force: bool = False,
+) -> dict:
+    """Apply one edit to many contacts at once. Ops:
+    stage/lead_status (set stage), sentiment (set sentiment on current stage),
+    tag_add/tag_remove (workspace tag), email_finder (background job).
+
+    Every write reuses the same scoped path the single-lead edits use, so the
+    outbox picks them up.
+    """
+    ids = [int(x) for x in (lead_ids or [])]
+    if not ids:
+        raise ValueError("no lead_ids provided")
+    if op not in BULK_OPS:
+        raise ValueError(f"op must be one of {', '.join(BULK_OPS)}")
+
+    if op == "email_finder":
+        status = sync_manager.start_email_finder(
+            workspace_slug or "", ids, force=force)
+        if status is None:
+            raise ValueError("a sync is already running")
+        return {"status": "started", "op": op, "job": status}
+
+    if op in ("tag_add", "tag_remove"):
+        import pipeline_tags
+        conn = get_conn()
+        try:
+            ws = _resolve_ws_id(conn, workspace_slug)
+        finally:
+            conn.close()
+        if not (value or "").strip():
+            raise ValueError("a tag value is required")
+        changed = 0
+        for lid in ids:
+            r = (pipeline_tags.tag_add(ws, lid, value) if op == "tag_add"
+                 else pipeline_tags.tag_remove(ws, lid, value))
+            if r.get("status") in ("added", "removed"):
+                changed += 1
+        return {"status": "ok", "op": op, "changed": changed, "requested": len(ids)}
+
+    # stage / lead_status / sentiment all go through change_stage_scoped.
+    if not (value or "").strip():
+        raise ValueError(f"a value is required for {op}")
+    conn = get_conn()
+    try:
+        for lid in ids:
+            if op == "sentiment":
+                row = conn.execute(
+                    "SELECT wl.status FROM workspace_leads wl"
+                    " JOIN workspaces w ON w.id = wl.workspace_id"
+                    " WHERE wl.lead_id = ? AND w.slug = ?", (lid, workspace_slug)).fetchone()
+                stage = (row["status"] if row else None) or "prospecting"
+                lead_actions.change_stage_scoped(
+                    lid, stage, workspace_slug=workspace_slug, sentiment=value)
+            else:  # stage / lead_status
+                lead_actions.change_stage_scoped(lid, value, workspace_slug=workspace_slug)
+    finally:
+        conn.close()
+    return {"status": "ok", "op": op, "updated": len(ids)}
+
+
+def _resolve_ws_id(conn: sqlite3.Connection, workspace_slug: Optional[str]) -> str:
+    import pipeline as _pipeline
+
+    if not workspace_slug:
+        raise ValueError("workspace is required")
+    ws = _pipeline.resolve_workspace_identity(conn, workspace_slug)
+    if not ws:
+        raise ValueError(f"workspace not found: {workspace_slug}")
+    return ws["id"]
+
+
+def set_company_domain(
+    company_id: int, domain: str, purpose: Optional[str] = None,
+) -> dict:
+    """Attach a sending domain to a company (or update its purpose). Wraps
+    pipeline_sender_accounts.set_sender_domain_cost with the company link."""
+    import pipeline_sender_accounts as psa
+
+    if not (domain or "").strip():
+        raise ValueError("domain is required")
+    kwargs: dict = {"company_id": company_id}
+    if purpose:
+        kwargs["purpose"] = purpose
+    result = psa.set_sender_domain_cost(domain, **kwargs)
+    if result.get("status") == "error":
+        raise ValueError(result["error"])
+    return result
+
+
 def bulk_link_companies(lead_ids: list) -> dict:
     """One-click company link for the 'linkable' set (Section D): link each lead
     to a company derived from its own `company` text via link_lead_company
@@ -270,7 +457,39 @@ class SyncManager:
         self._state = {
             "state": "idle", "kind": None, "started_at": None,
             "finished_at": None, "summary": None, "error": None,
+            "log_offset": 0,
         }
+        # The relay progress machinery (pipeline_sync/_relay_log) mirrors its
+        # stderr lines to OM_SYNC_LOG when set. Point it at a stable per-install
+        # file so the console drawer can tail it; each run records the file's
+        # size at start so the drawer shows only that run's lines.
+        try:
+            existing = os.environ.get("OM_SYNC_LOG", "").strip()
+            if existing:
+                self._log_path: Optional[Path] = Path(existing).expanduser()
+            else:
+                self._log_path = get_db_path().parent / "dashboard_sync.log"
+                os.environ["OM_SYNC_LOG"] = str(self._log_path)
+        except (OSError, RuntimeError):
+            self._log_path = None
+
+    def _log_size(self) -> int:
+        try:
+            return self._log_path.stat().st_size if self._log_path else 0
+        except OSError:
+            return 0
+
+    def read_log(self, after: int = 0) -> dict:
+        """New log bytes since `after`, for the console drawer to append."""
+        if not self._log_path or not self._log_path.exists():
+            return {"text": "", "offset": after}
+        try:
+            with self._log_path.open("r", encoding="utf-8", errors="replace") as fh:
+                fh.seek(max(0, after))
+                text = fh.read()
+            return {"text": text, "offset": after + len(text.encode("utf-8", "replace"))}
+        except OSError:
+            return {"text": "", "offset": after}
 
     def status(self) -> dict:
         with self._state_lock:
@@ -294,16 +513,19 @@ class SyncManager:
 
     def start_email_finder(
         self, workspace_slug: str, lead_ids: list,
-        domains: Optional[dict] = None,
+        domains: Optional[dict] = None, force: bool = False,
     ) -> Optional[dict]:
         return self._start(
             "email-finder", self._run_email_finder,
-            workspace_slug=workspace_slug, lead_ids=lead_ids, domains=domains)
+            workspace_slug=workspace_slug, lead_ids=lead_ids,
+            domains=domains, force=force)
 
-    def start_serper(self, workspace_slug: str, lead_ids: list) -> Optional[dict]:
+    def start_serper(
+        self, workspace_slug: str, lead_ids: list, force: bool = False,
+    ) -> Optional[dict]:
         return self._start(
             "serper", self._run_serper,
-            workspace_slug=workspace_slug, lead_ids=lead_ids)
+            workspace_slug=workspace_slug, lead_ids=lead_ids, force=force)
 
     def _start(self, kind: str, fn, **kwargs) -> Optional[dict]:
         """Returns the running status, or None when a sync is already running."""
@@ -314,6 +536,7 @@ class SyncManager:
                 "state": "running", "kind": kind,
                 "started_at": utc_now_for_storage(),
                 "finished_at": None, "summary": None, "error": None,
+                "log_offset": self._log_size(),
             }
         thread = threading.Thread(
             target=self._run, args=(fn,), kwargs=kwargs,
@@ -407,6 +630,7 @@ class SyncManager:
     @staticmethod
     def _run_email_finder(
         workspace_slug: str, lead_ids: list, domains: Optional[dict] = None,
+        force: bool = False,
     ) -> dict:
         """Company/multi-domain-aware email finder over a chosen lead set.
 
@@ -415,9 +639,14 @@ class SyncManager:
         runs the provider waterfall against them, stopping the whole batch once
         every provider is out of credits. Reuses email_finder.save_find_result
         so a hit flows through import-profiles and the outbox like any write.
+
+        Leads that already have an email-finding attempt on record are skipped
+        (status "already_ran") unless `force` is set — the re-run guard that
+        keeps a re-selected batch from re-spending finder credits.
         """
         import email_finder
         import dashboard_queries
+        from pipeline_provider_attempts import has_attempted
         from waterfall import run_find_with_domain_fallback
 
         ids = [int(x) for x in (lead_ids or [])][: SyncManager.MAX_ENRICH_LEADS]
@@ -433,6 +662,7 @@ class SyncManager:
         summary = {
             "workspace": workspace_slug, "requested": len(ids),
             "found": 0, "not_found": 0, "skipped_no_domain": 0,
+            "skipped_already_ran": 0,
             "credits_exhausted": False, "results": [],
         }
         conn = get_conn()
@@ -445,6 +675,14 @@ class SyncManager:
                     continue
                 if (lead["email"] or "").strip():
                     summary["results"].append({"lead_id": lead_id, "status": "has_email"})
+                    continue
+                if not force and (
+                    has_attempted(conn, lead_id, "trykitt")
+                    or has_attempted(conn, lead_id, "icypeas")
+                ):
+                    summary["skipped_already_ran"] += 1
+                    summary["results"].append(
+                        {"lead_id": lead_id, "status": "already_ran"})
                     continue
                 auto_domains, company_text = dashboard_queries._lead_domains(conn, lead_id)
                 override = overrides.get(lead_id)
@@ -484,13 +722,17 @@ class SyncManager:
         return summary
 
     @staticmethod
-    def _run_serper(workspace_slug: str, lead_ids: list) -> dict:
+    def _run_serper(workspace_slug: str, lead_ids: list, force: bool = False) -> dict:
         """Web-research surface for leads the email finder can't place: runs the
         Serper query pack per lead and returns the formatted result blocks for
         the agent to read and act on. This is the automatable slice — the final
         map-to-fields step stays agent-in-the-loop (needs a model to judge
-        which result is the right person/company)."""
+        which result is the right person/company).
+
+        Leads with a Serper research attempt already on record are skipped
+        (status "already_ran") unless `force` is set."""
         import enrich
+        from pipeline_provider_attempts import has_attempted
 
         ids = [int(x) for x in (lead_ids or [])][: SyncManager.MAX_ENRICH_LEADS]
         if not ids:
@@ -498,7 +740,7 @@ class SyncManager:
         cfg = enrich.load_config()
         summary = {
             "workspace": workspace_slug, "requested": len(ids),
-            "searched": 0, "errors": 0, "results": [],
+            "searched": 0, "errors": 0, "skipped_already_ran": 0, "results": [],
         }
         conn = get_conn()
         try:
@@ -507,6 +749,11 @@ class SyncManager:
                     "SELECT name, company, title FROM leads WHERE id = ?", (lead_id,)
                 ).fetchone()
                 if lead is None or not (lead["name"] or "").strip():
+                    continue
+                if not force and has_attempted(conn, lead_id, "serper"):
+                    summary["skipped_already_ran"] += 1
+                    summary["results"].append(
+                        {"lead_id": lead_id, "status": "already_ran"})
                     continue
                 person = {
                     "full_name": lead["name"],

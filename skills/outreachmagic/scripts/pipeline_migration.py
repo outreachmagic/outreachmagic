@@ -1552,6 +1552,24 @@ def migrate_db(conn=None):
             conn.execute(f"ALTER TABLE sender_domains ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
             pass
+    # purpose: what the domain is used for (sending / branch / email_finding) so
+    # the company panel can label and group additional domains. company_id: the
+    # optional owning company, letting one company carry multiple domains.
+    try:
+        conn.execute(
+            "ALTER TABLE sender_domains ADD COLUMN purpose TEXT NOT NULL DEFAULT 'sending'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE sender_domains ADD COLUMN company_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sender_domains_company "
+            "ON sender_domains(company_id)")
+    except sqlite3.OperationalError:
+        pass
 
     # Self-heal pre-existing lead_emails duplicates (case/whitespace variants
     # of a lead's own primary email, or repeated inserts of the same email)

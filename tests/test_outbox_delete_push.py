@@ -130,6 +130,29 @@ def test_company_delete_outside_merge_is_pushed():
     assert entry["entity_key"] == f"uid:{raw_uid}"
 
 
+def test_sender_domain_delete_uses_sender_domain_prefix_not_uid():
+    # sender_domains are keyed sender_domain:<domain>, never uid:. The trigger
+    # captures the bare OLD.domain, so the push must apply the sender_domain
+    # transform (and strip stray quotes) rather than the blanket uid: prefix.
+    import pipeline_sender_accounts as psa
+
+    psa.set_sender_domain_cost("deleteme.example.com", purpose="branch")
+    conn = om.get_conn()
+    conn.execute("DELETE FROM sender_domains WHERE domain = ?", ("deleteme.example.com",))
+    conn.commit()
+    conn.close()
+
+    cap = _Capture()
+    with mock.patch.object(om, "_relay_push_batches", side_effect=cap):
+        result = om._push_pending_sender_domain_outbox_deletes("om_agent_test")
+
+    assert result["pushed"] == 1
+    entry = cap.entries[0]
+    assert entry["action"] == "sender_domain_delete"
+    assert entry["entity_key"] == "sender_domain:deleteme.example.com"
+    assert not entry["entity_key"].startswith("uid:")
+
+
 def test_successful_delete_push_clears_outbox_and_stale_shadow():
     conn = om.get_conn()
     lead_id, _ = _mk_lead_in_ws(conn)

@@ -159,6 +159,46 @@ def has_attempted(conn: sqlite3.Connection, lead_id: int, provider: str) -> bool
     return row is not None
 
 
+# Capability -> the providers that satisfy it. Mirrors PROVIDER_DOMAINS but
+# inverted, so the dashboard can ask "has email-finding run?" without knowing
+# which vendor served it.
+CAPABILITY_PROVIDERS: dict[str, tuple[str, ...]] = {
+    "email_finding": ("trykitt", "icypeas"),
+    "research": ("serper",),
+    "email_verification": ("millionverifier", "scrubby"),
+}
+
+
+def provider_run_summary(conn: sqlite3.Connection, lead_id: int) -> dict[str, dict]:
+    """Per-capability run status for one lead, for the dashboard re-run guard.
+
+    Returns {capability: {ran, last_attempted_at, last_status, count,
+    providers:[...]}}. `ran` is True when any provider in that capability has an
+    attempt on record -- the signal the UI uses to warn before spending tokens
+    on a second email-finder / Serper run.
+    """
+    attempts = {a["provider"]: a for a in get_provider_attempts_for_lead(conn, lead_id)}
+    summary: dict[str, dict] = {}
+    for capability, providers in CAPABILITY_PROVIDERS.items():
+        ran_providers = [p for p in providers if p in attempts]
+        rows = [attempts[p] for p in ran_providers]
+        # Latest attempt across this capability's providers wins the headline.
+        latest = max(
+            rows,
+            key=lambda r: (r.get("completed_at") or r.get("attempted_at") or ""),
+            default=None,
+        )
+        summary[capability] = {
+            "ran": bool(ran_providers),
+            "last_attempted_at": (latest or {}).get("completed_at")
+            or (latest or {}).get("attempted_at"),
+            "last_status": (latest or {}).get("status"),
+            "count": len(rows),
+            "providers": ran_providers,
+        }
+    return summary
+
+
 def apply_provider_attempts_payload(
     conn: sqlite3.Connection, lead_id: int, attempts: list[dict],
 ) -> None:

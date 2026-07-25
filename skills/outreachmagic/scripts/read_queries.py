@@ -97,6 +97,8 @@ def _since_clause(since: Optional[str], column: str = "e.created_at") -> tuple[s
     if not raw:
         return "", []
     low = raw.lower()
+    if low == "all":  # the "all available" preset: no date bound at all
+        return "", []
     m = re.match(r"^(\d+)\s*h(?:ours?)?$", low)
     if m:
         return f" AND {column} >= datetime('now', ?)", [f"-{int(m.group(1))} hours"]

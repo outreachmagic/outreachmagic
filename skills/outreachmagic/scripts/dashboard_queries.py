@@ -101,10 +101,15 @@ def summary(
     conn: sqlite3.Connection, workspace_id: str,
     since: str = "7d", until: Optional[str] = None,
 ) -> dict:
+    # Stage tiles reflect leads *active in the selected range* (so "Interested"
+    # matches what the campaigns/replies views show for that window). With the
+    # "all available" preset (since falsy/all), _active_in_range is a no-op and
+    # every lead counts.
+    active_sql, active_params = _active_in_range(since, until, "workspace_leads")
     stage_rows = conn.execute(
-        "SELECT status, COUNT(*) AS n FROM workspace_leads"
-        " WHERE workspace_id = ? GROUP BY status",
-        (workspace_id,),
+        f"SELECT status, COUNT(*) AS n FROM workspace_leads"
+        f" WHERE workspace_id = ?{active_sql} GROUP BY status",
+        (workspace_id, *active_params),
     ).fetchall()
     stages = {stage: 0 for stage in PIPELINE_STAGES}
     for r in stage_rows:
@@ -458,6 +463,7 @@ def campaign_audit(
         SELECT campaign_id,
                SUM(event_type = 'email_sent') AS sent,
                SUM({reply_event_sql_condition()}) AS replies,
+               SUM(event_type = 'meeting_booked') AS meetings,
                SUM(event_type IN {BOUNCE_EVENT_TYPES_SQL}) AS bounces
         FROM ws_events
         WHERE campaign_id IS NOT NULL
@@ -494,6 +500,7 @@ def campaign_audit(
         sent = (m["sent"] if m else 0) or 0
         replies = (m["replies"] if m else 0) or 0
         bounces = (m["bounces"] if m else 0) or 0
+        meetings = (m["meetings"] if m else 0) or 0
         positive = positives.get(c["id"], 0)
         out.append({
             "id": c["id"],
@@ -504,6 +511,7 @@ def campaign_audit(
             "reply_rate": round(replies / sent, 4) if sent else None,
             "positive": positive,
             "positive_rate": round(positive / sent, 4) if sent else None,
+            "meetings": meetings,
             "bounces": bounces,
             "bounce_rate": round(bounces / sent, 4) if sent else None,
         })
@@ -551,6 +559,58 @@ def campaign_subjects(
     for s in subjects:
         s["reply_rate"] = round(s["replies"] / s["sends"], 4) if s["sends"] else None
     return {"campaign_id": campaign_id, "subjects": subjects[:limit]}
+
+
+def campaign_replies(
+    conn: sqlite3.Connection,
+    workspace_id: str,
+    campaign_id: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 200,
+) -> dict:
+    """Actual reply events across one or all campaigns (campaign_id=None = all),
+    each with the lead's current sentiment and an openable LinkedIn URL.
+
+    This is the 'only show replies' view: unlike campaign_subjects (which counts
+    sends grouped by subject), every row here is a real inbound reply, so the
+    sentiment column is meaningful and there's nothing to expand that isn't one.
+    """
+    from workspace_routing import linkedin_display_url
+
+    cte, since_params = _ws_events(since, until)
+    # Param order must follow placeholder order in the SQL text below.
+    params: list = [workspace_id, *since_params, workspace_id]
+    camp = ""
+    if campaign_id is not None:
+        camp = " AND e.campaign_id = ?"
+        params.append(campaign_id)
+    params.append(limit)
+    rows = conn.execute(
+        cte + f"""
+        SELECT e.id AS event_id, e.lead_id, e.subject, e.event_at,
+               e.campaign_id, c.name AS campaign_name,
+               l.name AS lead_name, l.linkedin_url, l.linkedin_sales_nav_id,
+               wl.current_status_sentiment AS sentiment,
+               wl.current_status_label AS status_label,
+               (SELECT json_extract(ev.metadata_json, '$.body') IS NOT NULL
+                FROM events ev WHERE ev.id = e.id) AS has_body
+        FROM ws_events e
+        JOIN leads l ON l.id = e.lead_id
+        LEFT JOIN campaigns c ON c.id = e.campaign_id
+        LEFT JOIN workspace_leads wl ON wl.lead_id = e.lead_id AND wl.workspace_id = ?
+        WHERE {reply_event_sql_condition()}{camp}
+        ORDER BY e.event_at DESC
+        LIMIT ?""",
+        params,
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["linkedin_display_url"] = linkedin_display_url(
+            d.pop("linkedin_url"), d.pop("linkedin_sales_nav_id"))
+        out.append(d)
+    return {"campaign_id": campaign_id, "replies": out}
 
 
 # Columns the activity search matches against (Section G: search the whole
@@ -671,6 +731,61 @@ DAILY_COLUMN_KEYS = (
 )
 
 
+def _interested_first_entry_by_day(
+    conn: sqlite3.Connection,
+    workspace_id: str,
+    campaign_id: Optional[int] = None,
+) -> dict[str, int]:
+    """{date: count} of leads that entered the *interested* stage on that date,
+    counted once per lead at the first day of their current unbroken interested
+    spell.
+
+    Leaving interested and returning resets the date to the new entry. Only leads
+    whose latest status event is still 'interested' are counted (an active spell).
+    Computed over full history so the spell boundaries are correct; the caller
+    filters to the visible range by only reading dates it renders.
+    """
+    camp = ""
+    params: list = [workspace_id]
+    if campaign_id is not None:
+        camp = (" AND wle.lead_id IN (SELECT lead_id FROM campaign_leads"
+                " WHERE campaign_id = ?)")
+        params.append(int(campaign_id))
+    rows = conn.execute(
+        f"""SELECT wle.lead_id AS lead_id, wle.event_at AS event_at,
+                   LOWER(COALESCE(json_extract(e.metadata_json, '$.lead_status_raw'), '')) AS raw
+            FROM workspace_lead_events wle JOIN events e ON e.id = wle.event_id
+            WHERE wle.workspace_id = ? AND e.event_type = 'lead_status_updated'{camp}
+            ORDER BY wle.lead_id, wle.event_at, e.id""",
+        params,
+    ).fetchall()
+    by_day: dict[str, int] = {}
+    current_lead = None
+    events: list = []
+
+    def flush(lead_events):
+        # Walk to the start of the trailing run of 'interested' transitions.
+        if not lead_events or lead_events[-1][1] != "interested":
+            return  # current status isn't interested — no active spell
+        spell_start = None
+        for at, raw in reversed(lead_events):
+            if raw == "interested":
+                spell_start = at
+            else:
+                break
+        if spell_start:
+            day = spell_start[:10]  # YYYY-MM-DD
+            by_day[day] = by_day.get(day, 0) + 1
+
+    for r in rows:
+        if r["lead_id"] != current_lead:
+            flush(events)
+            current_lead, events = r["lead_id"], []
+        events.append((r["event_at"], r["raw"]))
+    flush(events)
+    return by_day
+
+
 def campaign_daily(
     conn: sqlite3.Connection,
     workspace_id: str,
@@ -700,12 +815,16 @@ def campaign_daily(
             GROUP BY day ORDER BY day""",
         params,
     ).fetchall()
+    # "Interested" is special: count each lead once, on the first day of its
+    # current interested spell (see _interested_first_entry_by_day), rather than
+    # summing every positive status event as the SQL column does.
+    interested_by_day = _interested_first_entry_by_day(conn, workspace_id, campaign_id)
     days = []
     totals = dict.fromkeys(DAILY_COLUMN_KEYS, 0)
     for r in rows:
         day = {"date": r["day"]}
         for key in DAILY_COLUMN_KEYS:
-            day[key] = r[key] or 0
+            day[key] = interested_by_day.get(r["day"], 0) if key == "interested" else (r[key] or 0)
             totals[key] += day[key]
         days.append(day)
     return {
@@ -771,15 +890,26 @@ def lead_history(
     """Full event timeline for one lead; bodies fetched separately via event_body."""
     lead = conn.execute(
         """SELECT l.id, l.name, l.company, l.company_id, l.title, l.email,
-                  l.email_domain, l.industry, l.headcount, l.stage,
-                  l.linkedin_url, l.last_contact_at,
-                  co.name AS linked_company_name, co.domain AS linked_company_domain
+                  l.email_domain, l.stage,
+                  l.linkedin_url, l.linkedin_sales_nav_id, l.last_contact_at,
+                  -- companies is canonical for industry/headcount; the lead's own
+                  -- columns are only a fallback for leads with no company link
+                  -- (expand/contract: they'll be dropped once every reader is here).
+                  COALESCE(NULLIF(TRIM(co.industry), ''), l.industry) AS industry,
+                  COALESCE(NULLIF(TRIM(co.headcount), ''), l.headcount) AS headcount,
+                  co.name AS linked_company_name, co.domain AS linked_company_domain,
+                  co.industry AS company_industry, co.headcount AS company_headcount
            FROM leads l LEFT JOIN companies co ON co.id = l.company_id
            WHERE l.id = ?""",
         (lead_id,),
     ).fetchone()
     if lead is None:
         raise ValueError(f"lead not found: {lead_id}")
+    lead = dict(lead)
+    # Best openable LinkedIn URL (public profile, else synthesized Sales Nav URL).
+    from workspace_routing import linkedin_display_url
+    lead["linkedin_display_url"] = linkedin_display_url(
+        lead.get("linkedin_url"), lead.get("linkedin_sales_nav_id"))
     ws_sql, params = "", [lead_id]
     if workspace_id:
         ws_sql = (
@@ -803,8 +933,43 @@ def lead_history(
         params,
     ).fetchall()
     return {
-        "lead": dict(lead),
+        "lead": lead,
         "events": [dict(e) for e in events],
+    }
+
+
+def lead_custom_fields(conn: sqlite3.Connection, lead_id: int) -> dict:
+    """Lead + linked-company personalization (custom) fields for the lead panel."""
+    import pipeline_personalize as pp
+
+    row = conn.execute(
+        "SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"lead not found: {lead_id}")
+    lead_fields = pp._lead_personalization_dict(conn, lead_id)
+    company_fields = {}
+    company_id = row["company_id"]
+    if company_id:
+        company_fields = pp._company_personalization_dict(conn, company_id)
+    return {
+        "lead_id": lead_id,
+        "company_id": company_id,
+        "lead": [{"field": k, "value": v["field_value"]} for k, v in lead_fields.items()],
+        "company": [{"field": k, "value": v["field_value"]} for k, v in company_fields.items()],
+    }
+
+
+def lead_provider_runs(conn: sqlite3.Connection, lead_id: int) -> dict:
+    """Per-capability run status + the full provider-attempt log for a lead —
+    powers the verification/run-log section and the re-run guards."""
+    from pipeline_provider_attempts import (
+        get_provider_attempts_for_lead, provider_run_summary,
+    )
+
+    return {
+        "lead_id": lead_id,
+        "summary": provider_run_summary(conn, lead_id),
+        "runs": get_provider_attempts_for_lead(conn, lead_id),
     }
 
 
@@ -1132,10 +1297,64 @@ LEAD_SORTS = {
 
 def _lead_columns() -> str:
     return """l.id AS lead_id, l.name, l.company, l.company_id, l.title, l.email,
-             l.email_domain, l.linkedin_url, l.industry, l.headcount,
+             l.email_domain, l.linkedin_url, l.linkedin_sales_nav_id,
+             l.industry, l.headcount,
              l.location_city, l.location_country, l.email_verification_status,
              wl.status, wl.current_status_label, wl.current_status_sentiment,
-             wl.last_activity_at, wl.email_sent_count, wl.total_replies_count"""
+             wl.last_activity_at, wl.email_sent_count, wl.total_replies_count,
+             (SELECT GROUP_CONCAT(t.tag, ',') FROM workspace_lead_tags t
+              WHERE t.workspace_id = wl.workspace_id AND t.lead_id = wl.lead_id) AS tags"""
+
+
+# Provider "catch-all"/accept-all verification statuses, however the provider
+# spelled it. Kept as one list so the stats counts and the filter agree.
+_CATCH_ALL_STATUSES_SQL = "('catch_all', 'catchall', 'catch-all', 'accept_all', 'acceptall')"
+# A lead worth spending finder credits on: no email, a real name, and no
+# email-finding attempt already on record.
+_QUALIFY_FINDING_SQL = (
+    "(l.email IS NULL OR TRIM(l.email) = '')"
+    " AND l.name IS NOT NULL AND TRIM(l.name) != '' AND LOWER(TRIM(l.name)) != 'unknown'"
+    " AND NOT EXISTS (SELECT 1 FROM lead_provider_attempts a"
+    "                 WHERE a.lead_id = l.id AND a.provider IN ('trykitt', 'icypeas'))"
+)
+
+
+def _contacts_stats_selects() -> str:
+    """The count columns shared by the overall and per-tag stats rows.
+    CASE-wrapped so a comparison against a NULL status column contributes 0, not
+    NULL (which would make SUM return NULL when every row is unverified)."""
+    return f"""
+        COUNT(*) AS total,
+        SUM(CASE WHEN LOWER(l.email_verification_status) = 'valid' THEN 1 ELSE 0 END) AS valid_email,
+        SUM(CASE WHEN LOWER(l.email_verification_status) IN {_CATCH_ALL_STATUSES_SQL} THEN 1 ELSE 0 END) AS catch_all_email,
+        SUM(CASE WHEN l.email IS NULL OR TRIM(l.email) = '' THEN 1 ELSE 0 END) AS no_email,
+        SUM(CASE WHEN {_QUALIFY_FINDING_SQL} THEN 1 ELSE 0 END) AS qualify_finding,
+        SUM(CASE WHEN (l.linkedin_url IS NOT NULL AND TRIM(l.linkedin_url) != '')
+            OR (l.linkedin_sales_nav_id IS NOT NULL AND TRIM(l.linkedin_sales_nav_id) != '') THEN 1 ELSE 0 END) AS has_linkedin"""
+
+
+def contacts_stats(conn: sqlite3.Connection, workspace_id: str) -> dict:
+    """Email/LinkedIn readiness breakdown for a workspace, overall and per tag.
+
+    Each group here is click-to-filter in the UI (the filter keys line up with
+    search_leads params: verify=valid|catch_all|none, qualify_finding, has_linkedin,
+    tag)."""
+    overall = conn.execute(
+        f"""SELECT {_contacts_stats_selects()}
+            FROM workspace_leads wl JOIN leads l ON l.id = wl.lead_id
+            WHERE wl.workspace_id = ?""",
+        (workspace_id,),
+    ).fetchone()
+    by_tag = conn.execute(
+        f"""SELECT t.tag AS tag, {_contacts_stats_selects()}
+            FROM workspace_lead_tags t
+            JOIN workspace_leads wl ON wl.workspace_id = t.workspace_id AND wl.lead_id = t.lead_id
+            JOIN leads l ON l.id = wl.lead_id
+            WHERE t.workspace_id = ?
+            GROUP BY t.tag ORDER BY total DESC""",
+        (workspace_id,),
+    ).fetchall()
+    return {"overall": dict(overall) if overall else {}, "by_tag": [dict(r) for r in by_tag]}
 
 
 def search_leads(
@@ -1148,14 +1367,50 @@ def search_leads(
     since: Optional[str] = None,
     until: Optional[str] = None,
     sort: str = "last_activity",
+    tag: Optional[str] = None,
+    connected: Optional[bool] = None,
+    sender: Optional[str] = None,
+    has_linkedin: Optional[bool] = None,
+    verify: Optional[str] = None,
+    qualify_finding: Optional[bool] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict:
     """Search workspace leads by any attribute. `missing` in
     {email,company,title,name,linkable} filters to under-enriched leads
-    (Section D reuses this). `linkable` = has company text but no company_id."""
+    (Section D reuses this). `linkable` = has company text but no company_id.
+
+    `tag` restricts to leads carrying that workspace tag; `connected` (with
+    optional `sender`) restricts to 1st-degree LinkedIn connections; `has_linkedin`
+    restricts to leads with a public URL or Sales Navigator id."""
     where = ["wl.workspace_id = ?"]
     params: list = [workspace_id]
+    if tag:
+        where.append(
+            "wl.lead_id IN (SELECT lead_id FROM workspace_lead_tags"
+            " WHERE workspace_id = ? AND tag = ?)")
+        params += [workspace_id, tag]
+    if connected:
+        conn_sql = ("wl.lead_id IN (SELECT lead_id FROM workspace_lead_linkedin_status"
+                    " WHERE workspace_id = ? AND is_connected = 1")
+        params.append(workspace_id)
+        if sender:
+            conn_sql += " AND sender_profile = ?"
+            params.append(sender)
+        conn_sql += ")"
+        where.append(conn_sql)
+    if has_linkedin:
+        where.append(
+            "((l.linkedin_url IS NOT NULL AND TRIM(l.linkedin_url) != '')"
+            " OR (l.linkedin_sales_nav_id IS NOT NULL AND TRIM(l.linkedin_sales_nav_id) != ''))")
+    if verify == "valid":
+        where.append("LOWER(l.email_verification_status) = 'valid'")
+    elif verify == "catch_all":
+        where.append(f"LOWER(l.email_verification_status) IN {_CATCH_ALL_STATUSES_SQL}")
+    elif verify == "none":
+        where.append("(l.email IS NULL OR TRIM(l.email) = '')")
+    if qualify_finding:
+        where.append(_QUALIFY_FINDING_SQL)
     if q and q.strip():
         term = f"%{q.strip()}%"
         where.append("(" + " OR ".join(f"{c} LIKE ?" for c in LEAD_SEARCH_COLUMNS) + ")")

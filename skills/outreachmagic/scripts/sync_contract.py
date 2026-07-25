@@ -263,6 +263,10 @@ NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
     "sender_domains": {
         "created_at": "audit only",
         "updated_at": "audit only",
+        "purpose": "local organizational label (sending/branch/email_finding) for the "
+                   "company panel; not part of the relay snapshot",
+        "company_id": "local FK linking a domain to its owning company for the UI; "
+                      "local surrogate id, meaningless off this install, not synced",
     },
 }
 

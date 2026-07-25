@@ -91,10 +91,11 @@ def handle_summary(conn, ws_id, match, query):
 
 @_workspace_scoped
 def handle_deliverability(conn, ws_id, match, query):
-    series = dashboard_queries.bounce_series(
-        conn, ws_id, since=_q(query, "since", "30d"), until=_q(query, "until"))
-    mailboxes = dashboard_queries.mailbox_health(conn, ws_id)
-    domains = dashboard_queries.domain_health(conn, ws_id)
+    since, until = _q(query, "since", "30d"), _q(query, "until")
+    series = dashboard_queries.bounce_series(conn, ws_id, since=since, until=until)
+    # Mailbox / domain reply%/bounce% are live from events, scoped to the range.
+    mailboxes = dashboard_queries.mailbox_health(conn, ws_id, since=since, until=until)
+    domains = dashboard_queries.domain_health(conn, ws_id, since=since, until=until)
     return {
         "since": series["since"],
         "series": series["series"],
@@ -125,6 +126,13 @@ def handle_companies(conn, ws_id, match, query):
 @_workspace_scoped
 def handle_company_detail(conn, ws_id, match, query):
     return dashboard_queries.company_detail(conn, ws_id, int(match.group(1)))
+
+
+@_workspace_scoped
+def handle_company_contact_activity(conn, ws_id, match, query):
+    return dashboard_queries.company_contact_activity(
+        conn, ws_id, int(match.group(1)),
+        limit=_int_q(query, "limit", 200, lo=1, hi=500))
 
 
 def handle_company_search(match, query, body):
@@ -263,6 +271,7 @@ def handle_contacts(conn, ws_id, match, query):
         missing=_q(query, "missing"),
         since=_q(query, "since"), until=_q(query, "until"),
         sort=_q(query, "sort", "last_activity"),
+        direction=_q(query, "dir"),
         tag=_q(query, "tag"),
         connected=_bool_q(query, "connected"),
         sender=_q(query, "sender"),
@@ -354,13 +363,22 @@ def handle_cleanup_run(match, query, body):
     return 200, dashboard_actions.cleanup_run()
 
 
+def handle_empty_leads_preview(match, query, body):
+    return 200, dashboard_actions.empty_leads_preview(_q(query, "workspace"))
+
+
+def handle_empty_leads_run(match, query, body):
+    return 200, dashboard_actions.empty_leads_run((body or {}).get("workspace"))
+
+
 def handle_email_finder(match, query, body):
     body = body or {}
     status = dashboard_actions.sync_manager.start_email_finder(
         body.get("workspace") or "",
         body.get("lead_ids") or [],
         domains=body.get("domains"),
-        force=bool(body.get("force")))
+        force=bool(body.get("force")),
+        providers=body.get("providers"))
     if status is None:
         return 409, {"error": "a sync is already running"}
     return 202, status
@@ -370,7 +388,7 @@ def handle_serper(match, query, body):
     body = body or {}
     status = dashboard_actions.sync_manager.start_serper(
         body.get("workspace") or "", body.get("lead_ids") or [],
-        force=bool(body.get("force")))
+        force=bool(body.get("force")), deep=bool(body.get("deep")))
     if status is None:
         return 409, {"error": "a sync is already running"}
     return 202, status
@@ -385,6 +403,7 @@ def handle_campaign_leads(conn, ws_id, match, query):
         conn, ws_id, int(campaign_id),
         q=_q(query, "q"), since=_q(query, "since"), until=_q(query, "until"),
         sort=_q(query, "sort", "last_activity"),
+        direction=_q(query, "dir"),
         limit=_int_q(query, "limit", 50, lo=1, hi=200),
         offset=_int_q(query, "offset", 0, hi=10_000_000))
 
@@ -601,9 +620,11 @@ ROUTES = [
     ("GET", re.compile(r"^/api/data-quality$"), handle_data_quality),
     ("GET", re.compile(r"^/api/enrich/targets$"), handle_enrich_targets),
     ("GET", re.compile(r"^/api/cleanup/preview$"), handle_cleanup_preview),
+    ("GET", re.compile(r"^/api/cleanup/empty-leads/preview$"), handle_empty_leads_preview),
     ("GET", re.compile(r"^/api/companies$"), handle_companies),
     ("GET", re.compile(r"^/api/companies/search$"), handle_company_search),
     ("GET", re.compile(r"^/api/companies/(\d+)$"), handle_company_detail),
+    ("GET", re.compile(r"^/api/companies/(\d+)/contact-activity$"), handle_company_contact_activity),
     ("GET", re.compile(r"^/api/companies/(\d+)/domains$"), handle_company_domains),
     ("GET", re.compile(r"^/api/merge-candidates$"), handle_merge_candidates),
     ("GET", re.compile(r"^/api/domains/detail$"), handle_domain_detail),
@@ -631,6 +652,7 @@ ROUTES = [
     ("POST", re.compile(r"^/api/leads/(\d+)/link-company$"), handle_link_company),
     ("POST", re.compile(r"^/api/leads/bulk-link-company$"), handle_bulk_link_company),
     ("POST", re.compile(r"^/api/cleanup/run$"), handle_cleanup_run),
+    ("POST", re.compile(r"^/api/cleanup/empty-leads/run$"), handle_empty_leads_run),
     ("POST", re.compile(r"^/api/enrich/email-finder$"), handle_email_finder),
     ("POST", re.compile(r"^/api/enrich/serper$"), handle_serper),
     ("POST", re.compile(r"^/api/companies/(\d+)/edit$"), handle_update_company),

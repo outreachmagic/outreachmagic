@@ -121,6 +121,140 @@ def _report_distribution(conn: sqlite3.Connection) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Empty-identity leads (Stage 9b). A second, distinct junk population: leads
+# whose ONLY lead_identities rows are the system-assigned `uid` / `external_id`
+# (a content hash and a source id) with no real contact identity, no email, no
+# LinkedIn, name 'unknown'/blank, and zero rows in any history table. These are
+# name-only Sales-Navigator / CSV imports (e.g. "popcam | career services").
+#
+# Unlike the Stage-9 junk above, these DO have a valid relay entity_key (their
+# uid), so they were pushed. Deleting them therefore must *keep* the Stage-5
+# delete tombstone so the next push removes them from the relay too — otherwise
+# the next pull regrows them. That single difference (push vs drop tombstones)
+# is why this is a separate path rather than a loosened predicate.
+_EMPTY_CHILD_TABLES = (
+    "events",
+    "workspace_lead_events",
+    "lead_personalization",
+    "bounce_events",
+    "crm_entity_map",
+)
+
+_EMPTY_WHERE = """
+    (l.name IS NULL OR TRIM(l.name) = '' OR LOWER(TRIM(l.name)) = 'unknown')
+    AND (l.email IS NULL OR TRIM(l.email) = '')
+    AND l.linkedin_url IS NULL
+    AND l.linkedin_sales_nav_id IS NULL
+"""
+
+
+def _empty_ids_sql(workspace_id: Optional[str] = None) -> tuple[str, list]:
+    """SELECT the empty-identity lead ids. `li` is LEFT JOINed only on *real*
+    identity types, so uid/external_id rows don't count as recoverable history;
+    HAVING then requires zero rows across the five history tables and zero real
+    identities. Optionally scoped to a workspace's members."""
+    child = _EMPTY_CHILD_TABLES
+    joins = "\n".join(f"LEFT JOIN {t} ON {t}.lead_id = l.id" for t in child)
+    counts = " + ".join(f"COUNT(DISTINCT {t}.rowid)" for t in child)
+    ws_join, params = "", []
+    if workspace_id:
+        ws_join = "JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?"
+        params.append(workspace_id)
+    sql = f"""
+        SELECT l.id AS id, l.uid AS uid, l.original_source_detail AS osd
+          FROM leads l
+          {ws_join}
+          {joins}
+          LEFT JOIN lead_identities li
+                 ON li.lead_id = l.id
+                AND li.identity_type NOT IN ('uid', 'external_id')
+         WHERE {_EMPTY_WHERE}
+         GROUP BY l.id
+        HAVING ({counts} + COUNT(DISTINCT li.rowid)) = 0
+    """
+    return sql, params
+
+
+def cleanup_empty_leads(
+    conn: Optional[sqlite3.Connection] = None,
+    *,
+    workspace_id: Optional[str] = None,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict:
+    """Quarantine + delete empty-identity leads, KEEPING delete tombstones so the
+    relay is cleaned up on the next push (see population note above)."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        ids_sql, ids_params = _empty_ids_sql(workspace_id)
+        selected = conn.execute(
+            f"SELECT COUNT(*) AS n FROM ({ids_sql})", ids_params
+        ).fetchone()["n"]
+        top_sources = conn.execute(
+            f"""SELECT COALESCE(osd, '(null)') AS source_detail, COUNT(*) AS n
+                  FROM ({ids_sql}) GROUP BY osd ORDER BY n DESC LIMIT 20""",
+            ids_params,
+        ).fetchall()
+        result: dict = {
+            "dry_run": dry_run,
+            "selected": selected,
+            "workspace_id": workspace_id,
+            "distribution": {
+                "top_sources": [
+                    {"source_detail": r["source_detail"], "count": r["n"]}
+                    for r in top_sources
+                ],
+            },
+            "quarantined": 0,
+            "deleted": 0,
+            "tombstones_kept": 0,
+        }
+        if dry_run:
+            return result
+        if not confirm:
+            raise RuntimeError(
+                "cleanup_empty_leads is destructive and pushes deletes to the "
+                "relay; pass confirm=True (dashboard confirm) after reviewing "
+                "the dry-run count."
+            )
+
+        rows = conn.execute(ids_sql, ids_params).fetchall()
+        ids = [(r["id"], r["uid"], r["osd"]) for r in rows]
+        if not ids:
+            return result
+        conn.executemany(
+            "INSERT INTO leads_junk_quarantine (lead_id, uid, original_source_detail) "
+            "VALUES (?, ?, ?)",
+            ids,
+        )
+        result["quarantined"] = len(ids)
+
+        # DELETE fires the Stage-5 BEFORE DELETE trigger, filing a 'delete'
+        # outbox row keyed on the lead's (valid) uid. We KEEP those tombstones —
+        # the next push removes the lead from the relay so a pull can't regrow it.
+        lead_ids = [row[0] for row in ids]
+        conn.execute("PRAGMA foreign_keys = ON")
+        chunk = 500
+        for i in range(0, len(lead_ids), chunk):
+            batch = lead_ids[i : i + chunk]
+            placeholders = ",".join("?" for _ in batch)
+            cur = conn.execute(
+                f"DELETE FROM leads WHERE id IN ({placeholders})", batch
+            )
+            result["deleted"] += cur.rowcount
+        result["tombstones_kept"] = conn.execute(
+            "SELECT COUNT(*) AS n FROM outbox WHERE entity_type = 'lead_core' AND op = 'delete'"
+        ).fetchone()["n"]
+        conn.commit()
+        return result
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def cleanup_junk_leads(
     conn: Optional[sqlite3.Connection] = None,
     *,

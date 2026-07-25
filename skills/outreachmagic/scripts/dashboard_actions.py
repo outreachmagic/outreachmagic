@@ -430,6 +430,33 @@ def cleanup_run() -> dict:
     return junk_cleanup.cleanup_junk_leads(dry_run=False, confirm=True)
 
 
+def empty_leads_preview(workspace_slug: Optional[str] = None) -> dict:
+    """Dry-run the empty-identity lead cleanup (name 'unknown', no email/LinkedIn,
+    no history, only a system uid identity). Optionally scoped to a workspace."""
+    import junk_cleanup
+
+    conn = get_conn()
+    try:
+        ws_id = _resolve_ws_id(conn, workspace_slug) if workspace_slug else None
+        return junk_cleanup.cleanup_empty_leads(conn, workspace_id=ws_id, dry_run=True)
+    finally:
+        conn.close()
+
+
+def empty_leads_run(workspace_slug: Optional[str] = None) -> dict:
+    """Execute the empty-identity cleanup: quarantine → delete → KEEP tombstones
+    so the next push removes them from the relay. UI gates this behind preview."""
+    import junk_cleanup
+
+    conn = get_conn()
+    try:
+        ws_id = _resolve_ws_id(conn, workspace_slug) if workspace_slug else None
+        return junk_cleanup.cleanup_empty_leads(
+            conn, workspace_id=ws_id, dry_run=False, confirm=True)
+    finally:
+        conn.close()
+
+
 def resolve_merge_candidate(candidate_id: str, approve: bool, note: Optional[str] = None) -> dict:
     """Approve (execute the merge) or reject a queued company merge candidate."""
     import pipeline as _pipeline
@@ -491,6 +518,19 @@ class SyncManager:
         except OSError:
             return {"text": "", "offset": after}
 
+    def _log(self, msg: str) -> None:
+        """Append one timestamped line to the console log the drawer tails.
+        Lets the enrichment jobs (which don't go through the relay progress
+        machinery) show per-lead progress + credit usage in the same console."""
+        if not self._log_path:
+            return
+        line = f"[{utc_now_for_storage()}] {msg}\n"
+        try:
+            with self._log_path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+        except OSError:
+            pass
+
     def status(self) -> dict:
         with self._state_lock:
             return dict(self._state)
@@ -514,18 +554,20 @@ class SyncManager:
     def start_email_finder(
         self, workspace_slug: str, lead_ids: list,
         domains: Optional[dict] = None, force: bool = False,
+        providers: Optional[list] = None,
     ) -> Optional[dict]:
         return self._start(
             "email-finder", self._run_email_finder,
             workspace_slug=workspace_slug, lead_ids=lead_ids,
-            domains=domains, force=force)
+            domains=domains, force=force, providers=providers)
 
     def start_serper(
         self, workspace_slug: str, lead_ids: list, force: bool = False,
+        deep: bool = False,
     ) -> Optional[dict]:
         return self._start(
             "serper", self._run_serper,
-            workspace_slug=workspace_slug, lead_ids=lead_ids, force=force)
+            workspace_slug=workspace_slug, lead_ids=lead_ids, force=force, deep=deep)
 
     def _start(self, kind: str, fn, **kwargs) -> Optional[dict]:
         """Returns the running status, or None when a sync is already running."""
@@ -571,13 +613,28 @@ class SyncManager:
         last_max_id = _pipeline.get_last_max_id()
         effective_full = not last_max_id
         stats: dict = {}
-        imported, skipped = _pipeline.sync_from_relay_org(
-            agent_key,
-            after_id=None if effective_full else last_max_id,
-            full=effective_full,
-            quiet=True,
-            stats=stats,
-        )
+
+        # The pull writes progress to stdout (not _relay_log), so the console
+        # drawer — which tails OM_SYNC_LOG — was always empty for pulls even
+        # though push works. Run it non-quiet and redirect stdout into that same
+        # log file so the drawer shows real page/import progress.
+        def _do() -> tuple[int, int]:
+            return _pipeline.sync_from_relay_org(
+                agent_key,
+                after_id=None if effective_full else last_max_id,
+                full=effective_full,
+                quiet=False,
+                stats=stats,
+            )
+
+        log_path = os.environ.get("OM_SYNC_LOG", "").strip()
+        if log_path:
+            from contextlib import redirect_stdout
+
+            with open(log_path, "a", encoding="utf-8") as fh, redirect_stdout(fh):
+                imported, skipped = _do()
+        else:
+            imported, skipped = _do()
         return {"imported": imported, "skipped": skipped}
 
     @staticmethod
@@ -627,10 +684,13 @@ class SyncManager:
     # background job. The UI selects explicitly; this is a backstop.
     MAX_ENRICH_LEADS = 200
 
-    @staticmethod
+    # Providers the per-run dialog may request; anything else is ignored so a
+    # bad value can't widen the spend beyond what the finder normally does.
+    _EMAIL_FINDER_PROVIDERS = ("trykitt", "icypeas")
+
     def _run_email_finder(
-        workspace_slug: str, lead_ids: list, domains: Optional[dict] = None,
-        force: bool = False,
+        self, workspace_slug: str, lead_ids: list, domains: Optional[dict] = None,
+        force: bool = False, providers: Optional[list] = None,
     ) -> dict:
         """Company/multi-domain-aware email finder over a chosen lead set.
 
@@ -659,12 +719,21 @@ class SyncManager:
             raise RuntimeError(
                 "Outreach Magic data dir not found — cannot save finder results.")
 
+        # Per-run provider allow-list (from the dialog). None/empty => the
+        # finder's configured default. Unknown names are dropped.
+        prov_names = [p for p in (providers or [])
+                      if p in self._EMAIL_FINDER_PROVIDERS] or None
+
         summary = {
             "workspace": workspace_slug, "requested": len(ids),
             "found": 0, "not_found": 0, "skipped_no_domain": 0,
-            "skipped_already_ran": 0,
+            "skipped_already_ran": 0, "credits_used": 0,
+            "providers": prov_names or list(self._EMAIL_FINDER_PROVIDERS),
             "credits_exhausted": False, "results": [],
         }
+        self._log(
+            f"Email finder: {len(ids)} lead(s), providers="
+            f"{', '.join(summary['providers'])}{' (force re-run)' if force else ''}")
         conn = get_conn()
         try:
             for lead_id in ids:
@@ -691,9 +760,13 @@ class SyncManager:
                 if not cand:
                     summary["skipped_no_domain"] += 1
                     summary["results"].append({"lead_id": lead_id, "status": "no_domain"})
+                    self._log(f"  · {lead['name'] or f'lead {lead_id}'}: no resolvable domain — skipped")
                     continue
                 result = run_find_with_domain_fallback(
-                    cfg, full_name=lead["name"] or "", domains=cand)
+                    cfg, full_name=lead["name"] or "", domains=cand,
+                    provider_names=prov_names)
+                name = lead["name"] or f"lead {lead_id}"
+                summary["credits_used"] += int(result.get("credits_used") or 0)
                 if result.get("email"):
                     email_finder.save_find_result(
                         om_dir,
@@ -711,18 +784,25 @@ class SyncManager:
                         "email": result["email"],
                         "domain": result.get("winning_domain") or cand[0],
                     })
+                    self._log(f"  ✓ {name}: found {result['email']} ({result.get('winning_domain') or cand[0]})")
                 else:
                     summary["not_found"] += 1
                     summary["results"].append({"lead_id": lead_id, "status": "not_found"})
+                    self._log(f"  ✗ {name}: no email found (tried {', '.join(cand)})")
                 if result.get("status") == "credits_exhausted":
                     summary["credits_exhausted"] = True
+                    self._log("  ! provider credits exhausted — stopping batch")
                     break
         finally:
             conn.close()
+        self._log(
+            f"Email finder done: {summary['found']} found, {summary['not_found']} not found, "
+            f"{summary['skipped_no_domain']} no-domain, {summary['skipped_already_ran']} already-run, "
+            f"~{summary['credits_used']} credit(s) used.")
         return summary
 
-    @staticmethod
-    def _run_serper(workspace_slug: str, lead_ids: list, force: bool = False) -> dict:
+    def _run_serper(self, workspace_slug: str, lead_ids: list, force: bool = False,
+                    deep: bool = False) -> dict:
         """Web-research surface for leads the email finder can't place: runs the
         Serper query pack per lead and returns the formatted result blocks for
         the agent to read and act on. This is the automatable slice — the final
@@ -740,8 +820,13 @@ class SyncManager:
         cfg = enrich.load_config()
         summary = {
             "workspace": workspace_slug, "requested": len(ids),
-            "searched": 0, "errors": 0, "skipped_already_ran": 0, "results": [],
+            "searched": 0, "errors": 0, "skipped_already_ran": 0,
+            "queries": 0, "deep": bool(deep), "results": [],
         }
+        self._log(
+            f"Serper research: {len(ids)} lead(s), "
+            f"{'full query pack' if deep else 'core queries only'}"
+            f"{' (force re-run)' if force else ''}")
         conn = get_conn()
         try:
             for lead_id in ids:
@@ -763,9 +848,12 @@ class SyncManager:
                 sections = []
                 try:
                     for q in enrich.build_serper_queries(person):
-                        if not q.get("always"):
+                        # Default runs only the "always" core queries; deep mode
+                        # runs the full pack (more Serper calls per lead).
+                        if not deep and not q.get("always"):
                             continue
                         data = enrich.serper_search(q["query"], cfg)
+                        summary["queries"] += 1
                         sections.append(
                             {"label": q["label"], "query": q["query"], "data": data})
                     summary["searched"] += 1
@@ -773,11 +861,16 @@ class SyncManager:
                         "lead_id": lead_id, "name": lead["name"],
                         "research": enrich.format_serper_for_model(sections),
                     })
+                    self._log(f"  ✓ {lead['name']}: {len(sections)} query result block(s)")
                 except (ValueError, RuntimeError, OSError) as exc:
                     summary["errors"] += 1
                     summary["results"].append({"lead_id": lead_id, "error": str(exc)})
+                    self._log(f"  ✗ {lead['name']}: {exc}")
         finally:
             conn.close()
+        self._log(
+            f"Serper done: {summary['searched']} researched, {summary['errors']} error(s), "
+            f"{summary['skipped_already_ran']} already-run, {summary['queries']} Serper call(s).")
         return summary
 
 

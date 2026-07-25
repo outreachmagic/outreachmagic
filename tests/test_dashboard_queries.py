@@ -412,7 +412,9 @@ def test_campaign_daily_matrix():
     assert day["email_sent"] == 1
     assert day["email_received"] == 1
     assert day["dm_sent"] == 1
-    assert day["bounces"] == 1
+    # bounces are no longer a daily-matrix column (they live on Deliverability);
+    # ensure the key is gone so the campaigns table/chart don't reference it.
+    assert "bounces" not in day
     assert day["positive"] == 1
     assert all_out["totals"]["email_sent"] == 1
     # campaign-scoped excludes the DM (no campaign) but keeps the campaign events

@@ -245,8 +245,13 @@ def _assemble_lead_core_sync_payload(
         # (that's what the legacy provider_attempts key used to carry). Apply
         # keeps *accepting* the old key for the ~150k D1 snapshots that already
         # carry it (see apply_agent_lead_core_payload) -- only emission moved.
+        # Drop null fields from each observation: the apply side defaults every
+        # column to None (see apply_provider_observations_payload), so an omitted
+        # key round-trips identically while cutting the snapshot size — many
+        # observations carry only a handful of the 17 columns. Falsy-but-present
+        # values (False / 0 / "") are meaningful and kept.
         payload["provider_observations"] = [
-            {
+            {k: v for k, v in {
                 "kind": r["kind"],
                 "origin": r["origin"],
                 "provider": r["provider"],
@@ -264,7 +269,7 @@ def _assemble_lead_core_sync_payload(
                 "observed_at": r["observed_at"],
                 "completed_at": r["completed_at"],
                 "metadata_json": r["metadata_json"],
-            }
+            }.items() if v is not None}
             for r in provider_observation_rows
         ]
     return payload

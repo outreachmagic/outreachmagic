@@ -431,7 +431,7 @@ def test_cleanup_preview_is_dry_run(base_url):
 
 def test_email_finder_and_serper_routing(base_url, monkeypatch):
     # Don't hit real providers: stub the background runners, verify routing.
-    def fake_finder(workspace_slug, lead_ids, domains=None, force=False):
+    def fake_finder(workspace_slug, lead_ids, domains=None, force=False, providers=None):
         return {"found": len(lead_ids), "workspace": workspace_slug}
 
     monkeypatch.setattr(dashboard_actions.sync_manager, "_run_email_finder", fake_finder)
@@ -446,7 +446,7 @@ def test_email_finder_and_serper_routing(base_url, monkeypatch):
         time.sleep(0.05)
     assert st["state"] == "done" and st["summary"]["found"] == 2
 
-    def fake_serper(workspace_slug, lead_ids, force=False):
+    def fake_serper(workspace_slug, lead_ids, force=False, deep=False):
         return {"searched": len(lead_ids)}
 
     monkeypatch.setattr(dashboard_actions.sync_manager, "_run_serper", fake_serper)

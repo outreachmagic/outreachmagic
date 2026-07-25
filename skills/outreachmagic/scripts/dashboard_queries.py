@@ -175,7 +175,68 @@ def bounce_series(
     return {"since": since, "series": series}
 
 
-def mailbox_health(conn: sqlite3.Connection, workspace_id: str) -> dict:
+def _mailbox_event_rates(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str] = None, until: Optional[str] = None,
+) -> dict[str, dict]:
+    """Per-mailbox sends / replies / bounces from the real event stream, scoped
+    to a date range — the honest basis for reply% and bounce% (the provider-
+    exported sender_accounts.bounce_rate is stale/CSV-imported and often wrong).
+
+    A reply is attributed to every mailbox that sent to the replying lead within
+    the range; in cold outreach that's almost always exactly one mailbox, so the
+    rate is accurate without a per-thread mailbox link the events don't carry."""
+    reply_cond = reply_event_sql_condition()
+    reply_cond = reply_cond.replace("event_type", "e.event_type").replace("direction", "e.direction")
+
+    send_range, sp = _range_clause(since, until, "wle.event_at")
+    sends = conn.execute(
+        f"""SELECT e.sender AS mailbox, e.lead_id AS lead_id, COUNT(*) AS n
+            FROM workspace_lead_events wle JOIN events e ON e.id = wle.event_id
+            WHERE wle.workspace_id = ? AND e.event_type = 'email_sent'
+              AND e.sender IS NOT NULL AND e.sender != ''{send_range}
+            GROUP BY e.sender, e.lead_id""",
+        (workspace_id, *sp),
+    ).fetchall()
+    rates: dict[str, dict] = {}
+    lead_to_mailboxes: dict = defaultdict(set)
+    for r in sends:
+        m = rates.setdefault(r["mailbox"], {"sends": 0, "replies": 0, "bounces": 0})
+        m["sends"] += r["n"]
+        lead_to_mailboxes[r["lead_id"]].add(r["mailbox"])
+
+    reply_range, rp = _range_clause(since, until, "wle.event_at")
+    reply_rows = conn.execute(
+        f"""SELECT DISTINCT wle.lead_id AS lead_id
+            FROM workspace_lead_events wle JOIN events e ON e.id = wle.event_id
+            WHERE wle.workspace_id = ? AND lower(e.direction) = 'inbound'
+              AND lower(e.channel) = 'email' AND {reply_cond}{reply_range}""",
+        (workspace_id, *rp),
+    ).fetchall()
+    for r in reply_rows:
+        for m in lead_to_mailboxes.get(r["lead_id"], ()):
+            rates[m]["replies"] += 1
+
+    # Bounces from bounce_events (authoritative sender_email = the mailbox).
+    # No workspace filter (older rows predate the column); consumers only read
+    # their own mailboxes out of this map.
+    b_range, bp = _range_clause(since, until, "last_seen_at")
+    for r in conn.execute(
+        f"""SELECT sender_email AS mailbox, COUNT(*) AS n
+            FROM bounce_events
+            WHERE sender_email IS NOT NULL AND sender_email != ''{b_range}
+            GROUP BY sender_email""",
+        bp,
+    ).fetchall():
+        m = rates.setdefault(r["mailbox"], {"sends": 0, "replies": 0, "bounces": 0})
+        m["bounces"] += r["n"]
+    return rates
+
+
+def mailbox_health(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str] = None, until: Optional[str] = None,
+) -> dict:
     rows = conn.execute(
         """SELECT sa.id, sa.email, sa.email_domain, sa.channel, sa.status,
                   sa.first_name, sa.last_name, sa.provider, sa.is_active,
@@ -188,6 +249,7 @@ def mailbox_health(conn: sqlite3.Connection, workspace_id: str) -> dict:
            ORDER BY sa.email""",
         (workspace_id,),
     ).fetchall()
+    event_rates = _mailbox_event_rates(conn, workspace_id, since, until)
 
     # Bounce trend per sender: last 7 days vs the 7 days before that. Not
     # workspace-filtered — a mailbox's health is a property of the mailbox
@@ -208,16 +270,22 @@ def mailbox_health(conn: sqlite3.Connection, workspace_id: str) -> dict:
     mailboxes = []
     for r in rows:
         recent, prior = trend.get(r["email"], (0, 0))
-        # Providers export -1 for "not measured"; treat any negative as unknown.
-        bounce_rate = r["bounce_rate"]
-        if bounce_rate is not None and bounce_rate < 0:
-            bounce_rate = None
+        # Live rates from the event stream, scoped to the selected range —
+        # these replace the provider-exported sender_accounts.bounce_rate.
+        er = event_rates.get(r["email"], {"sends": 0, "replies": 0, "bounces": 0})
+        sends = er["sends"]
+        reply_rate = (er["replies"] / sends) if sends else None
+        bounce_rate = (er["bounces"] / sends) if sends else None
         trending_down = bool(
             (recent > prior and recent > 0)
             or (bounce_rate is not None and bounce_rate >= MAILBOX_BOUNCE_RATE_THRESHOLD)
         )
         mb = dict(r)
         mb.update({
+            "sends": sends,
+            "replies": er["replies"],
+            "reply_rate": reply_rate,
+            "bounces": er["bounces"],
             "bounce_rate": bounce_rate,
             "bounces_last_7d": recent,
             "bounces_prior_7d": prior,
@@ -260,7 +328,10 @@ def _parse_dnsbl_status(raw: Optional[str]) -> tuple[bool, str, Optional[str]]:
     return text.lower() not in ("clean", "ok", "not_listed", "unlisted"), text, None
 
 
-def domain_health(conn: sqlite3.Connection, workspace_id: str) -> dict:
+def domain_health(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str] = None, until: Optional[str] = None,
+) -> dict:
     # Domains come from the workspace's own mailboxes; sender_domains is a
     # LEFT JOIN because it only holds domains someone registered there
     # (reseller/pricing/DNSBL) — a workspace's sending domains must show up
@@ -272,7 +343,6 @@ def domain_health(conn: sqlite3.Connection, workspace_id: str) -> dict:
         """SELECT sa.email_domain AS domain,
                   SUM(sa.is_active = 1) AS mailboxes,
                   COUNT(sa.id) AS mailboxes_total,
-                  AVG(CASE WHEN sa.is_active = 1 THEN sa.overall_health_score END) AS avg_health,
                   MAX(sa.last_outbound_at) AS last_outbound_at,
                   sd.domain IS NOT NULL AS registered,
                   COALESCE(sd.is_active, 1) AS domain_active,
@@ -287,21 +357,46 @@ def domain_health(conn: sqlite3.Connection, workspace_id: str) -> dict:
            ORDER BY sa.email_domain""",
         (workspace_id,),
     ).fetchall()
+
+    # Roll the per-mailbox live event rates up to the domain, replacing the
+    # provider-exported avg_health with avg reply% / bounce% from real events.
+    mailbox_map = conn.execute(
+        """SELECT sa.email AS email, sa.email_domain AS domain
+           FROM sender_accounts sa
+           JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
+           WHERE wsa.workspace_id = ? AND sa.email_domain IS NOT NULL AND sa.email_domain != ''""",
+        (workspace_id,),
+    ).fetchall()
+    event_rates = _mailbox_event_rates(conn, workspace_id, since, until)
+    per_domain: dict[str, dict] = defaultdict(lambda: {"sends": 0, "replies": 0, "bounces": 0})
+    for m in mailbox_map:
+        er = event_rates.get(m["email"])
+        if er:
+            d = per_domain[m["domain"]]
+            d["sends"] += er["sends"]
+            d["replies"] += er["replies"]
+            d["bounces"] += er["bounces"]
+
     domains = []
     for r in rows:
         listed, summary, checked_at = _parse_dnsbl_status(r["dnsbl_status"])
         if not r["registered"]:
             summary = "not monitored"
+        agg = per_domain.get(r["domain"], {"sends": 0, "replies": 0, "bounces": 0})
+        sends = agg["sends"]
         domains.append({
             "domain": r["domain"],
             "mailboxes": r["mailboxes"] or 0,
             "mailboxes_total": r["mailboxes_total"],
-            "avg_health": round(r["avg_health"], 1) if r["avg_health"] is not None else None,
+            "sends": sends,
+            "reply_rate": (agg["replies"] / sends) if sends else None,
+            "bounce_rate": (agg["bounces"] / sends) if sends else None,
             "last_outbound_at": r["last_outbound_at"],
             "registered": bool(r["registered"]),
             "is_active": bool(r["domain_active"]),
             "sending_ip": r["sending_ip"],
             "reseller": r["reseller"],
+            "provider": r["reseller"],
             "domain_cost": r["domain_cost"],
             "currency": r["currency"],
             "listed": listed,
@@ -755,7 +850,6 @@ _DAILY_COLUMNS_SQL = f"""
         OR event_type = 'linkedin_dm_reply') AS dm_received,
     SUM(event_type IN ('linkedin_connect_sent', 'linkedin_connect')) AS connects_sent,
     SUM(event_type = 'linkedin_connection_accepted') AS connects_accepted,
-    SUM(event_type IN {BOUNCE_EVENT_TYPES_SQL}) AS bounces,
     SUM(event_type = 'meeting_booked') AS meetings
 """
 
@@ -766,11 +860,11 @@ _DAILY_COLUMNS_SQL = f"""
 SENTIMENT_KEYS = ("positive", "negative", "invalid", "autoreply")
 DAILY_EVENT_KEYS = (
     "email_sent", "email_received", "dm_sent", "dm_received",
-    "connects_sent", "connects_accepted", "bounces", "meetings",
+    "connects_sent", "connects_accepted", "meetings",
 )
 DAILY_COLUMN_KEYS = (
     "email_sent", "email_received", "dm_sent", "dm_received",
-    "connects_sent", "connects_accepted", "bounces",
+    "connects_sent", "connects_accepted",
     *SENTIMENT_KEYS, "meetings",
 )
 
@@ -991,6 +1085,15 @@ def lead_history(
     from workspace_routing import linkedin_display_url
     lead["linkedin_display_url"] = linkedin_display_url(
         lead.get("linkedin_url"), lead.get("linkedin_sales_nav_id"))
+    # Workspace tags for the lead panel's add/remove/filter chips.
+    if workspace_id:
+        lead["tags"] = [
+            r["tag"] for r in conn.execute(
+                "SELECT tag FROM workspace_lead_tags WHERE workspace_id = ? AND lead_id = ? ORDER BY tag",
+                (workspace_id, lead_id)).fetchall()
+        ]
+    else:
+        lead["tags"] = []
     ws_sql, params = "", [lead_id]
     if workspace_id:
         ws_sql = (
@@ -1042,16 +1145,56 @@ def lead_custom_fields(conn: sqlite3.Connection, lead_id: int) -> dict:
 
 def lead_provider_runs(conn: sqlite3.Connection, lead_id: int) -> dict:
     """Per-capability run status + the full provider-attempt log for a lead —
-    powers the verification/run-log section and the re-run guards."""
+    powers the verification/run-log section and the re-run guards.
+
+    Verification providers (millionverifier/scrubby) only write a submission
+    *stamp* to lead_provider_attempts (status 'unknown') because MillionVerifier
+    is async — the real valid/invalid result lands later in
+    lead_email_verification. Reading only the stamp made the panel show every
+    verification as 'unknown'. Overlay the real verification result here so the
+    run log and the capability headline reflect what actually came back."""
     from pipeline_provider_attempts import (
         get_provider_attempts_for_lead, provider_run_summary,
     )
 
-    return {
-        "lead_id": lead_id,
-        "summary": provider_run_summary(conn, lead_id),
-        "runs": get_provider_attempts_for_lead(conn, lead_id),
-    }
+    summary = provider_run_summary(conn, lead_id)
+    runs = get_provider_attempts_for_lead(conn, lead_id)
+
+    # Latest real verification result per provider (source), newest first.
+    verif_rows = conn.execute(
+        """SELECT email, status, source, verified_at
+           FROM lead_email_verification
+           WHERE lead_id = ? AND status IS NOT NULL AND TRIM(status) != ''
+           ORDER BY verified_at DESC""",
+        (lead_id,),
+    ).fetchall()
+    latest_by_provider: dict[str, dict] = {}
+    for r in verif_rows:
+        p = (r["source"] or "").strip().lower()
+        if p and p not in latest_by_provider:
+            latest_by_provider[p] = dict(r)
+
+    def _blank(v) -> bool:
+        return not v or str(v).strip().lower() == "unknown"
+
+    for run in runs:
+        v = latest_by_provider.get((run.get("provider") or "").strip().lower())
+        if v and _blank(run.get("status")):
+            run["status"] = v["status"]
+            run["result_email"] = run.get("result_email") or v["email"]
+            run["result_validity"] = run.get("result_validity") or v["status"]
+            run["completed_at"] = run.get("completed_at") or v["verified_at"]
+
+    verif = summary.get("email_verification")
+    if verif and verif.get("ran") and _blank(verif.get("last_status")):
+        cands = [latest_by_provider[p] for p in verif.get("providers", [])
+                 if p in latest_by_provider]
+        if cands:
+            best = max(cands, key=lambda x: x.get("verified_at") or "")
+            verif["last_status"] = best["status"]
+            verif["last_attempted_at"] = verif.get("last_attempted_at") or best.get("verified_at")
+
+    return {"lead_id": lead_id, "summary": summary, "runs": runs}
 
 
 def event_body(conn: sqlite3.Connection, event_id: int) -> dict:
@@ -1375,6 +1518,33 @@ LEAD_SORTS = {
     "recent": "l.id DESC",
 }
 
+# Column expressions the Contacts / Data-quality tables can sort on server-side
+# (whole list, not just the loaded page). Direction comes from the header click;
+# NULLs are forced last for both directions so empty cells never lead.
+LEAD_SORT_COLUMNS = {
+    "name": "l.name COLLATE NOCASE",
+    "email": "l.email COLLATE NOCASE",
+    "company": "l.company COLLATE NOCASE",
+    "title": "l.title COLLATE NOCASE",
+    "status": "wl.status COLLATE NOCASE",
+    "current_status_sentiment": "wl.current_status_sentiment COLLATE NOCASE",
+    "email_verification_status": "l.email_verification_status COLLATE NOCASE",
+    "total_replies_count": "wl.total_replies_count",
+    "email_sent_count": "wl.email_sent_count",
+    "last_activity_at": "wl.last_activity_at",
+}
+
+
+def _lead_order_by(sort: Optional[str], direction: Optional[str]) -> str:
+    """ORDER BY fragment for search_leads. A known column key uses the requested
+    direction with NULLs last and a stable id tiebreaker; otherwise fall back to
+    the legacy named sorts."""
+    col = LEAD_SORT_COLUMNS.get(sort or "")
+    if col:
+        d = "DESC" if str(direction or "").lower() == "desc" else "ASC"
+        return f"({col} IS NULL), {col} {d}, l.id DESC"
+    return LEAD_SORTS.get(sort or "", LEAD_SORTS["last_activity"])
+
 
 def _lead_columns() -> str:
     return """l.id AS lead_id, l.name, l.company, l.company_id, l.title, l.email,
@@ -1448,6 +1618,7 @@ def search_leads(
     since: Optional[str] = None,
     until: Optional[str] = None,
     sort: str = "last_activity",
+    direction: Optional[str] = None,
     tag: Optional[str] = None,
     connected: Optional[bool] = None,
     sender: Optional[str] = None,
@@ -1516,7 +1687,7 @@ def search_leads(
     active_sql, active_params = _active_in_range(since, until)
     params += active_params
     where_sql = " AND ".join(where) + active_sql
-    order = LEAD_SORTS.get(sort, LEAD_SORTS["last_activity"])
+    order = _lead_order_by(sort, direction)
     # ids_only powers the "select all N matching" bulk action: same WHERE, but
     # just the ids (capped by `limit`) so the client can select every match
     # across pages without paging through them. No column projection or sort.
@@ -1556,11 +1727,13 @@ def campaign_leads(
     limit: int = 50,
     offset: int = 0,
     sort: str = "last_activity",
+    direction: Optional[str] = None,
 ) -> dict:
     """Leads in a campaign (Section F: campaign detail is lead-centric)."""
     return search_leads(
         conn, workspace_id, q=q, campaign_id=campaign_id,
-        since=since, until=until, sort=sort, limit=limit, offset=offset)
+        since=since, until=until, sort=sort, direction=direction,
+        limit=limit, offset=offset)
 
 
 # ---------------------------------------------------------------------------
@@ -1652,6 +1825,42 @@ def company_detail(conn: sqlite3.Connection, workspace_id: str, company_id: int)
         "leads": [dict(r) for r in leads],
         "pending_merges": pending_merges,
         "lead_count": len(leads),
+    }
+
+
+def company_contact_activity(
+    conn: sqlite3.Connection, workspace_id: str, company_id: int, limit: int = 200,
+) -> dict:
+    """One row per contact at this company that has at least one event, with its
+    event count, latest event, and current sentiment — the roll-up for the
+    company pane's aggregated history. The full per-contact timeline is fetched
+    lazily via lead_history when a row is expanded, so this stays cheap."""
+    rows = conn.execute(
+        """SELECT l.id AS lead_id, l.name, l.title, l.email,
+                  wl.current_status_sentiment AS sentiment,
+                  wl.current_status_label AS status_label,
+                  COUNT(DISTINCT wle.event_id) AS event_count,
+                  MAX(wle.event_at) AS last_event_at,
+                  (SELECT e2.event_type
+                     FROM workspace_lead_events w2 JOIN events e2 ON e2.id = w2.event_id
+                    WHERE w2.workspace_id = wl.workspace_id AND w2.lead_id = l.id
+                    ORDER BY w2.event_at DESC, w2.id DESC LIMIT 1) AS last_event_type,
+                  (SELECT e2.direction
+                     FROM workspace_lead_events w2 JOIN events e2 ON e2.id = w2.event_id
+                    WHERE w2.workspace_id = wl.workspace_id AND w2.lead_id = l.id
+                    ORDER BY w2.event_at DESC, w2.id DESC LIMIT 1) AS last_event_direction
+           FROM leads l
+           JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?
+           JOIN workspace_lead_events wle ON wle.lead_id = l.id AND wle.workspace_id = ?
+           WHERE l.company_id = ?
+           GROUP BY l.id
+           ORDER BY last_event_at DESC
+           LIMIT ?""",
+        (workspace_id, workspace_id, company_id, limit),
+    ).fetchall()
+    return {
+        "company_id": company_id,
+        "contacts": [dict(r) for r in rows],
     }
 
 

@@ -142,6 +142,16 @@ tr.clickable:hover td { background: color-mix(in srgb, var(--series-1) 7%, trans
   background: var(--ink-1); color: var(--page); padding: 8px 16px;
   border-radius: 8px; font-size: 13px; display: none; z-index: 20;
 }
+.enrich-ov { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 25;
+  display: flex; align-items: center; justify-content: center; }
+.enrich-modal { background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 20px; width: min(400px, 92vw);
+  box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+.enrich-modal h3 { margin: 0 0 12px; font-size: 15px; }
+.enrich-modal label { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; cursor: pointer; }
+.enrich-modal label input { flex: none; }
+.enrich-modal .stale { margin: 6px 0 2px; }
+.enrich-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 button.linklike { border: none; background: none; padding: 0; font: inherit; font-weight: 600;
   color: var(--series-1); cursor: pointer; text-decoration: underline; }
 .tag-chip { display: inline-block; padding: 1px 7px; margin: 0 3px 2px 0; font-size: 11px;
@@ -355,6 +365,11 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <button class="small" id="cleanup-preview-btn">Preview cleanup</button>
         <span id="cleanup-summary" class="stale"></span>
       </div>
+      <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
+        <div class="sub" style="margin-bottom:4px">No-identity leads <span style="font-weight:400">— name "unknown"/blank, no email / LinkedIn / history, only a system id. Deleting pushes removals to the relay so a pull can't regrow them.</span></div>
+        <button class="small" id="empty-preview-btn">Preview no-identity leads (this workspace)</button>
+        <span id="empty-summary" class="stale"></span>
+      </div>
     </div>
   </section>
 
@@ -519,6 +534,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
     <div class="msg" id="identity-msg"></div>
   </form>
 
+  <div id="lead-tags" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-company-facts" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-emails" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-custom" style="border-top:1px solid var(--grid);padding-top:12px"></div>
@@ -722,13 +738,18 @@ function renderTable(container, cols, rows, opts = {}) {
   const tableKey = opts.tableKey || (typeof container === "string" ? container : null);
   const widths = loadColW(tableKey);
   const st = el._tstate = el._tstate || { sortKey: null, sortDir: 1, filter: "" };
+  // Server-sort mode: the whole (paginated) list is sorted by the backend, so
+  // arrows reflect opts.sortKey/sortDir and header clicks call back instead of
+  // reordering just the loaded page.
+  const serverSort = opts.serverSort || null;
+  if (serverSort) { st.sortKey = opts.sortKey ?? null; st.sortDir = opts.sortDir ?? -1; }
   const draw = () => {
     let view = rows;
     if (st.filter) {
       const f = st.filter.toLowerCase();
       view = rows.filter(r => cols.some(c => String(r[c.key] ?? "").toLowerCase().includes(f)));
     }
-    if (st.sortKey) {
+    if (st.sortKey && !serverSort) {
       const col = cols.find(c => c.key === st.sortKey);
       view = [...view].sort((a, b) => {
         const av = col.sortVal ? col.sortVal(a) : a[col.key];
@@ -774,6 +795,13 @@ function renderTable(container, cols, rows, opts = {}) {
     el.querySelectorAll("th.sortable").forEach(th => th.onclick = (ev) => {
       if (ev.target.closest(".col-resize")) return;  // dragging to resize, not sorting
       const key = th.dataset.key;
+      if (serverSort) {
+        // Toggle vs the current server sort; the callback validates the key and
+        // reloads page 1 with the new sort (whole-list, not just this page).
+        const dir = (st.sortKey === key && st.sortDir < 0) ? 1 : -1;
+        serverSort(key, dir < 0 ? "desc" : "asc");
+        return;
+      }
       if (st.sortKey === key) st.sortDir *= -1; else { st.sortKey = key; st.sortDir = 1; }
       draw();
     });
@@ -938,6 +966,12 @@ function leadLiUrl(r) {
   if (r.linkedin_sales_nav_id) return "https://www.linkedin.com/sales/lead/" + r.linkedin_sales_nav_id;
   return null;
 }
+// Columns the backend can sort whole-list (must match LEAD_SORT_COLUMNS in
+// dashboard_queries.py). Header clicks on other columns are ignored.
+const SORTABLE_LEAD_KEYS = new Set([
+  "name", "email", "company", "title", "status", "current_status_sentiment",
+  "email_verification_status", "total_replies_count", "email_sent_count", "last_activity_at",
+]);
 function leadColumns() {
   return [
     { key: "name", label: "Name", render: r => esc(r.name || "—") },
@@ -996,31 +1030,39 @@ function renderDeliv() {
     : "";
   $("deliv-count").innerHTML = `${mailboxes.length} of ${d.mailboxes.length} mailboxes${chip}`;
   if (delivDomainFilter) $("deliv-domain-clear").onclick = (e) => { e.preventDefault(); delivDomainFilter = null; renderDeliv(); };
+  // Sends / reply% / bounce% are live from the events collection, scoped to the
+  // range at the top (warmup/SPF/DKIM/DMARC/health are sequencer-only and live
+  // on the mailbox edit panel now, not this table).
+  const bflag = v => v != null && v >= 0.05 ? `<span class="flag bad">${pct(v)}</span>` : (v != null ? pct(v) : "–");
   renderTable("mailboxes", [
     { key: "email", label: "Mailbox",
       render: r => `${esc(r.email)}${r.is_active === 0 ? ' <span class="flag warn">decommissioned</span>' : ""}` },
-    { key: "warmup_status", label: "Warmup", render: r => esc(r.warmup_status ?? "–") },
-    { key: "spf_status", label: "SPF/DKIM/DMARC",
-      render: r => ["spf_status","dkim_status","dmarc_status"].map(k => esc(r[k] ?? "?")).join(" / ") },
-    { key: "overall_health_score", label: "Health", num: true, render: r => r.overall_health_score ?? "–" },
-    { key: "bounce_rate", label: "Bounce rate", num: true, render: r => r.bounce_rate != null ? pct(r.bounce_rate) : "–" },
+    { key: "sends", label: "Sends", num: true, render: r => fmt(r.sends || 0) },
+    { key: "reply_rate", label: "Reply rate", num: true, render: r => r.reply_rate != null ? pct(r.reply_rate) : "–" },
+    { key: "bounce_rate", label: "Bounce rate", num: true, render: r => bflag(r.bounce_rate) },
     { key: "last_outbound_at", label: "Last send", render: r => dt(r.last_outbound_at) || "never" },
     { key: "trending_down", label: "Status", sortVal: r => r.trending_down ? 0 : 1,
       render: r => r.trending_down ? '<span class="flag bad">▲ trending down</span>' : '<span class="flag ok">✓ ok</span>' },
   ], mailboxes, { empty: "No mailboxes match this filter.", onRowClick: r => openSenderEdit(r) });
   renderTable("domains", [
     { key: "domain", label: "Domain",
-      render: r => `${esc(r.domain)}${r.is_active === false ? ' <span class="flag warn">decommissioned</span>' : ""}` },
+      render: r => `${esc(r.domain)}${r.is_active === false ? ' <span class="flag warn">off</span>' : ""}` },
     { key: "mailboxes", label: "Mailboxes", num: true,
       render: r => r.mailboxes_total > r.mailboxes ? `${r.mailboxes} <span class="stale">(+${r.mailboxes_total - r.mailboxes} off)</span>` : r.mailboxes },
-    { key: "avg_health", label: "Avg health", num: true, render: r => r.avg_health ?? "–" },
-    { key: "last_outbound_at", label: "Last send", render: r => dt(r.last_outbound_at) || "–" },
-    { key: "reseller", label: "Reseller", render: r => esc(r.reseller ?? "–") },
-    { key: "dnsbl_summary", label: "Blacklist (DNSBL)" },
-    { key: "listed", label: "Status", sortVal: r => r.listed ? 0 : 1,
+    { key: "reply_rate", label: "Avg reply %", num: true, render: r => r.reply_rate != null ? pct(r.reply_rate) : "–" },
+    { key: "bounce_rate", label: "Avg bounce %", num: true, render: r => bflag(r.bounce_rate) },
+    { key: "provider", label: "Provider", render: r => esc(r.provider ?? r.reseller ?? "–") },
+    { key: "active", label: "Active", sortVal: r => (r.is_active === false ? 1 : 0),
+      render: r => `<label style="cursor:pointer" title="toggle active / not active"><input type="checkbox" class="dom-active" data-domain="${esc(r.domain)}" ${r.is_active !== false ? "checked" : ""}></label>` },
+    { key: "listed", label: "Blacklist", sortVal: r => r.listed ? 0 : 1,
       render: r => r.listed ? '<span class="flag bad">✖ listed</span>'
-        : r.registered ? '<span class="flag ok">✓ clean</span>' : '<span class="flag warn">not monitored</span>' },
-  ], domains, { empty: "No sending domains match this filter.", onRowClick: r => showDomain(r.domain) });
+        : r.registered ? '<span class="flag ok">✓ clean</span>' : '<span class="flag warn">—</span>' },
+  ], domains, { empty: "No sending domains match this filter.", onRowClick: r => showDomain(r.domain),
+    onDraw: el => el.querySelectorAll(".dom-active").forEach(cb => cb.onchange = () => {
+      post("/api/domains/edit", { domain: cb.dataset.domain, is_active: cb.checked ? 1 : 0 })
+        .then(() => { toast(`${cb.dataset.domain} ${cb.checked ? "active" : "not active"}`); loadDeliverability(); })
+        .catch(e => { toast(e.message); cb.checked = !cb.checked; });
+    }) });
 }
 
 function openSenderEdit(sa) {
@@ -1057,7 +1099,7 @@ function openDomainEdit(dom, reg) {
   $("edit-body").innerHTML = `
     <form id="domain-edit-form">
       <h3>Edit domain <span class="sub" style="font-weight:400;color:var(--ink-muted)">reseller / pricing / notes</span></h3>
-      <div class="row"><input name="reseller" placeholder="Reseller" value="${esc(reg?.reseller ?? "")}"></div>
+      <div class="row"><input name="reseller" placeholder="Provider / reseller" value="${esc(reg?.reseller ?? "")}"></div>
       <div class="row">
         <input name="domain_cost" type="number" step="0.01" placeholder="Cost (whole domain)" value="${reg?.domain_cost ?? ""}">
         <input name="currency" placeholder="Currency" value="${esc(reg?.currency ?? "USD")}">
@@ -1168,7 +1210,7 @@ async function showStageLeads(status, more = false) {
 $("leads-more").onclick = () => showStageLeads(state.leadsStatus, true);
 
 /* ---------- contacts (Section B) ---------- */
-const contactsState = { offset: 0, limit: 50, total: 0 };
+const contactsState = { offset: 0, limit: 50, total: 0, sortKey: null, sortDir: -1 };
 let contactsTimer = null;
 // Extra filters set by the stats section's click-to-filter (tag / verify /
 // qualify_finding / has_linkedin). Cleared via the active-filters chip.
@@ -1180,9 +1222,11 @@ function contactsQuery() {
     q: $("contacts-q").value.trim(),
     status: $("contacts-status").value,
     missing: $("contacts-missing").value,
-    sort: $("contacts-sort").value,
+    // A clicked column header (contactsState.sortKey) wins over the dropdown.
+    sort: contactsState.sortKey || $("contacts-sort").value,
     limit: contactsState.limit, offset: contactsState.offset,
   });
+  if (contactsState.sortKey) p.set("dir", contactsState.sortDir < 0 ? "desc" : "asc");
   const sender = $("contacts-sender").value;
   // A chosen sender only makes sense among that sender's 1st-degree connections,
   // so it implies connected=1 even if the checkbox is off.
@@ -1243,6 +1287,12 @@ async function loadContacts(resetOffset = true) {
     render: r => `<input type="checkbox" class="row-sel" data-id="${r.lead_id}" ${contactsSel.has(r.lead_id) ? "checked" : ""}>` };
   renderTable("contacts-table", [selCol].concat(leadColumns()), d.leads,
     { empty: "No contacts match.", filter: false, onRowClick: r => openLead(r.lead_id),
+      sortKey: contactsState.sortKey, sortDir: contactsState.sortDir,
+      serverSort: (key, dir) => {
+        if (!SORTABLE_LEAD_KEYS.has(key)) { toast("Column not sortable"); return; }
+        contactsState.sortKey = key; contactsState.sortDir = dir === "desc" ? -1 : 1;
+        loadContacts();
+      },
       onDraw: el => {
         el.querySelectorAll(".row-sel").forEach(cb => cb.onchange = () => {
           const id = +cb.dataset.id;
@@ -1411,9 +1461,18 @@ async function openCompany(companyId) {
   openEditPanel(esc(c.name || "Company"),
     [c.industry, c.headcount && c.headcount + " employees", [c.hq_city, c.hq_country].filter(Boolean).join(", ")]
       .filter(Boolean).join(" · ") || "—");
-  const domainChips = d.domains.length
-    ? d.domains.map(x => `<span class="domain-chip">${esc(x.value)}${x.role ? `<span class="role">${esc(x.role)}</span>` : ""}${x.is_verified ? " ✓" : ""}</span>`).join("")
-    : '<span class="stale">no branch domains recorded</span>';
+  // Show every domain — the company's own primary plus all identity/branch
+  // domains — deduped, so a company with a single domain still lists it.
+  const allDomains = [];
+  const seenDom = new Set();
+  if (c.domain) { allDomains.push({ value: c.domain, role: "primary", is_verified: 1 }); seenDom.add(c.domain.toLowerCase()); }
+  for (const x of d.domains) {
+    const k = (x.value || "").toLowerCase();
+    if (k && !seenDom.has(k)) { allDomains.push(x); seenDom.add(k); }
+  }
+  const domainChips = allDomains.length
+    ? allDomains.map(x => `<span class="domain-chip">${esc(x.value)}${x.role ? `<span class="role">${esc(x.role)}</span>` : ""}${x.is_verified ? " ✓" : ""}</span>`).join("")
+    : '<span class="stale">no domains recorded</span>';
   const emailChips = d.public_emails.length
     ? d.public_emails.map(x => `<span class="domain-chip">${esc(x.value)}</span>`).join("") : "";
   $("edit-body").innerHTML = `
@@ -1435,12 +1494,19 @@ async function openCompany(companyId) {
     <div style="border-top:1px solid var(--grid);padding-top:12px">
       <h3 style="font-size:13px">Leads at this company (${d.lead_count}${d.lead_count >= 200 ? "+" : ""})</h3>
       <div id="company-leads"></div>
-    </div>`;
+    </div>
+    <div id="company-activity" style="border-top:1px solid var(--grid);padding-top:12px"></div>`;
   renderCompanyDomains(companyId);
+  renderCompanyActivity(companyId);
   renderTable("company-leads", [
     { key: "name", label: "Name", render: r => esc(r.name || "—") },
     { key: "title", label: "Title", render: r => esc(r.title ?? "") },
-    { key: "status", label: "Stage" },
+    // Sentiment stands in for the stage when the stage is the catch-all
+    // "not_interested" — the sentiment is the informative signal there.
+    { key: "status", label: "Stage", render: r => r.status === "not_interested" && r.current_status_sentiment
+        ? `<span class="flag ${SENTIMENT_FLAG[String(r.current_status_sentiment).toLowerCase()] ?? ""}">${esc(r.current_status_sentiment)}</span>`
+        : esc(r.status ?? "—") },
+    { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
   ], d.leads, { empty: "No leads in this workspace.", filter: d.leads.length > 8,
     onRowClick: r => { navPush("company", companyId); closeEditPanel(); openLead(r.lead_id); } });
   $("company-edit-form").onsubmit = (e) => {
@@ -1483,6 +1549,55 @@ async function renderCompanyDomains(companyId) {
       post(`/api/companies/${companyId}/domains`, { domain: v, purpose: $("add-domain-purpose").value }),
       () => renderCompanyDomains(companyId));
   };
+}
+
+// Compact one-event line, shared by the company activity timeline.
+function compactEventLine(ev) {
+  return `<div class="tl-event"><div class="tl-head">
+    <span class="tl-type">${esc(ev.event_type)}${ev.direction === "inbound" ? " ↩" : " →"}</span>
+    <span>${dt(ev.created_at)} UTC</span>
+    ${ev.campaign_name ? `<span>· ${esc(ev.campaign_name)}</span>` : ""}
+    ${ev.sender ? `<span>· ${esc(ev.sender)}</span>` : ""}
+  </div>${ev.subject ? `<div class="tl-preview"><b>${esc(ev.subject)}</b></div>` : ""}${ev.body_preview ? `<div class="tl-preview">${esc(ev.body_preview)}</div>` : ""}</div>`;
+}
+
+// Aggregated history for the company: one collapsible row per contact that has
+// events (grouped-by-contact), timeline lazy-loaded on expand.
+async function renderCompanyActivity(companyId) {
+  const el = $("company-activity");
+  const head = '<h3 style="font-size:13px">Contact activity <span class="sub" style="font-weight:400;color:var(--ink-muted)">contacts with events — click to expand</span></h3>';
+  el.innerHTML = head + '<div class="stale">Loading…</div>';
+  const d = await get(`/api/companies/${companyId}/contact-activity`).catch(() => null);
+  if (!d) { el.innerHTML = ""; return; }
+  if (!d.contacts.length) { el.innerHTML = head + '<div class="stale">No contacts with events yet.</div>'; return; }
+  el.innerHTML = head + d.contacts.map(ct => {
+    const sent = ct.sentiment ? `<span class="flag ${SENTIMENT_FLAG[String(ct.sentiment).toLowerCase()] ?? ""}">${esc(ct.sentiment)}</span>` : "";
+    const last = ct.last_event_type ? `${esc(ct.last_event_type)}${ct.last_event_direction === "inbound" ? " ↩" : ""}` : "";
+    return `<div class="ca-contact">
+      <div class="ca-head" data-lead="${ct.lead_id}" style="display:flex;gap:8px;align-items:center;cursor:pointer;padding:5px 0;border-top:1px solid var(--grid);font-size:13px">
+        <span class="ca-caret" style="width:12px">▸</span>
+        <span style="flex:1">${esc(ct.name || "—")}${ct.title ? ` <span class="stale">· ${esc(ct.title)}</span>` : ""}</span>
+        ${sent}
+        <span class="stale">${fmt(ct.event_count)} event${ct.event_count === 1 ? "" : "s"}</span>
+        <span class="stale">${last}</span>
+        <span class="stale">${dt(ct.last_event_at) || ""}</span>
+      </div>
+      <div class="ca-body" style="display:none;padding:2px 0 8px 20px"></div>
+    </div>`;
+  }).join("");
+  el.querySelectorAll(".ca-head").forEach(h => h.onclick = async () => {
+    const body = h.parentElement.querySelector(".ca-body");
+    const caret = h.querySelector(".ca-caret");
+    if (body.style.display !== "none") { body.style.display = "none"; caret.textContent = "▸"; return; }
+    caret.textContent = "▾"; body.style.display = "block";
+    if (!body.dataset.loaded) {
+      body.innerHTML = '<div class="stale">Loading…</div>';
+      const hd = await get(`/api/leads/${h.dataset.lead}/history`).catch(() => null);
+      if (!hd) { body.innerHTML = '<div class="stale">Failed to load.</div>'; return; }
+      body.dataset.loaded = "1";
+      body.innerHTML = hd.events.length ? hd.events.map(compactEventLine).join("") : '<div class="stale">No events.</div>';
+    }
+  });
 }
 
 $("merge-toggle").onclick = () => {
@@ -1544,7 +1659,7 @@ const QUALITY_BUCKETS = {
   missing_title: "Missing title",
   unknown_name: "Unknown / no name",
 };
-const qualityState = { bucket: null, missing: null, offset: 0, limit: 50, total: 0, rows: [], sel: new Set() };
+const qualityState = { bucket: null, missing: null, offset: 0, limit: 50, total: 0, rows: [], sel: new Set(), sortKey: null, sortDir: -1 };
 
 async function loadQuality() {
   const d = await getR("/api/data-quality").catch(e => { toast(e.message); return null; });
@@ -1571,7 +1686,9 @@ async function loadQuality() {
 async function openBucket(key, missing, resetOffset = true) {
   if (resetOffset) { qualityState.offset = 0; qualityState.sel = new Set(); }
   qualityState.bucket = key; qualityState.missing = missing;
-  const p = new URLSearchParams({ missing, limit: qualityState.limit, offset: qualityState.offset, sort: "recent" });
+  const p = new URLSearchParams({ missing, limit: qualityState.limit, offset: qualityState.offset,
+    sort: qualityState.sortKey || "recent" });
+  if (qualityState.sortKey) p.set("dir", qualityState.sortDir < 0 ? "desc" : "asc");
   const d = await getR("/api/contacts?" + p.toString()).catch(e => { toast(e.message); return null; });
   if (!d) return;
   qualityState.total = d.total; qualityState.rows = d.leads;
@@ -1584,6 +1701,12 @@ async function openBucket(key, missing, resetOffset = true) {
     ...leadColumns(),
   ], d.leads, { empty: "Nothing in this bucket.", filter: false,
     onRowClick: r => openLead(r.lead_id),
+    sortKey: qualityState.sortKey, sortDir: qualityState.sortDir,
+    serverSort: (k, dir) => {
+      if (!SORTABLE_LEAD_KEYS.has(k)) { toast("Column not sortable"); return; }
+      qualityState.sortKey = k; qualityState.sortDir = dir === "desc" ? -1 : 1;
+      openBucket(qualityState.bucket, qualityState.missing, false);
+    },
     onDraw: (el) => el.querySelectorAll(".qsel").forEach(cb => cb.onchange = () => {
       const id = +cb.dataset.id;
       cb.checked ? qualityState.sel.add(id) : qualityState.sel.delete(id);
@@ -1635,6 +1758,64 @@ async function doBulkLink() {
   } catch (e) { toast(e.message); }
 }
 
+// Per-run enrichment options with a remembered default (localStorage). Opens a
+// small dialog so you can trim providers / query depth (and therefore credits)
+// before each run; the last choice is pre-filled next time.
+function loadEnrichPrefs() {
+  try { return JSON.parse(localStorage.getItem("om_enrich_prefs")) || {}; } catch (e) { return {}; }
+}
+function saveEnrichPrefs(p) { localStorage.setItem("om_enrich_prefs", JSON.stringify(p)); }
+
+function askEnrichOptions(kind, count) {
+  return new Promise(resolve => {
+    const p = loadEnrichPrefs();
+    const trykitt = p.trykitt !== false, icypeas = p.icypeas !== false, deep = !!p.deep;
+    const ov = document.createElement("div");
+    ov.className = "enrich-ov";
+    ov.innerHTML = `<div class="enrich-modal">
+      <h3>${kind === "email" ? "Find emails" : "Research (Serper)"} — ${fmt(count)} lead${count === 1 ? "" : "s"}</h3>
+      ${kind === "email" ? `
+        <label><input type="checkbox" id="eo-trykitt" ${trykitt ? "checked" : ""}> TryKitt</label>
+        <label><input type="checkbox" id="eo-icypeas" ${icypeas ? "checked" : ""}> Icypeas</label>
+        <div class="stale">Fewer providers = fewer credits. A credit is spent only when an email is found.</div>`
+      : `
+        <label><input type="checkbox" id="eo-deep" ${deep ? "checked" : ""}> Deep research — full query pack</label>
+        <div class="stale">Off = core queries only (cheapest). Deep runs more Serper calls per lead.</div>`}
+      <div class="enrich-actions">
+        <button class="small" id="eo-cancel">Cancel</button>
+        <button class="small primary" id="eo-run">Run</button>
+      </div></div>`;
+    document.body.appendChild(ov);
+    const close = v => { ov.remove(); resolve(v); };
+    ov.onclick = e => { if (e.target === ov) close(null); };
+    ov.querySelector("#eo-cancel").onclick = () => close(null);
+    ov.querySelector("#eo-run").onclick = () => {
+      if (kind === "email") {
+        const providers = [];
+        if (ov.querySelector("#eo-trykitt").checked) providers.push("trykitt");
+        if (ov.querySelector("#eo-icypeas").checked) providers.push("icypeas");
+        if (!providers.length) { toast("Pick at least one provider"); return; }
+        saveEnrichPrefs({ ...loadEnrichPrefs(), trykitt: providers.includes("trykitt"), icypeas: providers.includes("icypeas") });
+        close({ providers });
+      } else {
+        const deepV = ov.querySelector("#eo-deep").checked;
+        saveEnrichPrefs({ ...loadEnrichPrefs(), deep: deepV });
+        close({ deep: deepV });
+      }
+    };
+  });
+}
+
+// Start an enrichment job and surface its progress in the sync console drawer.
+function startEnrichJob(path, body) {
+  return post(path, { workspace: state.workspace, ...body }).then(s => {
+    state.logOffset = s.log_offset || 0;
+    openConsole(true);
+    pollConsoleOnce();
+    updateSyncPill(s);
+  }).catch(e => toast(e.message));
+}
+
 async function doFindEmails() {
   const ids = selectedIds();
   if (!ids.length) return;
@@ -1645,21 +1826,21 @@ async function doFindEmails() {
   const noDom = t.filter(x => x.no_domain).length;
   const multi = t.filter(x => x.multi_domain).length;
   const runnable = ids.length - noDom;
-  const warn = `Run the email finder on ${runnable} lead(s)? This spends provider credits.`
-    + (noDom ? `\n\n${noDom} have no resolvable domain and will be skipped.` : "")
-    + (multi ? `\n${multi} have multiple company domains — the primary/verified one is tried first.` : "");
   if (!runnable) { toast("None of the selected leads have a resolvable domain."); return; }
-  if (!confirm(warn)) return;
-  post("/api/enrich/email-finder", { workspace: state.workspace, lead_ids: ids })
-    .then(updateSyncPill).catch(e => toast(e.message));
+  if (noDom || multi) {
+    toast(`${runnable} runnable · ${noDom} no-domain (skipped)${multi ? ` · ${multi} multi-domain` : ""}`);
+  }
+  const opts = await askEnrichOptions("email", runnable);
+  if (!opts) return;
+  startEnrichJob("/api/enrich/email-finder", { lead_ids: ids, providers: opts.providers });
 }
 
 async function doSerper() {
   const ids = selectedIds();
   if (!ids.length) return;
-  if (!confirm(`Run Serper web research on ${ids.length} lead(s)? Results appear in the sync status for the agent to map. This spends Serper credits.`)) return;
-  post("/api/enrich/serper", { workspace: state.workspace, lead_ids: ids })
-    .then(updateSyncPill).catch(e => toast(e.message));
+  const opts = await askEnrichOptions("serper", ids.length);
+  if (!opts) return;
+  startEnrichJob("/api/enrich/serper", { lead_ids: ids, deep: opts.deep });
 }
 
 $("cleanup-preview-btn").onclick = async () => {
@@ -1675,6 +1856,26 @@ $("cleanup-preview-btn").onclick = async () => {
       try {
         const r = await post("/api/cleanup/run", {});
         toast(`Deleted ${r.deleted} (quarantined ${r.quarantined})`);
+        loadQuality();
+      } catch (e) { toast(e.message); }
+    };
+  } catch (e) { toast(e.message); }
+};
+
+$("empty-preview-btn").onclick = async () => {
+  try {
+    const d = await api(`/api/cleanup/empty-leads/preview?workspace=${encodeURIComponent(state.workspace)}`);
+    if (!d.selected) { $("empty-summary").textContent = "No no-identity leads in this workspace."; return; }
+    const top = (d.distribution?.top_sources || []).slice(0, 3)
+      .map(s => `${esc(s.source_detail)} (${s.count})`).join(", ");
+    $("empty-summary").innerHTML = `<b>${fmt(d.selected)}</b> deletable${top ? ` — top sources: ${top}` : ""}. `
+      + `<button class="small" id="empty-run-btn">Delete ${fmt(d.selected)} no-identity leads</button>`;
+    $("empty-run-btn").onclick = async () => {
+      if (!confirm(`Permanently delete ${d.selected} no-identity leads and push the removals to the relay? They are quarantined first. This cannot be undone from here.`)) return;
+      try {
+        const r = await post("/api/cleanup/empty-leads/run", { workspace: state.workspace });
+        toast(`Deleted ${r.deleted} (quarantined ${r.quarantined}). Push to relay to finish removal.`);
+        $("empty-summary").textContent = "";
         loadQuality();
       } catch (e) { toast(e.message); }
     };
@@ -1729,6 +1930,7 @@ async function loadReplies() {
     { key: "lead_name", label: "Lead", render: r => esc(r.lead_name || "—") },
     { key: "sentiment", label: "Sentiment", render: r => r.sentiment
         ? `<span class="flag ${SENTIMENT_FLAG[r.sentiment.toLowerCase()] ?? ""}">${esc(r.sentiment)}</span>` : "—" },
+    { key: "status_label", label: "Lead status", render: r => esc(r.status_label || "—") },
     { key: "subject", label: "Latest reply", render: r => esc(r.subject || "—") },
     { key: "campaign_name", label: "Campaign", render: r => esc(r.campaign_name || "—") },
     { key: "event_at", label: "Since", render: r => dt(r.event_at), sortVal: r => r.event_at || "" },
@@ -1745,7 +1947,6 @@ const DAILY_LABELS = {
   email_sent: "Email sent", email_received: "Email received",
   dm_sent: "DM sent", dm_received: "DM received",
   connects_sent: "Connects sent", connects_accepted: "Connects accepted",
-  bounces: "Bounces",
   positive: "Positive", negative: "Negative", invalid: "Invalid", autoreply: "Autoreply",
   meetings: "Meetings",
 };
@@ -1753,14 +1954,22 @@ const DAILY_LABELS = {
 function renderDaily(d) {
   if (!d) return;
   if (window.Chart) {
-    const { ink, grid, s1, s2, s3 } = chartInk();
+    const ci = chartInk();
+    const { ink, grid, s1, s2, s3 } = ci;
+    // Sentiment series colors: reuse the flag palette from CSS vars where we can.
+    const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || null;
+    const cPos = cssVar("--good-text") || s3, cNeg = cssVar("--status-critical") || s2,
+          cInv = cssVar("--warn-text") || s2, cAuto = cssVar("--series-4") || ink;
     state.charts.daily?.destroy();
     state.charts.daily = new Chart($("daily-chart"), {
       type: "line",
       data: { labels: d.days.map(p => p.date), datasets: [
-        { label: "Email sent", data: d.days.map(p => p.email_sent), borderColor: s1, backgroundColor: s1 },
-        { label: "Replies (email + DM)", data: d.days.map(p => p.email_received + p.dm_received), borderColor: s3, backgroundColor: s3 },
-        { label: "Bounces", data: d.days.map(p => p.bounces), borderColor: s2, backgroundColor: s2 },
+        { label: "Sent (email + DM)", data: d.days.map(p => (p.email_sent || 0) + (p.dm_sent || 0)), borderColor: s1, backgroundColor: s1 },
+        { label: "Replies (email + DM)", data: d.days.map(p => (p.email_received || 0) + (p.dm_received || 0)), borderColor: s3, backgroundColor: s3 },
+        { label: "Positive", data: d.days.map(p => p.positive || 0), borderColor: cPos, backgroundColor: cPos },
+        { label: "Negative", data: d.days.map(p => p.negative || 0), borderColor: cNeg, backgroundColor: cNeg },
+        { label: "Invalid", data: d.days.map(p => p.invalid || 0), borderColor: cInv, backgroundColor: cInv },
+        { label: "Autoreply", data: d.days.map(p => p.autoreply || 0), borderColor: cAuto, backgroundColor: cAuto },
       ].map(ds => ({ ...ds, borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.15 })) },
       options: { maintainAspectRatio: false, animation: false,
         onClick: (evt, els) => {
@@ -1780,7 +1989,7 @@ function renderDaily(d) {
     onRowClick: r => setRangeToDay(r.date) });
 }
 
-const campaignLeadsState = { campaignId: null, name: "", offset: 0, limit: 50, total: 0 };
+const campaignLeadsState = { campaignId: null, name: "", offset: 0, limit: 50, total: 0, sortKey: null, sortDir: -1 };
 let campaignLeadsTimer = null;
 
 async function showCampaign(campaignId, name) {
@@ -1815,13 +2024,20 @@ async function loadCampaignLeads(resetOffset = false) {
     campaign_id: c.campaignId, q: $("campaign-leads-q").value.trim(),
     limit: c.limit, offset: c.offset,
   });
+  if (c.sortKey) { p.set("sort", c.sortKey); p.set("dir", c.sortDir < 0 ? "desc" : "asc"); }
   const d = await getR("/api/campaigns/leads?" + p.toString())
     .catch(e => { toast(e.message); return null; });
   if (!d) return;
   c.total = d.total;
   renderTable("campaign-leads", leadColumns(), d.leads,
     { empty: "No leads active in this campaign for the selected range.", filter: false,
-      onRowClick: r => openLead(r.lead_id) });
+      onRowClick: r => openLead(r.lead_id),
+      sortKey: c.sortKey, sortDir: c.sortDir,
+      serverSort: (k, dir) => {
+        if (!SORTABLE_LEAD_KEYS.has(k)) { toast("Column not sortable"); return; }
+        c.sortKey = k; c.sortDir = dir === "desc" ? -1 : 1;
+        loadCampaignLeads(true);
+      } });
   const to = c.offset + d.leads.length;
   $("campaign-leads-count").textContent = `${fmt(d.total)} leads`;
   $("campaign-leads-page").textContent = d.total ? `${c.offset + 1}–${to} of ${fmt(d.total)}` : "";
@@ -2119,23 +2335,34 @@ async function openLead(leadId) {
   const liLink = $("lead-linkedin-link");
   if (lead.linkedin_display_url) { liLink.href = lead.linkedin_display_url; liLink.style.display = ""; }
   else liLink.style.display = "none";
+  renderLeadTags(lead);
   renderLeadCompanyFacts(lead);
   renderLeadEmails(lead.id);
   renderLeadCustomFields(lead.id);
   renderLeadProviderRuns(lead.id);
-  $("lead-history").innerHTML = d.events.length ? d.events.map(ev => `
+  // "to" side of each event: the lead's LinkedIn URL for LinkedIn events, else
+  // their email. Paired with the sender (the mailbox / from side).
+  const leadTo = ev => ev.channel === "linkedin"
+    ? (lead.linkedin_display_url || lead.linkedin_url || "")
+    : (lead.email || "");
+  $("lead-history").innerHTML = d.events.length ? d.events.map(ev => {
+    const from = ev.direction === "inbound" ? (lead.email || ev.sender || "") : (ev.sender || "");
+    const to = ev.direction === "inbound" ? (ev.sender || "") : leadTo(ev);
+    const fromTo = (from || to)
+      ? `<div class="stale" style="font-size:11px">from ${esc(from || "?")}${to ? ` → to ${esc(to)}` : ""}</div>` : "";
+    return `
     <div class="tl-event">
       <div class="tl-head">
         <span class="tl-type">${esc(ev.event_type)}${ev.direction === "inbound" ? " ↩" : " →"}</span>
         <span>${dt(ev.created_at)} UTC</span>
         ${ev.campaign_name ? `<span>· ${esc(ev.campaign_name)}</span>` : ""}
-        ${ev.sender ? `<span>· ${esc(ev.sender)}</span>` : ""}
         ${ev.status_display ? `<span>· status → <b>${esc(ev.status_display)}</b>${ev.status_sentiment ? ` (${esc(ev.status_sentiment)})` : ""}</span>` : ""}
       </div>
+      ${fromTo}
       ${ev.subject ? `<div class="tl-preview"><b>${esc(ev.subject)}</b></div>` : ""}
       ${ev.body_preview ? `<div class="tl-preview">${esc(ev.body_preview)}</div>` : ""}
       ${ev.has_body ? `<button class="small" style="margin-top:5px" onclick="toggleHistoryBody(this, ${ev.id})">Show full message</button>` : ""}
-    </div>`).join("") : '<div class="empty">No events for this lead yet.</div>';
+    </div>`; }).join("") : '<div class="empty">No events for this lead yet.</div>';
   renderLeadEnrich(lead);
   renderCompanyLink(lead);
   $("overlay").style.display = "block";
@@ -2160,26 +2387,60 @@ function renderLeadEnrich(lead) {
   // startJob consults the re-run guard (state.leadRuns, loaded by
   // renderLeadProviderRuns): if this capability already ran, it demands a
   // second confirm and sends force:true so the backend actually re-spends.
-  const startJob = (path, label, capability) => {
+  const startJob = async (path, label, capability, kind) => {
     const runs = state.leadRuns || {};
     const prior = runs[capability];
     let force = false;
     if (prior && prior.ran) {
       if (!confirm(`${label} already ran on this lead${prior.last_attempted_at ? " (" + prior.last_attempted_at + ")" : ""}. Run again anyway? Spends credits.`)) return;
       force = true;
-    } else if (!confirm(`Run ${label} on this lead? Spends provider credits.`)) return;
+    }
+    const opts = await askEnrichOptions(kind, 1);
+    if (!opts) return;
     const msg = $("lead-enrich-msg");
     msg.textContent = "starting…"; msg.className = "msg";
-    post(path, { workspace: state.workspace, lead_ids: [lead.id], force })
-      .then(s => { updateSyncPill(s); msg.textContent = `${label} started — watch the sync pill.`; msg.className = "msg ok"; })
-      .catch(e => { msg.textContent = e.message; msg.className = "msg err"; });
+    startEnrichJob(path, { lead_ids: [lead.id], force, ...opts })
+      .then(() => { msg.textContent = `${label} started — see the console.`; msg.className = "msg ok"; });
   };
   const fe = $("lead-find-email"), sr = $("lead-serper");
-  if (fe && !hasEmail) fe.onclick = () => startJob("/api/enrich/email-finder", "Email finder", "email_finding");
-  if (sr) sr.onclick = () => startJob("/api/enrich/serper", "Serper research", "research");
+  if (fe && !hasEmail) fe.onclick = () => startJob("/api/enrich/email-finder", "Email finder", "email_finding", "email");
+  if (sr) sr.onclick = () => startJob("/api/enrich/serper", "Serper research", "research", "serper");
 }
 
-/* ---------- lead panel: company facts, emails, custom fields, provider runs ---------- */
+/* ---------- lead panel: tags, company facts, emails, custom fields, provider runs ---------- */
+function renderLeadTags(lead) {
+  const el = $("lead-tags");
+  const tags = lead.tags || [];
+  const chips = tags.length
+    ? tags.map(t => `<span class="tag-chip" style="cursor:pointer" data-tag="${esc(t)}" title="filter contacts by this tag">${esc(t)} <span data-rm="${esc(t)}" title="remove tag" style="opacity:.6">✕</span></span>`).join(" ")
+    : '<span class="stale">No tags.</span>';
+  el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Tags</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${chips}</div>
+    <div class="row" style="display:flex;gap:6px;margin-top:6px">
+      <input id="lead-tag-input" placeholder="Add a tag…" list="lead-tag-list" style="flex:1">
+      <datalist id="lead-tag-list"></datalist>
+      <button class="small" id="lead-tag-add">Add</button>
+    </div>
+    <div class="msg" id="lead-tag-msg"></div>`;
+  // Type-ahead from existing workspace tags.
+  api("/api/tags").then(d => {
+    const dl = $("lead-tag-list");
+    if (dl && d?.tags) dl.innerHTML = d.tags.map(t => `<option value="${esc(t.tag ?? t)}">`).join("");
+  }).catch(() => {});
+  const tagOp = (op, value) => formResult("lead-tag-msg",
+    post("/api/contacts/bulk", { op, value, lead_ids: [lead.id], workspace: state.workspace }),
+    () => { openLead(lead.id); if (state.tab === "contacts") loadContacts(false); });
+  el.querySelectorAll("[data-tag]").forEach(chip => chip.onclick = (e) => {
+    if (e.target.dataset.rm) { tagOp("tag_remove", e.target.dataset.rm); return; }
+    // Click the chip (not the ✕) → filter the Contacts tab by this tag.
+    setContactsFilter({ tag: chip.dataset.tag });
+  });
+  $("lead-tag-add").onclick = () => {
+    const v = $("lead-tag-input").value.trim();
+    if (!v) { toast("Enter a tag"); return; }
+    tagOp("tag_add", v);
+  };
+}
 function renderLeadCompanyFacts(lead) {
   const el = $("lead-company-facts");
   const facts = [["Industry", lead.industry], ["Headcount", lead.headcount]].filter(x => x[1]);

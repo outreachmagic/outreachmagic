@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 from typing import Optional
 
 from constants import PIPELINE_STAGES
@@ -129,6 +130,10 @@ def summary(
         "SELECT MAX(event_at) AS latest FROM workspace_lead_events WHERE workspace_id = ?",
         (workspace_id,),
     ).fetchone()
+    # Positive = leads whose first positive-sentiment event falls in the range,
+    # counted once each — the same definition the daily chart and campaign table
+    # use, so the tile can't disagree with them. Cached briefly (polled tile).
+    positive = _positive_count_in_range(conn, workspace_id, since, until)
     return {
         "stages": stages,
         "total_leads": sum(stages.values()),
@@ -137,6 +142,7 @@ def summary(
         "sent": counts["sent"] or 0,
         "replied": counts["replied"] or 0,
         "bounced": counts["bounced"] or 0,
+        "positive": positive,
         "latest_event_at": latest["latest"],
     }
 
@@ -483,14 +489,18 @@ def campaign_audit(
         (workspace_id,),
     ).fetchall()
 
+    # Positives are counted once per lead on first_positive_at, and scoped to the
+    # same date range as sent/replies/bounces (was all-time current-sentiment,
+    # which read as "hundreds" regardless of range and double-counted a lead
+    # across campaigns).
+    fp_range, fp_params = _range_clause(since, until, "fp.first_positive_at")
     positive_rows = conn.execute(
-        """SELECT cl.campaign_id, COUNT(DISTINCT cl.lead_id) AS positive
-           FROM campaign_leads cl
-           JOIN workspace_leads wl ON wl.lead_id = cl.lead_id
-           WHERE wl.workspace_id = ?
-             AND lower(COALESCE(wl.current_status_sentiment, '')) = 'positive'
-           GROUP BY cl.campaign_id""",
-        (workspace_id,),
+        f"""WITH {_first_positive_cte()}
+            SELECT cl.campaign_id, COUNT(DISTINCT cl.lead_id) AS positive
+            FROM fp JOIN campaign_leads cl ON cl.lead_id = fp.lead_id
+            WHERE 1=1{fp_range}
+            GROUP BY cl.campaign_id""",
+        (workspace_id, *fp_params),
     ).fetchall()
     positives = {r["campaign_id"]: r["positive"] for r in positive_rows}
 
@@ -515,6 +525,10 @@ def campaign_audit(
             "bounces": bounces,
             "bounce_rate": round(bounces / sent, 4) if sent else None,
         })
+    # Hide campaigns with zero activity in the selected range — an all-zero row
+    # is just noise (the campaign exists but did nothing in this window).
+    out = [c for c in out
+           if c["sent"] or c["replies"] or c["bounces"] or c["meetings"] or c["positive"]]
     out.sort(key=lambda c: c["sent"], reverse=True)
     return {"since": since, "campaigns": out}
 
@@ -731,59 +745,74 @@ DAILY_COLUMN_KEYS = (
 )
 
 
-def _interested_first_entry_by_day(
+# One lead is "positive" once — the first time a positive-sentiment event lands
+# for it. That single fact (first_positive_at) is what every positive/interested
+# count on the dashboard uses now, so the daily chart, the campaign table, the
+# replies view and the top tile all agree. Earlier each surface counted
+# differently (positive status *events* per day, or all-time current-sentiment
+# per campaign), which is why the same day could read 12 in one place and 4 in
+# another. The signal is the event metadata `lead_status_sentiment`, set by
+# ingest on replies and status webhooks alike.
+def _first_positive_cte() -> str:
+    """CTE body (alias `fp`) mapping each lead to its first positive-sentiment
+    event time in a workspace. Binds one param: workspace_id."""
+    return """
+    fp AS (
+        SELECT wle.lead_id AS lead_id, MIN(wle.event_at) AS first_positive_at
+        FROM workspace_lead_events wle JOIN events e ON e.id = wle.event_id
+        WHERE wle.workspace_id = ?
+          AND lower(json_extract(e.metadata_json, '$.lead_status_sentiment')) = 'positive'
+        GROUP BY wle.lead_id
+    )"""
+
+
+# The first_positive_at CTE scans the workspace event stream (~0.5s on a large
+# workspace), and summary() is polled every few seconds. Memoize the summary's
+# count per (workspace, range) for a few seconds so the poll stays cheap; the
+# on-demand daily/campaign endpoints compute fresh.
+_POSITIVE_COUNT_CACHE: dict = {}
+_POSITIVE_COUNT_TTL = 15.0
+
+
+def _positive_count_in_range(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str], until: Optional[str],
+) -> int:
+    key = (workspace_id, since, until)
+    now = time.time()
+    hit = _POSITIVE_COUNT_CACHE.get(key)
+    if hit and now - hit[0] < _POSITIVE_COUNT_TTL:
+        return hit[1]
+    fp_range, fp_params = _range_clause(since, until, "fp.first_positive_at")
+    n = conn.execute(
+        f"WITH {_first_positive_cte()} SELECT COUNT(*) AS n FROM fp WHERE 1=1{fp_range}",
+        (workspace_id, *fp_params),
+    ).fetchone()["n"]
+    _POSITIVE_COUNT_CACHE[key] = (now, n)
+    return n
+
+
+def _positive_first_by_day(
     conn: sqlite3.Connection,
     workspace_id: str,
     campaign_id: Optional[int] = None,
 ) -> dict[str, int]:
-    """{date: count} of leads that entered the *interested* stage on that date,
-    counted once per lead at the first day of their current unbroken interested
-    spell.
-
-    Leaving interested and returning resets the date to the new entry. Only leads
-    whose latest status event is still 'interested' are counted (an active spell).
-    Computed over full history so the spell boundaries are correct; the caller
-    filters to the visible range by only reading dates it renders.
-    """
+    """{date: count} of leads counted once on the day they *first* became
+    positive (first_positive_at). Optionally scoped to one campaign's leads."""
     camp = ""
     params: list = [workspace_id]
     if campaign_id is not None:
-        camp = (" AND wle.lead_id IN (SELECT lead_id FROM campaign_leads"
+        camp = (" WHERE fp.lead_id IN (SELECT lead_id FROM campaign_leads"
                 " WHERE campaign_id = ?)")
         params.append(int(campaign_id))
     rows = conn.execute(
-        f"""SELECT wle.lead_id AS lead_id, wle.event_at AS event_at,
-                   LOWER(COALESCE(json_extract(e.metadata_json, '$.lead_status_raw'), '')) AS raw
-            FROM workspace_lead_events wle JOIN events e ON e.id = wle.event_id
-            WHERE wle.workspace_id = ? AND e.event_type = 'lead_status_updated'{camp}
-            ORDER BY wle.lead_id, wle.event_at, e.id""",
+        f"""WITH {_first_positive_cte()}
+            SELECT date(fp.first_positive_at) AS day, COUNT(*) AS n
+            FROM fp{camp}
+            GROUP BY day""",
         params,
     ).fetchall()
-    by_day: dict[str, int] = {}
-    current_lead = None
-    events: list = []
-
-    def flush(lead_events):
-        # Walk to the start of the trailing run of 'interested' transitions.
-        if not lead_events or lead_events[-1][1] != "interested":
-            return  # current status isn't interested — no active spell
-        spell_start = None
-        for at, raw in reversed(lead_events):
-            if raw == "interested":
-                spell_start = at
-            else:
-                break
-        if spell_start:
-            day = spell_start[:10]  # YYYY-MM-DD
-            by_day[day] = by_day.get(day, 0) + 1
-
-    for r in rows:
-        if r["lead_id"] != current_lead:
-            flush(events)
-            current_lead, events = r["lead_id"], []
-        events.append((r["event_at"], r["raw"]))
-    flush(events)
-    return by_day
+    return {r["day"]: r["n"] for r in rows if r["day"]}
 
 
 def campaign_daily(
@@ -815,16 +844,16 @@ def campaign_daily(
             GROUP BY day ORDER BY day""",
         params,
     ).fetchall()
-    # "Interested" is special: count each lead once, on the first day of its
-    # current interested spell (see _interested_first_entry_by_day), rather than
-    # summing every positive status event as the SQL column does.
-    interested_by_day = _interested_first_entry_by_day(conn, workspace_id, campaign_id)
+    # "Interested" = became positive that day, counted once per lead
+    # (first_positive_at), not one row per positive status event as the SQL
+    # column would give.
+    positive_by_day = _positive_first_by_day(conn, workspace_id, campaign_id)
     days = []
     totals = dict.fromkeys(DAILY_COLUMN_KEYS, 0)
     for r in rows:
         day = {"date": r["day"]}
         for key in DAILY_COLUMN_KEYS:
-            day[key] = interested_by_day.get(r["day"], 0) if key == "interested" else (r[key] or 0)
+            day[key] = positive_by_day.get(r["day"], 0) if key == "interested" else (r[key] or 0)
             totals[key] += day[key]
         days.append(day)
     return {
@@ -890,8 +919,12 @@ def lead_history(
     """Full event timeline for one lead; bodies fetched separately via event_body."""
     lead = conn.execute(
         """SELECT l.id, l.name, l.company, l.company_id, l.title, l.email,
-                  l.email_domain, l.stage,
-                  l.linkedin_url, l.linkedin_sales_nav_id, l.last_contact_at,
+                  l.email_domain, l.last_contact_at,
+                  l.linkedin_url, l.linkedin_sales_nav_id,
+                  -- Per-workspace status is authoritative; fall back to the lead's
+                  -- own stage when the panel is opened without a workspace.
+                  COALESCE(wl.status, l.stage) AS stage,
+                  wl.current_status_sentiment, wl.current_status_label,
                   -- companies is canonical for industry/headcount; the lead's own
                   -- columns are only a fallback for leads with no company link
                   -- (expand/contract: they'll be dropped once every reader is here).
@@ -899,9 +932,11 @@ def lead_history(
                   COALESCE(NULLIF(TRIM(co.headcount), ''), l.headcount) AS headcount,
                   co.name AS linked_company_name, co.domain AS linked_company_domain,
                   co.industry AS company_industry, co.headcount AS company_headcount
-           FROM leads l LEFT JOIN companies co ON co.id = l.company_id
+           FROM leads l
+           LEFT JOIN companies co ON co.id = l.company_id
+           LEFT JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?
            WHERE l.id = ?""",
-        (lead_id,),
+        (workspace_id, lead_id),
     ).fetchone()
     if lead is None:
         raise ValueError(f"lead not found: {lead_id}")

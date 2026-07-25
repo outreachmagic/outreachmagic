@@ -89,53 +89,46 @@ def test_provider_run_summary_flags_prior_attempt():
     assert summary["email_finding"]["ran"] is False
 
 
-# ---- E6: first-entry interested ----------------------------------------------
+# ---- positive-by-day (first_positive_at based) --------------------------------
 
-def test_interested_first_entry_resets_on_reentry():
+def _positive_event(lid, wsid, at):
+    """Index a positive-sentiment event for a lead at time `at`."""
+    eid = om.log_event(lead_id=lid, event_type="lead_status_updated",
+                       direction="inbound", metadata={"lead_status_sentiment": "positive"})
+    conn = om.get_conn()
+    append_workspace_event(conn, DEFAULT_ORG_ID, wsid, lid, event_id=eid,
+                           event_type="lead_status_updated", event_at=at,
+                           idempotency_key=f"pos{lid}{at}")
+    conn.commit()
+    conn.close()
+
+
+def test_positive_counted_once_on_first_positive_event():
     lid = om.add_lead("Jane", company="Acme", email="jane@acme.com")["id"]
     c0 = om.get_conn()
     wsid = resolve_workspace_identity(c0, "alpha")["id"]
     c0.close()
-
-    def status(raw, at):
-        eid = om.log_event(lead_id=lid, event_type="lead_status_updated",
-                           direction="inbound", metadata={"lead_status_raw": raw})
-        conn = om.get_conn()
-        append_workspace_event(conn, DEFAULT_ORG_ID, wsid, lid, event_id=eid,
-                               event_type="lead_status_updated", event_at=at,
-                               idempotency_key=f"k{raw}{at}")
-        conn.commit()
-        conn.close()
-
-    status("interested", "2026-07-01T10:00:00")
-    status("not_interested", "2026-07-03T10:00:00")
-    status("interested", "2026-07-04T10:00:00")
+    # Two positive events — the lead counts once, on the earliest date.
+    _positive_event(lid, wsid, "2026-07-01T10:00:00")
+    _positive_event(lid, wsid, "2026-07-04T10:00:00")
     conn = om.get_conn()
-    by_day = dq._interested_first_entry_by_day(conn, wsid)
+    by_day = dq._positive_first_by_day(conn, wsid)
     conn.close()
-    # counted once, on the re-entry date, not the original entry
-    assert by_day == {"2026-07-04": 1}
+    assert by_day == {"2026-07-01": 1}
 
 
-def test_interested_not_counted_when_current_status_is_not_interested():
+def test_lead_with_no_positive_event_not_counted():
     lid = om.add_lead("Bob", company="Beta", email="bob@beta.com")["id"]
     c0 = om.get_conn()
     wsid = resolve_workspace_identity(c0, "alpha")["id"]
     c0.close()
-
-    def status(raw, at):
-        eid = om.log_event(lead_id=lid, event_type="lead_status_updated",
-                           direction="inbound", metadata={"lead_status_raw": raw})
-        conn = om.get_conn()
-        append_workspace_event(conn, DEFAULT_ORG_ID, wsid, lid, event_id=eid,
-                               event_type="lead_status_updated", event_at=at,
-                               idempotency_key=f"k{raw}{at}")
-        conn.commit()
-        conn.close()
-
-    status("interested", "2026-07-01T10:00:00")
-    status("not_interested", "2026-07-02T10:00:00")
+    eid = om.log_event(lead_id=lid, event_type="lead_status_updated",
+                       direction="inbound", metadata={"lead_status_sentiment": "negative"})
     conn = om.get_conn()
-    by_day = dq._interested_first_entry_by_day(conn, wsid)
+    append_workspace_event(conn, DEFAULT_ORG_ID, wsid, lid, event_id=eid,
+                           event_type="lead_status_updated", event_at="2026-07-02T10:00:00",
+                           idempotency_key="neg1")
+    conn.commit()
+    by_day = dq._positive_first_by_day(conn, wsid)
     conn.close()
     assert by_day == {}

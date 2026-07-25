@@ -69,9 +69,9 @@ nav.tabs button.active { background: var(--surface-1); color: var(--ink-1); bord
 table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
 td.wrap { white-space: normal; }
-/* clip: cap a column's width so one long value (a title, a subject) can't
-   stretch the whole table; full value stays available via the title tooltip. */
-td.clip, th.clip { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+/* clip: ellipsis long values. Column width is pinned in JS (table-layout:fixed)
+   so the actual cap lives there; full value stays available via the tooltip. */
+td.clip, th.clip { overflow: hidden; text-overflow: ellipsis; }
 th { color: var(--ink-2); font-weight: 500; font-size: 12px; user-select: none; position: relative; }
 th.sortable { cursor: pointer; }
 /* drag handle on the right edge of a header cell to resize its column */
@@ -152,6 +152,10 @@ button.linklike { border: none; background: none; padding: 0; font: inherit; fon
 .stat-cell .label { color: var(--ink-muted); font-size: 11px; }
 .stat-cell .value { font-size: 18px; font-weight: 600; }
 .tile { cursor: pointer; }
+.stat-table { width: auto; font-size: 12px; }
+.stat-table th, .stat-table td { padding: 4px 10px; }
+.stat-table td.num { cursor: pointer; }
+.stat-table td.num:hover { background: color-mix(in srgb, var(--series-1) 12%, transparent); border-radius: 4px; }
 .banner { padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; border: 1px solid var(--border); }
 .banner.warn { border-color: var(--status-serious); }
 code { background: var(--page); border: 1px solid var(--grid); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
@@ -645,28 +649,60 @@ function cellText(c, r) {
   const v = r[c.key];
   return v == null ? "" : String(v);
 }
-// Drag-to-resize a column: live-updates every cell in the column, persists the
-// final width per (tableKey, colKey). Works with the default auto table layout
-// because the width is applied as max-width (the same lever .clip uses).
-function wireColResize(el, cols, tableKey, redraw) {
+// Pin every column to an explicit width and switch the table to `table-layout:
+// fixed`, so re-rendering after a sort/filter can't reflow the columns (the
+// "columns jump when I sort" problem). Width priority: persisted drag width >
+// already-measured width > natural width measured now (capped so one long value
+// can't stretch the table). Horizontal scroll position is preserved too.
+function pinColumnWidths(el, cols, widths) {
+  const tbl = el.querySelector("table");
+  const wrap = el.querySelector(".table-wrap");
+  if (!tbl) return;
+  el._colw = el._colw || {};
+  // Measure any column we don't already have a width for (first draw / new cols).
+  if (cols.some(c => el._colw[c.key] == null)) {
+    el.querySelectorAll("thead th").forEach((th, i) => {
+      const c = cols[i];
+      if (el._colw[c.key] == null) {
+        const cap = (!c.num && !c.wrap) ? (c.maxw || 320) : Infinity;
+        el._colw[c.key] = Math.min(Math.round(th.getBoundingClientRect().width), cap);
+      }
+    });
+  }
+  const colEls = tbl.querySelectorAll("colgroup col");
+  colEls.forEach((col, i) => {
+    const key = cols[i].key;
+    const w = widths[key] != null ? widths[key] : el._colw[key];
+    if (w) col.style.width = w + "px";
+  });
+  tbl.style.tableLayout = "fixed";
+  if (el._scrollLeft != null) wrap.scrollLeft = el._scrollLeft;
+  wrap.onscroll = () => { el._scrollLeft = wrap.scrollLeft; };
+}
+// Drag-to-resize a column: updates its <col> width live (table-layout:fixed) and
+// persists the final width per (tableKey, colKey).
+function wireColResize(el, cols, tableKey) {
+  const colEls = el.querySelectorAll("colgroup col");
   el.querySelectorAll(".col-resize").forEach(handle => {
     handle.onmousedown = (ev) => {
       ev.preventDefault(); ev.stopPropagation();
       const ci = +handle.dataset.ci;
+      const col = colEls[ci];
       const th = el.querySelector(`th[data-ci="${ci}"]`);
-      const cells = el.querySelectorAll(`[data-ci="${ci}"]`);
       const startX = ev.clientX;
-      const startW = th.offsetWidth;
+      const startW = (col && parseFloat(col.style.width)) || th.offsetWidth;
       let finalW = startW;
       document.body.classList.add("col-resizing");
       const move = (e) => {
         finalW = Math.max(60, startW + (e.clientX - startX));
-        cells.forEach(c => { c.style.maxWidth = finalW + "px"; });
+        if (col) col.style.width = finalW + "px";
       };
       const up = () => {
         document.removeEventListener("mousemove", move);
         document.removeEventListener("mouseup", up);
         document.body.classList.remove("col-resizing");
+        el._colw = el._colw || {};
+        el._colw[cols[ci].key] = finalW;
         saveColW(tableKey, cols[ci].key, finalW);
       };
       document.addEventListener("mousemove", move);
@@ -703,33 +739,29 @@ function renderTable(container, cols, rows, opts = {}) {
           ? av - bv : String(av).localeCompare(String(bv))) * st.sortDir;
       });
     }
-    // Resolve each column's clip width: persisted drag width wins, else the
-    // column's own maxw hint, else the default 320px from the .clip rule.
     const clipCol = c => !c.num && !c.wrap;
-    const colStyle = (c) => {
-      const w = widths[c.key] != null ? widths[c.key] : c.maxw;
-      return w != null ? `max-width:${w}px;` : "";
-    };
     const head = cols.map((c, ci) => {
       const arrow = st.sortKey === c.key ? `<span class="arrow">${st.sortDir > 0 ? "▲" : "▼"}</span>` : "";
       const cls = `sortable ${c.num ? "num" : ""}${clipCol(c) ? " clip" : ""}`;
       const handle = tableKey ? `<span class="col-resize" data-ci="${ci}"></span>` : "";
-      return `<th class="${cls}" data-key="${c.key}" data-ci="${ci}" style="${colStyle(c)}">${esc(c.label)} ${arrow}${handle}</th>`;
+      return `<th class="${cls}" data-key="${c.key}" data-ci="${ci}">${esc(c.label)} ${arrow}${handle}</th>`;
     }).join("");
     const body = view.map((r, i) => {
       const cells = cols.map((c, ci) => {
         const cls = `${c.num ? "num" : ""}${c.wrap ? " wrap" : ""}${clipCol(c) ? " clip" : ""}`;
         const txt = cellText(c, r);
         const title = txt ? ` title="${esc(txt)}"` : "";
-        return `<td class="${cls}" data-ci="${ci}" style="${colStyle(c)}"${title}>${c.render ? c.render(r) : esc(r[c.key] ?? "")}</td>`;
+        return `<td class="${cls}" data-ci="${ci}"${title}>${c.render ? c.render(r) : esc(r[c.key] ?? "")}</td>`;
       }).join("");
       return `<tr class="${opts.onRowClick ? "clickable" : ""}" data-i="${rows.indexOf(r)}">${cells}</tr>`;
     }).join("");
+    const colgroup = `<colgroup>${cols.map(() => "<col>").join("")}</colgroup>`;
     el.innerHTML =
       (opts.filter !== false && rows.length > 8
         ? `<div class="tfilter"><input placeholder="Filter…" value="${esc(st.filter)}"></div>` : "") +
-      `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
-    if (tableKey) wireColResize(el, cols, tableKey, draw);
+      `<div class="table-wrap"><table>${colgroup}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    pinColumnWidths(el, cols, widths);
+    if (tableKey) wireColResize(el, cols, tableKey);
     const filterInput = el.querySelector(".tfilter input");
     if (filterInput) {
       filterInput.oninput = () => { st.filter = filterInput.value; draw(); restoreFocus(); };
@@ -777,7 +809,9 @@ async function refreshSummary() {
       ["Sent", fmt(s.sent), () => switchTab("campaigns")],
       ["Replied", fmt(s.replied), () => switchTab("campaigns")],
       ["Bounced", fmt(s.bounced), () => switchTab("deliverability")],
-      ["Interested", fmt(s.stages.interested), () => { $("contacts-status").value = "interested"; switchTab("contacts"); loadContacts(); }],
+      // Positive = became positive in range (first_positive_at); drills to the
+      // interested-stage contacts (the closest browsable set).
+      ["Positive", fmt(s.positive), () => { $("contacts-status").value = "interested"; switchTab("contacts"); loadContacts(); }],
     ];
     $("tiles").innerHTML = tiles.map(([l, v], i) =>
       `<div class="tile" data-i="${i}"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
@@ -911,7 +945,13 @@ function leadColumns() {
     { key: "email", label: "Email", render: r => r.email ? esc(r.email) : '<span class="flag warn">no email</span>' },
     { key: "status", label: "Stage" },
     { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
-    { key: "tags", label: "Tags", render: r => r.tags ? r.tags.split(",").map(t => `<span class="tag-chip">${esc(t)}</span>`).join("") : "" },
+    { key: "tags", label: "Tags", maxw: 190, render: r => {
+        if (!r.tags) return "";
+        const arr = r.tags.split(",");
+        const shown = arr.slice(0, 2).map(t => `<span class="tag-chip">${esc(t)}</span>`).join("");
+        return shown + (arr.length > 2
+          ? `<span class="tag-chip" title="${esc(arr.join(', '))}">+${arr.length - 2}</span>` : "");
+      } },
     { key: "li", label: "LinkedIn", sortVal: () => 0, render: r => { const u = leadLiUrl(r); return u ? `<a href="${esc(u)}" target="_blank" rel="noopener">↗</a>` : ""; } },
     { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
   ];
@@ -1185,6 +1225,12 @@ function setContactsFilter(patch) {
   state.tab !== "contacts" && switchTab("contacts");
   renderActiveFilters(); loadContacts();
 }
+// Stats are workspace-wide (all time); clearing the range on drill-in makes the
+// table below match the number that was clicked (fixes "stat says 114k, table 289").
+function setRangeAll() {
+  state.since = "all"; state.until = null;
+  $("range").value = "all"; $("custom-range").hidden = true;
+}
 async function loadContacts(resetOffset = true) {
   if (resetOffset) contactsState.offset = 0;
   if ($("contacts-status").options.length <= 1) {
@@ -1231,33 +1277,50 @@ $("bulk-apply").onclick = () => {
     () => { contactsSel.clear(); loadContacts(false); refreshSummary(); });
 };
 
-async function loadContactsStats() {
-  const d = await getR("/api/contacts/stats").catch(() => null);
-  if (!d) return;
-  const cell = (label, value, patch) =>
-    `<div class="stat-cell" data-patch='${esc(JSON.stringify(patch))}'><div class="label">${label}</div><div class="value">${fmt(value || 0)}</div></div>`;
-  const grid = (o) => `<div class="stat-grid">
-    ${cell("Valid email", o.valid_email, { verify: "valid" })}
-    ${cell("Catch-all", o.catch_all_email, { verify: "catch_all" })}
-    ${cell("No email", o.no_email, { verify: "none" })}
-    ${cell("Find-eligible", o.qualify_finding, { qualify_finding: "1" })}
-    ${cell("Has LinkedIn", o.has_linkedin, { has_linkedin: "1" })}
-  </div>`;
-  const tagBlocks = d.by_tag.map(t => `<div style="margin-top:10px">
-    <div class="stale" style="margin-bottom:4px"><b>${esc(t.tag)}</b> · ${fmt(t.total)} leads
-      <button class="linklike" style="font-size:11px" data-tag="${esc(t.tag)}">filter to tag</button></div>
-    ${grid(t)}</div>`).join("");
-  $("contacts-stats").innerHTML = `
-    <div class="stale" style="margin-bottom:4px">All contacts · ${fmt(d.overall.total)} leads</div>
-    ${grid(d.overall)}${tagBlocks}`;
-  $("contacts-stats").querySelectorAll(".stat-cell").forEach(c => c.onclick = () => {
-    const patch = JSON.parse(c.dataset.patch);
-    // clear the other verify/qualify keys so filters stay coherent
-    ["verify", "qualify_finding", "has_linkedin"].forEach(k => delete contactsFilters[k]);
-    setContactsFilter(patch);
-  });
-  $("contacts-stats").querySelectorAll("[data-tag]").forEach(b => b.onclick = () =>
-    setContactsFilter({ tag: b.dataset.tag }));
+function loadContactsStats() {
+  // Not range-filtered by getR — stats are a workspace-wide inventory.
+  return get("/api/contacts/stats").then(d => {
+    if (!d) return;
+    const o = d.overall || {};
+    // Drill-in: clear any conflicting bucket keys, clear the range (so the table
+    // matches the all-time stat), then apply the filter.
+    const drill = (patch) => {
+      ["verify", "qualify_finding", "has_linkedin", "tag"].forEach(k => delete contactsFilters[k]);
+      setRangeAll();
+      setContactsFilter(patch);
+    };
+    const cell = (label, value, patch) =>
+      `<div class="stat-cell" data-patch='${esc(JSON.stringify(patch))}'>
+         <div class="label">${label}</div><div class="value">${fmt(value || 0)}</div></div>`;
+    const tags = (d.by_tag || []).filter(t => t.total > 0);   // hide empty/phantom tags
+    const tcell = (t, key, patch) =>
+      `<td class="num" data-patch='${esc(JSON.stringify(patch))}'>${fmt(t[key])}</td>`;
+    const tagRows = tags.map(t => `<tr data-tag="${esc(t.tag)}">
+        <td class="clip" style="max-width:220px"><button class="linklike">${esc(t.tag)}</button></td>
+        ${tcell(t, "total", { tag: t.tag })}
+        ${tcell(t, "valid_email", { tag: t.tag, verify: "valid" })}
+        ${tcell(t, "catch_all_email", { tag: t.tag, verify: "catch_all" })}
+        ${tcell(t, "no_email", { tag: t.tag, verify: "none" })}
+        ${tcell(t, "qualify_finding", { tag: t.tag, qualify_finding: "1" })}
+        ${tcell(t, "has_linkedin", { tag: t.tag, has_linkedin: "1" })}
+      </tr>`).join("");
+    $("contacts-stats").innerHTML = `
+      <div class="stale" style="margin-bottom:6px">Workspace totals (all time) · ${fmt(o.total)} leads — click any number to filter</div>
+      <div class="stat-grid">
+        ${cell("Valid email", o.valid_email, { verify: "valid" })}
+        ${cell("Catch-all", o.catch_all_email, { verify: "catch_all" })}
+        ${cell("No email", o.no_email, { verify: "none" })}
+        ${cell("Find-eligible", o.qualify_finding, { qualify_finding: "1" })}
+        ${cell("Has LinkedIn", o.has_linkedin, { has_linkedin: "1" })}
+      </div>
+      ${tags.length ? `<div style="margin-top:12px;overflow-x:auto"><table class="stat-table">
+        <thead><tr><th>Tag</th><th class="num">Leads</th><th class="num">Valid</th><th class="num">Catch-all</th>
+          <th class="num">No email</th><th class="num">Find-elig.</th><th class="num">LinkedIn</th></tr></thead>
+        <tbody>${tagRows}</tbody></table></div>` : ""}`;
+    $("contacts-stats").querySelectorAll(".stat-cell").forEach(c => c.onclick = () => drill(JSON.parse(c.dataset.patch)));
+    $("contacts-stats").querySelectorAll("tr[data-tag] .linklike").forEach(b => b.onclick = () => drill({ tag: b.closest("tr").dataset.tag }));
+    $("contacts-stats").querySelectorAll("td[data-patch]").forEach(td => td.onclick = () => drill(JSON.parse(td.dataset.patch)));
+  }).catch(() => {});
 }
 $("contacts-q").oninput = () => { clearTimeout(contactsTimer); contactsTimer = setTimeout(() => loadContacts(), 300); };
 $("contacts-status").onchange = $("contacts-missing").onchange = $("contacts-sort").onchange = $("contacts-connected").onchange = $("contacts-sender").onchange = () => loadContacts();
@@ -1634,7 +1697,7 @@ const DAILY_LABELS = {
   email_sent: "Email sent", email_received: "Email received",
   dm_sent: "DM sent", dm_received: "DM received",
   connects_sent: "Connects sent", connects_accepted: "Connects accepted",
-  bounces: "Bounces", interested: "Interested", not_interested: "Not interested",
+  bounces: "Bounces", interested: "Positive", not_interested: "Not interested",
   meetings: "Meetings",
 };
 
@@ -1988,9 +2051,15 @@ async function openLead(leadId) {
   state.lead = lead;
   $("lead-name").textContent = lead.name;
   $("lead-meta").textContent = [lead.title, lead.company, lead.email].filter(Boolean).join(" · ")
-    + ` — stage: ${lead.stage ?? "?"}`;
+    + ` — stage: ${lead.stage ?? "?"}`
+    + (lead.current_status_sentiment ? ` (${lead.current_status_sentiment})` : "")
+    + (lead.current_status_label ? ` · ${lead.current_status_label}` : "");
   $("stage-select").innerHTML = STAGES.map(s =>
     `<option ${s === lead.stage ? "selected" : ""}>${s}</option>`).join("");
+  // Prefill the sentiment + label controls from the lead's current workspace state
+  // (was always blank before, so the panel disagreed with the contacts table).
+  $("sentiment-select").value = lead.current_status_sentiment || "";
+  $("stage-label").value = lead.current_status_label || "";
   document.querySelectorAll("#slideover .msg").forEach(m => { m.textContent = ""; m.className = "msg"; });
   $("event-form").reset();
   // Identity form (name / title / LinkedIn) prefilled from the lead.

@@ -266,7 +266,7 @@ def edit_sender_domain(domain: str, fields: dict) -> dict:
 
     if not domain:
         raise ValueError("domain is required")
-    allowed = {"reseller", "domain_cost", "currency", "notes", "sending_ip"}
+    allowed = {"reseller", "domain_cost", "currency", "notes", "sending_ip", "is_active"}
     unknown = sorted(set(fields) - allowed)
     if unknown:
         raise ValueError(f"Unknown domain fields: {', '.join(unknown)}. "

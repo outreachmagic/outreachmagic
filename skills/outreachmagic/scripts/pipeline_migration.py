@@ -1505,6 +1505,12 @@ def migrate_db(conn=None):
         # Maintained by log_event; see touch_sender_account_activity.
         ("last_outbound_at", "TEXT"),
         ("last_inbound_at", "TEXT"),
+        # is_active: 0 == decommissioned mailbox. Provider exports only carry
+        # live accounts, so a dropped mailbox is never told to go away -- this
+        # lets cost/count/DNSBL queries exclude it while sync still ships the
+        # 0 so the cloud can tell "decommissioned" from "never registered".
+        # Default 1 is correct for every currently-live row (no backfill).
+        ("is_active", "INTEGER NOT NULL DEFAULT 1"),
     ):
         try:
             conn.execute(f"ALTER TABLE sender_accounts ADD COLUMN {_col} {_type}")
@@ -1552,6 +1558,14 @@ def migrate_db(conn=None):
             conn.execute(f"ALTER TABLE sender_domains ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
             pass
+    # is_active: 0 == domain intentionally dropped from the provider. Lets
+    # DNSBL scanning and routing skip it and distinguishes it from a domain
+    # simply not registered yet. Default 1 (no backfill needed).
+    try:
+        conn.execute(
+            "ALTER TABLE sender_domains ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
     # purpose: what the domain is used for (sending / branch / email_finding) so
     # the company panel can label and group additional domains. company_id: the
     # optional owning company, letting one company carry multiple domains.

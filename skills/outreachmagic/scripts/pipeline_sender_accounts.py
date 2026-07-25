@@ -321,6 +321,7 @@ def find_sender_account_id_by_email(conn: sqlite3.Connection, email: str, org_id
 
 _SENDER_ACCOUNT_EDITABLE_FIELDS = (
     "provider", "first_name", "last_name", "daily_limit", "status", "warmup_status", "channel",
+    "is_active",
 )
 
 
@@ -451,7 +452,8 @@ def resolve_sender_account_from_entity_key(
 
 
 _SYNC_PAYLOAD_COLUMNS = sorted(
-    set(_CSV_TO_COLUMN.values()) | {"tags_json", "linkedin_url", "linkedin_sales_nav_id"}
+    set(_CSV_TO_COLUMN.values())
+    | {"tags_json", "linkedin_url", "linkedin_sales_nav_id", "is_active"}
 )
 
 
@@ -610,7 +612,7 @@ def set_sender_domain_cost(
     domain: str, *, reseller: Optional[str] = None, domain_cost: Optional[float] = None,
     currency: Optional[str] = None, notes: Optional[str] = None,
     sending_ip: Optional[str] = None, purpose: Optional[str] = None,
-    company_id: Optional[int] = None,
+    company_id: Optional[int] = None, is_active: Optional[int] = None,
 ) -> dict:
     """Set/update the flat cost, reseller, notes, purpose, and/or owning company
     for a domain.
@@ -662,13 +664,16 @@ def set_sender_domain_cost(
             if company_id is not None:
                 sets.append("company_id = ?")
                 params.append(company_id)
+            if is_active is not None:
+                sets.append("is_active = ?")
+                params.append(int(is_active))
             conn.execute(f"UPDATE sender_domains SET {', '.join(sets)} WHERE domain = ?", params + [domain])
         else:
             conn.execute(
-                "INSERT INTO sender_domains (domain, reseller, domain_cost, currency, notes, sending_ip, purpose, company_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sender_domains (domain, reseller, domain_cost, currency, notes, sending_ip, purpose, company_id, is_active) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (domain, reseller, domain_cost, currency or "USD", notes, sending_ip,
-                 purpose or "sending", company_id),
+                 purpose or "sending", company_id, 1 if is_active is None else int(is_active)),
             )
         conn.commit()
     finally:
@@ -707,15 +712,20 @@ def get_sender_domains_for_scan(domain: Optional[str] = None) -> list[dict]:
                 (target,),
             ).fetchall()
         else:
+            # Decommissioned domains (sender_domains.is_active = 0) and domains
+            # known only through decommissioned mailboxes drop out of the bulk
+            # scan; an explicit `--domain X` above still scans on demand.
             rows = conn.execute(
                 """WITH all_domains AS (
-                       SELECT domain FROM sender_domains
+                       SELECT domain FROM sender_domains WHERE is_active = 1
                        UNION
-                       SELECT DISTINCT email_domain AS domain FROM sender_accounts WHERE email_domain IS NOT NULL
+                       SELECT DISTINCT email_domain AS domain FROM sender_accounts
+                       WHERE email_domain IS NOT NULL AND is_active = 1
                    )
                    SELECT d.domain AS domain, sd.sending_ip AS sending_ip, sd.dnsbl_status AS dnsbl_status
                    FROM all_domains d
                    LEFT JOIN sender_domains sd ON sd.domain = d.domain
+                   WHERE sd.is_active IS NULL OR sd.is_active = 1
                    ORDER BY d.domain""",
             ).fetchall()
     finally:
@@ -924,7 +934,8 @@ def sender_domains_report() -> list[dict]:
                 sd.domain_cost AS domain_cost,
                 COALESCE(sd.currency, 'USD') AS currency,
                 sd.notes AS notes,
-                (SELECT COUNT(*) FROM sender_accounts sa WHERE sa.email_domain = d.domain) AS sender_count
+                (SELECT COUNT(*) FROM sender_accounts sa
+                 WHERE sa.email_domain = d.domain AND sa.is_active = 1) AS sender_count
             FROM all_domains d
             LEFT JOIN sender_domains sd ON sd.domain = d.domain
             ORDER BY d.domain
@@ -979,11 +990,12 @@ def _domain_cost_rows_for_workspace(conn: sqlite3.Connection, ws_id: str) -> lis
     return conn.execute("""
         SELECT sa.id, sd.domain_cost, sd.created_at AS domain_created_at,
                (SELECT COUNT(*) FROM sender_accounts sa2
-                WHERE sa2.email_domain = sa.email_domain) AS domain_sender_count
+                WHERE sa2.email_domain = sa.email_domain
+                  AND sa2.is_active = 1) AS domain_sender_count
         FROM sender_accounts sa
         INNER JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
         LEFT JOIN sender_domains sd ON sd.domain = sa.email_domain
-        WHERE wsa.workspace_id = ?
+        WHERE wsa.workspace_id = ? AND sa.is_active = 1
     """, (ws_id,)).fetchall()
 
 

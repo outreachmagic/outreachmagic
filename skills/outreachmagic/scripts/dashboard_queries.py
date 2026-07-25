@@ -177,6 +177,7 @@ def bounce_series(
 def mailbox_health(conn: sqlite3.Connection, workspace_id: str) -> dict:
     rows = conn.execute(
         """SELECT sa.id, sa.email, sa.email_domain, sa.channel, sa.status,
+                  sa.first_name, sa.last_name, sa.provider, sa.is_active,
                   sa.warmup_status, sa.spf_status, sa.dkim_status, sa.dmarc_status,
                   sa.overall_health_score, sa.bounce_rate, sa.daily_limit,
                   sa.last_outbound_at, sa.last_inbound_at
@@ -263,12 +264,17 @@ def domain_health(conn: sqlite3.Connection, workspace_id: str) -> dict:
     # LEFT JOIN because it only holds domains someone registered there
     # (reseller/pricing/DNSBL) — a workspace's sending domains must show up
     # even when nobody has registered them yet.
+    # mailboxes counts live accounts only (matches the cost/count semantics on
+    # the CLI); an all-decommissioned domain still surfaces via its is_active=0
+    # sender_domains row so it can be seen and reactivated.
     rows = conn.execute(
         """SELECT sa.email_domain AS domain,
-                  COUNT(sa.id) AS mailboxes,
-                  AVG(sa.overall_health_score) AS avg_health,
+                  SUM(sa.is_active = 1) AS mailboxes,
+                  COUNT(sa.id) AS mailboxes_total,
+                  AVG(CASE WHEN sa.is_active = 1 THEN sa.overall_health_score END) AS avg_health,
                   MAX(sa.last_outbound_at) AS last_outbound_at,
                   sd.domain IS NOT NULL AS registered,
+                  COALESCE(sd.is_active, 1) AS domain_active,
                   sd.dnsbl_status, sd.sending_ip, sd.reseller,
                   sd.domain_cost, sd.currency
            FROM sender_accounts sa
@@ -287,10 +293,12 @@ def domain_health(conn: sqlite3.Connection, workspace_id: str) -> dict:
             summary = "not monitored"
         domains.append({
             "domain": r["domain"],
-            "mailboxes": r["mailboxes"],
+            "mailboxes": r["mailboxes"] or 0,
+            "mailboxes_total": r["mailboxes_total"],
             "avg_health": round(r["avg_health"], 1) if r["avg_health"] is not None else None,
             "last_outbound_at": r["last_outbound_at"],
             "registered": bool(r["registered"]),
+            "is_active": bool(r["domain_active"]),
             "sending_ip": r["sending_ip"],
             "reseller": r["reseller"],
             "domain_cost": r["domain_cost"],
@@ -1410,6 +1418,7 @@ def search_leads(
     qualify_finding: Optional[bool] = None,
     limit: int = 50,
     offset: int = 0,
+    ids_only: bool = False,
 ) -> dict:
     """Search workspace leads by any attribute. `missing` in
     {email,company,title,name,linkable} filters to under-enriched leads
@@ -1470,6 +1479,17 @@ def search_leads(
     params += active_params
     where_sql = " AND ".join(where) + active_sql
     order = LEAD_SORTS.get(sort, LEAD_SORTS["last_activity"])
+    # ids_only powers the "select all N matching" bulk action: same WHERE, but
+    # just the ids (capped by `limit`) so the client can select every match
+    # across pages without paging through them. No column projection or sort.
+    if ids_only:
+        rows = conn.execute(
+            f"""SELECT l.id FROM workspace_leads wl JOIN leads l ON l.id = wl.lead_id
+                WHERE {where_sql} LIMIT ?""",
+            (*params, limit),
+        ).fetchall()
+        ids = [r["id"] for r in rows]
+        return {"lead_ids": ids, "count": len(ids), "capped": len(ids) >= limit}
     total = conn.execute(
         f"SELECT COUNT(*) AS n FROM workspace_leads wl JOIN leads l ON l.id = wl.lead_id"
         f" WHERE {where_sql}",

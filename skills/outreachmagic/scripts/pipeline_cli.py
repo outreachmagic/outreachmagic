@@ -1386,6 +1386,14 @@ def main():
     sa_update_p.add_argument("--status")
     sa_update_p.add_argument("--warmup-status", dest="warmup_status")
     sa_update_p.add_argument("--channel", choices=("email", "linkedin"))
+    sa_setactive_p = sa_sub.add_parser(
+        "set-active",
+        help="Mark a mailbox live (1) or decommissioned (0). Decommissioned "
+             "mailboxes drop out of cost/count/DNSBL but still sync as is_active=0.",
+    )
+    sa_setactive_p.add_argument("--email", required=True, help="Sender account email")
+    sa_setactive_p.add_argument(
+        "--is-active", dest="is_active", type=int, choices=(0, 1), required=True)
     sa_link_p = sa_sub.add_parser("link", help="Link a sender account to a workspace")
     sa_link_p.add_argument("--email", required=True, help="Sender account email")
     sa_link_p.add_argument("--workspace", required=True, help="Workspace slug")
@@ -1408,6 +1416,9 @@ def main():
     sd_set_p.add_argument("--currency", help="Default: USD")
     sd_set_p.add_argument("--notes", help='Freeform note, e.g. "blacklisted in Azure" -- overwrites any previous note')
     sd_set_p.add_argument("--ip", help="User-registered static sending IP (enables IP-based DNSBL checks)")
+    sd_set_p.add_argument(
+        "--is-active", dest="is_active", type=int, choices=(0, 1),
+        help="1 == live, 0 == dropped from the provider (skipped by DNSBL/routing)")
     sd_blcheck_p = sd_sub.add_parser(
         "blacklist-check",
         help="Scan sender domains against DNSBLs; exits 1 if any domain is listed",
@@ -3733,12 +3744,16 @@ def main():
                 warmup_status=getattr(args, "warmup_status", None),
                 channel=getattr(args, "channel", None),
             ), indent=2))
+        elif sa_action == "set-active":
+            print(json.dumps(_pipeline.update_sender_account(
+                args.email, is_active=int(args.is_active),
+            ), indent=2))
         elif sa_action in ("link", "unlink"):
             print(json.dumps(_pipeline.set_sender_account_workspace_link(
                 args.email, args.workspace, linked=(sa_action == "link"),
             ), indent=2))
         else:
-            print(json.dumps({"error": "sender-accounts subcommand required: list, update, link, unlink"}))
+            print(json.dumps({"error": "sender-accounts subcommand required: list, update, set-active, link, unlink"}))
     elif args.command == "sender-domains":
         sd_action = getattr(args, "sender_domains_action", None)
         if sd_action == "list":
@@ -3758,6 +3773,7 @@ def main():
                 args.domain, reseller=getattr(args, "reseller", None),
                 domain_cost=getattr(args, "cost", None), currency=getattr(args, "currency", None),
                 notes=getattr(args, "notes", None), sending_ip=getattr(args, "ip", None),
+                is_active=getattr(args, "is_active", None),
             ), indent=2))
         elif sd_action == "blacklist-check":
             result = _pipeline.run_blacklist_check(

@@ -236,6 +236,10 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <span id="contacts-count" class="stale"></span>
       </div>
       <div id="contacts-active-filters" style="margin-bottom:8px"></div>
+      <div class="controls" style="gap:14px">
+        <label><input type="checkbox" id="contacts-all-page"> Select page</label>
+        <a href="#" id="contacts-all-matching" class="small" style="display:none"></a>
+      </div>
       <div id="contacts-bulk" class="controls" style="display:none;background:var(--page);padding:8px 10px;border-radius:8px">
         <b id="contacts-sel-count">0 selected</b>
         <select id="bulk-op">
@@ -246,6 +250,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           <option value="email_finder">Run email finder</option>
         </select>
         <input id="bulk-value" placeholder="value" style="width:160px">
+        <datalist id="bulk-tags"></datalist>
         <button class="small primary" id="bulk-apply">Apply</button>
         <button class="small" id="bulk-clear">Clear</button>
         <span class="msg" id="bulk-msg"></span>
@@ -271,7 +276,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <label>Activity
           <select id="deliv-age">
             <option value="all">All</option>
-            <option value="active90">Sent in last 3 mo</option>
+            <option value="active90" selected>Sent in last 3 mo</option>
             <option value="stale90">Not sent in 3 mo+</option>
             <option value="stale180">Not sent in 6 mo+</option>
             <option value="stale365">Not sent in 12 mo+</option>
@@ -283,11 +288,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       </div>
       <div id="mailboxes"></div>
     </div>
-    <div class="card"><h2>Sending domains <span class="sub">click a domain for reseller / pricing / notes / edit</span></h2><div id="domains"></div></div>
-    <div class="card" id="domain-detail-card" hidden>
-      <h2 id="domain-detail-title">Domain</h2>
-      <div id="domain-detail"></div>
-    </div>
+    <div class="card"><h2>Sending domains <span class="sub">click a domain to filter the mailboxes above and edit it</span></h2><div id="domains"></div></div>
   </section>
 
   <section id="tab-pipeline" hidden>
@@ -980,14 +981,24 @@ async function loadDeliverability() {
 }
 $("deliv-age").onchange = () => { if (state.deliv) renderDeliv(); };
 
+// Clicking a domain row filters the mailbox list above to that domain (and
+// opens the edit sidebar) rather than expanding a second table below.
+let delivDomainFilter = null;
+
 function renderDeliv() {
   const d = state.deliv;
   const pred = agePredicate($("deliv-age").value);
-  const mailboxes = d.mailboxes.filter(pred);
+  let mailboxes = d.mailboxes.filter(pred);
   const domains = d.domains.filter(pred);
-  $("deliv-count").textContent = `${mailboxes.length} of ${d.mailboxes.length} mailboxes`;
+  if (delivDomainFilter) mailboxes = mailboxes.filter(m => m.email_domain === delivDomainFilter);
+  const chip = delivDomainFilter
+    ? ` · <span class="flag warn">domain: ${esc(delivDomainFilter)}</span> <a href="#" id="deliv-domain-clear">clear</a>`
+    : "";
+  $("deliv-count").innerHTML = `${mailboxes.length} of ${d.mailboxes.length} mailboxes${chip}`;
+  if (delivDomainFilter) $("deliv-domain-clear").onclick = (e) => { e.preventDefault(); delivDomainFilter = null; renderDeliv(); };
   renderTable("mailboxes", [
-    { key: "email", label: "Mailbox" },
+    { key: "email", label: "Mailbox",
+      render: r => `${esc(r.email)}${r.is_active === 0 ? ' <span class="flag warn">decommissioned</span>' : ""}` },
     { key: "warmup_status", label: "Warmup", render: r => esc(r.warmup_status ?? "–") },
     { key: "spf_status", label: "SPF/DKIM/DMARC",
       render: r => ["spf_status","dkim_status","dmarc_status"].map(k => esc(r[k] ?? "?")).join(" / ") },
@@ -998,8 +1009,10 @@ function renderDeliv() {
       render: r => r.trending_down ? '<span class="flag bad">▲ trending down</span>' : '<span class="flag ok">✓ ok</span>' },
   ], mailboxes, { empty: "No mailboxes match this filter.", onRowClick: r => openSenderEdit(r) });
   renderTable("domains", [
-    { key: "domain", label: "Domain" },
-    { key: "mailboxes", label: "Mailboxes", num: true },
+    { key: "domain", label: "Domain",
+      render: r => `${esc(r.domain)}${r.is_active === false ? ' <span class="flag warn">decommissioned</span>' : ""}` },
+    { key: "mailboxes", label: "Mailboxes", num: true,
+      render: r => r.mailboxes_total > r.mailboxes ? `${r.mailboxes} <span class="stale">(+${r.mailboxes_total - r.mailboxes} off)</span>` : r.mailboxes },
     { key: "avg_health", label: "Avg health", num: true, render: r => r.avg_health ?? "–" },
     { key: "last_outbound_at", label: "Last send", render: r => dt(r.last_outbound_at) || "–" },
     { key: "reseller", label: "Reseller", render: r => esc(r.reseller ?? "–") },
@@ -1024,13 +1037,17 @@ function openSenderEdit(sa) {
           ${["active","paused","disabled","error"].map(s => `<option ${sa.status === s ? "selected" : ""}>${s}</option>`).join("")}
         </select>
       </div>
+      <div class="row"><label><input type="checkbox" name="is_active" ${sa.is_active !== 0 ? "checked" : ""}> Live mailbox <span class="sub" style="font-weight:400;color:var(--ink-muted)">uncheck = decommissioned (drops from cost/count/DNSBL)</span></label></div>
       <div class="row"><button class="primary">Save mailbox</button></div>
       <div class="msg" id="sender-msg"></div>
     </form>`;
   $("sender-edit-form").onsubmit = (e) => {
     e.preventDefault();
     const body = { email: sa.email };
-    for (const inp of e.target.querySelectorAll("[name]")) if (inp.value.trim()) body[inp.name] = inp.value.trim();
+    for (const inp of e.target.querySelectorAll("[name]")) {
+      if (inp.type === "checkbox") { body[inp.name] = inp.checked ? 1 : 0; continue; }
+      if (inp.value.trim()) body[inp.name] = inp.value.trim();
+    }
     formResult("sender-msg", post("/api/senders/edit", body), loadDeliverability);
   };
 }
@@ -1047,6 +1064,7 @@ function openDomainEdit(dom, reg) {
       </div>
       <div class="row"><input name="sending_ip" placeholder="Sending IP" value="${esc(reg?.sending_ip ?? "")}"></div>
       <div class="row"><textarea name="notes" placeholder="Notes" rows="2">${esc(reg?.notes ?? "")}</textarea></div>
+      <div class="row"><label><input type="checkbox" name="is_active" ${reg?.is_active !== 0 ? "checked" : ""}> Live domain <span class="sub" style="font-weight:400;color:var(--ink-muted)">uncheck = dropped (skipped by DNSBL/routing)</span></label></div>
       <div class="row"><button class="primary">Save domain</button></div>
       <div class="msg" id="domain-msg"></div>
     </form>`;
@@ -1054,6 +1072,7 @@ function openDomainEdit(dom, reg) {
     e.preventDefault();
     const body = { domain: dom };
     for (const inp of e.target.querySelectorAll("[name]")) {
+      if (inp.type === "checkbox") { body[inp.name] = inp.checked ? 1 : 0; continue; }
       const v = inp.value.trim();
       if (v) body[inp.name] = inp.name === "domain_cost" ? parseFloat(v) : v;
     }
@@ -1061,39 +1080,16 @@ function openDomainEdit(dom, reg) {
   };
 }
 
+// Filter the mailbox list above to this domain and open the edit sidebar (as
+// if the user had clicked "Edit domain"). We still fetch /api/domains/detail
+// once to prefill the edit form with the domain's registration row.
 async function showDomain(domain) {
+  delivDomainFilter = domain;
+  renderDeliv();
+  $("mailboxes").scrollIntoView({ behavior: "smooth", block: "nearest" });
   const d = await get(`/api/domains/detail?domain=${encodeURIComponent(domain)}`)
     .catch(e => { toast(e.message); return null; });
-  if (!d) return;
-  $("domain-detail-card").hidden = false;
-  $("domain-detail-title").innerHTML = `${esc(domain)} <button class="small" id="edit-domain-btn">Edit domain</button>`;
-  const reg = d.registration;
-  const bs = d.bounce_summary || {};
-  let html = "";
-  if (reg) {
-    html += `<div class="table-wrap"><table><tbody>
-      <tr><th>Reseller</th><td>${esc(reg.reseller ?? "–")}</td>
-          <th>Cost</th><td>${reg.domain_cost != null ? esc(reg.domain_cost) + " " + esc(reg.currency ?? "") : "–"}</td></tr>
-      <tr><th>Sending IP</th><td>${esc(reg.sending_ip ?? "–")}</td>
-          <th>Blacklist</th><td>${esc(reg.dnsbl_summary ?? "–")}${reg.dnsbl_checked_at ? ` <span class="stale">(checked ${dt(reg.dnsbl_checked_at)})</span>` : ""}</td></tr>
-      <tr><th>Notes</th><td colspan="3" class="wrap">${esc(reg.notes ?? "–")}</td></tr>
-    </tbody></table></div>`;
-  } else {
-    html += `<div class="banner warn">Not registered in <code>sender_domains</code> — no reseller/pricing/blacklist data. Add it with <code>pipeline.py sender-domains</code>.</div>`;
-  }
-  html += `<p class="stale">Bounces from this domain: ${fmt(bs.total_bounces)} across ${fmt(bs.leads_bounced)} leads${bs.last_bounce_at ? ", last " + dt(bs.last_bounce_at) : ""}</p>`;
-  html += `<div id="domain-mailboxes"></div>`;
-  $("domain-detail").innerHTML = html;
-  renderTable("domain-mailboxes", [
-    { key: "email", label: "Mailbox" },
-    { key: "warmup_status", label: "Warmup", render: r => esc(r.warmup_status ?? "–") },
-    { key: "daily_limit", label: "Daily limit", num: true },
-    { key: "overall_health_score", label: "Health", num: true, render: r => r.overall_health_score ?? "–" },
-    { key: "bounce_rate", label: "Bounce rate", num: true, render: r => r.bounce_rate != null ? pct(r.bounce_rate) : "–" },
-    { key: "last_outbound_at", label: "Last send", render: r => dt(r.last_outbound_at) || "–" },
-  ], d.mailboxes, { empty: "No mailboxes on this domain in this workspace." });
-  $("edit-domain-btn").onclick = () => openDomainEdit(domain, reg);
-  $("domain-detail-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  openDomainEdit(domain, d ? d.registration : null);
 }
 
 function renderBounceChart(series) {
@@ -1238,9 +1234,11 @@ async function loadContacts(resetOffset = true) {
       STAGES.map(s => `<option>${s}</option>`).join("");
   }
   fillSenderSelect();
+  fillBulkTags();
   const d = await getR(contactsQuery()).catch(e => { toast(e.message); return null; });
   if (!d) return;
   contactsState.total = d.total;
+  contactsState.rows = d.leads;
   const selCol = { key: "__sel", label: "", sortVal: () => 0,
     render: r => `<input type="checkbox" class="row-sel" data-id="${r.lead_id}" ${contactsSel.has(r.lead_id) ? "checked" : ""}>` };
   renderTable("contacts-table", [selCol].concat(leadColumns()), d.leads,
@@ -1265,7 +1263,35 @@ function updateBulkBar() {
   const bar = $("contacts-bulk");
   bar.style.display = contactsSel.size ? "" : "none";
   $("contacts-sel-count").textContent = `${contactsSel.size} selected`;
+  // "Select page" reflects whether every loaded row is already selected.
+  const rows = contactsState.rows || [];
+  $("contacts-all-page").checked = rows.length > 0 && rows.every(r => contactsSel.has(r.lead_id));
+  // Offer "select all N matching" only when there's more than one page.
+  const link = $("contacts-all-matching");
+  if (contactsState.total > rows.length && rows.length > 0) {
+    link.style.display = "";
+    link.textContent = `Select all ${fmt(contactsState.total)} matching`;
+  } else {
+    link.style.display = "none";
+  }
 }
+$("contacts-all-page").onchange = (e) => {
+  const rows = contactsState.rows || [];
+  rows.forEach(r => e.target.checked ? contactsSel.add(r.lead_id) : contactsSel.delete(r.lead_id));
+  loadContacts(false);
+};
+$("contacts-all-matching").onclick = async (e) => {
+  e.preventDefault();
+  try {
+    const u = new URL(contactsQuery(), location.origin);
+    u.searchParams.delete("offset");
+    u.searchParams.set("limit", "50000");
+    const d = await getR(u.pathname.replace("/api/contacts", "/api/contacts/ids") + "?" + u.searchParams.toString());
+    (d.lead_ids || []).forEach(id => contactsSel.add(id));
+    if (d.capped) toast(`Selected the first ${fmt(d.count)} matching (capped).`);
+    loadContacts(false);
+  } catch (err) { toast(err.message); }
+};
 $("bulk-clear").onclick = () => { contactsSel.clear(); updateBulkBar(); loadContacts(false); };
 $("bulk-apply").onclick = () => {
   const op = $("bulk-op").value;
@@ -1275,6 +1301,26 @@ $("bulk-apply").onclick = () => {
   formResult("bulk-msg", post("/api/contacts/bulk",
     { lead_ids: [...contactsSel], op, value, workspace: state.workspace }),
     () => { contactsSel.clear(); loadContacts(false); refreshSummary(); });
+};
+
+// Existing workspace tags feed the add/remove-tag type-ahead; custom values
+// still allowed (the datalist only suggests). Loaded once per workspace.
+let contactsTagsLoaded = false;
+async function fillBulkTags() {
+  if (contactsTagsLoaded) return;
+  contactsTagsLoaded = true;
+  const d = await get("/api/tags").catch(() => null);
+  if (!d || !d.tags) return;
+  $("bulk-tags").innerHTML = d.tags
+    .map(t => `<option value="${esc(t.tag ?? t)}">`).join("");
+}
+// The tag suggestions only make sense for tag ops; wire the datalist on demand.
+$("bulk-op").onchange = () => {
+  const op = $("bulk-op").value;
+  const isTag = op === "tag_add" || op === "tag_remove";
+  const inp = $("bulk-value");
+  if (isTag) { inp.setAttribute("list", "bulk-tags"); inp.placeholder = "tag…"; }
+  else { inp.removeAttribute("list"); inp.placeholder = "value"; }
 };
 
 function loadContactsStats() {
@@ -1513,8 +1559,10 @@ async function loadQuality() {
     return `<div class="tile clickable" data-key="${key}" data-missing="${b.missing}"${active}>
       <div class="label">${label}</div><div class="value">${fmt(b.count)}</div></div>`;
   }).join("") + `<div class="tile"><div class="label">Total leads</div><div class="value">${fmt(d.total)}</div></div>`;
-  $("quality-tiles").querySelectorAll(".tile.clickable").forEach(t =>
-    t.style.cursor = "pointer", t.onclick = () => openBucket(t.dataset.key, t.dataset.missing));
+  $("quality-tiles").querySelectorAll(".tile.clickable").forEach(t => {
+    t.style.cursor = "pointer";
+    t.onclick = () => openBucket(t.dataset.key, t.dataset.missing);
+  });
   $("cleanup-summary").textContent = d.junk_deletable
     ? `${fmt(d.junk_deletable)} truly-empty leads are deletable — preview first.`
     : "No empty leads to clean up.";

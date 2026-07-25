@@ -274,8 +274,36 @@ def handle_contacts(conn, ws_id, match, query):
 
 
 @_workspace_scoped
+def handle_contacts_ids(conn, ws_id, match, query):
+    # Every lead_id matching the current contacts filter, for "select all N
+    # matching" across pages. Capped so a runaway filter can't return the world.
+    campaign_id = _q(query, "campaign_id")
+    return dashboard_queries.search_leads(
+        conn, ws_id,
+        q=_q(query, "q"), status=_q(query, "status"),
+        campaign_id=int(campaign_id) if campaign_id else None,
+        missing=_q(query, "missing"),
+        since=_q(query, "since"), until=_q(query, "until"),
+        tag=_q(query, "tag"),
+        connected=_bool_q(query, "connected"),
+        sender=_q(query, "sender"),
+        has_linkedin=_bool_q(query, "has_linkedin"),
+        verify=_q(query, "verify"),
+        qualify_finding=_bool_q(query, "qualify_finding"),
+        limit=_int_q(query, "limit", 5000, lo=1, hi=50000),
+        ids_only=True)
+
+
+@_workspace_scoped
 def handle_contacts_stats(conn, ws_id, match, query):
     return dashboard_queries.contacts_stats(conn, ws_id)
+
+
+@_workspace_scoped
+def handle_tags(conn, ws_id, match, query):
+    # Existing workspace tags, for the bulk add/remove tag type-ahead.
+    import pipeline_tags
+    return {"tags": pipeline_tags.tag_list(ws_id, conn=conn)}
 
 
 @_workspace_scoped
@@ -565,7 +593,9 @@ ROUTES = [
     ("GET", re.compile(r"^/api/campaigns/detail$"), handle_campaign_detail),
     ("GET", re.compile(r"^/api/campaigns/leads$"), handle_campaign_leads),
     ("GET", re.compile(r"^/api/contacts$"), handle_contacts),
+    ("GET", re.compile(r"^/api/contacts/ids$"), handle_contacts_ids),
     ("GET", re.compile(r"^/api/contacts/stats$"), handle_contacts_stats),
+    ("GET", re.compile(r"^/api/tags$"), handle_tags),
     ("GET", re.compile(r"^/api/linkedin/senders$"), handle_linkedin_senders),
     ("POST", re.compile(r"^/api/contacts/bulk$"), handle_contacts_bulk),
     ("GET", re.compile(r"^/api/data-quality$"), handle_data_quality),

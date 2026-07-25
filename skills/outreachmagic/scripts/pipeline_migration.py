@@ -651,6 +651,54 @@ def _backfill_sender_account_activity(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO migration_flags (name) VALUES ('sender_activity_backfill')")
 
 
+def _backfill_current_sentiment_since(conn: sqlite3.Connection) -> None:
+    """Seed current_sentiment_since from event history for legacy rows.
+
+    For each workspace_lead, current_sentiment_since is the start of the
+    *current* contiguous run of its materialized current_status_sentiment: the
+    earliest sentiment event that is (a) the same sentiment as the lead's
+    current one and (b) later than the most recent event of a *different*
+    sentiment. A flip away and back therefore anchors on the latest re-entry.
+
+    Guarded on "any row still needs it" (sentiment set, since NULL) rather than
+    a permanent flag: ingest stamps the column going forward, so after the first
+    pass this is a LIMIT-1 no-op. event_at compares lexicographically as ISO
+    text, and '' sorts before any timestamp, so a lead that never changed
+    sentiment (no boundary row) takes MIN over its whole history.
+    """
+    needs = conn.execute(
+        "SELECT 1 FROM workspace_leads "
+        "WHERE current_status_sentiment IS NOT NULL "
+        "  AND trim(current_status_sentiment) != '' "
+        "  AND current_sentiment_since IS NULL LIMIT 1"
+    ).fetchone()
+    if not needs:
+        return
+    conn.execute("""
+        UPDATE workspace_leads
+        SET current_sentiment_since = (
+            SELECT MIN(wle.event_at)
+            FROM workspace_lead_events wle JOIN events e ON e.id = wle.event_id
+            WHERE wle.workspace_id = workspace_leads.workspace_id
+              AND wle.lead_id = workspace_leads.lead_id
+              AND lower(json_extract(e.metadata_json, '$.lead_status_sentiment'))
+                  = lower(workspace_leads.current_status_sentiment)
+              AND wle.event_at > COALESCE((
+                  SELECT MAX(wle2.event_at)
+                  FROM workspace_lead_events wle2 JOIN events e2 ON e2.id = wle2.event_id
+                  WHERE wle2.workspace_id = workspace_leads.workspace_id
+                    AND wle2.lead_id = workspace_leads.lead_id
+                    AND json_extract(e2.metadata_json, '$.lead_status_sentiment') IS NOT NULL
+                    AND lower(json_extract(e2.metadata_json, '$.lead_status_sentiment'))
+                        <> lower(workspace_leads.current_status_sentiment)
+              ), '')
+        )
+        WHERE current_status_sentiment IS NOT NULL
+          AND trim(current_status_sentiment) != ''
+          AND current_sentiment_since IS NULL
+    """)
+
+
 def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
     """Unify 'ACwAA...' and 'acwaa...' -- they're the same person, and the local
     store kept them as two.
@@ -994,6 +1042,7 @@ def migrate_db(conn=None):
             last_activity_at TEXT,
             current_status_label TEXT,
             current_status_sentiment TEXT,
+            current_sentiment_since TEXT,
             contact_priority INTEGER,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1196,6 +1245,14 @@ def migrate_db(conn=None):
         )
     except sqlite3.OperationalError:
         pass
+    # Same reason as map_source above: backfill_workspace_routing() calls
+    # upsert_workspace_lead(), whose INSERT now names current_sentiment_since, so
+    # the column must exist first on an already-created workspace_leads. The
+    # ALTER is repeated (idempotently) in the column loop further down.
+    try:
+        conn.execute("ALTER TABLE workspace_leads ADD COLUMN current_sentiment_since TEXT")
+    except sqlite3.OperationalError:
+        pass
     backfill_workspace_routing(conn)
     for tbl in ("workspaces", "campaign_workspace_map"):
         try:
@@ -1239,11 +1296,18 @@ def migrate_db(conn=None):
         ("current_status_label", "TEXT"),
         ("current_status_sentiment", "TEXT"),
         ("contact_priority", "INTEGER"),
+        # Timestamp the lead ENTERED its current contiguous sentiment run. A
+        # flip away and back resets it to the latest entry. Materialized so the
+        # campaigns view can GROUP BY date(current_sentiment_since) instead of
+        # rescanning the event stream; maintained at ingest + carried in the
+        # workspace snapshot. Backfilled below from the event history.
+        ("current_sentiment_since", "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE workspace_leads ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
+    _backfill_current_sentiment_since(conn)
     for col, col_type in [
         ("headcount_numeric", "INTEGER"),
         ("location_city", "TEXT"),

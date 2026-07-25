@@ -851,7 +851,7 @@ def blacklist_status_report(domain: Optional[str] = None, stale_hours: Optional[
     }
 
 
-_SENDER_DOMAIN_SYNC_COLUMNS = ("reseller", "domain_cost", "currency", "notes", "sending_ip", "dnsbl_status")
+_SENDER_DOMAIN_SYNC_COLUMNS = ("reseller", "domain_cost", "currency", "notes", "sending_ip", "dnsbl_status", "is_active")
 
 
 def sender_domain_entity_key(domain: str) -> str:

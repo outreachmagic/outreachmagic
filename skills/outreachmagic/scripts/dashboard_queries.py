@@ -17,6 +17,7 @@ import json
 import re
 import sqlite3
 import time
+from collections import defaultdict
 from typing import Optional
 
 from constants import PIPELINE_STAGES
@@ -497,18 +498,19 @@ def campaign_audit(
         (workspace_id,),
     ).fetchall()
 
-    # Positives are counted once per lead on first_positive_at, and scoped to the
-    # same date range as sent/replies/bounces (was all-time current-sentiment,
-    # which read as "hundreds" regardless of range and double-counted a lead
-    # across campaigns).
-    fp_range, fp_params = _range_clause(since, until, "fp.first_positive_at")
+    # Positives are counted once per lead on current_sentiment_since (current
+    # state), scoped to the same date range as sent/replies/bounces -- the same
+    # definition the daily matrix and Replies list use, so the three agree.
+    pos_range, pos_params = _range_clause(since, until, "wl.current_sentiment_since")
     positive_rows = conn.execute(
-        f"""WITH {_first_positive_cte()}
-            SELECT cl.campaign_id, COUNT(DISTINCT cl.lead_id) AS positive
-            FROM fp JOIN campaign_leads cl ON cl.lead_id = fp.lead_id
-            WHERE 1=1{fp_range}
+        f"""SELECT cl.campaign_id, COUNT(DISTINCT cl.lead_id) AS positive
+            FROM workspace_leads wl
+            JOIN campaign_leads cl ON cl.lead_id = wl.lead_id
+            WHERE wl.workspace_id = ?
+              AND lower(wl.current_status_sentiment) = 'positive'
+              AND wl.current_sentiment_since IS NOT NULL{pos_range}
             GROUP BY cl.campaign_id""",
-        (workspace_id, *fp_params),
+        (workspace_id, *pos_params),
     ).fetchall()
     positives = {r["campaign_id"]: r["positive"] for r in positive_rows}
 
@@ -591,38 +593,51 @@ def campaign_replies(
     until: Optional[str] = None,
     limit: int = 200,
 ) -> dict:
-    """Actual reply events across one or all campaigns (campaign_id=None = all),
-    each with the lead's current sentiment and an openable LinkedIn URL.
-
-    This is the 'only show replies' view: unlike campaign_subjects (which counts
-    sends grouped by subject), every row here is a real inbound reply, so the
-    sentiment column is meaningful and there's nothing to expand that isn't one.
+    """One row per lead that currently carries a sentiment, anchored on the day
+    it entered that sentiment (current_sentiment_since) — NOT one row per reply
+    event. A lead who replied five times appears once; filtering this list to a
+    day and sentiment reproduces that day's sentiment column exactly, because
+    both read the same materialized anchor. The lead's most recent reply (if
+    any) supplies the subject/copy for context.
     """
     from workspace_routing import linkedin_display_url
 
-    cte, since_params = _ws_events(since, until)
-    # Param order must follow placeholder order in the SQL text below.
-    params: list = [workspace_id, *since_params, workspace_id]
+    reply_cond = reply_event_sql_condition()
+    # Range applies to the sentiment anchor so this list reconciles with the
+    # daily sentiment columns rather than the raw reply timestamps.
+    range_sql, range_params = _range_clause(since, until, "wl.current_sentiment_since")
+    params: list = [workspace_id, *range_params]
     camp = ""
     if campaign_id is not None:
-        camp = " AND e.campaign_id = ?"
-        params.append(campaign_id)
+        camp = (" AND wl.lead_id IN (SELECT lead_id FROM campaign_leads"
+                " WHERE campaign_id = ?)")
+        params.append(int(campaign_id))
     params.append(limit)
     rows = conn.execute(
-        cte + f"""
-        SELECT e.id AS event_id, e.lead_id, e.subject, e.event_at,
-               e.campaign_id, c.name AS campaign_name,
-               l.name AS lead_name, l.linkedin_url, l.linkedin_sales_nav_id,
+        f"""
+        SELECT wl.lead_id AS lead_id,
                wl.current_status_sentiment AS sentiment,
                wl.current_status_label AS status_label,
-               (SELECT json_extract(ev.metadata_json, '$.body') IS NOT NULL
-                FROM events ev WHERE ev.id = e.id) AS has_body
-        FROM ws_events e
-        JOIN leads l ON l.id = e.lead_id
-        LEFT JOIN campaigns c ON c.id = e.campaign_id
-        LEFT JOIN workspace_leads wl ON wl.lead_id = e.lead_id AND wl.workspace_id = ?
-        WHERE {reply_event_sql_condition()}{camp}
-        ORDER BY e.event_at DESC
+               wl.current_sentiment_since AS event_at,
+               l.name AS lead_name, l.linkedin_url, l.linkedin_sales_nav_id,
+               lr.id AS event_id, lr.subject AS subject, lr.campaign_id AS campaign_id,
+               c.name AS campaign_name,
+               (lr.id IS NOT NULL AND json_extract(lr.metadata_json, '$.body') IS NOT NULL)
+                   AS has_body
+        FROM workspace_leads wl
+        JOIN leads l ON l.id = wl.lead_id
+        LEFT JOIN events lr ON lr.id = (
+            SELECT wle2.event_id
+            FROM workspace_lead_events wle2 JOIN events e2 ON e2.id = wle2.event_id
+            WHERE wle2.workspace_id = wl.workspace_id
+              AND wle2.lead_id = wl.lead_id
+              AND {reply_cond.replace('event_type', 'e2.event_type').replace('direction', 'e2.direction')}
+            ORDER BY wle2.event_at DESC, wle2.id DESC LIMIT 1)
+        LEFT JOIN campaigns c ON c.id = lr.campaign_id
+        WHERE wl.workspace_id = ?
+          AND wl.current_status_sentiment IS NOT NULL
+          AND wl.current_sentiment_since IS NOT NULL{range_sql}{camp}
+        ORDER BY wl.current_sentiment_since DESC
         LIMIT ?""",
         params,
     ).fetchall()
@@ -727,6 +742,10 @@ def activity_feed(
 # Daily activity matrix: one column per event kind an AM cares about.
 # Sentiment (normalized by the platform registry) stands in for the messy
 # free-text status labels: positive ~= interested, negative ~= not interested.
+# Event-derived daily columns only. The reply-sentiment columns are NOT summed
+# from the event stream here -- they're materialized from
+# workspace_leads.current_sentiment_since so each lead counts exactly once, on
+# the day it entered its *current* sentiment run (see _sentiment_by_day).
 _DAILY_COLUMNS_SQL = f"""
     SUM(event_type = 'email_sent') AS email_sent,
     SUM(direction = 'inbound' AND channel = 'email'
@@ -737,90 +756,99 @@ _DAILY_COLUMNS_SQL = f"""
     SUM(event_type IN ('linkedin_connect_sent', 'linkedin_connect')) AS connects_sent,
     SUM(event_type = 'linkedin_connection_accepted') AS connects_accepted,
     SUM(event_type IN {BOUNCE_EVENT_TYPES_SQL}) AS bounces,
-    SUM(event_type = 'lead_status_updated'
-        AND lower(COALESCE(json_extract(metadata_json, '$.lead_status_sentiment'), '')) = 'positive'
-        ) AS interested,
-    SUM(event_type = 'lead_status_updated'
-        AND lower(COALESCE(json_extract(metadata_json, '$.lead_status_sentiment'), '')) = 'negative'
-        ) AS not_interested,
     SUM(event_type = 'meeting_booked') AS meetings
 """
 
+# Sentiment is the single reply-classification axis (stage is a manual
+# sales-outcome overlay now, not a reporting axis). These four are what the
+# campaigns matrix, the Replies list, and the summary tile all count, each
+# one-row-per-lead on date(current_sentiment_since).
+SENTIMENT_KEYS = ("positive", "negative", "invalid", "autoreply")
+DAILY_EVENT_KEYS = (
+    "email_sent", "email_received", "dm_sent", "dm_received",
+    "connects_sent", "connects_accepted", "bounces", "meetings",
+)
 DAILY_COLUMN_KEYS = (
     "email_sent", "email_received", "dm_sent", "dm_received",
     "connects_sent", "connects_accepted", "bounces",
-    "interested", "not_interested", "meetings",
+    *SENTIMENT_KEYS, "meetings",
 )
 
 
-# One lead is "positive" once — the first time a positive-sentiment event lands
-# for it. That single fact (first_positive_at) is what every positive/interested
-# count on the dashboard uses now, so the daily chart, the campaign table, the
-# replies view and the top tile all agree. Earlier each surface counted
-# differently (positive status *events* per day, or all-time current-sentiment
-# per campaign), which is why the same day could read 12 in one place and 4 in
-# another. The signal is the event metadata `lead_status_sentiment`, set by
-# ingest on replies and status webhooks alike.
-def _first_positive_cte() -> str:
-    """CTE body (alias `fp`) mapping each lead to its first positive-sentiment
-    event time in a workspace. Binds one param: workspace_id."""
-    return """
-    fp AS (
-        SELECT wle.lead_id AS lead_id, MIN(wle.event_at) AS first_positive_at
-        FROM workspace_lead_events wle JOIN events e ON e.id = wle.event_id
-        WHERE wle.workspace_id = ?
-          AND lower(json_extract(e.metadata_json, '$.lead_status_sentiment')) = 'positive'
-        GROUP BY wle.lead_id
-    )"""
-
-
-# The first_positive_at CTE scans the workspace event stream (~0.5s on a large
-# workspace), and summary() is polled every few seconds. Memoize the summary's
-# count per (workspace, range) for a few seconds so the poll stays cheap; the
-# on-demand daily/campaign endpoints compute fresh.
+# A lead sits in exactly one sentiment at a time: its current_status_sentiment,
+# entered at current_sentiment_since (materialized at ingest; a flip away and
+# back resets the anchor to the latest entry). Every sentiment count on the
+# dashboard -- the campaigns matrix, the Replies list, the summary tile -- reads
+# these two columns, so they can't disagree: each is one row per lead, grouped
+# on date(current_sentiment_since). No event-stream rescans, no double-counting
+# a lead across days or campaigns.
 _POSITIVE_COUNT_CACHE: dict = {}
 _POSITIVE_COUNT_TTL = 15.0
+
+
+def _sentiment_count_in_range(
+    conn: sqlite3.Connection, workspace_id: str, sentiment: str,
+    since: Optional[str], until: Optional[str],
+) -> int:
+    """Leads whose CURRENT sentiment is `sentiment` and whose run started in the
+    range -- counted once each."""
+    range_sql, params = _range_clause(since, until, "current_sentiment_since")
+    return conn.execute(
+        f"""SELECT COUNT(*) AS n FROM workspace_leads
+            WHERE workspace_id = ?
+              AND lower(current_status_sentiment) = lower(?)
+              AND current_sentiment_since IS NOT NULL{range_sql}""",
+        (workspace_id, sentiment, *params),
+    ).fetchone()["n"]
 
 
 def _positive_count_in_range(
     conn: sqlite3.Connection, workspace_id: str,
     since: Optional[str], until: Optional[str],
 ) -> int:
+    # summary() is polled every few seconds; memoize this one count briefly.
     key = (workspace_id, since, until)
     now = time.time()
     hit = _POSITIVE_COUNT_CACHE.get(key)
     if hit and now - hit[0] < _POSITIVE_COUNT_TTL:
         return hit[1]
-    fp_range, fp_params = _range_clause(since, until, "fp.first_positive_at")
-    n = conn.execute(
-        f"WITH {_first_positive_cte()} SELECT COUNT(*) AS n FROM fp WHERE 1=1{fp_range}",
-        (workspace_id, *fp_params),
-    ).fetchone()["n"]
+    n = _sentiment_count_in_range(conn, workspace_id, "positive", since, until)
     _POSITIVE_COUNT_CACHE[key] = (now, n)
     return n
 
 
-def _positive_first_by_day(
+def _sentiment_by_day(
     conn: sqlite3.Connection,
     workspace_id: str,
     campaign_id: Optional[int] = None,
-) -> dict[str, int]:
-    """{date: count} of leads counted once on the day they *first* became
-    positive (first_positive_at). Optionally scoped to one campaign's leads."""
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+) -> dict[str, dict[str, int]]:
+    """{sentiment: {date: count}} of leads counted once on the day they entered
+    their current sentiment run (current_sentiment_since). Optionally scoped to
+    one campaign's leads and/or a date range."""
+    range_sql, range_params = _range_clause(since, until, "wl.current_sentiment_since")
     camp = ""
-    params: list = [workspace_id]
+    params: list = [workspace_id, *range_params]
     if campaign_id is not None:
-        camp = (" WHERE fp.lead_id IN (SELECT lead_id FROM campaign_leads"
+        camp = (" AND wl.lead_id IN (SELECT lead_id FROM campaign_leads"
                 " WHERE campaign_id = ?)")
         params.append(int(campaign_id))
     rows = conn.execute(
-        f"""WITH {_first_positive_cte()}
-            SELECT date(fp.first_positive_at) AS day, COUNT(*) AS n
-            FROM fp{camp}
-            GROUP BY day""",
+        f"""SELECT lower(wl.current_status_sentiment) AS sentiment,
+                   date(wl.current_sentiment_since) AS day, COUNT(*) AS n
+            FROM workspace_leads wl
+            WHERE wl.workspace_id = ?
+              AND wl.current_status_sentiment IS NOT NULL
+              AND wl.current_sentiment_since IS NOT NULL{range_sql}{camp}
+            GROUP BY sentiment, day""",
         params,
     ).fetchall()
-    return {r["day"]: r["n"] for r in rows if r["day"]}
+    out: dict[str, dict[str, int]] = defaultdict(dict)
+    for r in rows:
+        if r["day"] and r["sentiment"]:
+            out[r["sentiment"]][r["day"]] = r["n"]
+    return out
 
 
 def campaign_daily(
@@ -852,18 +880,28 @@ def campaign_daily(
             GROUP BY day ORDER BY day""",
         params,
     ).fetchall()
-    # "Interested" = became positive that day, counted once per lead
-    # (first_positive_at), not one row per positive status event as the SQL
-    # column would give.
-    positive_by_day = _positive_first_by_day(conn, workspace_id, campaign_id)
+    # Event columns come from the stream above; the four sentiment columns come
+    # from the materialized current_sentiment_since (one row per lead, current
+    # state), grouped on the same range. A lead can enter a sentiment on a day
+    # with no campaign-attributed events, so union the day sets from both sides.
+    event_by_day = {r["day"]: r for r in rows}
+    sent_by_day = _sentiment_by_day(conn, workspace_id, campaign_id, since, until)
+    all_days = sorted(
+        set(event_by_day)
+        | {d for per_day in sent_by_day.values() for d in per_day}
+    )
     days = []
     totals = dict.fromkeys(DAILY_COLUMN_KEYS, 0)
-    for r in rows:
-        day = {"date": r["day"]}
+    for day in all_days:
+        er = event_by_day.get(day)
+        row = {"date": day}
+        for key in DAILY_EVENT_KEYS:
+            row[key] = (er[key] or 0) if er else 0
+        for s in SENTIMENT_KEYS:
+            row[s] = sent_by_day.get(s, {}).get(day, 0)
         for key in DAILY_COLUMN_KEYS:
-            day[key] = positive_by_day.get(r["day"], 0) if key == "interested" else (r[key] or 0)
-            totals[key] += day[key]
-        days.append(day)
+            totals[key] += row[key]
+        days.append(row)
     return {
         "campaign_id": campaign_id, "since": since, "until": until,
         "columns": list(DAILY_COLUMN_KEYS), "days": days, "totals": totals,

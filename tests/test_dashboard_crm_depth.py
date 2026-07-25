@@ -91,44 +91,72 @@ def test_provider_run_summary_flags_prior_attempt():
 
 # ---- positive-by-day (first_positive_at based) --------------------------------
 
-def _positive_event(lid, wsid, at):
-    """Index a positive-sentiment event for a lead at time `at`."""
+def _sentiment_event(lid, wsid, sentiment, at):
+    """Replay a sentiment status event the way relay_ingest does: index the
+    workspace event AND materialize workspace_leads.current_status_sentiment /
+    current_sentiment_since with the reset-aware rule (same sentiment keeps the
+    anchor; a flip resets it to `at`)."""
     eid = om.log_event(lead_id=lid, event_type="lead_status_updated",
-                       direction="inbound", metadata={"lead_status_sentiment": "positive"})
+                       direction="inbound", metadata={"lead_status_sentiment": sentiment})
     conn = om.get_conn()
+    wr.upsert_workspace_lead(conn, DEFAULT_ORG_ID, wsid, lid)
     append_workspace_event(conn, DEFAULT_ORG_ID, wsid, lid, event_id=eid,
                            event_type="lead_status_updated", event_at=at,
-                           idempotency_key=f"pos{lid}{at}")
+                           idempotency_key=f"{sentiment}{lid}{at}")
+    conn.execute(
+        """UPDATE workspace_leads SET current_status_sentiment = ?,
+               current_sentiment_since = CASE WHEN current_status_sentiment IS NULL
+                 OR lower(current_status_sentiment) <> lower(?) OR current_sentiment_since IS NULL
+                 THEN ? ELSE current_sentiment_since END
+           WHERE workspace_id = ? AND lead_id = ?""",
+        (sentiment, sentiment, at, wsid, lid))
     conn.commit()
     conn.close()
 
 
-def test_positive_counted_once_on_first_positive_event():
+def _positive_event(lid, wsid, at):
+    _sentiment_event(lid, wsid, "positive", at)
+
+
+def test_positive_counted_once_in_current_run():
     lid = om.add_lead("Jane", company="Acme", email="jane@acme.com")["id"]
     c0 = om.get_conn()
     wsid = resolve_workspace_identity(c0, "alpha")["id"]
     c0.close()
-    # Two positive events — the lead counts once, on the earliest date.
+    # Two positive events, no flip between — the lead counts once, anchored on
+    # the day it first entered the current positive run.
     _positive_event(lid, wsid, "2026-07-01T10:00:00")
     _positive_event(lid, wsid, "2026-07-04T10:00:00")
     conn = om.get_conn()
-    by_day = dq._positive_first_by_day(conn, wsid)
+    by_day = dq._sentiment_by_day(conn, wsid).get("positive", {})
     conn.close()
     assert by_day == {"2026-07-01": 1}
 
 
-def test_lead_with_no_positive_event_not_counted():
+def test_positive_run_resets_on_flip_back():
+    """positive -> negative -> positive anchors on the latest re-entry."""
+    lid = om.add_lead("Mira", company="Gamma", email="mira@gamma.com")["id"]
+    c0 = om.get_conn()
+    wsid = resolve_workspace_identity(c0, "alpha")["id"]
+    c0.close()
+    _sentiment_event(lid, wsid, "positive", "2026-07-01T10:00:00")
+    _sentiment_event(lid, wsid, "negative", "2026-07-03T10:00:00")
+    _sentiment_event(lid, wsid, "positive", "2026-07-06T10:00:00")
+    conn = om.get_conn()
+    by_day = dq._sentiment_by_day(conn, wsid)
+    conn.close()
+    assert by_day.get("positive", {}) == {"2026-07-06": 1}
+    assert by_day.get("negative", {}) == {}  # no longer the current sentiment
+
+
+def test_lead_with_non_positive_sentiment_not_counted():
     lid = om.add_lead("Bob", company="Beta", email="bob@beta.com")["id"]
     c0 = om.get_conn()
     wsid = resolve_workspace_identity(c0, "alpha")["id"]
     c0.close()
-    eid = om.log_event(lead_id=lid, event_type="lead_status_updated",
-                       direction="inbound", metadata={"lead_status_sentiment": "negative"})
+    _sentiment_event(lid, wsid, "negative", "2026-07-02T10:00:00")
     conn = om.get_conn()
-    append_workspace_event(conn, DEFAULT_ORG_ID, wsid, lid, event_id=eid,
-                           event_type="lead_status_updated", event_at="2026-07-02T10:00:00",
-                           idempotency_key="neg1")
-    conn.commit()
-    by_day = dq._positive_first_by_day(conn, wsid)
+    by_day = dq._sentiment_by_day(conn, wsid)
     conn.close()
-    assert by_day == {}
+    assert by_day.get("positive", {}) == {}
+    assert by_day.get("negative") == {"2026-07-02": 1}

@@ -893,7 +893,9 @@ def test_sender_domain_entity_key_and_sync_payload_round_trip(tmp_path):
 
     payload = psa.build_sender_domain_sync_payload(conn, "acmemail.com")
     conn.close()
-    assert payload == {"reseller": "inboxkit", "domain_cost": 7.0, "currency": "USD"}
+    # is_active travels so a decommissioned domain can be distinguished from a
+    # never-registered one on the far side; a live domain ships is_active=1.
+    assert payload == {"reseller": "inboxkit", "domain_cost": 7.0, "currency": "USD", "is_active": 1}
 
     # Simulate a different client applying the pulled payload to a bare row
     # it just created for this entity_key (mirrors ingest_agent_entry()'s

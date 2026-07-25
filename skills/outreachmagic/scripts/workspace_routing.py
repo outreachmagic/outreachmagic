@@ -1528,6 +1528,7 @@ def upsert_workspace_lead(
     owner_user_id: Optional[str] = None,
     current_status_label: Optional[str] = None,
     current_status_sentiment: Optional[str] = None,
+    current_sentiment_since: Optional[str] = None,
     contact_priority: Optional[int] = None,
 ) -> str:
     # INSERT OR IGNORE is atomic — eliminates the SELECT→INSERT race that causes
@@ -1537,15 +1538,22 @@ def upsert_workspace_lead(
     conn.execute(
         """INSERT OR IGNORE INTO workspace_leads (
                id, org_id, workspace_id, lead_id, status, owner_user_id,
-               current_status_label, current_status_sentiment, contact_priority,
+               current_status_label, current_status_sentiment, current_sentiment_since,
+               contact_priority,
                stage_entered_at, last_activity_at, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+                     COALESCE(?, CASE WHEN ? IS NOT NULL THEN datetime('now') END), ?,
                      datetime('now'), NULL, datetime('now'), datetime('now'))""",
+        # current_sentiment_since: an explicit anchor wins; otherwise, if a
+        # sentiment is being set on this fresh row, stamp now; else leave NULL.
         (ws_lead_id, org_id, workspace_id, lead_id, status, owner_user_id,
-         current_status_label, current_status_sentiment, contact_priority),
+         current_status_label, current_status_sentiment,
+         current_sentiment_since, current_status_sentiment,
+         contact_priority),
     )
     row = conn.execute(
-        """SELECT id, current_status_label, current_status_sentiment, contact_priority
+        """SELECT id, current_status_label, current_status_sentiment,
+                  current_sentiment_since, contact_priority
            FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?""",
         (workspace_id, lead_id),
     ).fetchone()
@@ -1562,6 +1570,16 @@ def upsert_workspace_lead(
     if current_status_sentiment is not None and current_status_sentiment != row["current_status_sentiment"]:
         extra_sets.append("current_status_sentiment = ?")
         extra_params.append(current_status_sentiment)
+        # Sentiment changed: stamp the run start. Prefer an explicit since from
+        # the caller (a snapshot carrying it); otherwise anchor to now.
+        extra_sets.append("current_sentiment_since = COALESCE(?, datetime('now'))")
+        extra_params.append(current_sentiment_since)
+    elif (current_sentiment_since is not None
+          and current_sentiment_since != row["current_sentiment_since"]):
+        # Sentiment unchanged but the snapshot carries a corrected run start
+        # (e.g. an earlier, backfilled anchor) — apply it without a spurious flip.
+        extra_sets.append("current_sentiment_since = ?")
+        extra_params.append(current_sentiment_since)
     if contact_priority is not None and contact_priority != row["contact_priority"]:
         extra_sets.append("contact_priority = ?")
         extra_params.append(contact_priority)

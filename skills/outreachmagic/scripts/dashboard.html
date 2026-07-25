@@ -371,7 +371,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <div id="daily-matrix"></div>
     </div>
     <div class="card">
-      <h2>Replies <span class="sub">actual inbound replies — all campaigns by default, for the selected range</span></h2>
+      <h2>Replies <span class="sub">one row per lead by current sentiment — matches the daily columns for the selected range</span></h2>
       <div class="controls">
         <label>Campaign
           <select id="replies-campaign"><option value="">All campaigns</option></select>
@@ -1724,14 +1724,14 @@ async function loadReplies() {
   const d = await getR("/api/campaigns/replies" + (cid ? `?campaign_id=${cid}` : ""))
     .catch(e => { toast(e.message); return null; });
   if (!d) return;
-  $("replies-count").textContent = `${fmt(d.replies.length)} repl${d.replies.length === 1 ? "y" : "ies"}`;
+  $("replies-count").textContent = `${fmt(d.replies.length)} lead${d.replies.length === 1 ? "" : "s"}`;
   renderTable("replies-table", [
     { key: "lead_name", label: "Lead", render: r => esc(r.lead_name || "—") },
     { key: "sentiment", label: "Sentiment", render: r => r.sentiment
         ? `<span class="flag ${SENTIMENT_FLAG[r.sentiment.toLowerCase()] ?? ""}">${esc(r.sentiment)}</span>` : "—" },
-    { key: "subject", label: "Subject", render: r => esc(r.subject || "—") },
+    { key: "subject", label: "Latest reply", render: r => esc(r.subject || "—") },
     { key: "campaign_name", label: "Campaign", render: r => esc(r.campaign_name || "—") },
-    { key: "event_at", label: "When", render: r => dt(r.event_at), sortVal: r => r.event_at || "" },
+    { key: "event_at", label: "Since", render: r => dt(r.event_at), sortVal: r => r.event_at || "" },
     { key: "li", label: "LinkedIn", sortVal: () => 0, render: r => r.linkedin_display_url
         ? `<a href="${esc(r.linkedin_display_url)}" target="_blank" rel="noopener">open ↗</a>` : "" },
     { key: "copy", label: "Copy", sortVal: () => 0, render: r => r.has_body
@@ -1745,7 +1745,8 @@ const DAILY_LABELS = {
   email_sent: "Email sent", email_received: "Email received",
   dm_sent: "DM sent", dm_received: "DM received",
   connects_sent: "Connects sent", connects_accepted: "Connects accepted",
-  bounces: "Bounces", interested: "Positive", not_interested: "Not interested",
+  bounces: "Bounces",
+  positive: "Positive", negative: "Negative", invalid: "Invalid", autoreply: "Autoreply",
   meetings: "Meetings",
 };
 

@@ -1345,6 +1345,19 @@ def ingest_relay_event(
             if status_sentiment:
                 mat_sets.append("current_status_sentiment = ?")
                 mat_params.append(status_sentiment)
+                # Stamp the entry time only when the sentiment actually changes
+                # (or was never set): a repeat of the same sentiment keeps the
+                # original run start, a flip back to it resets to this event. The
+                # CASE reads the OLD row because SQLite evaluates every SET RHS
+                # against the pre-update row.
+                sentiment_at = event_at or om.utc_now_for_storage()
+                mat_sets.append(
+                    "current_sentiment_since = CASE WHEN current_status_sentiment IS NULL "
+                    "OR lower(current_status_sentiment) <> lower(?) "
+                    "OR current_sentiment_since IS NULL THEN ? "
+                    "ELSE current_sentiment_since END"
+                )
+                mat_params.extend([status_sentiment, sentiment_at])
             mat_sets.append("updated_at = datetime('now')")
             mat_params.append(ws_lead_id)
             conn.execute(

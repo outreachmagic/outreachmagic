@@ -42,6 +42,22 @@ STAGE_EMOJI = {
 
 ATTRIBUTE_INSIGHT_FIELDS = ("title", "industry", "headcount")
 
+# Phone numbers carry two orthogonal facts, kept in two columns so neither can
+# be read as the other:
+#   label  — what KIND of number it is (who picks up)
+#   source — where we GOT it (which provider or import)
+# "the Google Maps number" is a `main` labelled number with source
+# `google_maps`; collapsing those into one string is how you end up unable to
+# ask either question.
+PHONE_LABELS = (
+    "mobile", "direct", "main", "hq", "branch", "fax", "whatsapp", "other",
+)
+PHONE_SOURCES = (
+    "google_maps", "apify", "serper", "apollo", "csv_import", "manual",
+    "crm", "sequencer",
+)
+PHONE_OWNER_TYPES = ("lead", "company")
+
 # What a lead row actually represents.
 #   contact            — a real person (the default; every existing lead is one)
 #   company_placeholder — a stand-in for a company with no known contact yet,

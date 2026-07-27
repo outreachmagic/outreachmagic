@@ -543,6 +543,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
   <div id="lead-tags" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-company-facts" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-emails" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+  <div id="lead-phones" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-custom" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-runs" style="border-top:1px solid var(--grid);padding-top:12px"></div>
 
@@ -1502,12 +1503,14 @@ async function openCompany(companyId) {
       ${emailChips ? `<h3 style="font-size:13px;margin-top:10px">Public emails</h3><div>${emailChips}</div>` : ""}
     </div>
     <div id="company-domains" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+    <div id="company-phones" style="border-top:1px solid var(--grid);padding-top:12px"></div>
     <div style="border-top:1px solid var(--grid);padding-top:12px">
       <h3 style="font-size:13px">Leads at this company (${d.lead_count}${d.lead_count >= 200 ? "+" : ""})</h3>
       <div id="company-leads"></div>
     </div>
     <div id="company-activity" style="border-top:1px solid var(--grid);padding-top:12px"></div>`;
   renderCompanyDomains(companyId);
+  renderPhones("company-phones", "company", companyId, "main");
   renderCompanyActivity(companyId);
   renderTable("company-leads", [
     { key: "name", label: "Name", render: r => esc(r.name || "—") },
@@ -2367,6 +2370,7 @@ async function openLead(leadId) {
   renderLeadTags(lead);
   renderLeadCompanyFacts(lead);
   renderLeadEmails(lead.id);
+  renderPhones("lead-phones", "lead", lead.id, "mobile");
   renderLeadCustomFields(lead.id);
   renderLeadProviderRuns(lead.id);
   // "to" side of each event: the lead's LinkedIn URL for LinkedIn events, else
@@ -2508,6 +2512,54 @@ async function renderLeadEmails(leadId) {
     const v = $("add-email-input").value.trim();
     if (!v) { toast("Enter an email"); return; }
     formResult("emails-msg", post(`/api/leads/${leadId}/emails`, { op: "add", email: v }), () => renderLeadEmails(leadId));
+  };
+}
+
+const PHONE_LABELS = ["mobile", "direct", "main", "hq", "branch", "fax", "whatsapp", "other"];
+const PHONE_SOURCES = ["manual", "google_maps", "apify", "serper", "apollo", "csv_import", "crm", "sequencer"];
+
+// One renderer for both panes — a lead's numbers and a company's numbers are
+// the same table with a different owner, and the endpoints mirror each other.
+async function renderPhones(elId, kind, ownerId, defaultLabel) {
+  const el = $(elId);
+  if (!el) return;
+  const base = kind === "lead" ? `/api/leads/${ownerId}/phones` : `/api/companies/${ownerId}/phones`;
+  el.innerHTML = '<h3 style="font-size:13px;margin:0 0 6px">Phone numbers</h3><div class="stale">Loading…</div>';
+  const d = await api(base).catch(() => null);
+  if (!d) { el.innerHTML = ""; return; }
+  const msgId = `${elId}-msg`;
+  const rows = (d.phones || []).map(p => {
+    const meta = [p.label, p.source].filter(Boolean).map(esc).join(" · ");
+    const right = p.is_primary
+      ? '<span class="flag ok">primary</span>'
+      : `<button class="small" data-promote="${esc(p.phone_e164)}">make primary</button>`;
+    return `<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:3px 0">
+      <span>${esc(p.phone_e164)} <span class="stale">${meta}</span></span>
+      <span style="display:flex;gap:6px;align-items:center">${right}
+        <button class="small" data-remove="${esc(p.phone_e164)}">remove</button></span></div>`;
+  }).join("");
+  el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Phone numbers</h3>
+    ${rows || '<div class="stale">No numbers on record.</div>'}
+    <div class="row" style="display:flex;gap:6px;margin-top:6px">
+      <input id="${elId}-input" placeholder="Add a number…" style="flex:2">
+      <select id="${elId}-label" style="flex:0 0 100px">${PHONE_LABELS.map(l =>
+        `<option ${l === defaultLabel ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <select id="${elId}-source" style="flex:0 0 120px">${PHONE_SOURCES.map(s => `<option>${s}</option>`).join("")}</select>
+      <button class="small" id="${elId}-add">Add</button>
+    </div>
+    <div class="msg" id="${msgId}"></div>`;
+  const reload = () => renderPhones(elId, kind, ownerId, defaultLabel);
+  el.querySelectorAll("[data-promote]").forEach(b => b.onclick = () =>
+    formResult(msgId, post(base, { op: "promote", phone: b.dataset.promote }), reload));
+  el.querySelectorAll("[data-remove]").forEach(b => b.onclick = () =>
+    formResult(msgId, post(base, { op: "remove", phone: b.dataset.remove }), reload));
+  $(`${elId}-add`).onclick = () => {
+    const v = $(`${elId}-input`).value.trim();
+    if (!v) { toast("Enter a phone number"); return; }
+    formResult(msgId, post(base, {
+      op: "add", phone: v,
+      label: $(`${elId}-label`).value, source: $(`${elId}-source`).value,
+    }), reload);
   };
 }
 

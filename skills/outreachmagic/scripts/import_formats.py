@@ -29,6 +29,12 @@ HEADER_ALIASES: dict[str, str] = {
     "member linkedin id": "_member_linkedin_id",
     "member linkedin sales nav id": "member linkedin sales nav id",
     "phone": "phone",
+    "phone number": "phone",
+    "mobile": "phone_mobile",
+    "mobile phone": "phone_mobile",
+    "cell": "phone_mobile",
+    "cell phone": "phone_mobile",
+    "company phone": "company_phone",
     "summary": "linkedin_bio",
     "headline": "linkedin_headline",
 }
@@ -63,6 +69,13 @@ PRESERVED_EXTRA_FIELDS = frozenset({
     "unified_lead_id",
     "source_id",
     "external_id",
+    # Phone columns route into the phone_numbers table, not personalization --
+    # they have to survive normalize_import_row() to get there.
+    "phone",
+    "phone_mobile",
+    "company_phone",
+    "phone_label",
+    "phone_source",
 })
 
 

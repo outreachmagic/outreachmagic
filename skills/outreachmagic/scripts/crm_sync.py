@@ -226,7 +226,7 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
                l.headcount_numeric,
                l.linkedin_url, l.company,
                l.original_source, l.original_source_detail,
-               l.latest_source_detail,
+               l.latest_source_detail, l.company_id,
                c.name AS company_name, c.domain AS company_domain
           FROM workspace_leads wl
           JOIN leads l ON l.id = wl.lead_id
@@ -252,6 +252,26 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
             add_map.setdefault(ar["lead_id"], []).append(ar["email"])
         for lead in leads:
             lead["additional_emails"] = add_map.get(lead["lead_id"], [])
+
+        # The CRM drivers already read lead_data["phone"] (hubspot.py:205,
+        # ghl.py:263) -- until now nothing ever populated it. Prefer the
+        # person's own number; fall back to the company switchboard, which is
+        # what a Google Maps import gives you and is still a better answer
+        # than an empty field. Never the fax.
+        import phone_numbers
+
+        lead_phones = phone_numbers.primary_phone_map(conn, "lead", lead_ids)
+        company_ids = sorted({
+            l["company_id"] for l in leads
+            if l.get("company_id") and l["lead_id"] not in lead_phones
+        })
+        company_phones = phone_numbers.primary_phone_map(
+            conn, "company", company_ids, labels=("main", "hq", "direct"))
+        for lead in leads:
+            lead["phone"] = (
+                lead_phones.get(lead["lead_id"])
+                or company_phones.get(lead.get("company_id"))
+            )
     return leads
 
 
@@ -379,6 +399,7 @@ def _build_sync_hash(lead: dict, contact_field_mapping: dict | None,
         lead.get("industry", ""),
         lead.get("headcount", ""),
         lead.get("linkedin_url", ""),
+        lead.get("phone") or "",
         lead.get("company_name", ""),
         lead.get("company_domain", ""),
         lead.get("status", ""),

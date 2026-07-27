@@ -34,6 +34,9 @@ Detailed procedures moved from SKILL.md for progressive disclosure. Load this fi
 | `contact_order` | Integer `contact_priority` on workspace_leads (requires `--workspace`) |
 | `is_connected_linkedin` | Sets connected status (requires `--workspace` + `--sender-profile`) |
 | `is_linkedin_request_pending` | Sets pending status (requires `--workspace` + `--sender-profile`) |
+| `phone` / `phone_mobile` | Stored in `phone_numbers` on the **lead** (labels `direct` / `mobile`) |
+| `company_phone` | Stored in `phone_numbers` on the **company** (label `main`) |
+| `phone_label` / `phone_source` | Override the label/source applied to that row's numbers |
 
 ### Normalization rules
 
@@ -56,6 +59,32 @@ python3 scripts/pipeline.py apply-email-find-results \
 ```
 
 Updates email, workspace tags, and provider verification in one pass. Requires `--workspace`. Run `sync` after when pending snapshots reported.
+
+## Phone numbers
+
+Numbers live in the `phone_numbers` table, not in personalization — personalization
+holds one value per field (so it cannot hold a mobile *and* a switchboard), cannot
+normalize, and is a user namespace a client's own `phone` column would collide with.
+
+Two columns, deliberately separate:
+
+- **`label`** — what kind of number: `mobile · direct · main · hq · branch · fax · whatsapp · other`
+- **`source`** — where it came from: `google_maps · apify · serper · apollo · csv_import · manual · crm · sequencer`
+
+So "the Google Maps number" is `label=main, source=google_maps`. Owners are leads or
+companies; org-wide, no `--workspace`.
+
+```bash
+python3 scripts/pipeline.py phone list    --lead-id 42
+python3 scripts/pipeline.py phone add     --lead-id 42 --phone "(612) 555-0143" --label mobile --source apollo
+python3 scripts/pipeline.py phone add     --company-id 7 --phone "612-555-0100" --label main --source google_maps
+python3 scripts/pipeline.py phone promote --lead-id 42 --phone "612-555-0143"
+python3 scripts/pipeline.py phone remove  --lead-id 42 --phone "612-555-0143"
+```
+
+Numbers are stored E.164-normalized, so reformatting doesn't create duplicates. The
+first number on an owner becomes primary automatically. **CRM sync** maps a lead's
+primary number, falling back to the company's `main`/`hq`/`direct` — never the fax.
 
 ## Personalization (mail-merge)
 

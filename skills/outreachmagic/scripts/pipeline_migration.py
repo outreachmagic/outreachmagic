@@ -1806,6 +1806,41 @@ def migrate_db(conn=None):
         );
         CREATE INDEX IF NOT EXISTS idx_lead_emails_lead ON lead_emails(lead_id);
         CREATE INDEX IF NOT EXISTS idx_lead_emails_email ON lead_emails(email);
+        -- Phone numbers for leads AND companies in one polymorphic table.
+        --
+        -- Not personalization fields: personalization is a single value per
+        -- (entity, name), so it cannot hold a mobile and a switchboard number
+        -- at once, cannot normalize, and cannot dedup. Worse, it is a user
+        -- namespace -- a client whose CSV has its own `phone` column would
+        -- collide with the field CRM sync maps, which is exactly the failure
+        -- mode `record_type` was made native to avoid.
+        --
+        -- owner_type is TEXT rather than two nullable FK columns so the same
+        -- add/promote/remove verbs serve both entities. The cost is no FK, so
+        -- deletes are swept by the triggers below rather than ON DELETE CASCADE.
+        CREATE TABLE IF NOT EXISTS phone_numbers (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_type  TEXT NOT NULL,           -- 'lead' | 'company'
+            owner_id    INTEGER NOT NULL,
+            phone_e164  TEXT NOT NULL,           -- normalized; the dedup key
+            phone_raw   TEXT,                    -- exactly as sourced
+            label       TEXT NOT NULL DEFAULT 'other',
+            source      TEXT,                    -- provider slug
+            is_primary  INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (owner_type, owner_id, phone_e164)
+        );
+        CREATE INDEX IF NOT EXISTS idx_phone_numbers_owner ON phone_numbers(owner_type, owner_id);
+        CREATE INDEX IF NOT EXISTS idx_phone_numbers_e164 ON phone_numbers(phone_e164);
+        CREATE TRIGGER IF NOT EXISTS trg_phone_numbers_lead_delete
+        AFTER DELETE ON leads BEGIN
+            DELETE FROM phone_numbers WHERE owner_type = 'lead' AND owner_id = OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_phone_numbers_company_delete
+        AFTER DELETE ON companies BEGIN
+            DELETE FROM phone_numbers WHERE owner_type = 'company' AND owner_id = OLD.id;
+        END;
         CREATE TABLE IF NOT EXISTS provider_batch_jobs (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             provider        TEXT NOT NULL,

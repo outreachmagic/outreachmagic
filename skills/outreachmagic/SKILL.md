@@ -239,6 +239,8 @@ pipeline.py query engagement --workspace W --since 48h --json
 pipeline.py query replies --workspace W --since 7d --json
 pipeline.py workspace summary --workspace W --json
 pipeline.py copy-insights --lead-status interested --json
+pipeline.py phone list --lead-id 42                # numbers on a lead (or --company-id)
+pipeline.py phone add --lead-id 42 --phone "612-555-0143" --label mobile --source apollo
 pipeline.py status                                # dashboard overview
 pipeline.py connections                           # webhook URLs + event counts
 pipeline.py connect-platform --platform smartlead # generate webhook URL

@@ -1869,6 +1869,10 @@ def merge_leads(
                 "INSERT OR IGNORE INTO lead_emails (lead_id, email, is_primary) VALUES (?, ?, 0)",
                 (keep_id, merged_email_norm),
             )
+        # Same treatment for phone numbers as for the email above: carry them to
+        # the survivor before the DELETE fires trg_phone_numbers_lead_delete.
+        import phone_numbers as _phones
+        _phones.reassign_owner(conn, "lead", merge_id, keep_id)
         conn.execute(
             """INSERT INTO lead_merges (keep_id, merge_id, reason, merge_entity_key, relay_delete_pushed)
                VALUES (?, ?, ?, ?, 0)""",
@@ -2044,6 +2048,11 @@ def merge_companies(
         hq_city = (keep["hq_city"] or "") or (other["hq_city"] or "") or None
         hq_state = (keep["hq_state"] or "") or (other["hq_state"] or "") or None
         hq_country = (keep["hq_country"] or "") or (other["hq_country"] or "") or None
+
+        # Move the loser's phone numbers before the DELETE below fires
+        # trg_phone_numbers_company_delete.
+        import phone_numbers as _phones
+        _phones.reassign_owner(conn, "company", merge_id, keep_id)
 
         merge_entity_key = company_entity_key(conn, merge_id)
         conn.execute(
@@ -3065,6 +3074,16 @@ CANONICAL_SOURCE_IMPORT_FIELDS = (
     "latest_source", "latest_source_detail",
 )
 
+# Phone columns route into the `phone_numbers` table (see phone_numbers.py),
+# NOT into personalization. Reserved for the same reason as the provenance
+# columns above: a client CSV with a `phone` header must not be able to mint a
+# `personalized_phone` field that then competes with the number CRM sync maps.
+# `phone_label` / `phone_source` annotate the row's own number rather than
+# being numbers themselves.
+PHONE_IMPORT_FIELDS = (
+    "phone", "phone_mobile", "company_phone", "phone_label", "phone_source",
+)
+
 IMPORT_EXTRA_FIELDS = (
     "company_domain", "personalized_first_name", "personalized_company_name",
     "is_connected_linkedin", "is_linkedin_request_pending", "linkedin_connected_at",
@@ -3076,6 +3095,7 @@ IMPORT_EXTRA_FIELDS = (
     "last_message_sent", "last_message_received",
     "member linkedin sales nav id", "linkedin_sales_nav_id", "sales_nav_id",
     "linkedin_headline", "linkedin_bio",
+    *PHONE_IMPORT_FIELDS,
 )
 
 # Deliberately a curated SUBSET of IMPORT_EXTRA_FIELDS, not the whole tuple --
@@ -3117,6 +3137,7 @@ RESERVED_IMPORT_FIELDS = frozenset([
     "external_id", "notes", "last_message_sent", "last_message_received",
     "member linkedin sales nav id", "linkedin_sales_nav_id", "sales_nav_id",
     "linkedin_headline", "linkedin_bio",
+    *PHONE_IMPORT_FIELDS,
 ])
 
 def csv_import_source_fields(
@@ -3149,6 +3170,67 @@ def csv_import_latest_source_fields(
         (extra.get("latest_source") or "").strip() or None,
         (extra.get("latest_source_detail") or "").strip() or None,
     )
+
+
+def _import_phone_numbers(
+    lead_id: int,
+    profile: dict,
+    extra: dict,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+    summary: Optional[dict] = None,
+) -> int:
+    """Route a row's phone columns into `phone_numbers`.
+
+    `phone` / `phone_mobile` belong to the person; `company_phone` belongs to
+    the company the lead resolved to, so it is stored once against the company
+    rather than copied onto every contact there.
+
+    A bad number is not an import error. A CSV with one unparseable phone in
+    row 4,000 should still import row 4,000 -- the number is dropped and
+    counted, the lead lands.
+    """
+    import phone_numbers as _phones
+
+    label_override = (extra.get("phone_label") or "").strip().lower() or None
+    source_override = (extra.get("phone_source") or "").strip().lower() or None
+    written = 0
+
+    def _write(owner_type: str, owner_id: int, raw: str, default_label: str) -> None:
+        nonlocal written
+        try:
+            _phones.add_phone(
+                owner_type, owner_id, raw,
+                label=label_override or default_label,
+                source=source_override or "csv_import",
+                conn=conn,
+            )
+            written += 1
+        except _phones.PhoneNumberError:
+            if summary is not None:
+                summary["phones_skipped"] = summary.get("phones_skipped", 0) + 1
+
+    for key, default_label in (("phone", "direct"), ("phone_mobile", "mobile")):
+        raw = str(profile.get(key) or extra.get(key) or "").strip()
+        if raw:
+            _write("lead", lead_id, raw, default_label)
+
+    company_raw = str(extra.get("company_phone") or "").strip()
+    if company_raw:
+        own_conn = conn is None
+        cconn = conn or get_conn()
+        try:
+            row = cconn.execute(
+                "SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        finally:
+            if own_conn:
+                cconn.close()
+        if row and row["company_id"]:
+            _write("company", row["company_id"], company_raw, "main")
+
+    if written and summary is not None:
+        summary["phones_written"] = summary.get("phones_written", 0) + written
+    return written
 
 
 def detect_company_placeholder(profile: dict, extra: dict) -> bool:
@@ -3830,6 +3912,8 @@ def import_profiles(
         "personalized": 0,
         "tagged": 0,
         "company_placeholders": 0,
+        "phones_written": 0,
+        "phones_skipped": 0,
         "weak_identity_count": 0,
         "import_key_only_count": 0,
         "skipped_no_identity": 0,
@@ -4057,6 +4141,8 @@ def import_profiles(
                     li_conn.commit()
             if li_conn is not shared_conn:
                 li_conn.close()
+
+        _import_phone_numbers(lead_id, profile, extra, conn=shared_conn, summary=summary)
 
         lead_items = []
         co_items = []

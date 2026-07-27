@@ -19,6 +19,7 @@ import pipeline_dedup
 import pipeline_lead_review
 import query_cli
 import review_cloud
+from constants import PHONE_LABELS, PHONE_SOURCES
 import routing_cloud
 import workspace_archive
 
@@ -536,6 +537,31 @@ def main():
         help="Fix malformed workspace tags (e.g. \"['nace']\" -> nace)",
     )
     tag_repair_p.add_argument("--dry-run", action="store_true", help="Preview fixes without writing")
+
+    phone_p = sub.add_parser(
+        "phone",
+        help="Phone numbers for a lead or a company (org-wide, no --workspace)",
+    )
+    phone_sub = phone_p.add_subparsers(dest="phone_action")
+    for _name, _help in (
+        ("list", "List numbers on a lead or company"),
+        ("add", "Attach a number"),
+        ("promote", "Make a number the primary"),
+        ("remove", "Detach a number"),
+    ):
+        _pp = phone_sub.add_parser(_name, help=_help)
+        _pp.add_argument("--lead-id", type=int)
+        _pp.add_argument("--company-id", type=int)
+        if _name != "list":
+            _pp.add_argument("--phone", required=True)
+        if _name == "add":
+            _pp.add_argument("--label", default="other",
+                             choices=list(PHONE_LABELS),
+                             help="What kind of number it is")
+            _pp.add_argument("--source", choices=list(PHONE_SOURCES),
+                             help="Where the number came from")
+            _pp.add_argument("--primary", action="store_true",
+                             help="Make it the primary number")
 
     bj_p = sub.add_parser(
         "batch-job",
@@ -2982,6 +3008,38 @@ def main():
                 print(json.dumps(_pipeline.tag_bulk(ws_id, lead_ids, tags_list, remove=getattr(args, "remove", False))))
         else:
             print(json.dumps({"error": "tag subcommand required: add, remove, set, list, bulk, repair"}))
+    elif args.command == "phone":
+        import phone_numbers
+
+        action = getattr(args, "phone_action", None)
+        if not action:
+            print(json.dumps({"error": "phone subcommand required: list, add, promote, remove"}))
+            sys.exit(1)
+        lead_id = getattr(args, "lead_id", None)
+        company_id = getattr(args, "company_id", None)
+        if bool(lead_id) == bool(company_id):
+            print(json.dumps({"error": "exactly one of --lead-id or --company-id is required"}))
+            sys.exit(1)
+        owner_type = "lead" if lead_id else "company"
+        owner_id = lead_id or company_id
+        try:
+            if action == "list":
+                out = phone_numbers.list_phones(owner_type, owner_id)
+            elif action == "add":
+                out = phone_numbers.add_phone(
+                    owner_type, owner_id, args.phone,
+                    label=getattr(args, "label", "other"),
+                    source=getattr(args, "source", None),
+                    is_primary=getattr(args, "primary", False),
+                )
+            elif action == "promote":
+                out = phone_numbers.promote_phone(owner_type, owner_id, args.phone)
+            else:
+                out = phone_numbers.remove_phone(owner_type, owner_id, args.phone)
+        except phone_numbers.PhoneNumberError as exc:
+            print(json.dumps({"error": str(exc)}))
+            sys.exit(1)
+        print(json.dumps(out, indent=2))
     elif args.command == "batch-job":
         bj_action = getattr(args, "batch_job_action", None)
         if bj_action == "record":

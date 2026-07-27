@@ -179,6 +179,29 @@ def lead_email_action(lead_id: int, op: str, email: str) -> dict:
     raise ValueError("op must be 'add' or 'promote'")
 
 
+def phone_action(owner_type: str, owner_id: int, body: dict) -> dict:
+    """add / promote / remove a phone number on a lead or company."""
+    import phone_numbers
+
+    op = (body.get("op") or "add").strip().lower()
+    phone = body.get("phone") or ""
+    try:
+        if op == "add":
+            return phone_numbers.add_phone(
+                owner_type, owner_id, phone,
+                label=body.get("label") or "other",
+                source=body.get("source") or "manual",
+                is_primary=bool(body.get("is_primary")),
+            )
+        if op == "promote":
+            return phone_numbers.promote_phone(owner_type, owner_id, phone)
+        if op == "remove":
+            return phone_numbers.remove_phone(owner_type, owner_id, phone)
+    except phone_numbers.PhoneNumberError as exc:
+        raise ValueError(str(exc)) from exc
+    raise ValueError("op must be 'add', 'promote' or 'remove'")
+
+
 COMPANY_EDITABLE_FIELDS = (
     "name", "industry", "headcount", "hq_city", "hq_state", "hq_country",
 )

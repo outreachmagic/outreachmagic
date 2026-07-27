@@ -478,6 +478,24 @@ def handle_lead_emails(match, query, body):
     return 200, lead_emails.list_lead_emails(int(match.group(1)))
 
 
+def handle_lead_phones(match, query, body):
+    import phone_numbers
+    return 200, phone_numbers.list_phones("lead", int(match.group(1)))
+
+
+def handle_company_phones(match, query, body):
+    import phone_numbers
+    return 200, phone_numbers.list_phones("company", int(match.group(1)))
+
+
+def handle_lead_phone_action(match, query, body):
+    return 200, dashboard_actions.phone_action("lead", int(match.group(1)), body or {})
+
+
+def handle_company_phone_action(match, query, body):
+    return 200, dashboard_actions.phone_action("company", int(match.group(1)), body or {})
+
+
 def handle_lead_custom_fields(match, query, body):
     conn = get_conn()
     try:
@@ -644,6 +662,8 @@ ROUTES = [
     ("GET", re.compile(r"^/api/domains/detail$"), handle_domain_detail),
     ("GET", re.compile(r"^/api/leads/(\d+)/history$"), handle_lead_history),
     ("GET", re.compile(r"^/api/leads/(\d+)/emails$"), handle_lead_emails),
+    ("GET", re.compile(r"^/api/leads/(\d+)/phones$"), handle_lead_phones),
+    ("GET", re.compile(r"^/api/companies/(\d+)/phones$"), handle_company_phones),
     ("GET", re.compile(r"^/api/leads/(\d+)/custom-fields$"), handle_lead_custom_fields),
     ("GET", re.compile(r"^/api/leads/(\d+)/provider-runs$"), handle_lead_provider_runs),
     ("GET", re.compile(r"^/api/events/(\d+)/body$"), handle_event_body),
@@ -662,6 +682,8 @@ ROUTES = [
     ("POST", re.compile(r"^/api/leads/(\d+)/identity$"), handle_lead_identity),
     ("POST", re.compile(r"^/api/leads/(\d+)/custom-fields$"), handle_lead_custom_field_set),
     ("POST", re.compile(r"^/api/leads/(\d+)/emails$"), handle_lead_email_action),
+    ("POST", re.compile(r"^/api/leads/(\d+)/phones$"), handle_lead_phone_action),
+    ("POST", re.compile(r"^/api/companies/(\d+)/phones$"), handle_company_phone_action),
     ("POST", re.compile(r"^/api/leads/(\d+)/events$"), handle_log_event),
     ("POST", re.compile(r"^/api/leads/(\d+)/link-company$"), handle_link_company),
     ("POST", re.compile(r"^/api/leads/bulk-link-company$"), handle_bulk_link_company),

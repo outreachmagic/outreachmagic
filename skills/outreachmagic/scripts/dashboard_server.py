@@ -121,7 +121,16 @@ def handle_companies(conn, ws_id, match, query):
         conn, ws_id, q=_q(query, "q"),
         sort=_q(query, "sort", "leads"),
         limit=_int_q(query, "limit", 50, lo=1, hi=200),
-        offset=_int_q(query, "offset", 0, hi=10_000_000))
+        offset=_int_q(query, "offset", 0, hi=10_000_000),
+        tag=_q(query, "tag"),
+        missing_domain=_bool_q(query, "missing_domain"),
+        no_reachable_contact=_bool_q(query, "no_reachable_contact"),
+        placeholder_only=_bool_q(query, "placeholder_only"))
+
+
+@_workspace_scoped
+def handle_companies_stats(conn, ws_id, match, query):
+    return dashboard_queries.companies_stats(conn, ws_id)
 
 
 @_workspace_scoped
@@ -439,7 +448,8 @@ def handle_campaign_replies(conn, ws_id, match, query):
         conn, ws_id,
         campaign_id=int(campaign_id) if campaign_id else None,
         since=_q(query, "since"), until=_q(query, "until"),
-        limit=_int_q(query, "limit", 200, lo=1, hi=500))
+        limit=_int_q(query, "limit", 200, lo=1, hi=500),
+        sentiment=_q(query, "sentiment"), status_label=_q(query, "status_label"))
 
 
 @_workspace_scoped
@@ -654,6 +664,7 @@ ROUTES = [
     ("GET", re.compile(r"^/api/cleanup/preview$"), handle_cleanup_preview),
     ("GET", re.compile(r"^/api/cleanup/empty-leads/preview$"), handle_empty_leads_preview),
     ("GET", re.compile(r"^/api/companies$"), handle_companies),
+    ("GET", re.compile(r"^/api/companies/stats$"), handle_companies_stats),
     ("GET", re.compile(r"^/api/companies/search$"), handle_company_search),
     ("GET", re.compile(r"^/api/companies/(\d+)$"), handle_company_detail),
     ("GET", re.compile(r"^/api/companies/(\d+)/contact-activity$"), handle_company_contact_activity),

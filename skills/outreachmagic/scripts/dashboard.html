@@ -321,6 +321,10 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
 
   <section id="tab-companies" hidden>
     <div class="card">
+      <h2>Account coverage <span class="sub">how many accounts you can reach, and how deep you are inside them</span></h2>
+      <div id="companies-stats"></div>
+    </div>
+    <div class="card">
       <h2>Companies <span class="sub">click a company to edit, see branches &amp; leads</span></h2>
       <div class="controls">
         <input id="companies-q" placeholder="Search name / domain / industry…" style="width:280px">
@@ -328,6 +332,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           <option value="leads">Sort: most leads</option>
           <option value="name">Sort: name</option>
         </select>
+        <span id="companies-active-filters"></span>
         <span class="spacer"></span>
         <button id="merge-toggle" class="small">Review merges</button>
       </div>
@@ -396,6 +401,12 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <div class="controls">
         <label>Campaign
           <select id="replies-campaign"><option value="">All campaigns</option></select>
+        </label>
+        <label>Sentiment
+          <select id="replies-sentiment"><option value="">All</option></select>
+        </label>
+        <label>Lead status
+          <select id="replies-status"><option value="">All</option></select>
         </label>
         <span class="spacer"></span>
         <span id="replies-count" class="stale"></span>
@@ -958,7 +969,9 @@ $("tabs").onclick = (e) => {
 
 function loadTab() {
   ({ deliverability: loadDeliverability, pipeline: loadPipeline,
-     contacts: loadContacts, companies: loadCompanies, quality: loadQuality,
+     contacts: loadContacts,
+     companies: () => { loadCompaniesStats(); loadCompanies(); },
+     quality: loadQuality,
      campaigns: loadCampaigns,
      attributes: loadAttributes, crm: loadCrm,
      activity: () => loadActivity(true), sync: loadOutbox })[state.tab]();
@@ -1437,7 +1450,34 @@ $("contacts-next").onclick = () => { contactsState.offset += contactsState.limit
 
 /* ---------- companies (Section C) ---------- */
 const companiesState = { offset: 0, limit: 50 };
+const companiesFilters = {};   // tag / missing_domain / no_reachable_contact / placeholder_only
 let companiesTimer = null;
+
+// Every stat tile is a filter on this same list, so a number you click always
+// lands on the rows it counted.
+function setCompaniesFilter(patch) {
+  for (const k of ["tag", "missing_domain", "no_reachable_contact", "placeholder_only"]) delete companiesFilters[k];
+  Object.assign(companiesFilters, patch);
+  state.tab = "companies";
+  loadCompanies();
+}
+
+function renderCompaniesFilterChips() {
+  const el = $("companies-active-filters");
+  const keys = Object.keys(companiesFilters);
+  const LABELS = {
+    missing_domain: "missing domain",
+    no_reachable_contact: "no reachable contact",
+    placeholder_only: "placeholder only",
+  };
+  el.innerHTML = keys.length
+    ? keys.map(k => `<button class="small" data-clear="${k}">${esc(k === "tag" ? `tag: ${companiesFilters.tag}` : LABELS[k] || k)} ✕</button>`).join(" ")
+    : "";
+  el.querySelectorAll("[data-clear]").forEach(b => b.onclick = () => {
+    delete companiesFilters[b.dataset.clear];
+    loadCompanies();
+  });
+}
 
 async function loadCompanies(resetOffset = true) {
   if (resetOffset) companiesState.offset = 0;
@@ -1445,8 +1485,11 @@ async function loadCompanies(resetOffset = true) {
     q: $("companies-q").value.trim(), sort: $("companies-sort").value,
     limit: companiesState.limit, offset: companiesState.offset,
   });
+  for (const [k, v] of Object.entries(companiesFilters)) if (v) p.set(k, v);
+  renderCompaniesFilterChips();
+  $("companies-table").innerHTML = '<div class="stale">Loading…</div>';
   const d = await get("/api/companies?" + p.toString()).catch(e => { toast(e.message); return null; });
-  if (!d) return;
+  if (!d) { $("companies-table").innerHTML = ""; return; }
   renderTable("companies-table", [
     { key: "name", label: "Company", render: r => esc(r.name || "—") },
     { key: "domain", label: "Primary domain", render: r => esc(r.domain ?? "–") },
@@ -1454,12 +1497,59 @@ async function loadCompanies(resetOffset = true) {
       render: r => r.domains > 1 ? `<b>${r.domains}</b>` : (r.domains || 0) },
     { key: "industry", label: "Industry", render: r => esc(r.industry ?? "–") },
     { key: "headcount", label: "Size", render: r => esc(r.headcount ?? "–") },
+    { key: "tags", label: "Tags", sortVal: r => (r.tags || []).join(","),
+      render: r => esc((r.tags || []).join(", ")) || "–" },
     { key: "leads", label: "Leads", num: true, render: r => fmt(r.leads) },
   ], d.companies, { empty: "No companies match.", filter: false,
     onRowClick: r => openCompany(r.id) });
   $("companies-page").textContent = `${companiesState.offset + 1}–${companiesState.offset + d.companies.length}`;
   $("companies-prev").disabled = companiesState.offset === 0;
   $("companies-next").disabled = !d.has_more;
+}
+
+function loadCompaniesStats() {
+  // Not range-filtered — coverage is a workspace-wide inventory, same as the
+  // contacts stats above it.
+  return get("/api/companies/stats").then(d => {
+    if (!d) return;
+    const o = d.overall || {};
+    const cell = (label, value, patch) =>
+      `<div class="stat-cell"${patch ? ` data-patch='${esc(JSON.stringify(patch))}'` : ""}>
+         <div class="label">${label}</div><div class="value">${fmt(value || 0)}</div></div>`;
+    const tags = (d.by_tag || []).filter(t => t.companies > 0);
+    const tagRows = tags.map(t => `<tr data-tag="${esc(t.tag)}">
+        <td class="clip" style="max-width:220px"><button class="linklike">${esc(t.tag)}</button></td>
+        <td class="num">${fmt(t.companies)}</td>
+        <td class="num">${fmt(t.with_reachable_contact)}</td>
+        <td class="num">${fmt(t.no_reachable_contact)}</td>
+        <td class="num">${fmt(t.contacted)}</td>
+        <td class="num">${fmt(t.replied)}</td>
+        <td class="num">${fmt(t.positive)}</td>
+      </tr>`).join("");
+    $("companies-stats").innerHTML = `
+      <div class="stale" style="margin-bottom:6px">${fmt(o.companies)} companies with at least one lead here ·
+        ${o.avg_contacts_per_company ?? 0} contacts each on average — click a number to filter the list</div>
+      <div class="stat-grid">
+        ${cell("Reachable", o.with_reachable_contact)}
+        ${cell("No reachable contact", o.no_reachable_contact, { no_reachable_contact: "1" })}
+        ${cell("Placeholder only", o.placeholder_only, { placeholder_only: "1" })}
+        ${cell("Contacted", o.contacted)}
+        ${cell("Replied", o.replied)}
+        ${cell("Positive", o.positive)}
+        ${cell("Missing domain", o.missing_domain, { missing_domain: "1" })}
+        ${cell("Missing industry", o.missing_industry)}
+        ${cell("Missing headcount", o.missing_headcount)}
+      </div>
+      ${tags.length ? `<div style="margin-top:12px;overflow-x:auto"><table class="stat-table">
+        <thead><tr><th>Tag</th><th class="num">Companies</th><th class="num">Reachable</th>
+          <th class="num">No contact</th><th class="num">Contacted</th><th class="num">Replied</th>
+          <th class="num">Positive</th></tr></thead>
+        <tbody>${tagRows}</tbody></table></div>` : ""}`;
+    $("companies-stats").querySelectorAll(".stat-cell[data-patch]").forEach(c =>
+      c.onclick = () => setCompaniesFilter(JSON.parse(c.dataset.patch)));
+    $("companies-stats").querySelectorAll("tr[data-tag] .linklike").forEach(b =>
+      b.onclick = () => setCompaniesFilter({ tag: b.closest("tr").dataset.tag }));
+  }).catch(() => {});
 }
 $("companies-q").oninput = () => { clearTimeout(companiesTimer); companiesTimer = setTimeout(() => loadCompanies(), 300); };
 $("companies-sort").onchange = () => loadCompanies();
@@ -1952,11 +2042,30 @@ function fillCampaignSelects() {
 $("daily-campaign").onchange = loadCampaigns;
 
 const SENTIMENT_FLAG = { positive: "ok", negative: "bad", autoreply: "warn", invalid: "warn", neutral: "" };
+// The facets come back computed BEFORE the sentiment/status filters apply, so
+// each dropdown keeps offering every value available for the current campaign
+// and date range — choosing "positive" must not strip the status dropdown down
+// to the labels that happen to be positive.
+function fillReplyFacet(id, rows) {
+  const sel = $(id);
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All</option>' + rows.map(f =>
+    `<option value="${esc(f.value)}">${esc(f.value)} (${fmt(f.n)})</option>`).join("");
+  sel.value = rows.some(f => f.value === cur) ? cur : "";
+}
+
 async function loadReplies() {
+  const qs = new URLSearchParams();
   const cid = $("replies-campaign").value;
-  const d = await getR("/api/campaigns/replies" + (cid ? `?campaign_id=${cid}` : ""))
+  if (cid) qs.set("campaign_id", cid);
+  if ($("replies-sentiment").value) qs.set("sentiment", $("replies-sentiment").value);
+  if ($("replies-status").value) qs.set("status_label", $("replies-status").value);
+  $("replies-table").innerHTML = '<div class="stale">Loading…</div>';
+  const d = await getR("/api/campaigns/replies" + (qs.toString() ? `?${qs}` : ""))
     .catch(e => { toast(e.message); return null; });
-  if (!d) return;
+  if (!d) { $("replies-table").innerHTML = ""; $("replies-count").textContent = ""; return; }
+  fillReplyFacet("replies-sentiment", d.facets?.sentiment || []);
+  fillReplyFacet("replies-status", d.facets?.status_label || []);
   $("replies-count").textContent = `${fmt(d.replies.length)} lead${d.replies.length === 1 ? "" : "s"}`;
   renderTable("replies-table", [
     { key: "lead_name", label: "Lead", render: r => esc(r.lead_name || "—") },
@@ -1973,7 +2082,7 @@ async function loadReplies() {
   ], d.replies, { empty: "No replies in this range.",
     onRowClick: r => openLead(r.lead_id) });
 }
-$("replies-campaign").onchange = loadReplies;
+for (const id of ["replies-campaign", "replies-sentiment", "replies-status"]) $(id).onchange = loadReplies;
 
 const DAILY_LABELS = {
   email_sent: "Email sent", email_received: "Email received",

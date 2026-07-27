@@ -687,6 +687,8 @@ def campaign_replies(
     since: Optional[str] = None,
     until: Optional[str] = None,
     limit: int = 200,
+    sentiment: Optional[str] = None,
+    status_label: Optional[str] = None,
 ) -> dict:
     """One row per lead that currently carries a sentiment, anchored on the day
     it entered that sentiment (current_sentiment_since) — NOT one row per reply
@@ -694,6 +696,13 @@ def campaign_replies(
     day and sentiment reproduces that day's sentiment column exactly, because
     both read the same materialized anchor. The lead's most recent reply (if
     any) supplies the subject/copy for context.
+
+    `sentiment` / `status_label` narrow the list. The returned `facets` are
+    computed BEFORE those two apply, so each dropdown always offers every value
+    available for the current campaign and date selection — picking "positive"
+    must not empty the status-label dropdown of everything except the labels
+    that happen to be positive. Both come back in one round trip; a separate
+    facets endpoint would race the list against its own filter options.
     """
     from workspace_routing import linkedin_display_url
 
@@ -701,12 +710,41 @@ def campaign_replies(
     # Range applies to the sentiment anchor so this list reconciles with the
     # daily sentiment columns rather than the raw reply timestamps.
     range_sql, range_params = _range_clause(since, until, "wl.current_sentiment_since")
-    params: list = [workspace_id, *range_params]
+    base_params: list = [workspace_id, *range_params]
     camp = ""
     if campaign_id is not None:
         camp = (" AND wl.lead_id IN (SELECT lead_id FROM campaign_leads"
                 " WHERE campaign_id = ?)")
-        params.append(int(campaign_id))
+        base_params.append(int(campaign_id))
+
+    base_where = f"""wl.workspace_id = ?
+          AND wl.current_status_sentiment IS NOT NULL
+          AND wl.current_sentiment_since IS NOT NULL{range_sql}{camp}"""
+
+    facets = {
+        key: [
+            dict(r) for r in conn.execute(
+                f"""SELECT {col} AS value, COUNT(*) AS n
+                      FROM workspace_leads wl
+                     WHERE {base_where} AND {col} IS NOT NULL AND TRIM({col}) != ''
+                     GROUP BY {col} ORDER BY n DESC, {col}""",
+                base_params,
+            ).fetchall()
+        ]
+        for key, col in (
+            ("sentiment", "wl.current_status_sentiment"),
+            ("status_label", "wl.current_status_label"),
+        )
+    }
+
+    params = list(base_params)
+    narrow = ""
+    if sentiment:
+        narrow += " AND LOWER(wl.current_status_sentiment) = LOWER(?)"
+        params.append(sentiment)
+    if status_label:
+        narrow += " AND LOWER(wl.current_status_label) = LOWER(?)"
+        params.append(status_label)
     params.append(limit)
     rows = conn.execute(
         f"""
@@ -729,9 +767,7 @@ def campaign_replies(
               AND {reply_cond.replace('event_type', 'e2.event_type').replace('direction', 'e2.direction')}
             ORDER BY wle2.event_at DESC, wle2.id DESC LIMIT 1)
         LEFT JOIN campaigns c ON c.id = lr.campaign_id
-        WHERE wl.workspace_id = ?
-          AND wl.current_status_sentiment IS NOT NULL
-          AND wl.current_sentiment_since IS NOT NULL{range_sql}{camp}
+        WHERE {base_where}{narrow}
         ORDER BY wl.current_sentiment_since DESC
         LIMIT ?""",
         params,
@@ -742,7 +778,13 @@ def campaign_replies(
         d["linkedin_display_url"] = linkedin_display_url(
             d.pop("linkedin_url"), d.pop("linkedin_sales_nav_id"))
         out.append(d)
-    return {"campaign_id": campaign_id, "replies": out}
+    return {
+        "campaign_id": campaign_id,
+        "sentiment": sentiment,
+        "status_label": status_label,
+        "facets": facets,
+        "replies": out,
+    }
 
 
 # Columns the activity search matches against (Section G: search the whole
@@ -1755,6 +1797,37 @@ def campaign_leads(
 # Companies (Section C): search, detail with all domains/branches, merge review.
 # ---------------------------------------------------------------------------
 
+# A contact you can actually email. Shared by search_companies' filter and
+# companies_stats' tiles so "companies with no reachable contact" means the same
+# number in both places -- the click-through from a tile has to land on the rows
+# the tile counted.
+_REACHABLE_CONTACT_SQL = """(
+    l2.record_type = 'contact'
+    AND l2.email IS NOT NULL AND TRIM(l2.email) != ''
+    AND (l2.email_verification_status IS NULL
+         OR LOWER(l2.email_verification_status) NOT IN ('invalid', 'bounced', 'do_not_contact'))
+)"""
+
+
+def _company_tag_exists_sql() -> str:
+    """A company carries tag T if ANY of its leads in the workspace carries T.
+
+    Derived, not stored: a company_tags table would need a sync surface and would
+    drift from the lead tags that are the actual source of truth. A
+    company_placeholder lead is itself taggable, so company-level-only tags still
+    work -- you tag the placeholder.
+
+    EXISTS rather than a join: search_companies already joins leads +
+    workspace_leads and runs a correlated identity count, and a fourth join
+    multiplies rows before the GROUP BY.
+    """
+    return """EXISTS (
+        SELECT 1 FROM workspace_lead_tags t
+        JOIN leads lt ON lt.id = t.lead_id
+        WHERE t.workspace_id = wl.workspace_id AND lt.company_id = c.id AND t.tag = ?
+    )"""
+
+
 def search_companies(
     conn: sqlite3.Connection,
     workspace_id: str,
@@ -1762,14 +1835,39 @@ def search_companies(
     limit: int = 50,
     offset: int = 0,
     sort: str = "leads",
+    tag: Optional[str] = None,
+    missing_domain: Optional[bool] = None,
+    no_reachable_contact: Optional[bool] = None,
+    placeholder_only: Optional[bool] = None,
 ) -> dict:
-    """Companies that have at least one lead in the workspace."""
+    """Companies that have at least one lead in the workspace.
+
+    The three boolean filters are the click-throughs for the corresponding stat
+    tiles, so each one must select exactly the population its tile counted.
+    """
     where = ["wl.workspace_id = ?"]
     params: list = [workspace_id]
     if q and q.strip():
         term = f"%{q.strip()}%"
         where.append("(c.name LIKE ? OR c.domain LIKE ? OR c.industry LIKE ?)")
         params += [term, term, term]
+    if tag:
+        where.append(_company_tag_exists_sql())
+        params.append(tag)
+    if missing_domain:
+        where.append("(c.domain IS NULL OR TRIM(c.domain) = '')")
+    if no_reachable_contact:
+        where.append(f"""NOT EXISTS (
+            SELECT 1 FROM leads l2
+            JOIN workspace_leads wl2 ON wl2.lead_id = l2.id
+            WHERE l2.company_id = c.id AND wl2.workspace_id = wl.workspace_id
+              AND {_REACHABLE_CONTACT_SQL})""")
+    if placeholder_only:
+        where.append("""NOT EXISTS (
+            SELECT 1 FROM leads l3
+            JOIN workspace_leads wl3 ON wl3.lead_id = l3.id
+            WHERE l3.company_id = c.id AND wl3.workspace_id = wl.workspace_id
+              AND l3.record_type = 'contact')""")
     where_sql = " AND ".join(where)
     order = {
         "leads": "leads DESC, c.name COLLATE NOCASE",
@@ -1780,7 +1878,10 @@ def search_companies(
                    c.hq_city, c.hq_country,
                    COUNT(DISTINCT wl.lead_id) AS leads,
                    (SELECT COUNT(*) FROM company_identities ci
-                    WHERE ci.company_id = c.id AND ci.identity_type = 'domain') AS domains
+                    WHERE ci.company_id = c.id AND ci.identity_type = 'domain') AS domains,
+                   (SELECT GROUP_CONCAT(DISTINCT t.tag) FROM workspace_lead_tags t
+                    JOIN leads lt ON lt.id = t.lead_id
+                    WHERE t.workspace_id = wl.workspace_id AND lt.company_id = c.id) AS tags
             FROM companies c
             JOIN leads l ON l.company_id = c.id
             JOIN workspace_leads wl ON wl.lead_id = l.id
@@ -1792,10 +1893,119 @@ def search_companies(
     ).fetchall()
     has_more = len(rows) > limit
     rows = rows[:limit]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["tags"] = sorted({t for t in (d.get("tags") or "").split(",") if t})
+        out.append(d)
     return {
-        "companies": [dict(r) for r in rows],
-        "limit": limit, "offset": offset, "has_more": has_more, "q": q,
+        "companies": out,
+        "limit": limit, "offset": offset, "has_more": has_more, "q": q, "tag": tag,
     }
+
+
+def _companies_stats_selects() -> str:
+    """The count columns shared by the overall and per-tag company stats.
+
+    Contacts stats measure *reachability* per person. Companies need *coverage
+    and penetration* instead: how many accounts you can reach at all, how deep
+    you are inside each, and which ones are blocked on missing data. Each tile
+    lines up with a search_companies filter so it is click-through.
+    """
+    reach = f"""EXISTS (SELECT 1 FROM leads l2
+                  JOIN workspace_leads wl2 ON wl2.lead_id = l2.id
+                 WHERE l2.company_id = c.id AND wl2.workspace_id = ?
+                   AND {_REACHABLE_CONTACT_SQL})"""
+    real_contact = """EXISTS (SELECT 1 FROM leads l3
+                        JOIN workspace_leads wl3 ON wl3.lead_id = l3.id
+                       WHERE l3.company_id = c.id AND wl3.workspace_id = ?
+                         AND l3.record_type = 'contact')"""
+    # workspace_lead_events carries no direction of its own -- it indexes into
+    # events, which does. "Replied" uses the canonical reply condition rather
+    # than bare inbound so it agrees with the Replies tab and the daily columns.
+    reply_cond = (reply_event_sql_condition()
+                  .replace("event_type", "e4.event_type")
+                  .replace("direction", "e4.direction"))
+    contacted = """EXISTS (SELECT 1 FROM workspace_lead_events wle
+                     JOIN leads l4 ON l4.id = wle.lead_id
+                     JOIN events e4 ON e4.id = wle.event_id
+                    WHERE l4.company_id = c.id AND wle.workspace_id = ?
+                      AND LOWER(e4.direction) = 'outbound')"""
+    replied = f"""EXISTS (SELECT 1 FROM workspace_lead_events wle
+                    JOIN leads l4 ON l4.id = wle.lead_id
+                    JOIN events e4 ON e4.id = wle.event_id
+                   WHERE l4.company_id = c.id AND wle.workspace_id = ?
+                     AND {reply_cond})"""
+    positive = """EXISTS (SELECT 1 FROM workspace_leads wl5
+                    JOIN leads l5 ON l5.id = wl5.lead_id
+                   WHERE l5.company_id = c.id AND wl5.workspace_id = ?
+                     AND LOWER(wl5.current_status_sentiment) = 'positive')"""
+    return f"""
+        COUNT(DISTINCT c.id) AS companies,
+        SUM(CASE WHEN {reach} THEN 1 ELSE 0 END) AS with_reachable_contact,
+        SUM(CASE WHEN {reach} THEN 0 ELSE 1 END) AS no_reachable_contact,
+        SUM(CASE WHEN {real_contact} THEN 0 ELSE 1 END) AS placeholder_only,
+        SUM(CASE WHEN {contacted} THEN 1 ELSE 0 END) AS contacted,
+        SUM(CASE WHEN {replied} THEN 1 ELSE 0 END) AS replied,
+        SUM(CASE WHEN {positive} THEN 1 ELSE 0 END) AS positive,
+        SUM(CASE WHEN c.domain IS NULL OR TRIM(c.domain) = '' THEN 1 ELSE 0 END) AS missing_domain,
+        SUM(CASE WHEN c.industry IS NULL OR TRIM(c.industry) = '' THEN 1 ELSE 0 END) AS missing_industry,
+        SUM(CASE WHEN c.headcount IS NULL OR TRIM(c.headcount) = '' THEN 1 ELSE 0 END) AS missing_headcount,
+        SUM(lead_count) AS contact_rows"""
+
+
+# One workspace_id bind per correlated EXISTS in _companies_stats_selects(), in
+# the order they appear in the SELECT list: reach ×2 (with/without),
+# real_contact, contacted, replied, positive. These bind BEFORE the FROM
+# clause's own workspace_id -- SQLite numbers `?` by position in the statement
+# text, and the SELECT list is written first.
+_COMPANIES_STATS_BINDS = 6
+
+
+def companies_stats(conn: sqlite3.Connection, workspace_id: str) -> dict:
+    """Account coverage and penetration for a workspace, overall and per tag.
+
+    The inner subquery collapses to one row per company FIRST; the aggregates
+    then count companies, never lead rows. Doing it the other way -- aggregating
+    over the lead join -- weights every tile by how many contacts a company
+    happens to have, which reads plausibly and is wrong.
+    """
+    base = """FROM (
+        SELECT c2.id AS id, COUNT(DISTINCT wl.lead_id) AS lead_count
+          FROM companies c2
+          JOIN leads l ON l.company_id = c2.id
+          JOIN workspace_leads wl ON wl.lead_id = l.id
+         WHERE wl.workspace_id = ?
+         GROUP BY c2.id
+    ) g JOIN companies c ON c.id = g.id"""
+    selects = _companies_stats_selects()
+    binds = [workspace_id] * _COMPANIES_STATS_BINDS
+    overall = conn.execute(
+        f"SELECT {selects} {base}", (*binds, workspace_id),
+    ).fetchone()
+    result = dict(overall) if overall else {}
+    total = result.get("companies") or 0
+    result["avg_contacts_per_company"] = (
+        round((result.get("contact_rows") or 0) / total, 1) if total else 0.0
+    )
+
+    # Per-tag uses the same derived rule as the tag filter: a company is in tag
+    # T if any of its workspace leads carries T.
+    tag_base = """FROM (
+        SELECT c2.id AS id, t.tag AS tag, COUNT(DISTINCT wl.lead_id) AS lead_count
+          FROM companies c2
+          JOIN leads l ON l.company_id = c2.id
+          JOIN workspace_leads wl ON wl.lead_id = l.id
+          JOIN workspace_lead_tags t
+            ON t.workspace_id = wl.workspace_id AND t.lead_id = wl.lead_id
+         WHERE wl.workspace_id = ?
+         GROUP BY c2.id, t.tag
+    ) g JOIN companies c ON c.id = g.id"""
+    by_tag = conn.execute(
+        f"SELECT g.tag AS tag, {selects} {tag_base} GROUP BY g.tag ORDER BY companies DESC",
+        (*binds, workspace_id),
+    ).fetchall()
+    return {"overall": result, "by_tag": [dict(r) for r in by_tag]}
 
 
 def company_detail(conn: sqlite3.Connection, workspace_id: str, company_id: int) -> dict:

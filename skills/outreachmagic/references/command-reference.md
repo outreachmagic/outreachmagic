@@ -298,6 +298,32 @@ pipeline.py export --workspace acme_corp --since today --format json
 
 Writes to `outreachmagic/exports/`. **Not for Google Sheets** — use `sheets export` or `review export`.
 
+### Column presets and the field picker
+
+Passing `--preset` or `--fields` routes to the same query the dashboard's **Export CSV**
+button runs, so a file pulled from the CLI and one pulled from the browser with the same
+filters are the same file. Without either flag the legacy export shape above is used
+unchanged.
+
+| Preset | Contains |
+|--------|----------|
+| `sequencer-upload` | email, first/last name, company, title, linkedin, company_domain, phone + every `personalized_*` |
+| `enrichment-input` | name, company, company_domain, linkedin, title, location — the finder/Serper input shape |
+| `client-report` | name, title, company, stage, sentiment, status label, last activity, campaign, sender |
+| `replies-review` | identity + last message sent/received (time, subject, body) + sentiment + status |
+| `full` | every base column, both message blocks, and every `personalized_*` |
+
+```bash
+pipeline.py export --workspace acme_corp --list-fields          # what's available here
+pipeline.py export --workspace acme_corp --preset sequencer-upload --tag nace
+pipeline.py export --workspace acme_corp --fields email,name,company,personalized_icebreaker
+```
+
+`--fields` overrides `--preset` — the picker's output is the answer, not the preset it
+started from. Filters (`--tag`, `--status`, `--since`, `--verify`, `--record-type`) are the
+same set the contacts list uses; company placeholders are excluded unless you ask for
+`--record-type all`.
+
 ## Reset local database
 
 ```bash

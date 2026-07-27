@@ -248,7 +248,20 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           <option value="">Any sender</option>
         </select>
         <span class="spacer"></span>
+        <button id="contacts-export-btn" class="small">Export CSV</button>
         <span id="contacts-count" class="stale"></span>
+      </div>
+      <div id="contacts-export" class="controls" hidden
+           style="gap:10px;background:var(--page);padding:8px 10px;border-radius:8px;flex-wrap:wrap">
+        <label>Preset <select id="export-preset"></select></label>
+        <label style="flex:1;min-width:260px">Columns
+          <select id="export-fields" multiple size="6" style="width:100%"></select>
+        </label>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <button class="small primary" id="export-run">Export what's on screen</button>
+          <button class="small" id="export-cancel">Close</button>
+        </div>
+        <span class="msg" id="export-msg" style="flex-basis:100%"></span>
       </div>
       <div id="contacts-active-filters" style="margin-bottom:8px"></div>
       <div class="controls" style="gap:14px">
@@ -1241,16 +1254,15 @@ let contactsTimer = null;
 const contactsFilters = {};
 const contactsSel = new Set();
 
-function contactsQuery() {
+// Just the filters — no sort, no paging. The list, the "select all matching"
+// id fetch and the export all start from this, which is what makes "export
+// what's on screen right now" literally true rather than approximately true.
+function contactsFilterParams() {
   const p = new URLSearchParams({
     q: $("contacts-q").value.trim(),
     status: $("contacts-status").value,
     missing: $("contacts-missing").value,
-    // A clicked column header (contactsState.sortKey) wins over the dropdown.
-    sort: contactsState.sortKey || $("contacts-sort").value,
-    limit: contactsState.limit, offset: contactsState.offset,
   });
-  if (contactsState.sortKey) p.set("dir", contactsState.sortDir < 0 ? "desc" : "asc");
   const sender = $("contacts-sender").value;
   // A chosen sender only makes sense among that sender's 1st-degree connections,
   // so it implies connected=1 even if the checkbox is off.
@@ -1258,8 +1270,77 @@ function contactsQuery() {
   if (sender) p.set("sender", sender);
   if ($("contacts-record-type").value) p.set("record_type", $("contacts-record-type").value);
   for (const [k, v] of Object.entries(contactsFilters)) if (v != null && v !== "") p.set(k, v);
+  return p;
+}
+
+function contactsQuery() {
+  const p = contactsFilterParams();
+  // A clicked column header (contactsState.sortKey) wins over the dropdown.
+  p.set("sort", contactsState.sortKey || $("contacts-sort").value);
+  p.set("limit", contactsState.limit);
+  p.set("offset", contactsState.offset);
+  if (contactsState.sortKey) p.set("dir", contactsState.sortDir < 0 ? "desc" : "asc");
   return "/api/contacts?" + p.toString();
 }
+/* ---------- contacts export (D5) ---------- */
+let exportFieldOptions = null;
+
+async function openExportPanel() {
+  const panel = $("contacts-export");
+  panel.hidden = false;
+  $("export-msg").textContent = "";
+  if (!exportFieldOptions) {
+    exportFieldOptions = await get("/api/contacts/export/fields").catch(e => {
+      toast(e.message); return null;
+    });
+    if (!exportFieldOptions) { panel.hidden = true; return; }
+    $("export-preset").innerHTML = Object.keys(exportFieldOptions.presets)
+      .map(p => `<option value="${esc(p)}"${p === "sequencer-upload" ? " selected" : ""}>${esc(p)}</option>`).join("");
+    // Every column the picker can offer, in the order the panes group them.
+    const all = [
+      ...exportFieldOptions.base,
+      ...exportFieldOptions.messages,
+      ...exportFieldOptions.personalization,
+    ];
+    $("export-fields").innerHTML = all.map(f =>
+      `<option value="${esc(f)}">${esc(f)}</option>`).join("");
+  }
+  applyExportPreset();
+}
+
+// The preset seeds the picker; whatever is selected when you hit Export is what
+// gets sent, so adding or removing a column after choosing a preset does the
+// obvious thing instead of being silently overridden by the preset name.
+function applyExportPreset() {
+  const chosen = new Set(exportFieldOptions.presets[$("export-preset").value] || []);
+  for (const opt of $("export-fields").options) opt.selected = chosen.has(opt.value);
+}
+
+async function runExport() {
+  const fields = [...$("export-fields").selectedOptions].map(o => o.value);
+  if (!fields.length) { toast("Pick at least one column"); return; }
+  const p = contactsFilterParams();
+  p.set("workspace", state.workspace);
+  $("export-msg").textContent = "Exporting…";
+  try {
+    const d = await api("/api/contacts/export?" + p.toString(),
+      { method: "POST", body: JSON.stringify({ fields }) });
+    $("export-msg").innerHTML =
+      `Wrote <b>${fmt(d.count)}</b> row${d.count === 1 ? "" : "s"} to <code>${esc(d.file)}</code>` +
+      (d.truncated ? ` <span class="flag warn">capped at ${fmt(d.limit)}</span>` : "");
+  } catch (e) {
+    $("export-msg").textContent = e.message;
+  }
+}
+
+$("contacts-export-btn").onclick = () => {
+  const panel = $("contacts-export");
+  if (panel.hidden) openExportPanel(); else panel.hidden = true;
+};
+$("export-cancel").onclick = () => { $("contacts-export").hidden = true; };
+$("export-preset").onchange = applyExportPreset;
+$("export-run").onclick = runExport;
+
 let sendersLoaded = false;
 async function fillSenderSelect() {
   if (sendersLoaded) return;

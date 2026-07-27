@@ -315,6 +315,60 @@ def handle_contacts_ids(conn, ws_id, match, query):
         ids_only=True)
 
 
+def _lead_filters_from(query: dict) -> dict:
+    """The contacts filter set as lead_export kwargs — read from the same query
+    keys the contacts list uses, so "export what's on screen" is literal."""
+    campaign_id = _q(query, "campaign_id")
+    return {
+        "q": _q(query, "q"), "status": _q(query, "status"),
+        "campaign_id": int(campaign_id) if campaign_id else None,
+        "missing": _q(query, "missing"),
+        "since": _q(query, "since"), "until": _q(query, "until"),
+        "tag": _q(query, "tag"),
+        "connected": _bool_q(query, "connected"),
+        "sender": _q(query, "sender"),
+        "has_linkedin": _bool_q(query, "has_linkedin"),
+        "verify": _q(query, "verify"),
+        "qualify_finding": _bool_q(query, "qualify_finding"),
+        "record_type": _q(query, "record_type"),
+    }
+
+
+@_workspace_scoped
+def handle_contacts_export_fields(conn, ws_id, match, query):
+    import lead_export
+    return lead_export.export_field_options(conn, ws_id)
+
+
+def handle_contacts_export(match, query, body):
+    """Server-side CSV: writes to the export dir and returns the path. The
+    browser gets a download link, not 100k rows to assemble into a Blob.
+
+    Filters ride the URL query string — the same keys, read by the same helpers,
+    as GET /api/contacts. The body carries only the column choice. That way
+    "export what's on screen" cannot drift from what's on screen.
+    """
+    import lead_export
+
+    body = body or {}
+    conn = get_conn()
+    try:
+        ws = _resolve_workspace(conn, _q(query, "workspace"))
+        filters = _lead_filters_from(query)
+        try:
+            return 200, lead_export.export_to_csv(
+                conn, ws["id"],
+                workspace_slug=ws.get("slug"),
+                preset=body.get("preset"),
+                fields=body.get("fields") or None,
+                limit=max(1, min(int(body.get("limit") or 50000), 200000)),
+                **filters)
+        except lead_export.LeadExportError as exc:
+            return 400, {"error": str(exc)}
+    finally:
+        conn.close()
+
+
 @_workspace_scoped
 def handle_contacts_stats(conn, ws_id, match, query):
     return dashboard_queries.contacts_stats(conn, ws_id)
@@ -656,6 +710,8 @@ ROUTES = [
     ("GET", re.compile(r"^/api/contacts$"), handle_contacts),
     ("GET", re.compile(r"^/api/contacts/ids$"), handle_contacts_ids),
     ("GET", re.compile(r"^/api/contacts/stats$"), handle_contacts_stats),
+    ("GET", re.compile(r"^/api/contacts/export/fields$"), handle_contacts_export_fields),
+    ("POST", re.compile(r"^/api/contacts/export$"), handle_contacts_export),
     ("GET", re.compile(r"^/api/tags$"), handle_tags),
     ("GET", re.compile(r"^/api/linkedin/senders$"), handle_linkedin_senders),
     ("POST", re.compile(r"^/api/contacts/bulk$"), handle_contacts_bulk),

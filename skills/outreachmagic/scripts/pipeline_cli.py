@@ -678,6 +678,28 @@ def main():
         action="store_true",
         help="Only leads with companies.domain set (never fall back to company name)",
     )
+    # Preset/field mode routes to lead_export.py -- the same query the dashboard
+    # export button runs. Without either flag the legacy shape above is used, so
+    # existing scripts keep working unchanged.
+    export_p.add_argument(
+        "--preset",
+        help="Column preset: sequencer-upload, enrichment-input, client-report, "
+             "replies-review, full",
+    )
+    export_p.add_argument(
+        "--fields",
+        help="Comma-separated columns (overrides --preset); "
+             "see `export --list-fields` for what's available",
+    )
+    export_p.add_argument(
+        "--list-fields", action="store_true",
+        help="Print the available columns and presets for this workspace, then exit",
+    )
+    export_p.add_argument("--status", help="Filter by workspace stage (preset mode)")
+    export_p.add_argument("--verify", choices=("valid", "catch_all", "none"),
+                          help="Filter by email verification (preset mode)")
+    export_p.add_argument("--record-type", dest="record_type",
+                          help="contact (default), company_placeholder, or all")
 
     efc_p = sub.add_parser(
         "email-finding-candidates",
@@ -2766,6 +2788,45 @@ def main():
         finally:
             conn.close()
     elif args.command == "export":
+        # Preset/field mode: the same lead_export query the dashboard button
+        # runs, so a CSV pulled from the CLI and one pulled from the browser
+        # with the same filters are the same file.
+        if (getattr(args, "preset", None) or getattr(args, "fields", None)
+                or getattr(args, "list_fields", False)):
+            import lead_export
+
+            conn = _pipeline.get_conn()
+            try:
+                ws_row = _pipeline.resolve_workspace_identity(conn, args.workspace)
+                if not ws_row:
+                    print(json.dumps({"error": f"workspace not found: {args.workspace}"}))
+                    sys.exit(1)
+                if getattr(args, "list_fields", False):
+                    print(json.dumps(
+                        lead_export.export_field_options(conn, ws_row["id"]), indent=2))
+                    return
+                field_list = ([f.strip() for f in args.fields.split(",") if f.strip()]
+                              if getattr(args, "fields", None) else None)
+                result = lead_export.export_to_csv(
+                    conn, ws_row["id"],
+                    workspace_slug=ws_row["slug"],
+                    preset=getattr(args, "preset", None),
+                    fields=field_list,
+                    file_path=getattr(args, "file", None),
+                    limit=args.limit,
+                    tag=getattr(args, "tag", None),
+                    status=getattr(args, "status", None) or getattr(args, "stage", None),
+                    since=getattr(args, "since", None),
+                    verify=getattr(args, "verify", None),
+                    record_type=getattr(args, "record_type", None),
+                )
+            except lead_export.LeadExportError as exc:
+                print(json.dumps({"error": str(exc)}))
+                sys.exit(1)
+            finally:
+                conn.close()
+            print(json.dumps(result, indent=2))
+            return
         try:
             result = _pipeline.export_leads(
                 workspace=args.workspace,

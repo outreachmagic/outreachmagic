@@ -1351,7 +1351,33 @@ def export_leads(
     never_contacted: bool = False,
     no_email: bool = False,
     require_domain: bool = False,
+    preset: Optional[str] = None,
+    fields: Optional[list[str]] = None,
 ) -> dict:
+    """Legacy export shape, kept working verbatim for existing scripts.
+
+    `preset` / `fields` route to `lead_export.py`, which is the one that shares
+    its filter set with the contacts list. This function's own filters
+    (never_contacted / no_email / require_domain) predate that and have no
+    equivalent there, so the legacy path stays as the default rather than being
+    approximated -- a CSV that silently changed shape would be worse than two
+    paths.
+    """
+    if preset or fields:
+        import lead_export
+
+        conn = get_conn()
+        try:
+            ws_row = resolve_workspace_identity(conn, workspace)
+            if not ws_row:
+                raise ValueError(f"workspace not found: {workspace}")
+            return lead_export.export_to_csv(
+                conn, ws_row["id"], workspace_slug=ws_row["slug"],
+                preset=preset, fields=fields, file_path=file_path, limit=limit,
+                tag=tag, status=stage, since=since)
+        finally:
+            conn.close()
+
     rows, truncated = query_leads_for_export(
         workspace=workspace,
         tag=tag,

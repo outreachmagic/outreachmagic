@@ -1654,8 +1654,51 @@ def contacts_stats(conn: sqlite3.Connection, workspace_id: str) -> dict:
     return {"overall": dict(overall) if overall else {}, "by_tag": [dict(r) for r in by_tag]}
 
 
-def search_leads(
-    conn: sqlite3.Connection,
+# Every filter the contacts list understands, in one place. Named so the export
+# can take exactly the same kwargs and mean exactly the same thing -- "export
+# what's on screen right now" is only true if both sides build the same WHERE.
+def lead_message_block_sql(direction: str) -> str:
+    """Correlated subqueries for the last message a lead sent or received:
+    (at, subject, body) as three SELECT expressions.
+
+    Mirrors the pattern campaign_replies already uses for its latest-reply
+    join. `outbound` matches on direction; `inbound` uses the canonical reply
+    condition, so "received" here means the same thing it means on the Replies
+    tab rather than a second definition. Bodies come out of
+    json_extract(metadata_json,'$.body'), same as event_body().
+    """
+    if direction == "inbound":
+        cond = (reply_event_sql_condition()
+                .replace("event_type", "em.event_type")
+                .replace("direction", "em.direction"))
+        prefix = "last_message_received"
+    else:
+        cond = "LOWER(em.direction) = 'outbound'"
+        prefix = "last_message_sent"
+    pick = f"""(SELECT {{col}} FROM workspace_lead_events wlem
+                  JOIN events em ON em.id = wlem.event_id
+                 WHERE wlem.workspace_id = wl.workspace_id
+                   AND wlem.lead_id = wl.lead_id AND {cond}
+                 ORDER BY wlem.event_at DESC, wlem.id DESC LIMIT 1)"""
+    body_expr = "json_extract(em.metadata_json, '$.body')"
+    return ", ".join(
+        f"{pick.format(col=col)} AS {prefix}_{suffix}"
+        for col, suffix in (
+            ("em.created_at", "at"),
+            ("em.subject", "subject"),
+            (body_expr, "body"),
+        )
+    )
+
+
+LEAD_FILTER_KEYS = (
+    "q", "status", "campaign_id", "missing", "since", "until", "tag",
+    "connected", "sender", "has_linkedin", "verify", "qualify_finding",
+    "record_type",
+)
+
+
+def lead_filter_clause(
     workspace_id: str,
     q: Optional[str] = None,
     status: Optional[str] = None,
@@ -1663,8 +1706,6 @@ def search_leads(
     missing: Optional[str] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
-    sort: str = "last_activity",
-    direction: Optional[str] = None,
     tag: Optional[str] = None,
     connected: Optional[bool] = None,
     sender: Optional[str] = None,
@@ -1672,17 +1713,14 @@ def search_leads(
     verify: Optional[str] = None,
     qualify_finding: Optional[bool] = None,
     record_type: Optional[str] = None,
-    limit: int = 50,
-    offset: int = 0,
-    ids_only: bool = False,
-) -> dict:
-    """Search workspace leads by any attribute. `missing` in
-    {email,company,title,name,linkable} filters to under-enriched leads
-    (Section D reuses this). `linkable` = has company text but no company_id.
+) -> tuple[str, list]:
+    """The shared WHERE for anything selecting workspace leads: (sql, params).
 
-    `tag` restricts to leads carrying that workspace tag; `connected` (with
-    optional `sender`) restricts to 1st-degree LinkedIn connections; `has_linkedin`
-    restricts to leads with a public URL or Sales Navigator id."""
+    Assumes the aliases `wl` (workspace_leads) and `l` (leads) are in scope.
+    Extracted from search_leads so lead_export.py can reuse it verbatim rather
+    than growing a second, quietly divergent filter set -- which is what
+    pipeline_tags.export_leads had become.
+    """
     where = ["wl.workspace_id = ?"]
     params: list = [workspace_id]
     # Company placeholders are accounts, not people. They are excluded unless
@@ -1743,7 +1781,43 @@ def search_leads(
         where.append("l.company_id IS NULL AND l.company IS NOT NULL AND TRIM(l.company) != ''")
     active_sql, active_params = _active_in_range(since, until)
     params += active_params
-    where_sql = " AND ".join(where) + active_sql
+    return " AND ".join(where) + active_sql, params
+
+
+def search_leads(
+    conn: sqlite3.Connection,
+    workspace_id: str,
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    campaign_id: Optional[int] = None,
+    missing: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    sort: str = "last_activity",
+    direction: Optional[str] = None,
+    tag: Optional[str] = None,
+    connected: Optional[bool] = None,
+    sender: Optional[str] = None,
+    has_linkedin: Optional[bool] = None,
+    verify: Optional[str] = None,
+    qualify_finding: Optional[bool] = None,
+    record_type: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    ids_only: bool = False,
+) -> dict:
+    """Search workspace leads by any attribute. `missing` in
+    {email,company,title,name,linkable} filters to under-enriched leads
+    (Section D reuses this). `linkable` = has company text but no company_id.
+
+    `tag` restricts to leads carrying that workspace tag; `connected` (with
+    optional `sender`) restricts to 1st-degree LinkedIn connections; `has_linkedin`
+    restricts to leads with a public URL or Sales Navigator id."""
+    where_sql, params = lead_filter_clause(
+        workspace_id, q=q, status=status, campaign_id=campaign_id, missing=missing,
+        since=since, until=until, tag=tag, connected=connected, sender=sender,
+        has_linkedin=has_linkedin, verify=verify, qualify_finding=qualify_finding,
+        record_type=record_type)
     order = _lead_order_by(sort, direction)
     # ids_only powers the "select all N matching" bulk action: same WHERE, but
     # just the ids (capped by `limit`) so the client can select every match

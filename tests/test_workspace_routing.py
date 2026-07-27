@@ -633,9 +633,9 @@ def test_import_profiles_force_lead_id_merges_email_conflict():
 def test_import_profiles_force_lead_id_enriches_existing():
     _reset_db()
     s0 = om.import_profiles([{
-        "name": "Lucia Stanković",
+        "name": "Renata Vukčević",
         "company": "ISAB",
-        "company_domain": "isab.berkeley.edu",
+        "company_domain": "isab.ossining.edu",
         "linkedin": "https://linkedin.com/in/lucia-stankovic",
     }], workspace="default")
     assert s0["created"] == 1
@@ -643,7 +643,7 @@ def test_import_profiles_force_lead_id_enriches_existing():
 
     s1 = om.import_profiles([{
         "id": lead_id,
-        "email": "lucia@berkeley.edu",
+        "email": "lucia@ossining.edu",
         "tags": "trykitt_attempted",
     }], workspace="default")
     assert s1["created"] == 0
@@ -653,15 +653,15 @@ def test_import_profiles_force_lead_id_enriches_existing():
     conn = om.get_conn()
     row = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
     conn.close()
-    assert row["email"] == "lucia@berkeley.edu"
+    assert row["email"] == "lucia@ossining.edu"
 
 
 def test_import_profiles_weak_identity_and_entity_key():
     _reset_db()
     row = {
-        "name": "Melynie Schiel",
-        "company": "ACCJC",
-        "company_domain": "accjc.org",
+        "name": "Coretta Vandenbroek",
+        "company": "QXRTB",
+        "company_domain": "qxrtb.org",
         "unified_lead_id": "ul_test_99",
         "list_source": "nace",
     }

@@ -16,12 +16,12 @@ import pipeline as om  # noqa: E402
 
 
 VAYNE_ROW = {
-    "first name": "Lucia",
-    "last name": "Stanković",
+    "first name": "Renata",
+    "last name": "Vukčević",
     "job title": "Marketing Director",
-    "company": "Riot Games",
+    "company": "Vandelay Games",
     "linkedin url": "https://www.linkedin.com/in/lucia-stankovic",
-    "corporate website": "http://www.riotgames.com",
+    "corporate website": "http://www.vandelaygames.com",
     "linkedin industry": "Computer Games",
     "linkedin employees": "1001-5000",
     "location": "Laguna Beach, California, United States",
@@ -53,10 +53,10 @@ def test_detect_sales_nav_format():
 
 def test_normalize_vayne_row():
     row = impfmt.normalize_import_row(VAYNE_ROW)
-    assert row["name"] == "Lucia Stanković"
+    assert row["name"] == "Renata Vukčević"
     assert row["title"] == "Marketing Director"
-    assert row["company"] == "Riot Games"
-    assert row["company_domain"] == "http://www.riotgames.com"
+    assert row["company"] == "Vandelay Games"
+    assert row["company_domain"] == "http://www.vandelaygames.com"
     assert row["industry"] == "Computer Games"
     assert row["headcount"] == "1001-5000"
     assert row["location_city"] == "Laguna Beach"
@@ -93,10 +93,10 @@ def test_import_profiles_vayne_row_not_unknown():
     ).fetchone()
     conn.close()
     assert lead["name"] != "Unknown"
-    assert "Lucia" in lead["name"]
+    assert "Renata" in lead["name"]
     assert lead["title"] == "Marketing Director"
     assert lead["industry"] == "Computer Games"
-    assert domain and domain["domain"] == "riotgames.com"
+    assert domain and domain["domain"] == "vandelaygames.com"
 
 
 def test_import_dry_run_preview_fields():
@@ -104,7 +104,7 @@ def test_import_dry_run_preview_fields():
     summary = om.import_profiles([VAYNE_ROW], dry_run=True, import_format="auto")
     assert summary["import_format"] == "sales_navigator"
     assert "first name" in summary["fields_mapped"]
-    assert summary.get("sample_preview", {}).get("name") == "Lucia Stanković"
+    assert summary.get("sample_preview", {}).get("name") == "Renata Vukčević"
 
 
 def test_dry_run_suggests_fields_missing_from_this_csv():
@@ -192,4 +192,4 @@ def test_csv_roundtrip_headers():
     rows = list(csv.DictReader(buf))
     normalized, meta = impfmt.preprocess_import_rows(rows)
     assert meta["detected_format"] == "sales_navigator"
-    assert normalized[0]["name"] == "Lucia Stanković"
+    assert normalized[0]["name"] == "Renata Vukčević"

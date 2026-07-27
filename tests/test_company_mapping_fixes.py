@@ -105,35 +105,35 @@ def test_domain_mismatch_no_crash():
     """link_lead_company handles domain mismatches gracefully (warns but doesn't crash)."""
     tmp, conn = _setup()
     try:
-        # Create a company with ndsu.edu domain
-        cid_ndsu = _company(conn, "North Dakota State University", "ndsu.edu")
+        # Create a company with bluthestate.edu domain
+        cid_ndsu = _company(conn, "North Dakota State University", "bluthestate.edu")
 
-        # Create a lead with ndsu.edu email — should link to NDSU
+        # Create a lead with bluthestate.edu email — should link to NDSU
         lead_id = conn.execute(
             "INSERT INTO leads (name, email, email_domain, channel, stage) "
             "VALUES (?, ?, ?, 'email', 'prospecting')",
-            ["NDSU Lead", "user@ndsu.edu", "ndsu.edu"],
+            ["NDSU Lead", "user@bluthestate.edu", "bluthestate.edu"],
         ).lastrowid
         conn.commit()
 
         # Link — domains match
         result = om.link_lead_company(
-            conn, lead_id, company="NDSU", email="user@ndsu.edu",
+            conn, lead_id, company="NDSU", email="user@bluthestate.edu",
         )
         conn.commit()
         assert result == cid_ndsu, f"Expected {cid_ndsu}, got {result}"
 
-        # Create a lead with nebraska.edu email — should NOT crash
+        # Create a lead with wernham.edu email — should NOT crash
         lead_id2 = conn.execute(
             "INSERT INTO leads (name, email, email_domain, channel, stage) "
             "VALUES (?, ?, ?, 'email', 'prospecting')",
-            ["Nebraska Lead", "user@nebraska.edu", "nebraska.edu"],
+            ["Wernham Lead", "user@wernham.edu", "wernham.edu"],
         ).lastrowid
         conn.commit()
 
-        cid_neb = _company(conn, "University of Nebraska", "nebraska.edu")
+        cid_neb = _company(conn, "University of Wernham", "wernham.edu")
         result2 = om.link_lead_company(
-            conn, lead_id2, company="University of Nebraska", email="user@nebraska.edu",
+            conn, lead_id2, company="University of Wernham", email="user@wernham.edu",
         )
         conn.commit()
         assert result2 == cid_neb, f"Expected {cid_neb}, got {result2}"

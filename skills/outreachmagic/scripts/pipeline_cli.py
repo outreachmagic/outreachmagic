@@ -1700,7 +1700,9 @@ def main():
     pstat = sub.add_parser("personalize-status", help="Lead personalization summary")
     pstat.add_argument("--json", action="store_true")
 
-    cpset = sub.add_parser("company-personalize-set", help="Write company personalization (company_name, company_*)")
+    cpset = sub.add_parser(
+        "company-personalize-set",
+        help="Write company personalization (any field name, e.g. phone_google_maps)")
     cpset.add_argument("--company-id", type=int)
     cpset.add_argument("--domain")
     cpset.add_argument("--name", help="Company name lookup")
@@ -1726,8 +1728,14 @@ def main():
 
     pclear = sub.add_parser("personalize-clear", help="Clear personalization data")
     pclear.add_argument("--lead-id", type=int, help="Clear one lead")
-    pclear.add_argument("--field", help="Clear specific field across all leads")
+    pclear.add_argument(
+        "--field",
+        help="Clear this field from EVERY lead and company (org-wide, both scopes)")
     pclear.add_argument("--all", dest="clear_all", action="store_true", help="Clear everything")
+    pclear.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
+    pclear.add_argument(
+        "--yes", dest="confirm", action="store_true",
+        help="Confirm a delete affecting more than 10 rows")
 
     cleanup_rules_p = sub.add_parser("cleanup-rules", help="Remove invalid campaign mapping rules")
     cleanup_rules_p.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
@@ -4184,11 +4192,21 @@ def main():
             print(f"Pending: {result['pending']}")
             print(f"Stale: {result['stale']}")
     elif args.command == "personalize-clear":
-        result = _pipeline.personalize_clear(
-            lead_id=args.lead_id,
-            field=args.field,
-            clear_all=getattr(args, "clear_all", False),
-        )
+        import pipeline_personalize as _pp
+
+        if getattr(args, "dry_run", False):
+            result = _pp.personalize_clear_preview(
+                lead_id=args.lead_id,
+                field=args.field,
+                clear_all=getattr(args, "clear_all", False),
+            )
+        else:
+            result = _pipeline.personalize_clear(
+                lead_id=args.lead_id,
+                field=args.field,
+                clear_all=getattr(args, "clear_all", False),
+                confirm=getattr(args, "confirm", False),
+            )
         print(json.dumps(result, indent=2))
     elif args.command == "outbox":
         import outbox as _outbox

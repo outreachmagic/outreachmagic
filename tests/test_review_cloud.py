@@ -65,7 +65,7 @@ class ReviewCloudExportTests(unittest.TestCase):
             title="Acme Review",
             detail="full",
             headers=["lead_id", "name", "email"],
-            rows=[[1, "Teresa", "teresa@purdueglobal.edu"]],
+            rows=[[1, "Teresa", "teresa@zarkfeldglobal.edu"]],
             workspace="acme",
             share_email="owner@example.com",
         )
@@ -75,7 +75,7 @@ class ReviewCloudExportTests(unittest.TestCase):
         self.assertEqual(body["detail"], "full")
         self.assertEqual(body["workspace"], "acme")
         self.assertEqual(body["headers"], ["lead_id", "name", "email"])
-        self.assertEqual(body["rows"], [[1, "Teresa", "teresa@purdueglobal.edu"]])
+        self.assertEqual(body["rows"], [[1, "Teresa", "teresa@zarkfeldglobal.edu"]])
         self.assertEqual(body["share_email"], "owner@example.com")
         self.assertNotIn("candidates", body)
 

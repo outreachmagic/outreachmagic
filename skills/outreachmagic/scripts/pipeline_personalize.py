@@ -2,6 +2,7 @@
 """Mail-merge personalization for leads and companies."""
 
 import hashlib
+import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
@@ -13,9 +14,71 @@ from pipeline_utils import normalize_company_domain
 _LEAD_SOURCE_FIELDS = {"first_name": "name"}
 _COMPANY_SOURCE_FIELDS = {"company_name": "name"}
 
+_FIELD_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 
-def is_company_personalization_field(field_name: str) -> bool:
+# Real columns on `leads` / `companies`. A personalization field may never
+# shadow one: `personalized_original_source` sitting next to the actual
+# `leads.original_source` is ambiguous to every reader (exports, CRM mapping,
+# the dashboard's custom-field panel) and is how source provenance silently
+# ended up in the wrong place on CSV import.
+_LEAD_RESERVED_NAMES = frozenset({
+    "id", "name", "company_id", "company", "title", "industry", "headcount",
+    "headcount_numeric", "email", "email_domain", "linkedin_url",
+    "linkedin_sales_nav_id", "location_city", "location_state",
+    "location_country", "channel", "stage", "notes",
+    "original_source", "original_source_detail", "original_source_platform",
+    "original_source_at", "latest_source", "latest_source_detail",
+    "latest_source_platform", "latest_source_at",
+    "email_verification_status", "email_verified_at", "created_at",
+    "updated_at", "last_contact_at", "next_action", "latest_sender",
+    "latest_sender_platform", "linkedin_headline", "linkedin_bio", "uid",
+    "record_type", "superseded_at",
+})
+_COMPANY_RESERVED_NAMES = frozenset({
+    "id", "name", "domain", "industry", "headcount", "headcount_numeric",
+    "hq_city", "hq_state", "hq_country", "created_at", "updated_at", "uid",
+})
+
+
+def looks_company_scoped(field_name: str) -> bool:
+    """Heuristic for ROUTING an ambiguously-scoped field during import.
+
+    `company_name`/`company_*` almost certainly describes the account rather
+    than the person, so an import row carrying one writes it to the company.
+    This is a guess, and it is only ever allowed to pick a destination -- it
+    must NOT be used to validate an explicit write. company_personalize_set()
+    used to reject anything failing this test, which made perfectly ordinary
+    company facts (`phone_google_maps`, `gm_rating`, `hours`) unstorable: the
+    caller had already said "company scope" by calling the company function.
+    """
     return field_name == "company_name" or field_name.startswith("company_")
+
+
+# Back-compat alias: pipeline.py imports this name for its import-routing loop.
+is_company_personalization_field = looks_company_scoped
+
+
+def validate_personalization_field(field_name: str, *, scope: str) -> str:
+    """Normalize and validate a personalization field name for `scope`.
+
+    Returns the cleaned name; raises ValueError with the reason otherwise.
+    Scope decides which set of real columns the name may not shadow.
+    """
+    name = str(field_name or "").strip().lower()
+    if not name:
+        raise ValueError("field name is required")
+    if not _FIELD_NAME_RE.match(name):
+        raise ValueError(
+            f"invalid field name {field_name!r}: use lowercase letters, digits "
+            "and underscores (max 64 chars), starting with a letter or digit"
+        )
+    reserved = _COMPANY_RESERVED_NAMES if scope == "company" else _LEAD_RESERVED_NAMES
+    if name in reserved:
+        raise ValueError(
+            f"{name!r} is a real {scope} column, not a personalization field. "
+            f"Set it directly instead of creating a personalized_{name} shadow copy."
+        )
+    return name
 
 
 def resolve_company_id(
@@ -179,8 +242,12 @@ def personalize_set(
     field_date: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
-    if is_company_personalization_field(field_name):
+    if looks_company_scoped(field_name):
         return {"status": "error", "error": f"{field_name} is company-scoped — use company-personalize-set"}
+    try:
+        field_name = validate_personalization_field(field_name, scope="lead")
+    except ValueError as exc:
+        return {"status": "error", "error": str(exc)}
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
@@ -212,10 +279,13 @@ def personalize_set_batch(items: list[dict], *, conn: Optional[sqlite3.Connectio
         if not lid or not fname or fval is None:
             err_list.append({"item": item, "error": "missing lead_id, field, or value"})
             continue
-        if is_company_personalization_field(fname):
+        if looks_company_scoped(fname):
             err_list.append({"item": item, "error": f"{fname} is company-scoped"})
             continue
-        personalize_set(lid, fname, str(fval), field_date=item.get("date"), conn=conn)
+        result = personalize_set(lid, fname, str(fval), field_date=item.get("date"), conn=conn)
+        if result.get("status") == "error":
+            err_list.append({"item": item, "error": result["error"]})
+            continue
         written += 1
     return {"status": "ok", "written": written, "errors": err_list}
 
@@ -230,8 +300,13 @@ def company_personalize_set(
     field_date: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
-    if not is_company_personalization_field(field_name):
-        return {"status": "error", "error": f"{field_name} is not a company personalization field"}
+    # No `company_` prefix requirement. Calling this function IS the scope
+    # declaration; demanding the name also look company-shaped rejected ordinary
+    # company facts like `phone_google_maps`, `gm_rating` or `hours` outright.
+    try:
+        field_name = validate_personalization_field(field_name, scope="company")
+    except ValueError as exc:
+        return {"status": "error", "error": str(exc)}
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
@@ -322,7 +397,7 @@ def company_personalize_get(
 
 
 def personalize_pending(fields: list[str], limit: int = 50) -> list[dict]:
-    lead_fields = [f for f in fields if not is_company_personalization_field(f)]
+    lead_fields = [f for f in fields if not looks_company_scoped(f)]
     if not lead_fields:
         return []
     conn = get_conn()
@@ -339,7 +414,10 @@ def personalize_pending(fields: list[str], limit: int = 50) -> list[dict]:
 
 
 def company_personalize_pending(fields: list[str], limit: int = 50) -> list[dict]:
-    company_fields = [f for f in fields if is_company_personalization_field(f)]
+    # Every requested field is company-scoped here: the caller asked the company
+    # function. Filtering by name shape hid any field that didn't happen to start
+    # with `company_`, so `phone_google_maps` never showed as pending.
+    company_fields = [f for f in fields if str(f or "").strip()]
     if not company_fields:
         return []
     conn = get_conn()
@@ -388,7 +466,62 @@ def company_personalize_status() -> dict:
     return {"total_companies": total, "personalized": with_co, "pending": total - with_co, "stale": stale}
 
 
-def personalize_clear(lead_id: Optional[int] = None, field: Optional[str] = None, clear_all: bool = False) -> dict:
+def personalize_clear_preview(
+    lead_id: Optional[int] = None, field: Optional[str] = None, clear_all: bool = False,
+) -> dict:
+    """Row counts personalize_clear would delete, by scope. Nothing written."""
+    conn = get_conn()
+    try:
+        lead_n = company_n = 0
+        if clear_all:
+            lead_n = conn.execute("SELECT COUNT(*) n FROM lead_personalization").fetchone()["n"]
+            company_n = conn.execute(
+                "SELECT COUNT(*) n FROM company_personalization").fetchone()["n"]
+        elif lead_id and field:
+            lead_n = conn.execute(
+                "SELECT COUNT(*) n FROM lead_personalization WHERE lead_id = ? AND field_name = ?",
+                (lead_id, field)).fetchone()["n"]
+        elif lead_id:
+            lead_n = conn.execute(
+                "SELECT COUNT(*) n FROM lead_personalization WHERE lead_id = ?",
+                (lead_id,)).fetchone()["n"]
+        elif field:
+            lead_n = conn.execute(
+                "SELECT COUNT(*) n FROM lead_personalization WHERE field_name = ?",
+                (field,)).fetchone()["n"]
+            company_n = conn.execute(
+                "SELECT COUNT(*) n FROM company_personalization WHERE field_name = ?",
+                (field,)).fetchone()["n"]
+        return {"status": "ok", "lead_rows": lead_n, "company_rows": company_n,
+                "total": lead_n + company_n}
+    finally:
+        conn.close()
+
+
+# Deleting more than this many rows needs an explicit confirm. `--field X` with
+# no --lead-id is org-wide across BOTH scopes: it reads like "remove my test
+# value" and behaves like "drop this column from every record you have".
+_CLEAR_CONFIRM_THRESHOLD = 10
+
+
+def personalize_clear(
+    lead_id: Optional[int] = None,
+    field: Optional[str] = None,
+    clear_all: bool = False,
+    confirm: bool = False,
+) -> dict:
+    if not confirm:
+        preview = personalize_clear_preview(lead_id, field, clear_all)
+        if preview["total"] > _CLEAR_CONFIRM_THRESHOLD:
+            return {
+                **preview,
+                "status": "error",
+                "error": (
+                    f"refusing to delete {preview['total']} personalization rows "
+                    f"({preview['lead_rows']} lead, {preview['company_rows']} company) "
+                    "without confirmation — re-run with --yes if that is what you want"
+                ),
+            }
     conn = get_conn()
     count = 0
     if clear_all:
@@ -401,10 +534,14 @@ def personalize_clear(lead_id: Optional[int] = None, field: Optional[str] = None
     elif lead_id:
         count = conn.execute("DELETE FROM lead_personalization WHERE lead_id = ?", (lead_id,)).rowcount
     elif field:
-        if is_company_personalization_field(field):
-            count = conn.execute("DELETE FROM company_personalization WHERE field_name = ?", (field,)).rowcount
-        else:
-            count = conn.execute("DELETE FROM lead_personalization WHERE field_name = ?", (field,)).rowcount
+        # Clear from BOTH scopes. Routing this by name shape meant a company
+        # field that doesn't start with `company_` (now legal -- see
+        # company_personalize_set) could never be cleared: the delete went to
+        # lead_personalization and silently removed nothing.
+        count = conn.execute(
+            "DELETE FROM lead_personalization WHERE field_name = ?", (field,)).rowcount
+        count += conn.execute(
+            "DELETE FROM company_personalization WHERE field_name = ?", (field,)).rowcount
     else:
         conn.close()
         return {"status": "error", "error": "Specify --lead-id, --field, or --all"}

@@ -138,8 +138,8 @@ class TestLeadReview(unittest.TestCase):
             {
                 "id": 1,
                 "name": "Jane",
-                "company": "Ohio University",
-                "company_domain": "Ohio University",
+                "company": "Ossining University",
+                "company_domain": "Ossining University",
             },
             {
                 "id": 2,

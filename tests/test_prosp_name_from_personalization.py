@@ -31,8 +31,8 @@ def _fresh_db():
 def test_personalized_first_name_backfills_name_when_row_has_no_name():
     _fresh_db()
     rows = [{
-        "email": "aum221@lehigh.edu",
-        "company": "Lehigh University",
+        "email": "aum221@bluthe.edu",
+        "company": "Bluthe University",
         "personalized_first_name": "Autumn",
     }]
     summary = om.import_profiles(rows)

@@ -665,37 +665,62 @@ def _backfill_current_sentiment_since(conn: sqlite3.Connection) -> None:
     pass this is a LIMIT-1 no-op. event_at compares lexicographically as ISO
     text, and '' sorts before any timestamp, so a lead that never changed
     sentiment (no boundary row) takes MIN over its whole history.
+
+    THE GUARD AND THE UPDATE MUST SELECT THE SAME ROWS, or this never converges.
+    They used to disagree: the guard asked "is any row missing an anchor?" while
+    the UPDATE could only supply one from a matching sentiment *event*. A lead
+    whose sentiment was set directly (a manual stage change, not a webhook) has
+    no such event, so the subquery returned NULL, the UPDATE wrote NULL over
+    NULL, and the row still qualified on the next pass -- forever.
+
+    276 rows were in that state. Because SQLite fires AFTER UPDATE even when no
+    value changes, every one of them re-stamped its outbox row on EVERY
+    pipeline.py invocation: `dirty_at` reset to now and `attempts` reset to 0.
+    The outbox therefore never reached zero, every sync rebuilt ~276 workspace
+    and ~241 core payloads only to discard them as echoes, and an expensive
+    correlated subquery over the whole sentiment set ran on every CLI command.
+
+    Restricting both the guard and the UPDATE to rows that HAVE an anchor makes
+    it converge in one pass. Rows with no anchorable event keep NULL, which is
+    honest -- and if a sentiment event ever does arrive for one, ingest stamps
+    the column at that point (relay_ingest), so nothing is lost by not retrying.
     """
-    needs = conn.execute(
-        "SELECT 1 FROM workspace_leads "
-        "WHERE current_status_sentiment IS NOT NULL "
-        "  AND trim(current_status_sentiment) != '' "
-        "  AND current_sentiment_since IS NULL LIMIT 1"
-    ).fetchone()
-    if not needs:
+    def anchor(row: str) -> str:
+        """The anchor subquery, correlated to `row` (the outer workspace_leads)."""
+        return f"""
+        SELECT MIN(wle.event_at)
+        FROM workspace_lead_events wle JOIN events e ON e.id = wle.event_id
+        WHERE wle.workspace_id = {row}.workspace_id
+          AND wle.lead_id = {row}.lead_id
+          AND lower(json_extract(e.metadata_json, '$.lead_status_sentiment'))
+              = lower({row}.current_status_sentiment)
+          AND wle.event_at > COALESCE((
+              SELECT MAX(wle2.event_at)
+              FROM workspace_lead_events wle2 JOIN events e2 ON e2.id = wle2.event_id
+              WHERE wle2.workspace_id = {row}.workspace_id
+                AND wle2.lead_id = {row}.lead_id
+                AND json_extract(e2.metadata_json, '$.lead_status_sentiment') IS NOT NULL
+                AND lower(json_extract(e2.metadata_json, '$.lead_status_sentiment'))
+                    <> lower({row}.current_status_sentiment)
+          ), '')
+        """
+
+    def qualifies(row: str) -> str:
+        return f"""
+            {row}.current_status_sentiment IS NOT NULL
+        AND trim({row}.current_status_sentiment) != ''
+        AND {row}.current_sentiment_since IS NULL
+        AND ({anchor(row)}) IS NOT NULL
+        """
+
+    if not conn.execute(
+        f"SELECT 1 FROM workspace_leads wl WHERE {qualifies('wl')} LIMIT 1"
+    ).fetchone():
         return
-    conn.execute("""
+    conn.execute(f"""
         UPDATE workspace_leads
-        SET current_sentiment_since = (
-            SELECT MIN(wle.event_at)
-            FROM workspace_lead_events wle JOIN events e ON e.id = wle.event_id
-            WHERE wle.workspace_id = workspace_leads.workspace_id
-              AND wle.lead_id = workspace_leads.lead_id
-              AND lower(json_extract(e.metadata_json, '$.lead_status_sentiment'))
-                  = lower(workspace_leads.current_status_sentiment)
-              AND wle.event_at > COALESCE((
-                  SELECT MAX(wle2.event_at)
-                  FROM workspace_lead_events wle2 JOIN events e2 ON e2.id = wle2.event_id
-                  WHERE wle2.workspace_id = workspace_leads.workspace_id
-                    AND wle2.lead_id = workspace_leads.lead_id
-                    AND json_extract(e2.metadata_json, '$.lead_status_sentiment') IS NOT NULL
-                    AND lower(json_extract(e2.metadata_json, '$.lead_status_sentiment'))
-                        <> lower(workspace_leads.current_status_sentiment)
-              ), '')
-        )
-        WHERE current_status_sentiment IS NOT NULL
-          AND trim(current_status_sentiment) != ''
-          AND current_sentiment_since IS NULL
+           SET current_sentiment_since = ({anchor('workspace_leads')})
+         WHERE {qualifies('workspace_leads')}
     """)
 
 

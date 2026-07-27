@@ -70,9 +70,9 @@ class CompanyDomainFallbackTests(unittest.TestCase):
 
     def test_export_company_domain_fallback_from_email_domain(self):
         self._add_lead_with_null_company_domain(
-            email="teresa.stock@purdueglobal.edu",
+            email="teresa.stock@zarkfeldglobal.edu",
             name="Teresa Stock",
-            company="Purdue University Global",
+            company="Zarkfeld University Global",
             linkedin="https://www.linkedin.com/in/teresa-stock",
         )
         result = om.export_leads(
@@ -83,7 +83,7 @@ class CompanyDomainFallbackTests(unittest.TestCase):
         )
         leads = result["leads"]
         self.assertEqual(len(leads), 1)
-        self.assertEqual(leads[0]["company_domain"], "purdueglobal.edu")
+        self.assertEqual(leads[0]["company_domain"], "zarkfeldglobal.edu")
 
     def test_export_gmail_company_domain_blank(self):
         self._add_lead_with_null_company_domain(
@@ -104,15 +104,15 @@ class CompanyDomainFallbackTests(unittest.TestCase):
 
     def test_link_lead_company_backfills_from_existing_email_domain(self):
         lead_id = self._add_lead_with_null_company_domain(
-            email="teresa.stock@purdueglobal.edu",
+            email="teresa.stock@zarkfeldglobal.edu",
             name="Teresa Stock",
-            company="Purdue University Global",
+            company="Zarkfeld University Global",
             linkedin="https://www.linkedin.com/in/teresa-stock",
         )
         om.resolve_lead(
             linkedin_url="https://www.linkedin.com/in/teresa-stock",
             name="Teresa Stock",
-            company="Purdue University Global",
+            company="Zarkfeld University Global",
         )
         conn = om.get_conn()
         row = conn.execute(
@@ -123,13 +123,13 @@ class CompanyDomainFallbackTests(unittest.TestCase):
             (lead_id,),
         ).fetchone()
         conn.close()
-        self.assertEqual(row["domain"], "purdueglobal.edu")
+        self.assertEqual(row["domain"], "zarkfeldglobal.edu")
 
     def test_require_domain_includes_email_domain_only(self):
         self._add_lead_with_null_company_domain(
-            email="teresa.stock@purdueglobal.edu",
+            email="teresa.stock@zarkfeldglobal.edu",
             name="Teresa Stock",
-            company="Purdue University Global",
+            company="Zarkfeld University Global",
             linkedin="https://www.linkedin.com/in/teresa-stock",
         )
         rows, _ = om.query_leads_for_export(
@@ -139,25 +139,25 @@ class CompanyDomainFallbackTests(unittest.TestCase):
             limit=10,
         )
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["company_domain"], "purdueglobal.edu")
+        self.assertEqual(rows[0]["company_domain"], "zarkfeldglobal.edu")
 
     def test_build_lead_sync_payload_company_domain_fallback(self):
         lead_id = self._add_lead_with_null_company_domain(
-            email="teresa.stock@purdueglobal.edu",
+            email="teresa.stock@zarkfeldglobal.edu",
             name="Teresa Stock",
-            company="Purdue University Global",
+            company="Zarkfeld University Global",
             linkedin="https://www.linkedin.com/in/teresa-stock",
         )
         conn = om.get_conn()
         payload = om.build_lead_sync_payload(conn, om.DEFAULT_ORG_ID, lead_id)
         conn.close()
-        self.assertEqual(payload.get("company_domain"), "purdueglobal.edu")
+        self.assertEqual(payload.get("company_domain"), "zarkfeldglobal.edu")
 
     def test_map_to_outreachmagic_email_domain_fallback(self):
         person = {
             "full_name": "Teresa Stock",
-            "company_name": "Purdue University Global",
-            "email": "teresa.stock@purdueglobal.edu",
+            "company_name": "Zarkfeld University Global",
+            "email": "teresa.stock@zarkfeldglobal.edu",
         }
         enrichment = {
             "company_website": "",
@@ -165,7 +165,7 @@ class CompanyDomainFallbackTests(unittest.TestCase):
             "confidence": "low",
         }
         mapped = enrich.map_to_outreachmagic(person, enrichment)
-        self.assertEqual(mapped["profile"]["company_domain"], "purdueglobal.edu")
+        self.assertEqual(mapped["profile"]["company_domain"], "zarkfeldglobal.edu")
 
     def test_map_to_outreachmagic_skips_gmail_fallback(self):
         person = {

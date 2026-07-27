@@ -433,7 +433,12 @@ def cleanup_run() -> dict:
 
 def empty_leads_preview(workspace_slug: Optional[str] = None) -> dict:
     """Dry-run the empty-identity lead cleanup (name 'unknown', no email/LinkedIn,
-    no history, only a system uid identity). Optionally scoped to a workspace."""
+    no history, only a system uid identity).
+
+    `workspace_slug=None` means ORG-WIDE, which is usually what you want: these
+    are minted in bulk by a single bad snapshot pull and land across every
+    workspace at once, so a workspace-scoped cleanup leaves the rest behind.
+    """
     import junk_cleanup
 
     conn = get_conn()

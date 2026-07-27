@@ -1933,12 +1933,22 @@ def data_quality(
     import junk_cleanup
 
     junk = junk_cleanup.cleanup_junk_leads(conn, dry_run=True)
+    # No-identity leads: name 'unknown', no email/linkedin/company, no history,
+    # only a system uid. Reported both for this workspace (what you are looking
+    # at) and org-wide (what actually has to be deleted) -- these arrive in bulk
+    # from a single bad snapshot pull, so a per-workspace cleanup leaves orphans
+    # behind in every other workspace.
+    empty_ws = junk_cleanup.cleanup_empty_leads(conn, workspace_id=workspace_id, dry_run=True)
+    empty_org = junk_cleanup.cleanup_empty_leads(conn, dry_run=True)
     return {
         "since": since, "until": until,
         "range_active": bool(active_sql),
         "total": row["total"] or 0,
         "buckets": buckets,
         "junk_deletable": junk["selected"],
+        "empty_leads_workspace": empty_ws["selected"],
+        "empty_leads_org": empty_org["selected"],
+        "empty_leads_sources": empty_org["distribution"]["top_sources"][:5],
     }
 
 

@@ -366,8 +366,9 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <span id="cleanup-summary" class="stale"></span>
       </div>
       <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
-        <div class="sub" style="margin-bottom:4px">No-identity leads <span style="font-weight:400">— name "unknown"/blank, no email / LinkedIn / history, only a system id. Deleting pushes removals to the relay so a pull can't regrow them.</span></div>
-        <button class="small" id="empty-preview-btn">Preview no-identity leads (this workspace)</button>
+        <div class="sub" style="margin-bottom:4px">No-identity leads <span id="empty-counts"></span><span style="font-weight:400"> — name "unknown"/blank, no email / LinkedIn / history, only a system id. Nothing to enrich or search on. Deleting pushes removals to the relay so a pull can't regrow them.</span></div>
+        <button class="small" id="empty-preview-org-btn">Preview org-wide</button>
+        <button class="small" id="empty-preview-btn">Preview this workspace</button>
         <span id="empty-summary" class="stale"></span>
       </div>
     </div>
@@ -1681,6 +1682,13 @@ async function loadQuality() {
   $("cleanup-summary").textContent = d.junk_deletable
     ? `${fmt(d.junk_deletable)} truly-empty leads are deletable — preview first.`
     : "No empty leads to clean up.";
+  // Surface the counts up front rather than only after a preview click — the
+  // whole problem with this population is that it is invisible until you know
+  // to go looking for it.
+  const org = d.empty_leads_org || 0, ws = d.empty_leads_workspace || 0;
+  $("empty-counts").innerHTML = org
+    ? `<b style="color:var(--warn,inherit)">${fmt(org)} org-wide</b>, ${fmt(ws)} here`
+    : "<b>none</b>";
 }
 
 async function openBucket(key, missing, resetOffset = true) {
@@ -1862,25 +1870,36 @@ $("cleanup-preview-btn").onclick = async () => {
   } catch (e) { toast(e.message); }
 };
 
-$("empty-preview-btn").onclick = async () => {
+// No-identity leads arrive in bulk from a single bad snapshot pull and land
+// across every workspace at once, so "this workspace" is almost never the right
+// scope — org-wide is offered alongside it and is what the tile counts.
+async function previewEmptyLeads(scope) {
+  const isOrg = scope === "org";
+  const wsParam = isOrg ? "org" : state.workspace;
   try {
-    const d = await api(`/api/cleanup/empty-leads/preview?workspace=${encodeURIComponent(state.workspace)}`);
-    if (!d.selected) { $("empty-summary").textContent = "No no-identity leads in this workspace."; return; }
+    const d = await api(`/api/cleanup/empty-leads/preview?workspace=${encodeURIComponent(wsParam)}`);
+    const where = isOrg ? "across all workspaces" : "in this workspace";
+    if (!d.selected) { $("empty-summary").textContent = `No no-identity leads ${where}.`; return; }
     const top = (d.distribution?.top_sources || []).slice(0, 3)
-      .map(s => `${esc(s.source_detail)} (${s.count})`).join(", ");
-    $("empty-summary").innerHTML = `<b>${fmt(d.selected)}</b> deletable${top ? ` — top sources: ${top}` : ""}. `
-      + `<button class="small" id="empty-run-btn">Delete ${fmt(d.selected)} no-identity leads</button>`;
+      .map(s => `${esc(s.source_detail)} (${fmt(s.count)})`).join(", ");
+    $("empty-summary").innerHTML =
+      `<b>${fmt(d.selected)}</b> deletable ${where}${top ? ` — top sources: ${top}` : ""}. `
+      + `<button class="small" id="empty-run-btn">Delete ${fmt(d.selected)}</button>`;
     $("empty-run-btn").onclick = async () => {
-      if (!confirm(`Permanently delete ${d.selected} no-identity leads and push the removals to the relay? They are quarantined first. This cannot be undone from here.`)) return;
+      if (!confirm(`Permanently delete ${d.selected} no-identity leads ${where} and push the removals to the relay? `
+        + `They have no name, email, LinkedIn, company or history, and are quarantined first. `
+        + `This cannot be undone from here.`)) return;
       try {
-        const r = await post("/api/cleanup/empty-leads/run", { workspace: state.workspace });
-        toast(`Deleted ${r.deleted} (quarantined ${r.quarantined}). Push to relay to finish removal.`);
+        const r = await post("/api/cleanup/empty-leads/run", { workspace: wsParam });
+        toast(`Deleted ${fmt(r.deleted)} (quarantined ${fmt(r.quarantined)}). Push to relay to finish removal.`);
         $("empty-summary").textContent = "";
         loadQuality();
       } catch (e) { toast(e.message); }
     };
   } catch (e) { toast(e.message); }
-};
+}
+$("empty-preview-btn").onclick = () => previewEmptyLeads("workspace");
+$("empty-preview-org-btn").onclick = () => previewEmptyLeads("org");
 
 /* ---------- campaigns ---------- */
 async function loadCampaigns() {

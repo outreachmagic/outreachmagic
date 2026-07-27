@@ -791,6 +791,38 @@ def agent_sync_extra_identities(
     return out
 
 
+def _payload_can_create_lead(payload: dict, entity_key: str) -> bool:
+    """Is there enough here to be a lead at all?
+
+    A uid is NOT enough. It identifies a lead that already exists somewhere; if
+    we cannot find that lead locally, minting an empty row under the same uid
+    produces something that can never be matched, enriched or sent to -- there
+    is literally nothing to search on. Any real identifier or profile text
+    qualifies, including one carried by a typed entity_key (email:…,
+    linkedin:…, external_id:…), which is a legitimate first sighting.
+    """
+    from workspace_routing import parse_entity_key
+
+    payload = payload or {}
+    for key in ("email", "linkedin", "linkedin_url", "linkedin_sales_nav_id",
+                "external_id", "company", "title", "company_domain"):
+        if str(payload.get(key) or "").strip():
+            return True
+    name = str(payload.get("name") or "").strip()
+    if name and name.lower() != "unknown":
+        return True
+
+    key = str(entity_key or "").strip()
+    if not key:
+        return False
+    if key.startswith("uid:"):
+        return False
+    if "@" in key:                       # bare-email key
+        return True
+    itype, val = parse_entity_key(key)
+    return bool(itype and val and itype != "uid")
+
+
 def resolve_lead_from_agent_sync(
     entity_key: str,
     payload: dict,
@@ -799,10 +831,36 @@ def resolve_lead_from_agent_sync(
     conn: Optional[sqlite3.Connection] = None,
     company_cache: Optional[dict] = None,
 ) -> dict:
-    """Create or match a lead from a relay agent entry (uses entity_key + full payload)."""
+    """Create or match a lead from a relay agent entry (uses entity_key + full payload).
+
+    Refuses to CREATE from a payload that carries no identity and no profile.
+    Updating an existing lead is unaffected -- by the time this is called the
+    caller has already failed to find one locally.
+
+    This is the junk-lead factory named in find_lead_by_identifier's comment:
+    the lead_workspace_update path calls in with an EMPTY payload ({}), so any
+    entity_key that fails to resolve locally minted a name="Unknown" lead with
+    no email, no linkedin, no company and no events. A single `pull --full` on
+    2026-07-13 produced 10,457 of them in 17 minutes -- every uid-keyed relay
+    snapshot whose payload had nothing in it, mostly stale rows left over from
+    the pre-uid rekey. They are not recoverable data and cannot be enriched:
+    there is nothing to search on.
+    """
     from pipeline import resolve_lead
 
     extra = dict(import_extra_from_entity_key(entity_key))
+    if not _payload_can_create_lead(payload, entity_key):
+        return {
+            "status": "error",
+            "error": "empty snapshot: no identity or profile to create a lead from",
+            "reason": "empty_snapshot",
+            "entity_key": entity_key,
+            # resolve_lead would also have refused this, one step later, as a
+            # weak identity. Keep that flag set so callers (and the identity
+            # guard tests) still see the same contract -- this only refuses
+            # earlier, and says why more precisely.
+            "weak_identity": True,
+        }
     if payload.get("external_id"):
         extra["external_id"] = str(payload["external_id"])
     if payload.get("list_source"):

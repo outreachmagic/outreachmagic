@@ -22,6 +22,7 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
 if __package__ is None and str(Path(__file__).parent) not in sys.path:
@@ -363,12 +364,23 @@ def handle_cleanup_run(match, query, body):
     return 200, dashboard_actions.cleanup_run()
 
 
+def _empty_leads_scope(value) -> Optional[str]:
+    """`scope=org` (or an absent workspace) means org-wide.
+
+    Explicit, because the difference is 10k rows vs a few hundred and the two
+    read identically in a URL otherwise.
+    """
+    return None if str(value or "").lower() in ("", "org", "all") else value
+
+
 def handle_empty_leads_preview(match, query, body):
-    return 200, dashboard_actions.empty_leads_preview(_q(query, "workspace"))
+    return 200, dashboard_actions.empty_leads_preview(
+        _empty_leads_scope(_q(query, "workspace")))
 
 
 def handle_empty_leads_run(match, query, body):
-    return 200, dashboard_actions.empty_leads_run((body or {}).get("workspace"))
+    return 200, dashboard_actions.empty_leads_run(
+        _empty_leads_scope((body or {}).get("workspace")))
 
 
 def handle_email_finder(match, query, body):

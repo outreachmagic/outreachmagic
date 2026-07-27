@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import sys
 from typing import Optional
 
 import bounces
@@ -140,6 +141,32 @@ def build_outbox_triggers() -> list[str]:
                 f"AFTER DELETE ON {table} WHEN {guard} BEGIN "
                 f"{_outbox_upsert_stmt(etype, old_expr)} END"
             )
+
+    # A lead_workspace tombstone reads its entity_key as
+    # `(SELECT uid FROM leads WHERE id = OLD.lead_id)`. That works when a
+    # workspace_leads row is deleted on its own -- and returns NULL when the
+    # delete arrives by ON DELETE CASCADE from `leads`, because the parent row
+    # is already gone by the time the child's BEFORE DELETE trigger runs. A
+    # tombstone with no entity_key cannot be pushed, so it sat in the outbox
+    # forever while the relay kept the workspace snapshot: deleting 10,458 empty
+    # leads produced exactly that many undeliverable rows.
+    #
+    # Pre-file them from the parent, where OLD.uid is still readable. The
+    # cascade's own trigger then hits ON CONFLICT and only bumps dirty_at --
+    # it never touches entity_key -- so the good key survives.
+    out.append(
+        "CREATE TRIGGER IF NOT EXISTS trg_outbox_leads_delete_workspace_tombstones "
+        "BEFORE DELETE ON leads BEGIN "
+        "INSERT INTO outbox (entity_type, entity_id, op, entity_key, workspace_slug, dirty_at) "
+        "SELECT 'lead_workspace', wl.lead_id || ':' || wl.workspace_id, 'delete', "
+        "       OLD.uid, (SELECT slug FROM workspaces WHERE id = wl.workspace_id), "
+        "       datetime('now') "
+        "  FROM workspace_leads wl WHERE wl.lead_id = OLD.id "
+        "ON CONFLICT (entity_type, entity_id, op) DO UPDATE SET "
+        "  entity_key = excluded.entity_key, "
+        "  workspace_slug = excluded.workspace_slug, "
+        "  dirty_at = datetime('now'), attempts = 0, last_error = NULL; END"
+    )
     return out
 
 
@@ -847,6 +874,53 @@ def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
 # guard below aborts any INSERT/UPDATE that would put one of these back into a
 # provenance column.
 _TRANSPORT_STRINGS = ("agent_sync", "relay_sync", "relay")
+
+
+def _repair_keyless_workspace_tombstones(conn: sqlite3.Connection) -> int:
+    """Recover lead_workspace tombstones whose entity_key came out NULL.
+
+    Cascade-deleted workspace_leads rows filed a tombstone with no entity_key
+    (see trg_outbox_leads_delete_workspace_tombstones for why). Unpushable, so
+    they accumulate in the outbox forever while the relay keeps serving the
+    snapshot they were meant to retract.
+
+    leads_junk_quarantine kept (lead_id, uid) for exactly this sort of
+    after-the-fact recovery. Rows we still cannot key are dropped: an
+    un-keyable tombstone can never be delivered, and leaving it queued only
+    makes 'pending' permanently wrong.
+    """
+    keyless = conn.execute(
+        "SELECT COUNT(*) n FROM outbox "
+        "WHERE entity_type = 'lead_workspace' AND op = 'delete' "
+        "  AND (entity_key IS NULL OR entity_key = '')"
+    ).fetchone()["n"]
+    if not keyless:
+        return 0
+
+    conn.execute(
+        """UPDATE outbox SET entity_key = (
+               SELECT q.uid FROM leads_junk_quarantine q
+                WHERE q.lead_id = CAST(substr(outbox.entity_id, 1,
+                        instr(outbox.entity_id, ':') - 1) AS INTEGER)
+                  AND q.uid IS NOT NULL AND q.uid != ''
+                ORDER BY q.id DESC LIMIT 1
+           )
+           WHERE entity_type = 'lead_workspace' AND op = 'delete'
+             AND (entity_key IS NULL OR entity_key = '')
+             AND instr(entity_id, ':') > 1"""
+    )
+    dropped = conn.execute(
+        "DELETE FROM outbox WHERE entity_type = 'lead_workspace' AND op = 'delete' "
+        "  AND (entity_key IS NULL OR entity_key = '')"
+    ).rowcount
+    recovered = keyless - dropped
+    if recovered or dropped:
+        print(
+            f"[outreachmagic] repaired {recovered:,} workspace tombstone(s); "
+            f"dropped {dropped:,} that could not be keyed",
+            file=sys.stderr,
+        )
+    return recovered
 
 
 # Placeholder provenance written by the importer when the CSV said nothing
@@ -1921,6 +1995,7 @@ def migrate_db(conn=None):
     conn.execute("DELETE FROM lead_personalization WHERE field_name = 'linkedin_bio'")
 
     _repair_sales_nav_id_casing(conn)
+    _repair_keyless_workspace_tombstones(conn)
     _fold_shadow_source_personalization(conn)
     _repair_provenance_transport_strings(conn)
     _install_provenance_transport_guard(conn)

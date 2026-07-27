@@ -106,7 +106,7 @@ SYNCED_COLUMNS: dict[str, frozenset[str]] = {
         "linkedin_sales_nav_id", "email", "linkedin_url", "latest_sender",
         "latest_sender_platform", "email_verified_at", "original_source",
         "original_source_detail", "original_source_at", "latest_source",
-        "latest_source_detail", "latest_source_at",
+        "latest_source_detail", "latest_source_at", "record_type", "superseded_at",
         "uid",  # transmitted as the entity_key (uid:<uid>), not a payload field
     }),
     "lead_identities": frozenset({"identity_type", "identity_value_normalized"}),

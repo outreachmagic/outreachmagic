@@ -876,6 +876,102 @@ def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
 _TRANSPORT_STRINGS = ("agent_sync", "relay_sync", "relay")
 
 
+def _add_lead_record_type(conn: sqlite3.Connection) -> dict:
+    """`leads.record_type`: is this row a person, or a stand-in for a company?
+
+    Google Maps / Apify scrapes are lists of businesses, not people. Importing
+    them as leads with name = company_name gives you a "contact" that is really
+    an account: no email, no LinkedIn, nobody to send to. That is a legitimate
+    stage -- you import the list, then research actual contacts at each company
+    -- but the difference has to be recorded somewhere every query can see it.
+
+    A native column, NOT a `personalized_record_type` field, because:
+      * personalization is a user namespace; a client can legitimately create a
+        field called record_type and collide with structural meaning,
+      * import turns any unrecognised CSV column into personalization, so a
+        stray header could silently reclassify leads (this is exactly how
+        original_source ended up shadowed),
+      * it has to ride the relay snapshot for the dashboard and CRM to filter
+        on it, and
+      * every send/enrich eligibility check would otherwise need a join to
+        lead_personalization.
+
+    Vocabulary is validated in code rather than by CHECK, so it can grow without
+    a table rebuild. The index is partial: ~zero cost for the 99% 'contact' case.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(leads)").fetchall()}
+    if "record_type" not in cols:
+        conn.execute(
+            "ALTER TABLE leads ADD COLUMN record_type TEXT NOT NULL DEFAULT 'contact'")
+    if "superseded_at" not in cols:
+        conn.execute("ALTER TABLE leads ADD COLUMN superseded_at TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_leads_record_type ON leads(record_type) "
+        "WHERE record_type <> 'contact'"
+    )
+
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'lead_record_type_fold'"
+    ).fetchone():
+        return {"skipped": True}
+
+    # Fold the personalization field that was standing in for this column.
+    folded = conn.execute(
+        """UPDATE leads SET record_type = (
+               SELECT lower(TRIM(p.field_value)) FROM lead_personalization p
+                WHERE p.lead_id = leads.id AND p.field_name = 'record_type'
+                  AND lower(TRIM(p.field_value)) IN ('contact', 'company_placeholder')
+           )
+           WHERE EXISTS (
+               SELECT 1 FROM lead_personalization p
+                WHERE p.lead_id = leads.id AND p.field_name = 'record_type'
+                  AND lower(TRIM(p.field_value)) IN ('contact', 'company_placeholder')
+           )"""
+    ).rowcount
+    dropped = conn.execute(
+        "DELETE FROM lead_personalization WHERE field_name = 'record_type'").rowcount
+
+    # Catch the rest of the same import: a lead whose name IS its company, with
+    # no email, no LinkedIn and no history, is a company stub whether or not
+    # anyone remembered to tag it.
+    #
+    # Candidates come from SQL, but the decision runs through the SAME Python
+    # predicate the importer uses. A second copy of the rule in SQL is how the
+    # two drift, and the drift is not symmetric: an over-eager rule here hides
+    # real people from sending, enrichment and CRM sync without saying so.
+    from pipeline import detect_company_placeholder
+
+    candidates = conn.execute(
+        """SELECT id, name, company FROM leads
+            WHERE record_type = 'contact'
+              AND company IS NOT NULL AND TRIM(company) != ''
+              AND TRIM(lower(name)) = TRIM(lower(company))
+              AND COALESCE(TRIM(email), '') = ''
+              AND COALESCE(TRIM(linkedin_url), '') = ''
+              AND COALESCE(TRIM(linkedin_sales_nav_id), '') = ''
+              AND COALESCE(TRIM(title), '') = ''
+              AND NOT EXISTS (SELECT 1 FROM events e WHERE e.lead_id = leads.id)"""
+    ).fetchall()
+    hits = [
+        (r["id"],) for r in candidates
+        if detect_company_placeholder({"name": r["name"], "company": r["company"]}, {})
+    ]
+    if hits:
+        conn.executemany(
+            "UPDATE leads SET record_type = 'company_placeholder' WHERE id = ?", hits)
+    detected = len(hits)
+
+    conn.execute("INSERT INTO migration_flags (name) VALUES ('lead_record_type_fold')")
+    stats = {"folded": folded, "shadow_rows_dropped": dropped, "auto_detected": detected}
+    if folded or detected:
+        print(
+            f"[outreachmagic] record_type: {folded:,} folded from personalization, "
+            f"{detected:,} auto-detected as company placeholders",
+            file=sys.stderr,
+        )
+    return stats
+
+
 def _repair_keyless_workspace_tombstones(conn: sqlite3.Connection) -> int:
     """Recover lead_workspace tombstones whose entity_key came out NULL.
 
@@ -1997,6 +2093,7 @@ def migrate_db(conn=None):
     _repair_sales_nav_id_casing(conn)
     _repair_keyless_workspace_tombstones(conn)
     _fold_shadow_source_personalization(conn)
+    _add_lead_record_type(conn)
     _repair_provenance_transport_strings(conn)
     _install_provenance_transport_guard(conn)
 

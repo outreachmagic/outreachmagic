@@ -1778,6 +1778,25 @@ def main():
     )
     sync_health_p.add_argument("--json", action="store_true")
 
+    rt_p = sub.add_parser(
+        "record-type",
+        help="Inspect/set whether a lead is a person or a company placeholder",
+    )
+    rt_p.add_argument("--lead-id", type=int, help="Set this lead's record_type")
+    rt_p.add_argument(
+        "--set", dest="record_type",
+        choices=("contact", "company_placeholder"),
+        help="New record_type for --lead-id",
+    )
+    rt_p.add_argument(
+        "--resolve", action="store_true",
+        help="Retire placeholders at companies that now have real contacts "
+             "(deletes unsent stubs, supersedes ones with history)")
+    rt_p.add_argument("--company-id", type=int, help="Limit --resolve to one company")
+    rt_p.add_argument(
+        "--yes", action="store_true", help="Execute --resolve (default is dry-run)")
+    rt_p.add_argument("--json", action="store_true")
+
     junk_p = sub.add_parser(
         "cleanup-junk-leads",
         help="Stage 9: quarantine + delete the weak-identity junk leads. Destructive.",
@@ -4299,6 +4318,30 @@ def main():
                 print("Run `pipeline.py sync` to drain the outbox.")
             elif result["status"] == "SHADOW_STALE":
                 print("Run `pipeline.py shadow --prune-legacy --dry-run` to preview cleanup.")
+
+    elif args.command == "record-type":
+        if args.record_type:
+            if not args.lead_id:
+                print("--set requires --lead-id"); return
+            result = _pipeline.set_lead_record_type(args.lead_id, args.record_type)
+        elif args.resolve:
+            result = _pipeline.resolve_company_placeholders(
+                company_id=args.company_id, dry_run=not args.yes)
+        else:
+            conn = _pipeline.get_conn()
+            try:
+                result = {
+                    "counts": {
+                        r["record_type"]: r["n"] for r in conn.execute(
+                            "SELECT record_type, COUNT(*) n FROM leads GROUP BY 1")
+                    },
+                    "superseded": conn.execute(
+                        "SELECT COUNT(*) n FROM leads WHERE superseded_at IS NOT NULL"
+                    ).fetchone()["n"],
+                }
+            finally:
+                conn.close()
+        print(json.dumps(result, indent=2))
 
     elif args.command == "cleanup-junk-leads":
         import junk_cleanup

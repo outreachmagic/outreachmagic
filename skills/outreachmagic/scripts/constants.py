@@ -42,6 +42,60 @@ STAGE_EMOJI = {
 
 ATTRIBUTE_INSIGHT_FIELDS = ("title", "industry", "headcount")
 
+# What a lead row actually represents.
+#   contact            — a real person (the default; every existing lead is one)
+#   company_placeholder — a stand-in for a company with no known contact yet,
+#                        typically a Google Maps / Apify business scrape. Real
+#                        for tagging, personalization and company facts; NOT a
+#                        person, so it is excluded from sending, enrichment
+#                        targeting and CRM sync until a real contact replaces it.
+RECORD_TYPE_CONTACT = "contact"
+RECORD_TYPE_COMPANY_PLACEHOLDER = "company_placeholder"
+LEAD_RECORD_TYPES = (RECORD_TYPE_CONTACT, RECORD_TYPE_COMPANY_PLACEHOLDER)
+
+# Tokens that mark a name as a business rather than a person.
+#
+# Auto-detection requires one of these to be PRESENT, rather than trying to
+# recognise a person's name and excluding it. The asymmetry is deliberate: a
+# missed stub costs nothing (it just sits in the contacts list), while a real
+# person misclassified as a placeholder is silently dropped from sending,
+# enrichment targeting and CRM sync. Sole traders whose company is their own
+# name -- "Marisol Okonkwo", "Petra Lindqvist" -- match name == company exactly like
+# a Google Maps business does, and three of them were caught by an earlier
+# version of this rule that had no such requirement.
+COMPANY_NAME_TOKENS = frozenset({
+    "inc", "incorporated", "llc", "l.l.c", "ltd", "limited", "plc", "corp",
+    "corporation", "co", "company", "group", "holdings", "partners", "associates",
+    "enterprises", "ventures", "industries", "international", "worldwide",
+    "auto", "autos", "motors", "motor", "automotive", "cars", "car", "truck",
+    "trucks", "vehicles", "vehicle", "dealership", "dealers", "dealer",
+    "sales", "service", "services", "center", "centre", "shop", "garage",
+    "solutions", "systems", "technologies", "consulting", "agency", "studio",
+    "works", "supply", "supplies", "equipment", "rental", "rentals", "leasing",
+    "brothers", "bros", "sons", "family", "management", "mobility", "imports",
+    "used", "pre-owned", "wholesale", "outlet", "superstore", "mart",
+    # Marques that appear as the whole dealership name
+    "hyundai", "ford", "toyota", "honda", "kia", "nissan", "chevrolet", "chevy",
+    "bmw", "audi", "mazda", "subaru", "jeep", "dodge", "ram", "gmc", "buick",
+    "cadillac", "lexus", "acura", "infiniti", "volvo", "volkswagen", "vw",
+    "mercedes", "porsche", "tesla", "chrysler", "mitsubishi", "genesis",
+})
+
+
+def looks_like_company_name(value: str | None) -> bool:
+    """Does this name carry a positive signal that it is a business?
+
+    A corporate token, an ampersand, or a digit. Not a person-name detector --
+    see COMPANY_NAME_TOKENS for why the test runs in this direction.
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    if "&" in text or any(ch.isdigit() for ch in text):
+        return True
+    tokens = {t.strip(".,'\"()") for t in text.replace("/", " ").replace("-", " ").split()}
+    return bool(tokens & COMPANY_NAME_TOKENS)
+
 # Personal inboxes — skip domain-wide company sync (would touch unrelated leads)
 SHARED_EMAIL_DOMAINS = frozenset({
     "126.com", "163.com", "aim.com", "alice.it", "aol.com", "ameritech.net", "att.net",

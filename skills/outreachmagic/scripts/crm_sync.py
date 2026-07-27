@@ -194,6 +194,11 @@ def select_leads(conn, workspace_id: str, last_sync_at: str | None = None,
         where.append("wl.lead_id = ?")
         params.append(lead_id)
     else:
+        # A company placeholder is an account stub, not a person. Pushing one to
+        # a CRM creates a contact record for a business with no human attached,
+        # which then has to be cleaned up on the far side. An explicit
+        # lead_id request still syncs, so nothing is unreachable.
+        where.append("l.record_type = 'contact'")
         placeholders = ",".join("?" for _ in SYNCABLE_STATUSES)
         where.append(f"wl.status IN ({placeholders})")
         params.extend(sorted(SYNCABLE_STATUSES))

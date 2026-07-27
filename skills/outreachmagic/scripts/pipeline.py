@@ -170,6 +170,8 @@ from constants import (
     BILLING_UPGRADE_URL,
     MAX_EVENT_BODY_STORAGE_CHARS,
     PIPELINE_STAGES,
+    RECORD_TYPE_COMPANY_PLACEHOLDER,
+    RECORD_TYPE_CONTACT,
     RELAY_BULK_THRESHOLD,
     RELAY_PULL_EVENT_MAX,
     RELAY_PULL_MAX,
@@ -188,6 +190,7 @@ from constants import (
     COMPANY_DOMAIN_SQL,
     SHARED_EMAIL_DOMAINS,
     is_non_company_name,
+    looks_like_company_name,
     STAGE_EMOJI,
     require_professional_domain_clause,
     USAGE_WARNING_PERCENT,
@@ -3148,6 +3151,130 @@ def csv_import_latest_source_fields(
     )
 
 
+def detect_company_placeholder(profile: dict, extra: dict) -> bool:
+    """Is this import row a company stub rather than a person?
+
+    The signature of a Google Maps / Apify business scrape imported with
+    name = company_name: the name IS the company, and there is no personal
+    identifier of any kind. Deliberately strict -- a real person who happens to
+    share their company's name still has an email or a LinkedIn URL.
+    """
+    name = str(profile.get("name") or "").strip().lower()
+    company = str(profile.get("company") or "").strip().lower()
+    if not name or not company or name != company:
+        return False
+    # Require a positive business signal. A sole trader whose company is their
+    # own name matches name == company exactly like a scraped business does.
+    if not looks_like_company_name(name):
+        return False
+    for key in ("email", "linkedin", "linkedin_url", "title"):
+        if str(profile.get(key) or "").strip():
+            return False
+    for key in ("linkedin_sales_nav_id", "sales_nav_id", "member linkedin sales nav id"):
+        if str((extra or {}).get(key) or "").strip():
+            return False
+    return True
+
+
+def set_lead_record_type(
+    lead_id: int, record_type: str, *, conn: Optional[sqlite3.Connection] = None,
+) -> dict:
+    """Set leads.record_type, validating against LEAD_RECORD_TYPES."""
+    from constants import LEAD_RECORD_TYPES
+
+    rt = str(record_type or "").strip().lower()
+    if rt not in LEAD_RECORD_TYPES:
+        return {"status": "error",
+                "error": f"record_type must be one of {', '.join(LEAD_RECORD_TYPES)}"}
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        conn.execute(
+            "UPDATE leads SET record_type = ?, updated_at = datetime('now') WHERE id = ?",
+            (rt, lead_id),
+        )
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
+    return {"status": "ok", "lead_id": lead_id, "record_type": rt}
+
+
+def resolve_company_placeholders(
+    company_id: Optional[int] = None,
+    *,
+    dry_run: bool = True,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict:
+    """Retire company placeholders at companies that now have real contacts.
+
+    Two outcomes, and the distinction is the whole point:
+      * placeholder with NO events -> delete it. It was a stand-in; the real
+        contacts have arrived and nothing was ever sent to the stub.
+      * placeholder WITH events -> keep it, stamp superseded_at. Something was
+        actually sent to that address; deleting it would erase the record of
+        outreach that happened.
+
+    Scoped to one company, or every company when company_id is None.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        scope, params = "", []
+        if company_id is not None:
+            scope = " AND p.company_id = ?"
+            params.append(int(company_id))
+        rows = conn.execute(
+            f"""SELECT p.id, p.company_id, p.name,
+                       EXISTS (SELECT 1 FROM events e WHERE e.lead_id = p.id) AS has_events
+                  FROM leads p
+                 WHERE p.record_type = 'company_placeholder'
+                   AND p.superseded_at IS NULL
+                   AND p.company_id IS NOT NULL{scope}
+                   AND EXISTS (
+                       SELECT 1 FROM leads c
+                        WHERE c.company_id = p.company_id
+                          AND c.record_type = 'contact'
+                          AND c.id <> p.id
+                   )""",
+            params,
+        ).fetchall()
+
+        deletable = [r["id"] for r in rows if not r["has_events"]]
+        supersedable = [r["id"] for r in rows if r["has_events"]]
+        result = {
+            "dry_run": dry_run,
+            "matched": len(rows),
+            "deletable": len(deletable),
+            "supersedable": len(supersedable),
+            "deleted": 0,
+            "superseded": 0,
+        }
+        if dry_run or not rows:
+            return result
+
+        if supersedable:
+            conn.executemany(
+                "UPDATE leads SET superseded_at = datetime('now'), "
+                "updated_at = datetime('now') WHERE id = ?",
+                [(i,) for i in supersedable],
+            )
+            result["superseded"] = len(supersedable)
+        if deletable:
+            # Same path junk_cleanup uses: the delete triggers file the relay
+            # tombstones, so the stub is retracted rather than orphaned upstream.
+            conn.executemany("DELETE FROM leads WHERE id = ?", [(i,) for i in deletable])
+            result["deleted"] = len(deletable)
+        conn.commit()
+        return result
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def _apply_csv_latest_source(
     lead_id: int,
     latest_source: Optional[str],
@@ -3684,8 +3811,13 @@ def import_profiles(
     import_batch_id: Optional[str] = None,
     import_format: Optional[str] = None,
     overwrite_source: bool = False,
+    record_type: Optional[str] = None,
 ) -> dict:
-    """Import many profile rows (CSV dicts or JSON objects). Tiered identity match keys."""
+    """Import many profile rows (CSV dicts or JSON objects). Tiered identity match keys.
+
+    `record_type` forces every row to a type; leave it None to auto-detect
+    company placeholders (see detect_company_placeholder).
+    """
     rows, import_meta = preprocess_import_rows(rows, import_format=import_format)
     default_source = source if source is not None else "csv_import"
     if default_source == "csv_import" and import_meta.get("detected_format") == "sales_navigator":
@@ -3697,6 +3829,7 @@ def import_profiles(
         "enriched": 0,
         "personalized": 0,
         "tagged": 0,
+        "company_placeholders": 0,
         "weak_identity_count": 0,
         "import_key_only_count": 0,
         "skipped_no_identity": 0,
@@ -3867,6 +4000,16 @@ def import_profiles(
                 result["id"], row_latest_source, row_latest_source_detail,
                 conn=shared_conn,
             )
+        row_record_type = (
+            str(raw.get("record_type") or "").strip().lower()
+            or record_type
+            or (RECORD_TYPE_COMPANY_PLACEHOLDER
+                if detect_company_placeholder(profile, extra) else None)
+        )
+        if row_record_type and row_record_type != RECORD_TYPE_CONTACT:
+            summary["company_placeholders"] += 1
+            if not dry_run and result.get("id"):
+                set_lead_record_type(result["id"], row_record_type, conn=shared_conn)
         if result["status"] == "created":
             summary["created"] += 1
         else:

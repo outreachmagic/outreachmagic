@@ -279,6 +279,7 @@ def handle_contacts(conn, ws_id, match, query):
         has_linkedin=_bool_q(query, "has_linkedin"),
         verify=_q(query, "verify"),
         qualify_finding=_bool_q(query, "qualify_finding"),
+        record_type=_q(query, "record_type"),
         limit=_int_q(query, "limit", 50, lo=1, hi=200),
         offset=_int_q(query, "offset", 0, hi=10_000_000))
 
@@ -300,6 +301,7 @@ def handle_contacts_ids(conn, ws_id, match, query):
         has_linkedin=_bool_q(query, "has_linkedin"),
         verify=_q(query, "verify"),
         qualify_finding=_bool_q(query, "qualify_finding"),
+        record_type=_q(query, "record_type"),
         limit=_int_q(query, "limit", 5000, lo=1, hi=50000),
         ids_only=True)
 

@@ -226,6 +226,11 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <select id="contacts-status">
           <option value="">Any stage</option>
         </select>
+        <select id="contacts-record-type" title="Company placeholders are account stubs with no person attached">
+          <option value="">People only</option>
+          <option value="company_placeholder">Company placeholders</option>
+          <option value="all">People + placeholders</option>
+        </select>
         <select id="contacts-missing">
           <option value="">All contacts</option>
           <option value="email">Missing email</option>
@@ -975,7 +980,11 @@ const SORTABLE_LEAD_KEYS = new Set([
 ]);
 function leadColumns() {
   return [
-    { key: "name", label: "Name", render: r => esc(r.name || "—") },
+    { key: "name", label: "Name", render: r => esc(r.name || "—")
+        + (r.record_type === "company_placeholder"
+            ? ' <span class="flag" title="Company placeholder — an account stub with no person attached. Not sent to, not enriched, not synced to CRM.">company</span>'
+            : "")
+        + (r.superseded_at ? ' <span class="flag warn" title="Superseded by real contacts at this company; kept for audit">superseded</span>' : "") },
     { key: "company", label: "Company", render: r => esc(r.company ?? "") + (r.company_id ? "" : ' <span class="flag warn" title="not linked to a company record">⚠</span>') },
     { key: "title", label: "Title", render: r => esc(r.title ?? "") },
     { key: "email", label: "Email", render: r => r.email ? esc(r.email) : '<span class="flag warn">no email</span>' },
@@ -1233,6 +1242,7 @@ function contactsQuery() {
   // so it implies connected=1 even if the checkbox is off.
   if ($("contacts-connected").checked || sender) p.set("connected", "1");
   if (sender) p.set("sender", sender);
+  if ($("contacts-record-type").value) p.set("record_type", $("contacts-record-type").value);
   for (const [k, v] of Object.entries(contactsFilters)) if (v != null && v !== "") p.set(k, v);
   return "/api/contacts?" + p.toString();
 }
@@ -1420,7 +1430,7 @@ function loadContactsStats() {
   }).catch(() => {});
 }
 $("contacts-q").oninput = () => { clearTimeout(contactsTimer); contactsTimer = setTimeout(() => loadContacts(), 300); };
-$("contacts-status").onchange = $("contacts-missing").onchange = $("contacts-sort").onchange = $("contacts-connected").onchange = $("contacts-sender").onchange = () => loadContacts();
+$("contacts-status").onchange = $("contacts-missing").onchange = $("contacts-sort").onchange = $("contacts-connected").onchange = $("contacts-sender").onchange = $("contacts-record-type").onchange = () => loadContacts();
 $("contacts-prev").onclick = () => { contactsState.offset = Math.max(0, contactsState.offset - contactsState.limit); loadContacts(false); };
 $("contacts-next").onclick = () => { contactsState.offset += contactsState.limit; loadContacts(false); };
 

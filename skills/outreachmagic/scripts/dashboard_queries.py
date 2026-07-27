@@ -1548,6 +1548,7 @@ def _lead_order_by(sort: Optional[str], direction: Optional[str]) -> str:
 
 def _lead_columns() -> str:
     return """l.id AS lead_id, l.name, l.company, l.company_id, l.title, l.email,
+             l.record_type, l.superseded_at,
              l.email_domain, l.linkedin_url, l.linkedin_sales_nav_id,
              l.industry, l.headcount,
              l.location_city, l.location_country, l.email_verification_status,
@@ -1565,6 +1566,9 @@ _CATCH_ALL_STATUSES_SQL = "('catch_all', 'catchall', 'catch-all', 'accept_all', 
 _QUALIFY_FINDING_SQL = (
     "(l.email IS NULL OR TRIM(l.email) = '')"
     " AND l.name IS NOT NULL AND TRIM(l.name) != '' AND LOWER(TRIM(l.name)) != 'unknown'"
+    # A company placeholder's "name" is the company. Searching for an email for
+    # it burns finder credits looking for a person who does not exist.
+    " AND l.record_type = 'contact'"
     " AND NOT EXISTS (SELECT 1 FROM lead_provider_attempts a"
     "                 WHERE a.lead_id = l.id AND a.provider IN ('trykitt', 'icypeas'))"
 )
@@ -1625,6 +1629,7 @@ def search_leads(
     has_linkedin: Optional[bool] = None,
     verify: Optional[str] = None,
     qualify_finding: Optional[bool] = None,
+    record_type: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     ids_only: bool = False,
@@ -1638,6 +1643,16 @@ def search_leads(
     restricts to leads with a public URL or Sales Navigator id."""
     where = ["wl.workspace_id = ?"]
     params: list = [workspace_id]
+    # Company placeholders are accounts, not people. They are excluded unless
+    # asked for by name, so the contacts list, its counts, and every bulk action
+    # driven off this query keep meaning "people you can actually contact".
+    if record_type == "all":
+        pass
+    elif record_type:
+        where.append("l.record_type = ?")
+        params.append(record_type)
+    else:
+        where.append("l.record_type = 'contact'")
     if tag:
         where.append(
             "wl.lead_id IN (SELECT lead_id FROM workspace_lead_tags"
@@ -1989,12 +2004,22 @@ def enrichment_targets(
     targets = []
     for lead_id in lead_ids:
         lead = conn.execute(
-            """SELECT l.id, l.name, l.company, l.company_id, l.email
+            """SELECT l.id, l.name, l.company, l.company_id, l.email, l.record_type
                FROM workspace_leads wl JOIN leads l ON l.id = wl.lead_id
                WHERE wl.workspace_id = ? AND l.id = ?""",
             (workspace_id, int(lead_id)),
         ).fetchone()
         if lead is None:
+            continue
+        if lead["record_type"] != "contact":
+            # Surfaced rather than dropped: selecting a placeholder and getting
+            # silence back is worse than being told why it can't run.
+            targets.append({
+                "lead_id": lead["id"], "name": lead["name"], "company": lead["company"],
+                "domains": [], "domain_count": 0, "email": lead["email"],
+                "blocked": "company_placeholder",
+                "reason": "no person to find — research a real contact first",
+            })
             continue
         domains, _ = _lead_domains(conn, int(lead_id))
         targets.append({

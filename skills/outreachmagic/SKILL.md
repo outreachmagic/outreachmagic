@@ -286,11 +286,41 @@ pipeline.py import-profiles --file enriched.csv --workspace W \
 
 Full import field reference, personalization workflow, email verification, dedup, Google Sheets export, quarantine management, and troubleshooting: [references/command-reference.md](references/command-reference.md).
 
+## Company-only lists (Google Maps / directory scrapes)
+
+A scraped business list has no people in it. Import it with an explicit
+record type so the rows are never mistaken for contacts:
+
+```bash
+python3 scripts/pipeline.py import-profiles --file dealers.csv \
+  --record-type company_placeholder --source google_maps
+```
+
+`company_placeholder` rows are real records — taggable, personalizable, linked
+to a company — but they are **excluded from the contacts list, email-finder
+targeting and CRM sync**, because there is no person to contact yet. Once
+research turns up real contacts at those companies:
+
+```bash
+python3 scripts/pipeline.py record-type --resolve            # dry run
+python3 scripts/pipeline.py record-type --resolve --yes      # execute
+```
+
+Stubs that were never sent to are deleted; stubs with outreach history are kept
+and stamped `superseded_at`, so the record of what was sent survives.
+
+Without `--record-type`, import auto-detects only when the name carries a clear
+business signal (`Inc`, `LLC`, `Motors`, a marque, an `&`, a digit). That is
+deliberately conservative: a sole trader whose company is their own name looks
+identical to a scraped business, and misclassifying a real person hides them
+from outreach. **Pass the flag when you know the list is companies.**
+
 ## Lead Fields Reference
 
 | Field | CLI flag | Notes |
 |-------|----------|-------|
 | name | `--name` | Required |
+| record_type | `--record-type` | `contact` (default) or `company_placeholder` |
 | company | `--company` | |
 | title | `--title` | Job title |
 | industry | `--industry` | e.g. Martech, Fintech |

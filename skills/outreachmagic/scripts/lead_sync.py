@@ -225,6 +225,12 @@ def _assemble_lead_core_sync_payload(
         val = row[field]
         if val is not None and str(val).strip():
             payload[field] = val
+    # Only sent when it is not the default, so ~every lead's payload is
+    # unchanged and no content hash churns on rollout.
+    if "record_type" in row.keys() and row["record_type"] and row["record_type"] != "contact":
+        payload["record_type"] = row["record_type"]
+    if "superseded_at" in row.keys() and row["superseded_at"]:
+        payload["superseded_at"] = row["superseded_at"]
     if personalization_rows:
         pers = {
             r["field_name"]: {
@@ -963,6 +969,15 @@ def apply_agent_lead_core_payload(
     if payload.get("notes"):
         _set("notes", payload["notes"])
         bump_updated_at = True
+
+    # Absent means 'contact' (the sender omits the default), so a missing key
+    # must not clear a locally-set placeholder -- only an explicit value applies.
+    incoming_record_type = str(payload.get("record_type") or "").strip().lower()
+    if incoming_record_type in ("contact", "company_placeholder"):
+        _set("record_type", incoming_record_type)
+        bump_updated_at = True
+    if payload.get("superseded_at"):
+        _set("superseded_at", payload["superseded_at"])
 
     # Company link; was link_lead_company(company=None), i.e. company_id only,
     # resolved from the email domain.

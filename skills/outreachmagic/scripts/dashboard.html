@@ -2487,9 +2487,19 @@ async function renderLeadCustomFields(leadId) {
   el.innerHTML = '<h3 style="font-size:13px;margin:0 0 6px">Custom fields</h3><div class="stale">Loading…</div>';
   const d = await api(`/api/leads/${leadId}/custom-fields`).catch(() => null);
   if (!d) { el.innerHTML = ""; return; }
-  const line = (scope, f) => `<div style="display:flex;gap:8px;align-items:center;padding:2px 0">
-     <span style="flex:1"><span class="stale">${esc(f.field)}:</span> ${esc(f.value || "")}</span>
-     <button class="small" data-scope="${scope}" data-field="${esc(f.field)}" data-val="${esc(f.value || "")}">edit</button></div>`;
+  // Research blobs (serper_research) run to thousands of characters — inline
+  // they'd push the edit button off the panel. Anything long collapses.
+  const LONG = 200;
+  const line = (scope, f) => {
+    const val = f.value || "";
+    const body = val.length > LONG
+      ? `<details><summary class="stale" style="cursor:pointer">${esc(f.field)} (${val.length.toLocaleString()} chars)</summary>
+         <pre style="white-space:pre-wrap;word-break:break-word;margin:4px 0;font-size:11px">${esc(val)}</pre></details>`
+      : `<span class="stale">${esc(f.field)}:</span> ${esc(val)}`;
+    return `<div style="display:flex;gap:8px;align-items:flex-start;padding:2px 0">
+     <span style="flex:1;min-width:0">${body}</span>
+     <button class="small" data-scope="${scope}" data-field="${esc(f.field)}" data-val="${esc(val)}">edit</button></div>`;
+  };
   el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Custom fields</h3>
     ${d.lead.length ? `<div class="stale" style="margin:4px 0">Lead</div>${d.lead.map(f => line("lead", f)).join("")}` : ""}
     ${d.company.length ? `<div class="stale" style="margin:4px 0">Company</div>${d.company.map(f => line("company", f)).join("")}` : ""}

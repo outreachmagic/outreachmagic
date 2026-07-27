@@ -1,7 +1,7 @@
 {
   "version": "1.5.0",
   "files": {
-    "scripts/dashboard.html": "e92c902ae3efcd8fbde621d50af4e5d2f5b386c395b05538663f66d6ae72880e",
+    "scripts/dashboard.html": "37b6f6e9398621bc2da458acd899eba664253f31b78541393a4a73f2ff50609c",
     "README.md": "4107500d17db56e8ce8fe84c7c2ad44bb55f749fea1a36d6a518b26d9d8cdf17",
     "SECURITY.md": "db20902ceb5c57e81ac4caa2cf9257cbaaba53fd03b813417ccff21d99c92a32",
     "SKILL.md": "bf54b0fe9365599b5b28f3d476754f6f177a09311263d471f8d64b59cd813e10",
@@ -22,7 +22,7 @@
     "crm_drivers/ghl.py": "3d6caa9d337a9b23509b7cfea039e68ac386d96a95107b43548b7fc1d62b7f66",
     "crm_drivers/hubspot.py": "e6575b237fb409eae33cedd9785587a3f1b7c30e4f2cb9e5ebd3f9c81e362caa",
     "crm_sync.py": "6755be42b4f993a25a53d480683027c83547b05c6105590eea712d47dec2d156",
-    "dashboard_actions.py": "cbaa7018a614f981146b06ce1b78058a0d79e5814b368cb11717a428eaac88c7",
+    "dashboard_actions.py": "1039bbf4a4d214ab3ce78d31a5840515618f7622b81d8dc2d7008de15e7e3841",
     "dashboard_queries.py": "fd23509bf54da29e0159e0244ee6abb76ef0797ebc8a9e48aababe59bf79e3b5",
     "dashboard_server.py": "8884c81bdd6ac68fa60fa3eb0ee0ed0903b5c36fb003fae00ed6f21292c052a9",
     "data_freshness.py": "ec3dc68995a90f997a106ebd05e75355347b185a013838164faff14f9a97d8dd",

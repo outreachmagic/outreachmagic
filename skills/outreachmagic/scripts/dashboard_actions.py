@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -821,7 +822,7 @@ class SyncManager:
         summary = {
             "workspace": workspace_slug, "requested": len(ids),
             "searched": 0, "errors": 0, "skipped_already_ran": 0,
-            "queries": 0, "deep": bool(deep), "results": [],
+            "persisted": 0, "queries": 0, "deep": bool(deep), "results": [],
         }
         self._log(
             f"Serper research: {len(ids)} lead(s), "
@@ -856,15 +857,25 @@ class SyncManager:
                         summary["queries"] += 1
                         sections.append(
                             {"label": q["label"], "query": q["query"], "data": data})
+                    research = enrich.format_serper_for_model(sections)
+                    self._persist_serper_result(
+                        conn, lead_id, research, sections,
+                        workspace_slug=workspace_slug, deep=deep,
+                    )
                     summary["searched"] += 1
+                    summary["persisted"] += 1
                     summary["results"].append({
-                        "lead_id": lead_id, "name": lead["name"],
-                        "research": enrich.format_serper_for_model(sections),
+                        "lead_id": lead_id, "name": lead["name"], "research": research,
                     })
-                    self._log(f"  ✓ {lead['name']}: {len(sections)} query result block(s)")
+                    self._log(f"  ✓ {lead['name']}: {len(sections)} query result block(s), saved")
                 except (ValueError, RuntimeError, OSError) as exc:
                     summary["errors"] += 1
                     summary["results"].append({"lead_id": lead_id, "error": str(exc)})
+                    # Record the failure too, so a lead that reliably errors is
+                    # visible in the run log instead of looking never-attempted.
+                    self._record_serper_attempt(
+                        conn, lead_id, status="error", queries=len(sections),
+                        deep=deep, error=str(exc))
                     self._log(f"  ✗ {lead['name']}: {exc}")
         finally:
             conn.close()
@@ -872,6 +883,96 @@ class SyncManager:
             f"Serper done: {summary['searched']} researched, {summary['errors']} error(s), "
             f"{summary['skipped_already_ran']} already-run, {summary['queries']} Serper call(s).")
         return summary
+
+    # -- Serper persistence -------------------------------------------------
+    #
+    # This whole run used to leave no trace. The formatted research came back in
+    # the job summary and nothing else: no provider attempt, no personalization,
+    # no event. Three consequences, all reported as "I ran it and nothing
+    # happened": the contact showed nothing, the provider-runs panel showed
+    # nothing, and -- because has_attempted() was therefore never true -- the
+    # "skip already-run" guard never fired, so every re-run bought the same
+    # Serper credits again.
+
+    SERPER_RESEARCH_FIELD = "serper_research"
+
+    @staticmethod
+    def _record_serper_attempt(
+        conn, lead_id: int, *, status: str, queries: int, deep: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        from pipeline_provider_attempts import record_provider_attempt
+
+        metadata = {"queries": queries, "mode": "deep" if deep else "core"}
+        if error:
+            metadata["error"] = error[:500]
+        record_provider_attempt(
+            conn, lead_id, "serper", status=status, metadata=metadata,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        conn.commit()
+
+    def _persist_serper_result(
+        self, conn, lead_id: int, research: str, sections: list, *,
+        workspace_slug: str, deep: bool,
+    ) -> None:
+        """Attempt row + the research text + a history event, in that order.
+
+        The text lands in lead_personalization because that is what it is: a
+        derived blob a human or a model reads before writing copy. Mapping it
+        onto structured lead fields stays agent-in-the-loop -- deciding which
+        search result is actually the right person is a judgement call.
+        """
+        import pipeline_personalize as pp
+
+        # ATTEMPT_STATUSES is a fixed vocabulary (found/not_found/error/skipped/
+        # unknown) shared with the email-finder providers; anything else is
+        # silently coerced to "unknown", which is how every verification run
+        # ended up displaying as unknown. For research, "found" means the query
+        # pack came back with something to read.
+        self._record_serper_attempt(
+            conn, lead_id, status="found" if sections else "not_found",
+            queries=len(sections), deep=deep)
+        if research and research.strip():
+            pp.personalize_set(
+                lead_id, self.SERPER_RESEARCH_FIELD, research, conn=conn)
+        conn.commit()
+
+        # log_event requires an explicit workspace in multi-workspace mode. The
+        # research is *about a lead*, and a lead that belongs to exactly one
+        # workspace already answers the question -- without this the event was
+        # silently dropped whenever the caller (CLI, agent) had no slug to hand.
+        slug = workspace_slug or self._sole_workspace_slug(conn, lead_id)
+
+        # Separate connection: log_event manages its own transaction and needs
+        # the attempt above already committed to attach in the right order.
+        try:
+            log_event(
+                lead_id, "research_completed",
+                direction="internal", channel="research",
+                subject=f"Serper research ({len(sections)} queries)",
+                body=research[:4000] if research else None,
+                metadata={"provider": "serper", "queries": len(sections),
+                          "mode": "deep" if deep else "core",
+                          "labels": [s.get("label") for s in sections]},
+                workspace_slug=slug or None,
+            )
+        except (ValueError, sqlite3.Error) as exc:
+            # The research is already saved; a missing workspace must not lose it.
+            self._log(f"    (history event not logged: {exc})")
+
+    @staticmethod
+    def _sole_workspace_slug(conn, lead_id: int) -> Optional[str]:
+        """The lead's workspace slug when it belongs to exactly one.
+
+        Ambiguous membership returns None rather than guessing -- filing the
+        event under the wrong workspace is worse than not filing it.
+        """
+        rows = conn.execute(
+            "SELECT w.slug FROM workspace_leads wl JOIN workspaces w ON w.id = wl.workspace_id "
+            "WHERE wl.lead_id = ?", (lead_id,),
+        ).fetchall()
+        return rows[0]["slug"] if len(rows) == 1 else None
 
 
 sync_manager = SyncManager()

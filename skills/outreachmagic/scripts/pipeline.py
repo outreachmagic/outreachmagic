@@ -3685,6 +3685,16 @@ def import_profiles(
             )
         profile = normalize_profile_row(raw)
         extra = _extract_extra_import_fields(raw)
+        # A "Personalized First Name" column (Prosp LinkedIn-match exports carry
+        # this) is a real name, not a mail-merge override -- when the row has no
+        # other name source, this IS the lead's name and belongs in leads.name,
+        # not stashed only in lead_personalization where nothing ever reads it
+        # back into the profile. Pop it so the personalization loop below
+        # doesn't ALSO write it as a first_name override once it's promoted.
+        if not profile.get("name"):
+            pf_name = str(extra.pop("personalized_first_name", "") or "").strip()
+            if pf_name:
+                profile["name"] = pf_name
         row_company_domain = normalize_company_domain(extra.get("company_domain"))
         row_notes = extra.get("notes") or notes
         lead_id_hint = _lead_id_hint_from_raw(raw)

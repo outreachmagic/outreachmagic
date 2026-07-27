@@ -810,6 +810,235 @@ def set_company_domain_label(company_id: int, domain: str, label: str) -> dict:
         conn.close()
 
 
+def set_company_domain_purpose(company_id: int, domain: str, purpose: str) -> dict:
+    """pipeline.py company domain-purpose: what one of a company's known domains
+    is FOR (primary / branch / email_finding / parked).
+
+    On company_identities, not sender_domains. sender_domains is your own
+    cold-email sending infrastructure; a prospect's domains are a different set
+    of facts, and the company pane rendering both under one "domains" heading is
+    what made them indistinguishable.
+
+    Setting `primary` also moves companies.domain, because "primary" and "the
+    canonical identity column" cannot be allowed to disagree -- that is the sort
+    of split that quietly breaks dedup.
+    """
+    from constants import COMPANY_DOMAIN_PURPOSES
+
+    p = str(purpose or "").strip().lower()
+    if p not in COMPANY_DOMAIN_PURPOSES:
+        return {"status": "error",
+                "error": f"purpose must be one of {', '.join(COMPANY_DOMAIN_PURPOSES)}"}
+    domain_norm = normalize_company_domain(domain)
+    if not domain_norm:
+        return {"status": "error", "error": f"invalid domain: {domain}"}
+    conn = get_conn()
+    try:
+        company = conn.execute(
+            "SELECT id, domain FROM companies WHERE id = ?", (company_id,)).fetchone()
+        if not company:
+            return {"status": "error", "error": f"company not found: {company_id}"}
+        row = conn.execute(
+            """SELECT id FROM company_identities
+               WHERE company_id = ? AND identity_type = 'domain'
+                 AND identity_value_normalized = ?""",
+            (company_id, domain_norm),
+        ).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE company_identities SET purpose = ? WHERE id = ?", (p, row["id"]))
+        else:
+            conn.execute(
+                """INSERT INTO company_identities
+                       (org_id, company_id, identity_type, identity_value_normalized,
+                        purpose, source)
+                   VALUES (?, ?, 'domain', ?, ?, 'manual_purpose')""",
+                (DEFAULT_ORG_ID, company_id, domain_norm, p),
+            )
+        if p == "primary":
+            # Exactly one primary, and it is the one companies.domain names.
+            conn.execute(
+                """UPDATE company_identities SET purpose = NULL
+                    WHERE company_id = ? AND identity_type = 'domain'
+                      AND purpose = 'primary' AND identity_value_normalized != ?""",
+                (company_id, domain_norm),
+            )
+            conn.execute(
+                "UPDATE companies SET domain = ?, updated_at = datetime('now') WHERE id = ?",
+                (domain_norm, company_id),
+            )
+        conn.commit()
+        return {"status": "ok", "company_id": company_id,
+                "domain": domain_norm, "purpose": p}
+    finally:
+        conn.close()
+
+
+def detach_company_domain(company_id: int, domain: str) -> dict:
+    """pipeline.py company detach-domain: this domain is not theirs.
+
+    Removes the identity row. If it was `companies.domain`, the next-best
+    remaining domain is promoted -- preferring an explicit `primary`, then
+    `email_finding`, then whatever is left -- rather than leaving the company
+    with an alias set but no canonical identity, which blocks email finding and
+    reads as "missing domain" on the companies page.
+    """
+    domain_norm = normalize_company_domain(domain)
+    if not domain_norm:
+        return {"status": "error", "error": f"invalid domain: {domain}"}
+    conn = get_conn()
+    try:
+        company = conn.execute(
+            "SELECT id, domain FROM companies WHERE id = ?", (company_id,)).fetchone()
+        if not company:
+            return {"status": "error", "error": f"company not found: {company_id}"}
+        was_primary = (company["domain"] or "").lower() == domain_norm
+        removed = conn.execute(
+            """DELETE FROM company_identities
+                WHERE company_id = ? AND identity_type = 'domain'
+                  AND identity_value_normalized = ?""",
+            (company_id, domain_norm),
+        ).rowcount
+        # ensure_company() writes companies.domain without always creating a
+        # matching identity row, so "no identity row" does NOT mean "we don't
+        # know this domain" -- checking only the rowcount would refuse to detach
+        # the one domain most companies actually have.
+        if not removed and not was_primary:
+            return {"status": "error",
+                    "error": f"domain not known for company {company_id}: {domain_norm}"}
+        promoted = None
+        if was_primary:
+            nxt = conn.execute(
+                """SELECT identity_value_normalized AS d FROM company_identities
+                    WHERE company_id = ? AND identity_type = 'domain'
+                    ORDER BY CASE purpose WHEN 'primary' THEN 0 WHEN 'email_finding' THEN 1
+                                          WHEN 'branch' THEN 2 WHEN 'parked' THEN 4 ELSE 3 END,
+                             is_verified DESC, id
+                    LIMIT 1""",
+                (company_id,),
+            ).fetchone()
+            promoted = nxt["d"] if nxt else None
+            conn.execute(
+                "UPDATE companies SET domain = ?, updated_at = datetime('now') WHERE id = ?",
+                (promoted, company_id),
+            )
+            if promoted:
+                conn.execute(
+                    """UPDATE company_identities SET purpose = 'primary'
+                        WHERE company_id = ? AND identity_type = 'domain'
+                          AND identity_value_normalized = ?""",
+                    (company_id, promoted),
+                )
+        conn.commit()
+        return {"status": "ok", "company_id": company_id, "domain": domain_norm,
+                "identity_rows_removed": removed, "promoted_primary": promoted}
+    finally:
+        conn.close()
+
+
+def split_company_domain(
+    company_id: int, domain: str, into_name: str, *, dry_run: bool = False,
+) -> dict:
+    """pipeline.py company split: this domain is a different company.
+
+    Moves the domain identity AND every lead at this company whose email_domain
+    matches it to the target company (found by name/domain, or created). Then
+    queues a company_merge_candidate in reverse, so a split made in error is
+    visible and reversible through the merge review that already exists -- an
+    unreviewable destructive edit is how you end up not trusting the tool.
+    """
+    domain_norm = normalize_company_domain(domain)
+    if not domain_norm:
+        return {"status": "error", "error": f"invalid domain: {domain}"}
+    if not (into_name or "").strip():
+        return {"status": "error", "error": "--into (target company name) is required"}
+    conn = get_conn()
+    try:
+        source = conn.execute(
+            "SELECT id, name, domain FROM companies WHERE id = ?", (company_id,)).fetchone()
+        if not source:
+            return {"status": "error", "error": f"company not found: {company_id}"}
+        known = conn.execute(
+            """SELECT 1 FROM company_identities
+                WHERE company_id = ? AND identity_type = 'domain'
+                  AND identity_value_normalized = ?""",
+            (company_id, domain_norm),
+        ).fetchone()
+        if not known and (source["domain"] or "").lower() != domain_norm:
+            return {"status": "error",
+                    "error": f"domain not known for company {company_id}: {domain_norm}"}
+        # Splitting into the source's own name would create a second company
+        # with an identical name -- ensure_company() refuses to attach a domain
+        # on a name-only match (it queues a merge candidate instead), so this
+        # would "succeed" by producing exactly the duplicate the split was
+        # meant to resolve.
+        if into_name.strip().casefold() == (source["name"] or "").casefold():
+            return {"status": "error",
+                    "error": "target name is this company's own name — pick a different one"}
+
+        moving = [
+            r["id"] for r in conn.execute(
+                "SELECT id FROM leads WHERE company_id = ? AND LOWER(email_domain) = ?",
+                (company_id, domain_norm),
+            ).fetchall()
+        ]
+        if dry_run:
+            return {"status": "dry_run", "company_id": company_id, "domain": domain_norm,
+                    "into": into_name.strip(), "leads_to_move": len(moving)}
+
+        # Detach from the source BEFORE resolving the target. ensure_company()
+        # matches on domain first, so while the domain still points at this
+        # company it resolves straight back to it and the split becomes a no-op
+        # that reports success.
+        conn.execute(
+            """DELETE FROM company_identities
+                WHERE company_id = ? AND identity_type = 'domain'
+                  AND identity_value_normalized = ?""",
+            (company_id, domain_norm),
+        )
+        source_was_primary = (source["domain"] or "").lower() == domain_norm
+        if source_was_primary:
+            conn.execute(
+                "UPDATE companies SET domain = NULL, updated_at = datetime('now') WHERE id = ?",
+                (company_id,),
+            )
+
+        target_id = ensure_company(conn, name=into_name.strip(), domain=domain_norm)
+        if not target_id or target_id == company_id:
+            conn.rollback()
+            return {"status": "error",
+                    "error": "target resolved to the same company — pick a different name"}
+
+        conn.execute(
+            """INSERT OR IGNORE INTO company_identities
+                   (org_id, company_id, identity_type, identity_value_normalized,
+                    purpose, source)
+               VALUES (?, ?, 'domain', ?, 'primary', 'company_split')""",
+            (DEFAULT_ORG_ID, target_id, domain_norm),
+        )
+        if moving:
+            conn.executemany(
+                "UPDATE leads SET company_id = ?, updated_at = datetime('now') WHERE id = ?",
+                [(target_id, lead_id) for lead_id in moving],
+            )
+        # The reverse merge candidate: "should these two be one company after
+        # all?" -- exactly the question a mistaken split raises.
+        _log_company_merge_candidate(
+            conn,
+            existing_company_id=company_id,
+            candidate_company_id=target_id,
+            reason=f"split: {domain_norm} moved out of {source['name'] or company_id}",
+            payload={"split_domain": domain_norm, "leads_moved": len(moving),
+                     "into_name": into_name.strip()},
+        )
+        conn.commit()
+        return {"status": "ok", "company_id": company_id, "domain": domain_norm,
+                "into_company_id": target_id, "leads_moved": len(moving),
+                "reverse_merge_candidate": True}
+    finally:
+        conn.close()
+
+
 def claim_public_emails(
     workspace: str,
     *,

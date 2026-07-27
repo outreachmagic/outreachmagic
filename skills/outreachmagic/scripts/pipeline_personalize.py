@@ -576,7 +576,7 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
     # any beyond the primary companies.domain into aliases too, so the relay
     # can map any of them back to this uid.
     identity_rows = conn.execute(
-        "SELECT identity_value_normalized, role, label, verified_mx FROM company_identities "
+        "SELECT identity_value_normalized, role, label, purpose, verified_mx FROM company_identities "
         "WHERE company_id = ? AND identity_type = 'domain'",
         (company_id,),
     ).fetchall()
@@ -598,6 +598,7 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
                 "domain": r["identity_value_normalized"],
                 "role": r["role"],
                 "label": r["label"],
+                "purpose": r["purpose"],
                 "verified_mx": r["verified_mx"],
             }
             for r in identity_rows
@@ -608,7 +609,7 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
     # them, and a fresh install pulling the company down would silently lose
     # the one contact address we managed to find.
     public_email_rows = conn.execute(
-        "SELECT identity_value_normalized, role, label, verified_mx FROM company_identities "
+        "SELECT identity_value_normalized, role, label, purpose, verified_mx FROM company_identities "
         "WHERE company_id = ? AND identity_type = 'public_email'",
         (company_id,),
     ).fetchall()
@@ -689,7 +690,9 @@ def apply_agent_company_sync_payload(company_id: int, payload: dict, *, conn=Non
         domain_identities = payload.get("domain_identities")
         if isinstance(domain_identities, list) and domain_identities:
             # Rich, structured form (this plan) -- full-fidelity
-            # reconstruction of role/label/verified_mx, not just the domain.
+            # reconstruction of role/label/purpose/verified_mx, not just the
+            # domain. `purpose` is additive: snapshots pushed by an older client
+            # simply omit it and COALESCE keeps whatever is already local.
             for entry in domain_identities:
                 if not isinstance(entry, dict):
                     continue
@@ -698,13 +701,15 @@ def apply_agent_company_sync_payload(company_id: int, payload: dict, *, conn=Non
                     continue
                 conn.execute(
                     """INSERT INTO company_identities
-                           (org_id, company_id, identity_type, identity_value_normalized, role, label, verified_mx, source)
-                       VALUES (?, ?, 'domain', ?, ?, ?, ?, 'relay_pull')
+                           (org_id, company_id, identity_type, identity_value_normalized, role, label, purpose, verified_mx, source)
+                       VALUES (?, ?, 'domain', ?, ?, ?, ?, ?, 'relay_pull')
                        ON CONFLICT (org_id, identity_type, identity_value_normalized) DO UPDATE SET
                            role = COALESCE(excluded.role, company_identities.role),
                            label = COALESCE(excluded.label, company_identities.label),
+                           purpose = COALESCE(excluded.purpose, company_identities.purpose),
                            verified_mx = COALESCE(excluded.verified_mx, company_identities.verified_mx)""",
-                    (DEFAULT_ORG_ID, target_id, domain_val, entry.get("role"), entry.get("label"), entry.get("verified_mx")),
+                    (DEFAULT_ORG_ID, target_id, domain_val, entry.get("role"),
+                     entry.get("label"), entry.get("purpose"), entry.get("verified_mx")),
                 )
         else:
             # Backward-compat fallback for snapshots pushed before this

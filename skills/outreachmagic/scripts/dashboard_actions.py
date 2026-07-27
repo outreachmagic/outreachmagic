@@ -377,19 +377,34 @@ def _resolve_ws_id(conn: sqlite3.Connection, workspace_slug: Optional[str]) -> s
     return ws["id"]
 
 
-def set_company_domain(
-    company_id: int, domain: str, purpose: Optional[str] = None,
-) -> dict:
-    """Attach a sending domain to a company (or update its purpose). Wraps
-    pipeline_sender_accounts.set_sender_domain_cost with the company link."""
-    import pipeline_sender_accounts as psa
+def company_domain_action(company_id: int, body: dict) -> dict:
+    """One company-domain surface: set purpose, detach, or split out.
 
-    if not (domain or "").strip():
+    Previously this wrote to `sender_domains` — your own cold-email sending
+    infrastructure — because that table had been given a company_id + purpose.
+    The company pane then rendered sender_domains AND the identity-derived list
+    both as "this company's domains", which is two different tables under one
+    heading. A prospect's domains live in company_identities; that is what
+    email finding walks and what dedup matches on, so that is where purpose
+    belongs.
+    """
+    import pipeline as _pipeline
+
+    domain = (body.get("domain") or "").strip()
+    if not domain:
         raise ValueError("domain is required")
-    kwargs: dict = {"company_id": company_id}
-    if purpose:
-        kwargs["purpose"] = purpose
-    result = psa.set_sender_domain_cost(domain, **kwargs)
+    op = (body.get("op") or "purpose").strip().lower()
+    if op == "purpose":
+        result = _pipeline.set_company_domain_purpose(
+            company_id, domain, body.get("purpose") or "")
+    elif op == "detach":
+        result = _pipeline.detach_company_domain(company_id, domain)
+    elif op == "split":
+        result = _pipeline.split_company_domain(
+            company_id, domain, body.get("into") or "",
+            dry_run=bool(body.get("dry_run")))
+    else:
+        raise ValueError("op must be 'purpose', 'detach' or 'split'")
     if result.get("status") == "error":
         raise ValueError(result["error"])
     return result

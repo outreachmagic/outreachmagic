@@ -2095,13 +2095,29 @@ def company_detail(conn: sqlite3.Connection, workspace_id: str, company_id: int)
         raise ValueError(f"company not found: {company_id}")
     identities = conn.execute(
         """SELECT identity_type, identity_value_normalized AS value, role,
-                  verified_mx, is_verified, source
+                  verified_mx, is_verified, source, label, purpose
            FROM company_identities WHERE company_id = ?
            ORDER BY identity_type, is_verified DESC, value""",
         (company_id,),
     ).fetchall()
     domains = [dict(r) for r in identities if r["identity_type"] == "domain"]
     public_emails = [dict(r) for r in identities if r["identity_type"] == "public_email"]
+    # companies.domain is the canonical identity but predates company_identities,
+    # so a company can have one without a matching identity row. Surface it as
+    # the primary row rather than leaving the pane's one domain table quietly
+    # missing the most important entry.
+    if company["domain"] and not any(
+        (d["value"] or "").lower() == (company["domain"] or "").lower() for d in domains
+    ):
+        domains.insert(0, {
+            "identity_type": "domain", "value": company["domain"], "role": None,
+            "verified_mx": None, "is_verified": 0, "source": "companies.domain",
+            "label": None, "purpose": "primary",
+        })
+    for d in domains:
+        d["is_primary"] = (d["value"] or "").lower() == (company["domain"] or "").lower()
+        if d["is_primary"] and not d.get("purpose"):
+            d["purpose"] = "primary"
     leads = conn.execute(
         f"""SELECT {_lead_columns()}
             FROM workspace_leads wl JOIN leads l ON l.id = wl.lead_id

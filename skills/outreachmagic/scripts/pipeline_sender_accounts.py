@@ -681,15 +681,18 @@ def set_sender_domain_cost(
     return {"status": "ok", "domain": domain}
 
 
-def company_domains(conn: sqlite3.Connection, company_id: int) -> list[dict]:
-    """All sending domains owned by a company, with purpose + cost, for the
-    company panel's domains list."""
-    rows = conn.execute(
-        """SELECT domain, purpose, reseller, domain_cost, currency, notes, sending_ip
-           FROM sender_domains WHERE company_id = ? ORDER BY purpose, domain""",
-        (company_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+# company_domains() used to live here: it read sender_domains WHERE company_id,
+# and the company pane rendered its result alongside company_detail's
+# identity-derived list, both under the heading "this company's domains". They
+# are not the same thing. sender_domains is YOUR cold-email sending
+# infrastructure; a prospect's domains live in company_identities, which is what
+# email finding walks and dedup matches on. The company pane now shows only the
+# latter (see dashboard_queries.company_detail).
+#
+# sender_domains.company_id / .purpose stay as columns -- no production row ever
+# used the link (every one is company_id IS NULL), so there is nothing to
+# migrate, and dropping columns means a table rebuild. They are simply not
+# surfaced as a company's domains anywhere.
 
 
 def get_sender_domains_for_scan(domain: Optional[str] = None) -> list[dict]:

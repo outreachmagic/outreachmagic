@@ -972,6 +972,43 @@ def _add_lead_record_type(conn: sqlite3.Connection) -> dict:
     return stats
 
 
+def _add_company_identity_purpose(conn: sqlite3.Connection) -> None:
+    """`company_identities.purpose` — what a prospect's domain is FOR.
+
+    Purpose lived on `sender_domains` (a company_id + purpose pair added in an
+    earlier stage), which put two unrelated things behind one word: your own
+    cold-email sending infrastructure, and a prospect company's set of known
+    domains. The company pane rendered both as "this company's domains", so the
+    same heading meant two different tables.
+
+    Purpose belongs on the alias set email finding actually walks. Nothing in
+    production ever used the sender_domains company link (every row is
+    company_id IS NULL), so this needs no data migration -- the columns stay on
+    sender_domains, they just stop being surfaced as a company's domains.
+
+    Vocabulary is validated in code, not by CHECK, so it can grow without a
+    table rebuild -- same discipline as leads.record_type. Backfill marks the
+    company's own `companies.domain` as primary; everything else stays NULL
+    ("unclassified") rather than being guessed into a category.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(company_identities)").fetchall()}
+    if "purpose" not in cols:
+        conn.execute("ALTER TABLE company_identities ADD COLUMN purpose TEXT")
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'company_identity_purpose_backfill'"
+    ).fetchone():
+        return
+    conn.execute(
+        """UPDATE company_identities SET purpose = 'primary'
+            WHERE identity_type = 'domain' AND purpose IS NULL
+              AND EXISTS (SELECT 1 FROM companies c
+                           WHERE c.id = company_identities.company_id
+                             AND LOWER(c.domain) = LOWER(company_identities.identity_value_normalized))"""
+    )
+    conn.execute(
+        "INSERT INTO migration_flags (name) VALUES ('company_identity_purpose_backfill')")
+
+
 def _repair_keyless_workspace_tombstones(conn: sqlite3.Connection) -> int:
     """Recover lead_workspace tombstones whose entity_key came out NULL.
 
@@ -2151,6 +2188,8 @@ def migrate_db(conn=None):
         conn.execute("ALTER TABLE company_identities ADD COLUMN label TEXT")
     except sqlite3.OperationalError:
         pass
+
+    _add_company_identity_purpose(conn)
 
     conn.commit()
     if own_conn:

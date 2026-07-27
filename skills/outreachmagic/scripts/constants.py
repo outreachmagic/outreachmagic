@@ -58,6 +58,16 @@ PHONE_SOURCES = (
 )
 PHONE_OWNER_TYPES = ("lead", "company")
 
+# What a PROSPECT company's known domain is for. Lives on company_identities,
+# not sender_domains -- sender_domains is your own cold-email sending
+# infrastructure, and rendering both under one "domains" heading is what made
+# the two indistinguishable in the company pane.
+#   primary       — the canonical identity; mirrors companies.domain
+#   branch        — a division, region or acquired brand that is really them
+#   email_finding — walk this one when searching for addresses
+#   parked        — held but not in use; never guess addresses here
+COMPANY_DOMAIN_PURPOSES = ("primary", "branch", "email_finding", "parked")
+
 # What a lead row actually represents.
 #   contact            — a real person (the default; every existing lead is one)
 #   company_placeholder — a stand-in for a company with no known contact yet,

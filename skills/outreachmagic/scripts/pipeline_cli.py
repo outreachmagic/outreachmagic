@@ -19,7 +19,7 @@ import pipeline_dedup
 import pipeline_lead_review
 import query_cli
 import review_cloud
-from constants import PHONE_LABELS, PHONE_SOURCES
+from constants import COMPANY_DOMAIN_PURPOSES, PHONE_LABELS, PHONE_SOURCES
 import routing_cloud
 import workspace_archive
 
@@ -1144,6 +1144,32 @@ def main():
     company_domain_label_p.add_argument("--company-id", type=int, required=True)
     company_domain_label_p.add_argument("--domain", required=True)
     company_domain_label_p.add_argument("--label", required=True)
+
+    company_domain_purpose_p = company_sub.add_parser(
+        "domain-purpose",
+        help="What one of a company's known domains is FOR "
+             "(primary / branch / email_finding / parked)",
+    )
+    company_domain_purpose_p.add_argument("--company-id", type=int, required=True)
+    company_domain_purpose_p.add_argument("--domain", required=True)
+    company_domain_purpose_p.add_argument(
+        "--purpose", required=True, choices=list(COMPANY_DOMAIN_PURPOSES))
+
+    company_detach_p = company_sub.add_parser(
+        "detach-domain", help="This domain is not theirs — remove it from the company")
+    company_detach_p.add_argument("--company-id", type=int, required=True)
+    company_detach_p.add_argument("--domain", required=True)
+
+    company_split_p = company_sub.add_parser(
+        "split",
+        help="This domain is a different company — move it and its leads out, "
+             "queueing a reverse merge candidate so the split is reversible",
+    )
+    company_split_p.add_argument("--company-id", type=int, required=True)
+    company_split_p.add_argument("--domain", required=True)
+    company_split_p.add_argument("--into", required=True, help="Target company name")
+    company_split_p.add_argument("--dry-run", action="store_true",
+                                 help="Report what would move without moving it")
 
     company_mr_p = company_sub.add_parser(
         "merge-review",
@@ -3814,6 +3840,16 @@ def main():
             print(json.dumps(
                 _pipeline.set_company_domain_label(args.company_id, args.domain, args.label), indent=2,
             ))
+        elif args.company_command == "domain-purpose":
+            print(json.dumps(_pipeline.set_company_domain_purpose(
+                args.company_id, args.domain, args.purpose), indent=2))
+        elif args.company_command == "detach-domain":
+            print(json.dumps(
+                _pipeline.detach_company_domain(args.company_id, args.domain), indent=2))
+        elif args.company_command == "split":
+            print(json.dumps(_pipeline.split_company_domain(
+                args.company_id, args.domain, args.into,
+                dry_run=getattr(args, "dry_run", False)), indent=2))
         elif args.company_command == "merge-review":
             cmr_action = getattr(args, "company_merge_review_action", None)
             if cmr_action == "list":

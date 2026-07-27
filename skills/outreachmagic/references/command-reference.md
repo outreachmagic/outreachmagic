@@ -141,6 +141,39 @@ pipeline.py merge-leads --keep 12 --merge 34
 pipeline.py merge-leads --email j@acme.com --linkedin linkedin.com/in/janedoe
 ```
 
+### The three things called "domain"
+
+These get confused constantly. They are not the same set of facts:
+
+| Thing | Storage | What it means |
+|-------|---------|---------------|
+| **Primary domain** | `companies.domain` | The canonical identity, one per company. Drives dedup, display, and the root the email finder starts from. |
+| **Known domains** | `company_identities` where `identity_type='domain'` | The **prospect's** alias set: branches, acquired brands, regional TLDs. Carries `purpose`, `role`, `verified_mx`, `is_verified`, `source`, `label`. **This is what email finding actually walks.** |
+| **Sender domains** | `sender_domains` | **Your own cold-email sending infrastructure** — reseller, cost, sending IP, DNSBL status. Nothing to do with the prospect. Lives under Deliverability, never on a company. |
+
+`company_identities.purpose` says what one of a prospect's domains is *for*:
+
+| Purpose | Meaning |
+|---------|---------|
+| `primary` | The canonical identity; kept in step with `companies.domain` |
+| `branch` | A division, region, or acquired brand that is really them |
+| `email_finding` | Walk this one when searching for addresses |
+| `parked` | Held but not in use — never guess addresses here |
+
+```bash
+pipeline.py company domain-stats   --id 42                              # found/attempted per domain, ranked
+pipeline.py company domain-purpose --company-id 42 --domain acme.eu --purpose branch
+pipeline.py company domain-label   --company-id 42 --domain coe.acme.edu --label "College of Engineering"
+pipeline.py company detach-domain  --company-id 42 --domain notreally.com
+pipeline.py company split --company-id 42 --domain spinoff.com --into "Spinoff Ltd" --dry-run
+```
+
+`detach-domain` removes the identity; if it was the primary, the next-best remaining
+domain is promoted rather than leaving the company with no canonical identity (which
+blocks email finding). `split` moves the domain **and every lead at that company whose
+email domain matches**, then queues a reverse merge candidate so a mistaken split shows
+up in `company merge-review` and can be undone.
+
 ### Domain discovery (Serper)
 
 Discover a domain + public emails for companies that don't have one yet, so `email_finder` has something to search against:

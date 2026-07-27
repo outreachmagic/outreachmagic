@@ -1647,15 +1647,6 @@ async function openCompany(companyId) {
   // Show every domain — the company's own primary plus all identity/branch
   // domains — deduped, so a company with a single domain still lists it.
   const allDomains = [];
-  const seenDom = new Set();
-  if (c.domain) { allDomains.push({ value: c.domain, role: "primary", is_verified: 1 }); seenDom.add(c.domain.toLowerCase()); }
-  for (const x of d.domains) {
-    const k = (x.value || "").toLowerCase();
-    if (k && !seenDom.has(k)) { allDomains.push(x); seenDom.add(k); }
-  }
-  const domainChips = allDomains.length
-    ? allDomains.map(x => `<span class="domain-chip">${esc(x.value)}${x.role ? `<span class="role">${esc(x.role)}</span>` : ""}${x.is_verified ? " ✓" : ""}</span>`).join("")
-    : '<span class="stale">no domains recorded</span>';
   const emailChips = d.public_emails.length
     ? d.public_emails.map(x => `<span class="domain-chip">${esc(x.value)}</span>`).join("") : "";
   $("edit-body").innerHTML = `
@@ -1668,12 +1659,9 @@ async function openCompany(companyId) {
       <div class="row"><button class="primary">Save company</button></div>
       <div class="msg" id="company-msg"></div>
     </form>
-    <div style="border-top:1px solid var(--grid);padding-top:12px">
-      <h3 style="font-size:13px">Domains &amp; branches</h3>
-      <div>${domainChips}</div>
-      ${emailChips ? `<h3 style="font-size:13px;margin-top:10px">Public emails</h3><div>${emailChips}</div>` : ""}
-    </div>
     <div id="company-domains" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+    ${emailChips ? `<div style="border-top:1px solid var(--grid);padding-top:12px">
+      <h3 style="font-size:13px">Public emails</h3><div>${emailChips}</div></div>` : ""}
     <div id="company-phones" style="border-top:1px solid var(--grid);padding-top:12px"></div>
     <div style="border-top:1px solid var(--grid);padding-top:12px">
       <h3 style="font-size:13px">Leads at this company (${d.lead_count}${d.lead_count >= 200 ? "+" : ""})</h3>
@@ -1703,37 +1691,52 @@ async function openCompany(companyId) {
   updateBackBtns();
 }
 
-const DOMAIN_PURPOSES = ["sending", "branch", "email_finding"];
+// A PROSPECT company's domains, from company_identities. This pane used to show
+// two tables both headed "domains": this one, and sender_domains — which is your
+// own cold-email sending infrastructure and has nothing to do with the company
+// you're looking at. sender_domains now lives only under Deliverability.
+const DOMAIN_PURPOSES = ["primary", "branch", "email_finding", "parked"];
 async function renderCompanyDomains(companyId) {
   const el = $("company-domains");
-  el.innerHTML = '<h3 style="font-size:13px">Sending domains</h3><div class="stale">Loading…</div>';
-  const d = await api(`/api/companies/${companyId}/domains`).catch(() => null);
+  el.innerHTML = '<h3 style="font-size:13px">Domains</h3><div class="stale">Loading…</div>';
+  const d = await get(`/api/companies/${companyId}/domains`).catch(() => null);
   if (!d) { el.innerHTML = ""; return; }
-  const rows = d.domains.map(dm => {
-    const opts = DOMAIN_PURPOSES.map(p => `<option ${p === (dm.purpose || "sending") ? "selected" : ""}>${p}</option>`).join("");
+  const rows = (d.domains || []).map(dm => {
+    const opts = DOMAIN_PURPOSES.map(p =>
+      `<option ${p === dm.purpose ? "selected" : ""}>${p}</option>`).join("");
+    const meta = [
+      dm.role, dm.verified_mx ? "MX ✓" : null, dm.label, dm.source,
+    ].filter(Boolean).map(esc).join(" · ");
     return `<div style="display:flex;gap:8px;align-items:center;padding:3px 0">
-      <span style="flex:1">${esc(dm.domain)}</span>
-      <select data-domain="${esc(dm.domain)}" class="dom-purpose">${opts}</select></div>`;
+      <span style="flex:1;min-width:0">${esc(dm.value)}
+        ${dm.is_primary ? '<span class="flag ok">primary</span>' : ""}
+        <span class="stale">${meta}</span></span>
+      <select data-domain="${esc(dm.value)}" class="dom-purpose">
+        <option value=""${dm.purpose ? "" : " selected"}>—</option>${opts}</select>
+      <button class="small" data-detach="${esc(dm.value)}" title="This domain is not theirs">detach</button>
+      <button class="small" data-split="${esc(dm.value)}" title="This domain is a different company">split</button>
+    </div>`;
   }).join("");
-  el.innerHTML = `<h3 style="font-size:13px">Sending domains <span class="sub" style="font-weight:400;color:var(--ink-muted)">purpose = what it's used for</span></h3>
-    ${rows || '<div class="stale">No domains linked to this company yet.</div>'}
-    <div class="row" style="display:flex;gap:8px;margin-top:6px">
-      <input id="add-domain-input" placeholder="Add a domain…" style="flex:2">
-      <select id="add-domain-purpose">${DOMAIN_PURPOSES.map(p => `<option>${p}</option>`).join("")}</select>
-      <button class="small" id="add-domain-btn">Add</button>
-    </div>
+  el.innerHTML = `<h3 style="font-size:13px">Domains
+      <span class="sub" style="font-weight:400;color:var(--ink-muted)">their domains — purpose is what each one is for</span></h3>
+    ${rows || '<div class="stale">No domains recorded for this company.</div>'}
     <div class="msg" id="company-domains-msg"></div>`;
-  el.querySelectorAll(".dom-purpose").forEach(sel => sel.onchange = () =>
-    formResult("company-domains-msg",
-      post(`/api/companies/${companyId}/domains`, { domain: sel.dataset.domain, purpose: sel.value }),
-      () => renderCompanyDomains(companyId)));
-  $("add-domain-btn").onclick = () => {
-    const v = $("add-domain-input").value.trim();
-    if (!v) { toast("Enter a domain"); return; }
-    formResult("company-domains-msg",
-      post(`/api/companies/${companyId}/domains`, { domain: v, purpose: $("add-domain-purpose").value }),
-      () => renderCompanyDomains(companyId));
-  };
+  const reload = () => { renderCompanyDomains(companyId); loadCompanies(false); };
+  const send = (body) => formResult("company-domains-msg",
+    post(`/api/companies/${companyId}/domains`, body), reload);
+  el.querySelectorAll(".dom-purpose").forEach(sel => sel.onchange = () => {
+    if (!sel.value) return;
+    send({ op: "purpose", domain: sel.dataset.domain, purpose: sel.value });
+  });
+  el.querySelectorAll("[data-detach]").forEach(b => b.onclick = () => {
+    if (!confirm(`Remove ${b.dataset.detach} from this company?`)) return;
+    send({ op: "detach", domain: b.dataset.detach });
+  });
+  el.querySelectorAll("[data-split]").forEach(b => b.onclick = () => {
+    const into = prompt(`Move ${b.dataset.split} — and every lead here with that email domain — to which company?`);
+    if (!into || !into.trim()) return;
+    send({ op: "split", domain: b.dataset.split, into: into.trim() });
+  });
 }
 
 // Compact one-event line, shared by the company activity timeline.

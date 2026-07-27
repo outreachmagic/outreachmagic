@@ -137,7 +137,8 @@ SYNCED_COLUMNS: dict[str, frozenset[str]] = {
     }),
     "company_personalization": frozenset({"field_name", "field_value", "field_date", "processed_at"}),
     "company_identities": frozenset({
-        "identity_type", "identity_value_normalized", "role", "label", "verified_mx",
+        "identity_type", "identity_value_normalized", "role", "label", "purpose",
+        "verified_mx",
     }),
     "sender_accounts": frozenset({
         "email", "first_name", "last_name", "provider", "daily_limit", "warmup_status",

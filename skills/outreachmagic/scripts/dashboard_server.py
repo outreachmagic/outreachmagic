@@ -180,19 +180,20 @@ def handle_link_company(match, query, body):
 
 
 def handle_company_domains(match, query, body):
-    import pipeline_sender_accounts as psa
+    """A company's own domain set, from company_identities — NOT sender_domains,
+    which is your sending infrastructure and is unrelated to this company."""
     conn = get_conn()
     try:
-        return 200, {"company_id": int(match.group(1)),
-                     "domains": psa.company_domains(conn, int(match.group(1)))}
+        company_id = int(match.group(1))
+        detail = dashboard_queries.company_detail(
+            conn, _resolve_workspace(conn, _q(query, "workspace"))["id"], company_id)
+        return 200, {"company_id": company_id, "domains": detail["domains"]}
     finally:
         conn.close()
 
 
 def handle_set_company_domain(match, query, body):
-    body = body or {}
-    return 200, dashboard_actions.set_company_domain(
-        int(match.group(1)), body.get("domain") or "", purpose=body.get("purpose"))
+    return 200, dashboard_actions.company_domain_action(int(match.group(1)), body or {})
 
 
 def handle_edit_sender(match, query, body):

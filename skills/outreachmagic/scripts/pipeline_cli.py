@@ -465,6 +465,13 @@ def main():
     )
     imp_p.add_argument("--source-detail", dest="source_detail", help="Attribution source detail (e.g. list name)")
     imp_p.add_argument(
+        "--overwrite-source",
+        dest="overwrite_source",
+        action="store_true",
+        help="Let the CSV's original_source/original_source_detail replace existing "
+             "values (default: first-touch provenance is kept)",
+    )
+    imp_p.add_argument(
         "--import-batch-id",
         dest="import_batch_id",
         help="Stable batch id for name-only rows (import_key dedupe within batch)",
@@ -2845,6 +2852,7 @@ def main():
             source_detail=getattr(args, "source_detail", None),
             import_batch_id=getattr(args, "import_batch_id", None),
             import_format=getattr(args, "import_format", None),
+            overwrite_source=getattr(args, "overwrite_source", False),
         )
         # import_profiles() already reports a sync_hint when leads are pending
         # (see pipeline.py) without ever auto-syncing — network push only runs

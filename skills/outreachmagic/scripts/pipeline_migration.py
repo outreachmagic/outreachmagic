@@ -713,6 +713,17 @@ def _backfill_current_sentiment_since(conn: sqlite3.Connection) -> None:
         AND ({anchor(row)}) IS NOT NULL
         """
 
+    # Cheap pre-check on workspace_leads alone, before anything touches the
+    # event tables. On a fresh database there are no rows at all, and this must
+    # return before the anchor subquery is even parsed -- during init_db the
+    # event schema is not necessarily in its final shape yet.
+    if not conn.execute(
+        "SELECT 1 FROM workspace_leads "
+        "WHERE current_status_sentiment IS NOT NULL "
+        "  AND trim(current_status_sentiment) != '' "
+        "  AND current_sentiment_since IS NULL LIMIT 1"
+    ).fetchone():
+        return
     if not conn.execute(
         f"SELECT 1 FROM workspace_leads wl WHERE {qualifies('wl')} LIMIT 1"
     ).fetchone():
@@ -836,6 +847,116 @@ def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
 # guard below aborts any INSERT/UPDATE that would put one of these back into a
 # provenance column.
 _TRANSPORT_STRINGS = ("agent_sync", "relay_sync", "relay")
+
+
+# Placeholder provenance written by the importer when the CSV said nothing
+# specific. A real value from the row beats it; a genuine user-chosen source
+# does not.
+_GENERIC_SOURCES = ("csv_import", "")
+
+
+def _fold_shadow_source_personalization(conn: sqlite3.Connection) -> dict:
+    """Fold `personalized_original_source` & co. back onto the real columns.
+
+    Until CANONICAL_SOURCE_IMPORT_FIELDS existed, a CSV column literally headed
+    `original_source` was not recognised as provenance: it fell through to the
+    personalization loop and became a `lead_personalization` row, while the real
+    leads.original_source kept the importer's `csv_import` placeholder. 1,285
+    leads were in that state in production -- their true origin (google_maps)
+    stored in the shadow, the wrong value in the column every report groups by.
+
+    Conservative on purpose, because provenance is not re-derivable:
+      * fill any real column that is empty;
+      * replace original_source only when it still holds the importer's generic
+        placeholder and the shadow is specific;
+      * NEVER overwrite a specific latest_source -- "most recent touch" may well
+        have been set by a later, legitimate import;
+      * drop a shadow row only once its value is actually on the lead.
+
+    Flag-guarded, so rows we deliberately declined to overwrite are not
+    re-examined on every startup (see _backfill_current_sentiment_since for what
+    a non-converging migration costs).
+    """
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'shadow_source_personalization_fold'"
+    ).fetchone():
+        return {"skipped": True}
+
+    generic = ",".join("?" for _ in _GENERIC_SOURCES)
+    transport = ",".join("?" for _ in _TRANSPORT_STRINGS)
+    stats: dict = {}
+
+    def shadow(field: str) -> str:
+        return f"""
+            SELECT p.field_value FROM lead_personalization p
+             WHERE p.lead_id = leads.id AND p.field_name = '{field}'
+               AND p.field_value IS NOT NULL AND TRIM(p.field_value) != ''
+               AND p.field_value NOT IN ({transport})
+        """
+
+    # 1. original_source_detail: fill only where empty.
+    cur = conn.execute(
+        f"""UPDATE leads SET original_source_detail = ({shadow('original_source_detail')})
+             WHERE (original_source_detail IS NULL OR TRIM(original_source_detail) = '')
+               AND ({shadow('original_source_detail')}) IS NOT NULL""",
+        (*_TRANSPORT_STRINGS, *_TRANSPORT_STRINGS),
+    )
+    stats["original_source_detail_filled"] = cur.rowcount
+
+    # 2. latest_source / latest_source_detail move as a PAIR. Filling the detail
+    # from this import's shadow while the source column still names a different,
+    # later import produces a row that reads "latest touch: list-B, described by:
+    # list-A" -- worse than the NULL it replaced.
+    pair_ok = f"""
+        (latest_source IS NULL OR TRIM(latest_source) = ''
+         OR latest_source = ({shadow('latest_source')}))
+    """
+    for col in ("latest_source", "latest_source_detail"):
+        cur = conn.execute(
+            f"""UPDATE leads SET {col} = ({shadow(col)})
+                 WHERE ({col} IS NULL OR TRIM({col}) = '')
+                   AND ({shadow(col)}) IS NOT NULL
+                   AND {pair_ok}""",
+            (*_TRANSPORT_STRINGS, *_TRANSPORT_STRINGS, *_TRANSPORT_STRINGS),
+        )
+        stats[f"{col}_filled"] = cur.rowcount
+
+    # 2. original_source: fill when empty, and displace the generic placeholder.
+    cur = conn.execute(
+        f"""UPDATE leads SET original_source = ({shadow('original_source')})
+             WHERE COALESCE(TRIM(original_source), '') IN ({generic})
+               AND ({shadow('original_source')}) IS NOT NULL""",
+        (*_TRANSPORT_STRINGS, *_GENERIC_SOURCES, *_TRANSPORT_STRINGS),
+    )
+    stats["original_source_set"] = cur.rowcount
+
+    # 3. Retire only the shadows whose value now lives on the lead.
+    cur = conn.execute(
+        """DELETE FROM lead_personalization
+            WHERE field_name IN ('original_source', 'original_source_detail',
+                                 'latest_source', 'latest_source_detail')
+              AND EXISTS (
+                  SELECT 1 FROM leads l
+                   WHERE l.id = lead_personalization.lead_id
+                     AND CASE lead_personalization.field_name
+                           WHEN 'original_source'        THEN l.original_source
+                           WHEN 'original_source_detail' THEN l.original_source_detail
+                           WHEN 'latest_source'          THEN l.latest_source
+                           WHEN 'latest_source_detail'   THEN l.latest_source_detail
+                         END = lead_personalization.field_value
+              )"""
+    )
+    stats["shadow_rows_retired"] = cur.rowcount
+    stats["shadow_rows_kept"] = conn.execute(
+        """SELECT COUNT(*) n FROM lead_personalization
+            WHERE field_name IN ('original_source', 'original_source_detail',
+                                 'latest_source', 'latest_source_detail')"""
+    ).fetchone()["n"]
+
+    conn.execute(
+        "INSERT INTO migration_flags (name) VALUES ('shadow_source_personalization_fold')"
+    )
+    return stats
 
 
 def _repair_provenance_transport_strings(conn: sqlite3.Connection) -> None:
@@ -1800,6 +1921,7 @@ def migrate_db(conn=None):
     conn.execute("DELETE FROM lead_personalization WHERE field_name = 'linkedin_bio'")
 
     _repair_sales_nav_id_casing(conn)
+    _fold_shadow_source_personalization(conn)
     _repair_provenance_transport_strings(conn)
     _install_provenance_transport_guard(conn)
 

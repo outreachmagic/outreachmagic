@@ -2316,6 +2316,7 @@ def resolve_lead(
     force_lead_id: Optional[int] = None,
     allow_weak_identity: bool = False,
     company_cache: Optional[dict] = None,
+    overwrite_source: bool = False,
 ) -> dict:
     """Match or create lead by tiered identities (email, external_id, name+company, etc.)."""
     email_norm = normalize_email(email)
@@ -2545,15 +2546,23 @@ def resolve_lead(
                 "latest_source_detail = ?",
                 "latest_source_platform = ?",
                 "latest_source_at = ?",
-                "original_source = COALESCE(original_source, ?)",
-                "original_source_detail = COALESCE(original_source_detail, ?)",
-                "original_source_platform = COALESCE(original_source_platform, ?)",
-                "original_source_at = COALESCE(original_source_at, ?)",
             ])
-            params.extend([
-                source, source_detail, source_platform, now_ts,
-                source, source_detail, source_platform, now_ts,
-            ])
+            params.extend([source, source_detail, source_platform, now_ts])
+            if overwrite_source:
+                sets.extend([
+                    "original_source = ?",
+                    "original_source_detail = ?",
+                    "original_source_platform = ?",
+                    "original_source_at = COALESCE(original_source_at, ?)",
+                ])
+            else:
+                sets.extend([
+                    "original_source = COALESCE(original_source, ?)",
+                    "original_source_detail = COALESCE(original_source_detail, ?)",
+                    "original_source_platform = COALESCE(original_source_platform, ?)",
+                    "original_source_at = COALESCE(original_source_at, ?)",
+                ])
+            params.extend([source, source_detail, source_platform, now_ts])
         if notes is not None:
             # Persist import notes when provided.
             # - overwrite=False: only fill if notes is currently empty
@@ -2979,8 +2988,15 @@ def upsert_lead_profile(
     import_extra: Optional[dict[str, str]] = None,
     force_lead_id: Optional[int] = None,
     allow_weak_identity: bool = False,
+    overwrite_source: bool = False,
 ) -> dict:
-    """Match or create by tiered identities; enrich profile and company link."""
+    """Match or create by tiered identities; enrich profile and company link.
+
+    `overwrite_source` makes original_source/original_source_detail
+    authoritative on an existing lead. Default stays fill-only: first-touch
+    provenance is normally the whole point of the column, so re-importing a
+    list must not silently rewrite where a lead originally came from.
+    """
     extra = dict(import_extra or {})
     if company_domain and "company_domain" not in extra:
         extra["company_domain"] = company_domain
@@ -3032,13 +3048,25 @@ def upsert_lead_profile(
         import_extra=extra,
         force_lead_id=force_lead_id,
         allow_weak_identity=allow_weak_identity,
+        overwrite_source=overwrite_source,
     )
 
+
+# Provenance columns a CSV may set by their real names. Before this, only the
+# `list_source`/`import_name` aliases were understood: a column literally headed
+# `original_source` fell through to the personalization loop below and became
+# `personalized_original_source`, sitting next to the real (and now wrong)
+# leads.original_source. 1,285 leads landed that way in production.
+CANONICAL_SOURCE_IMPORT_FIELDS = (
+    "original_source", "original_source_detail",
+    "latest_source", "latest_source_detail",
+)
 
 IMPORT_EXTRA_FIELDS = (
     "company_domain", "personalized_first_name", "personalized_company_name",
     "is_connected_linkedin", "is_linkedin_request_pending", "linkedin_connected_at",
     "lead_status", "lead_sentiment", "import_name", "list_source",
+    *CANONICAL_SOURCE_IMPORT_FIELDS,
     "tags", "contact_order",
     "hq_city", "hq_state", "hq_country",
     "external_id", "notes",
@@ -3060,6 +3088,7 @@ IMPORT_SUGGESTABLE_EXTRA_FIELDS = (
     "personalized_first_name", "personalized_company_name",
     "external_id", "notes", "tags", "contact_order",
     "lead_status", "lead_sentiment", "list_source", "import_name",
+    *CANONICAL_SOURCE_IMPORT_FIELDS,
     "is_connected_linkedin", "is_linkedin_request_pending",
     "linkedin_headline", "linkedin_bio", "linkedin_sales_nav_id",
 )
@@ -3081,6 +3110,7 @@ RESERVED_IMPORT_FIELDS = frozenset([
     "company_domain", "is_connected_linkedin", "is_linkedin_request_pending", "linkedin_connected_at",
     "lead_status", "lead_sentiment", "import_name", "list_source",
     "tags", "contact_order", "hq_city", "hq_state", "hq_country",
+    *CANONICAL_SOURCE_IMPORT_FIELDS,
     "external_id", "notes", "last_message_sent", "last_message_received",
     "member linkedin sales nav id", "linkedin_sales_nav_id", "sales_nav_id",
     "linkedin_headline", "linkedin_bio",
@@ -3092,12 +3122,67 @@ def csv_import_source_fields(
     default_source: str,
     default_source_detail: Optional[str] = None,
 ) -> tuple[str, Optional[str]]:
-    """Map CSV columns: list_source -> source, import_name -> source_detail."""
+    """Resolve a row's provenance from its CSV columns.
+
+    Precedence: the canonical column name (`original_source`) wins over the
+    legacy alias (`list_source`), which wins over the --source default. Naming
+    the real column is the most explicit thing a caller can do, so it outranks
+    everything; the aliases stay supported because existing CSVs use them.
+    """
+    canonical_src = (extra.get("original_source") or "").strip()
+    canonical_detail = (extra.get("original_source_detail") or "").strip()
     list_src = (extra.get("list_source") or "").strip()
     import_name = (extra.get("import_name") or "").strip()
-    lead_source = list_src or default_source
-    lead_source_detail = import_name or default_source_detail
+    lead_source = canonical_src or list_src or default_source
+    lead_source_detail = canonical_detail or import_name or default_source_detail
     return lead_source, lead_source_detail
+
+
+def csv_import_latest_source_fields(
+    extra: dict[str, str],
+) -> tuple[Optional[str], Optional[str]]:
+    """`latest_source` / `latest_source_detail` when the CSV names them."""
+    return (
+        (extra.get("latest_source") or "").strip() or None,
+        (extra.get("latest_source_detail") or "").strip() or None,
+    )
+
+
+def _apply_csv_latest_source(
+    lead_id: int,
+    latest_source: Optional[str],
+    latest_source_detail: Optional[str],
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Authoritatively set latest_source/_detail from explicit CSV columns.
+
+    Unlike original_source, latest_source is "most recent touch" -- an import
+    that names it is asserting exactly that, so this overwrites rather than
+    filling. Only the columns actually present in the CSV are touched.
+    """
+    sets, params = [], []
+    if latest_source:
+        sets.extend(["latest_source = ?", "latest_source_at = datetime('now')"])
+        params.append(latest_source)
+    if latest_source_detail:
+        sets.append("latest_source_detail = ?")
+        params.append(latest_source_detail)
+    if not sets:
+        return
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        conn.execute(
+            f"UPDATE leads SET {', '.join(sets)}, updated_at = datetime('now') WHERE id = ?",
+            (*params, lead_id),
+        )
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def _extract_extra_import_fields(raw: dict) -> dict[str, str]:
@@ -3598,6 +3683,7 @@ def import_profiles(
     source_detail: Optional[str] = None,
     import_batch_id: Optional[str] = None,
     import_format: Optional[str] = None,
+    overwrite_source: bool = False,
 ) -> dict:
     """Import many profile rows (CSV dicts or JSON objects). Tiered identity match keys."""
     rows, import_meta = preprocess_import_rows(rows, import_format=import_format)
@@ -3670,6 +3756,28 @@ def import_profiles(
     if personalize_columns_detected and dry_run:
         summary["personalization_detected"] = personalize_columns_detected
 
+    # Show provenance routing before it is committed. A CSV naming these columns
+    # used to have them silently diverted into personalization; being able to see
+    # "original_source -> leads.original_source" in the dry run is the whole
+    # difference between "it worked" and "it looked like it worked".
+    if rows and dry_run:
+        source_mapping = [
+            f"{col} -> leads.{col}"
+            for col in CANONICAL_SOURCE_IMPORT_FIELDS
+            if str(rows[0].get(col) or "").strip()
+        ]
+        for alias, target in (("list_source", "original_source"),
+                              ("import_name", "original_source_detail")):
+            if str(rows[0].get(alias) or "").strip():
+                source_mapping.append(f"{alias} -> leads.{target} (alias)")
+        if source_mapping:
+            summary["source_fields_mapped"] = source_mapping
+            if not overwrite_source:
+                summary["source_fields_note"] = (
+                    "original_source/_detail fill only where empty; "
+                    "pass --overwrite-source to replace existing values"
+                )
+
     use_shared_conn = not dry_run
     shared_conn: Optional[sqlite3.Connection] = get_conn() if use_shared_conn else None
     if shared_conn is not None:
@@ -3712,6 +3820,7 @@ def import_profiles(
             default_source=default_source,
             default_source_detail=source_detail,
         )
+        row_latest_source, row_latest_source_detail = csv_import_latest_source_fields(extra)
         row_hq_city = extra.get("hq_city")
         row_hq_state = extra.get("hq_state")
         row_hq_country = extra.get("hq_country")
@@ -3735,6 +3844,7 @@ def import_profiles(
                 import_extra=extra,
                 force_lead_id=lead_id_hint,
                 conn=shared_conn,
+                overwrite_source=overwrite_source,
                 # An explicit import is the legitimate name+company-only case:
                 # you import the list, then run the email finder over it. The
                 # composite identity gets persisted, so re-importing the same row
@@ -3750,6 +3860,13 @@ def import_profiles(
             summary["errors"].append({"row": i + 1, "email": profile.get("email"), "error": result.get("error")})
             continue
         summary["results"].append(result)
+        # An explicit latest_source column overrides what upsert_lead_profile
+        # derived from the import source -- the CSV named the column, so it wins.
+        if (row_latest_source or row_latest_source_detail) and not dry_run and result.get("id"):
+            _apply_csv_latest_source(
+                result["id"], row_latest_source, row_latest_source_detail,
+                conn=shared_conn,
+            )
         if result["status"] == "created":
             summary["created"] += 1
         else:

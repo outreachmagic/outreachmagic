@@ -628,6 +628,12 @@ const state = {
   charts: {},
   campaigns: [],
   navStack: [],  // back-stack for lead ↔ company slide-over navigation
+  // Bumped on every workspace change. get() captures it at request time and a
+  // response that comes back under an older generation is discarded: two
+  // in-flight requests can resolve out of order, and without this the slower
+  // request for the workspace you just left can win and repaint the page with
+  // the wrong workspace's rows.
+  wsGeneration: 0,
 };
 const STAGES = ["prospecting","contacted","replied","interested","scheduled","won","not_interested","lost"];
 
@@ -646,7 +652,17 @@ function withRange(path) {
   if (!p.length) return path;
   return path + (path.includes("?") ? "&" : "?") + p.join("&");
 }
-const get = (path) => api(path + (path.includes("?") ? "&" : "?") + "workspace=" + encodeURIComponent(state.workspace));
+// Resolves to null — not a rejection — when the workspace changed while the
+// request was in flight. Every loader already treats a falsy payload as "don't
+// render", so a stale response bows out silently and the load already running
+// for the new workspace fills the container. Rejecting instead would surface a
+// "workspace changed" toast on every switch, which is not an error.
+async function get(path) {
+  const generation = state.wsGeneration;
+  const payload = await api(
+    path + (path.includes("?") ? "&" : "?") + "workspace=" + encodeURIComponent(state.workspace));
+  return generation === state.wsGeneration ? payload : null;
+}
 const getR = (path) => get(withRange(path));
 function rangeLabel() {
   if (state.until) return `${state.since} → ${state.until}`;
@@ -932,12 +948,42 @@ $("push-btn").onclick = () => {
   if (!confirm("Push pending local changes to the relay?")) return;
   startSyncJob("/api/sync/push");
 };
+// Everything here is scoped to one workspace and means nothing in the next one.
+// Cached payloads are obvious; the <select> values are the subtle half — a
+// campaign/tag/sender id left in the DOM from the old workspace makes the new
+// workspace's requery legitimately return nothing, which reads exactly like a
+// broken switch.
+function resetWorkspaceScopedState() {
+  state.wsGeneration++;   // discard anything still in flight for the old one
+  state.activityCursor = null;
+  state.campaigns = [];
+  state.deliv = null;
+  state.leadRuns = null;
+  state.leadsOffset = 0; state.leadsStatus = null;
+  sendersLoaded = false;
+  exportFieldOptions = null;   // personalization fields differ per workspace
+  contactsState.offset = 0; contactsState.sortKey = null;
+  contactsSel.clear();
+  for (const k of Object.keys(contactsFilters)) delete contactsFilters[k];
+  companiesState.offset = 0;
+  for (const k of Object.keys(companiesFilters)) delete companiesFilters[k];
+  Object.assign(qualityState, { bucket: null, missing: null, offset: 0, total: 0, rows: [] });
+  qualityState.sel = new Set();
+  for (const id of ["contacts-campaign", "contacts-tag", "contacts-sender",
+                    "daily-campaign", "attr-campaign", "replies-campaign",
+                    "replies-sentiment", "replies-status"]) {
+    const el = $(id);
+    if (el) el.value = "";
+  }
+  const exportPanel = $("contacts-export");
+  if (exportPanel) exportPanel.hidden = true;
+  closeDetails();
+}
+
 $("workspace").onchange = (e) => {
   state.workspace = e.target.value;
   localStorage.setItem("om_workspace", state.workspace);
-  state.activityCursor = null; state.campaigns = [];
-  sendersLoaded = false;  // sender list is per-workspace
-  closeDetails();
+  resetWorkspaceScopedState();
   refreshSummary(); loadTab();
 };
 $("range").onchange = (e) => {
@@ -979,6 +1025,18 @@ $("tabs").onclick = (e) => {
   const btn = e.target.closest("button[data-tab]");
   if (btn) switchTab(btn.dataset.tab);
 };
+
+// Clear a loader's containers BEFORE it awaits. Every loader is
+// `const d = await …; if (!d) return;` — so on an error, an empty response, or
+// a stale-workspace bail it returns without touching the DOM, leaving the
+// PREVIOUS workspace's rows on screen looking like current data. Blanking up
+// front means the table either repopulates or goes visibly empty.
+function skeleton(...ids) {
+  for (const id of ids) {
+    const el = $(id);
+    if (el) el.innerHTML = '<div class="stale">Loading…</div>';
+  }
+}
 
 function loadTab() {
   ({ deliverability: loadDeliverability, pipeline: loadPipeline,
@@ -1044,6 +1102,7 @@ function agePredicate(mode) {
 }
 
 async function loadDeliverability() {
+  skeleton("mailboxes", "domains");
   const d = await getR("/api/deliverability").catch(e => { toast(e.message); return null; });
   if (!d) return;
   state.deliv = d;
@@ -1197,6 +1256,7 @@ function renderBounceChart(series) {
 
 /* ---------- pipeline ---------- */
 async function loadPipeline() {
+  skeleton("stage-leads");
   const d = await getR("/api/pipeline").catch(e => { toast(e.message); return null; });
   if (!d) return;
   const stages = d.stages;
@@ -1385,6 +1445,7 @@ async function loadContacts(resetOffset = true) {
   }
   fillSenderSelect();
   fillBulkTags();
+  skeleton("contacts-table");
   const d = await getR(contactsQuery()).catch(e => { toast(e.message); return null; });
   if (!d) return;
   contactsState.total = d.total;
@@ -1850,6 +1911,7 @@ const QUALITY_BUCKETS = {
 const qualityState = { bucket: null, missing: null, offset: 0, limit: 50, total: 0, rows: [], sel: new Set(), sortKey: null, sortDir: -1 };
 
 async function loadQuality() {
+  skeleton("quality-tiles", "quality-table");
   const d = await getR("/api/data-quality").catch(e => { toast(e.message); return null; });
   if (!d) return;
   $("quality-sub").textContent = d.range_active
@@ -2090,6 +2152,7 @@ $("empty-preview-org-btn").onclick = () => previewEmptyLeads("org");
 
 /* ---------- campaigns ---------- */
 async function loadCampaigns() {
+  skeleton("campaigns", "daily-matrix");
   const [audit, daily] = await Promise.all([
     getR("/api/campaigns"),
     getR("/api/campaigns/daily" + ($("daily-campaign").value ? `?campaign_id=${$("daily-campaign").value}` : "")),
@@ -2310,6 +2373,7 @@ async function loadAttributes() {
   }
   const field = $("attr-field").value, min = $("attr-min").value || 1;
   const cid = $("attr-campaign").value;
+  skeleton("attributes");
   const d = await get(`/api/attributes?field=${field}&min_sample=${min}${cid ? `&campaign_id=${cid}` : ""}`)
     .catch(e => { toast(e.message); return null; });
   if (!d) return;
@@ -2326,6 +2390,7 @@ $("attr-field").onchange = $("attr-min").onchange = $("attr-campaign").onchange 
 
 /* ---------- CRM ---------- */
 async function loadCrm() {
+  skeleton("crm-tiles", "crm-pending", "crm-synced", "crm-runs");
   const d = await get("/api/crm").catch(e => { toast(e.message); return null; });
   if (!d) return;
   $("crm-banner").innerHTML = d.configured
@@ -2411,6 +2476,7 @@ async function loadActivity(reset) {
   if (reset) { state.activityCursor = null; state.activityRows = []; loadActivityTypes(); }
   const p = activityParams();
   if (state.activityCursor) p.set("before", state.activityCursor);
+  if (reset) skeleton("activity");
   const d = await getR("/api/activity?" + p.toString()).catch(e => { toast(e.message); return null; });
   if (!d) return;
   state.activityRows = (state.activityRows || []).concat(d.events);
@@ -2444,6 +2510,7 @@ function outboxUrl() {
 }
 
 async function loadOutbox() {
+  skeleton("outbox-groups", "outbox-rows");
   const d = await api(outboxUrl()).catch(e => { toast(e.message); return null; });
   if (!d) return;
   // Be honest about what "Push to relay" actually sends: every upsert, plus

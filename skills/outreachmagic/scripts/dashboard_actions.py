@@ -91,20 +91,26 @@ def log_event(
 
 def update_lead_identity(
     lead_id: int, *, name: Optional[str] = None, title: Optional[str] = None,
-    linkedin: Optional[str] = None,
+    linkedin: Optional[str] = None, conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
     """Authoritatively set a lead's name/title, and store a LinkedIn value into
     the correct column (public URL -> linkedin_url, Sales Navigator token ->
     linkedin_sales_nav_id) via the identity path so dedup stays consistent.
 
     Unlike enrich() this overwrites — it's a direct edit, not a fill-if-empty.
+
+    Pass `conn` to join a caller's transaction. Without it this commits on its
+    own connection, which is fine for a single dashboard edit and wrong for a
+    batch: an outer ROLLBACK cannot undo a commit that already happened on a
+    different connection, so a failed batch would leave some fields written.
     """
     _require_lead(lead_id)
     from workspace_routing import (
         DEFAULT_ORG_ID, parse_linkedin_value, upsert_identity_alias,
     )
 
-    conn = get_conn()
+    own_conn = conn is None
+    conn = conn or get_conn()
     try:
         sets: list[str] = []
         params: list = []
@@ -131,9 +137,11 @@ def update_lead_identity(
                 upsert_identity_alias(
                     conn, DEFAULT_ORG_ID, lead_id, itype, value, source="dashboard")
                 linkedin_written.append(itype)
-        conn.commit()
+        if own_conn:
+            conn.commit()
     finally:
-        conn.close()
+        if own_conn:
+            conn.close()
     return {"status": "updated", "id": lead_id, "linkedin": linkedin_written}
 
 
@@ -874,8 +882,20 @@ class SyncManager:
         conn = get_conn()
         try:
             for lead_id in ids:
+                # companies is canonical for the company name; leads.company is
+                # free text and is frequently blank on exactly the leads that get
+                # sent here. Reading only the free-text column is what produced
+                # the `"" official website` searches.
                 lead = conn.execute(
-                    "SELECT name, company, title FROM leads WHERE id = ?", (lead_id,)
+                    """SELECT l.name, l.title, l.email_domain,
+                              COALESCE(NULLIF(TRIM(co.name), ''),
+                                       NULLIF(TRIM(l.company), '')) AS company_name,
+                              COALESCE(NULLIF(TRIM(co.domain), ''),
+                                       NULLIF(TRIM(l.email_domain), '')) AS company_domain
+                         FROM leads l
+                         LEFT JOIN companies co ON co.id = l.company_id
+                        WHERE l.id = ?""",
+                    (lead_id,),
                 ).fetchone()
                 if lead is None or not (lead["name"] or "").strip():
                     continue
@@ -886,12 +906,23 @@ class SyncManager:
                     continue
                 person = {
                     "full_name": lead["name"],
-                    "company_name": lead["company"] or "",
+                    "company_name": lead["company_name"] or "",
+                    # A shared mailbox domain (gmail.com, ...) identifies no
+                    # company, so it must not stand in for one.
+                    "company_domain": self._company_search_domain(lead["company_domain"]),
                     "stated_role": lead["title"] or "",
                 }
                 sections = []
                 try:
-                    for q in enrich.build_serper_queries(person):
+                    pack = enrich.build_serper_queries(person)
+                    # No company name and no professional domain: the pack comes
+                    # back with the LinkedIn lookup only. That still runs -- it is
+                    # often how the company gets identified -- but record the gap
+                    # so "no company results" reads as "we had nothing to search
+                    # for" rather than as a failed search.
+                    no_company_identifier = not any(
+                        q["label"].startswith("company_discovery") for q in pack)
+                    for q in pack:
                         # Default runs only the "always" core queries; deep mode
                         # runs the full pack (more Serper calls per lead).
                         if not deep and not q.get("always"):
@@ -904,6 +935,7 @@ class SyncManager:
                     self._persist_serper_result(
                         conn, lead_id, research, sections,
                         workspace_slug=workspace_slug, deep=deep,
+                        no_company_identifier=no_company_identifier,
                     )
                     summary["searched"] += 1
                     summary["persisted"] += 1
@@ -940,13 +972,29 @@ class SyncManager:
     SERPER_RESEARCH_FIELD = "serper_research"
 
     @staticmethod
+    def _company_search_domain(domain: Optional[str]) -> str:
+        """A domain worth searching for a company by, or "".
+
+        Shared mailbox domains (gmail.com, outlook.com, ...) belong to a mail
+        provider, not to the lead's employer; searching for one finds the
+        provider. SHARED_EMAIL_DOMAINS is the same list the email finder and
+        COMPANY_DOMAIN_SQL use -- one definition, not a second copy.
+        """
+        from constants import SHARED_EMAIL_DOMAINS
+
+        d = (domain or "").strip().lower()
+        return "" if not d or d in SHARED_EMAIL_DOMAINS else d
+
+    @staticmethod
     def _record_serper_attempt(
         conn, lead_id: int, *, status: str, queries: int, deep: bool,
-        error: Optional[str] = None,
+        error: Optional[str] = None, no_company_identifier: bool = False,
     ) -> None:
         from pipeline_provider_attempts import record_provider_attempt
 
         metadata = {"queries": queries, "mode": "deep" if deep else "core"}
+        if no_company_identifier:
+            metadata["no_company_identifier"] = True
         if error:
             metadata["error"] = error[:500]
         record_provider_attempt(
@@ -957,7 +1005,7 @@ class SyncManager:
 
     def _persist_serper_result(
         self, conn, lead_id: int, research: str, sections: list, *,
-        workspace_slug: str, deep: bool,
+        workspace_slug: str, deep: bool, no_company_identifier: bool = False,
     ) -> None:
         """Attempt row + the research text + a history event, in that order.
 
@@ -967,6 +1015,8 @@ class SyncManager:
         search result is actually the right person is a judgement call.
         """
         import pipeline_personalize as pp
+        import serper_candidates
+        import serper_review
 
         # ATTEMPT_STATUSES is a fixed vocabulary (found/not_found/error/skipped/
         # unknown) shared with the email-finder providers; anything else is
@@ -975,10 +1025,27 @@ class SyncManager:
         # pack came back with something to read.
         self._record_serper_attempt(
             conn, lead_id, status="found" if sections else "not_found",
-            queries=len(sections), deep=deep)
+            queries=len(sections), deep=deep,
+            no_company_identifier=no_company_identifier)
         if research and research.strip():
             pp.personalize_set(
                 lead_id, self.SERPER_RESEARCH_FIELD, research, conn=conn)
+        # Structured candidates alongside the prose. The prose is what a model
+        # reads; the candidates are what a picker offers. Neither is applied to
+        # the lead here -- choosing is a judgement, and this is the code that
+        # deliberately does not make it.
+        if sections:
+            lead_ctx = conn.execute(
+                """SELECT l.name, l.company, co.name AS linked_company, co.domain
+                     FROM leads l LEFT JOIN companies co ON co.id = l.company_id
+                    WHERE l.id = ?""", (lead_id,)).fetchone()
+            if lead_ctx is not None:
+                serper_review.store_candidates(conn, lead_id, serper_candidates.extract_candidates(
+                    sections,
+                    name=lead_ctx["name"] or "",
+                    company=(lead_ctx["linked_company"] or lead_ctx["company"] or ""),
+                    company_domains=[lead_ctx["domain"]] if lead_ctx["domain"] else [],
+                ))
         conn.commit()
 
         # log_event requires an explicit workspace in multi-workspace mode. The

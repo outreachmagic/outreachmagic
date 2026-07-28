@@ -585,6 +585,48 @@ def handle_lead_identity(match, query, body):
         linkedin=body.get("linkedin"))
 
 
+def handle_lead_serper_candidates(match, query, body):
+    import serper_review
+
+    conn = get_conn()
+    try:
+        return 200, serper_review.lead_candidates(conn, int(match.group(1)))
+    finally:
+        conn.close()
+
+
+@_workspace_scoped
+def handle_serper_review(conn, ws_id, match, query):
+    """The triage queue: leads with Serper candidates and no decision yet.
+
+    Returns candidates in score order and nothing marked as chosen — the picker
+    starts on "none of these" and the operator moves it. Ranking is not a
+    recommendation.
+    """
+    import serper_review
+
+    return serper_review.review_queue(
+        conn, ws_id, field=_q(query, "field", "linkedin"),
+        limit=_int_q(query, "limit", 25, lo=1, hi=100),
+        offset=_int_q(query, "offset", 0, hi=1_000_000))
+
+
+def handle_serper_apply(match, query, body):
+    import serper_review
+
+    body = body or {}
+    decisions = body.get("decisions")
+    if decisions is not None:
+        # A triage session posts its whole batch at once; all-or-nothing, so a
+        # partial failure can't leave the operator guessing which half landed.
+        return 200, serper_review.apply_batch(
+            decisions, dry_run=bool(body.get("dry_run")))
+    return 200, serper_review.apply_decision(
+        int(body.get("lead_id") or 0), str(body.get("field") or ""),
+        value=body.get("value"), dismissed=bool(body.get("dismissed")),
+        dry_run=bool(body.get("dry_run")))
+
+
 def handle_lead_custom_field_set(match, query, body):
     body = body or {}
     return 200, dashboard_actions.set_lead_custom_field(
@@ -717,6 +759,8 @@ ROUTES = [
     ("GET", re.compile(r"^/api/linkedin/senders$"), handle_linkedin_senders),
     ("POST", re.compile(r"^/api/contacts/bulk$"), handle_contacts_bulk),
     ("GET", re.compile(r"^/api/data-quality$"), handle_data_quality),
+    ("GET", re.compile(r"^/api/serper/review$"), handle_serper_review),
+    ("GET", re.compile(r"^/api/leads/(\d+)/serper-candidates$"), handle_lead_serper_candidates),
     ("GET", re.compile(r"^/api/enrich/targets$"), handle_enrich_targets),
     ("GET", re.compile(r"^/api/cleanup/preview$"), handle_cleanup_preview),
     ("GET", re.compile(r"^/api/cleanup/empty-leads/preview$"), handle_empty_leads_preview),
@@ -748,6 +792,7 @@ ROUTES = [
     ("POST", re.compile(r"^/api/leads/(\d+)/stage$"), handle_change_stage),
     ("POST", re.compile(r"^/api/leads/(\d+)/enrich$"), handle_enrich),
     ("POST", re.compile(r"^/api/leads/(\d+)/identity$"), handle_lead_identity),
+    ("POST", re.compile(r"^/api/serper/apply$"), handle_serper_apply),
     ("POST", re.compile(r"^/api/leads/(\d+)/custom-fields$"), handle_lead_custom_field_set),
     ("POST", re.compile(r"^/api/leads/(\d+)/emails$"), handle_lead_email_action),
     ("POST", re.compile(r"^/api/leads/(\d+)/phones$"), handle_lead_phone_action),

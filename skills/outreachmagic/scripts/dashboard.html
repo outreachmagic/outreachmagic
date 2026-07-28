@@ -367,6 +367,22 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <h2>Data quality <span class="sub" id="quality-sub">under-enriched leads — click a bucket to work it</span></h2>
       <div class="tiles" id="quality-tiles"></div>
     </div>
+    <div class="card" id="serper-review-card">
+      <h2>Research review
+        <span class="sub" style="font-weight:400;color:var(--ink-muted)">choose which result is the right one</span></h2>
+      <div class="controls">
+        <select id="serper-review-field">
+          <option value="linkedin">LinkedIn profile</option>
+          <option value="title">Job title</option>
+          <option value="company_domain">Company website</option>
+        </select>
+        <button class="small" id="serper-review-load">Load queue</button>
+        <span class="spacer"></span>
+        <span id="serper-review-count" class="stale"></span>
+        <button class="small primary" id="serper-review-save" disabled>Save decisions</button>
+      </div>
+      <div id="serper-review-list"></div>
+    </div>
     <div class="card" id="quality-list-card" hidden>
       <h2 id="quality-list-title">Leads</h2>
       <div class="controls">
@@ -570,6 +586,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
   <div id="lead-phones" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-custom" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-runs" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+  <div id="lead-serper" style="border-top:1px solid var(--grid);padding-top:12px"></div>
 
   <form id="event-form">
     <h3>Log event</h3>
@@ -967,7 +984,7 @@ function resetWorkspaceScopedState() {
   for (const k of Object.keys(contactsFilters)) delete contactsFilters[k];
   companiesState.offset = 0;
   for (const k of Object.keys(companiesFilters)) delete companiesFilters[k];
-  Object.assign(qualityState, { bucket: null, missing: null, offset: 0, total: 0, rows: [] });
+  Object.assign(qualityState, { bucket: null, missing: null, offset: 0, total: 0, rows: [], summary: null });
   qualityState.sel = new Set();
   for (const id of ["contacts-campaign", "contacts-tag", "contacts-sender",
                     "daily-campaign", "attr-campaign", "replies-campaign",
@@ -1908,15 +1925,15 @@ const QUALITY_BUCKETS = {
   missing_title: "Missing title",
   unknown_name: "Unknown / no name",
 };
-const qualityState = { bucket: null, missing: null, offset: 0, limit: 50, total: 0, rows: [], sel: new Set(), sortKey: null, sortDir: -1 };
+const qualityState = { bucket: null, missing: null, offset: 0, limit: 50, total: 0, rows: [], sel: new Set(), sortKey: null, sortDir: -1, summary: null };
 
-async function loadQuality() {
-  skeleton("quality-tiles", "quality-table");
-  const d = await getR("/api/data-quality").catch(e => { toast(e.message); return null; });
+// Repainting the tiles is separate from fetching them, because opening a bucket
+// needs the first without the second. It used to call loadQuality() just to move
+// the active-tile outline -- which re-ran skeleton() over BOTH containers and
+// then only redrew the tiles, wiping the rows openBucket had just rendered and
+// leaving the list stuck on "Loading…" forever.
+function renderQualityTiles(d) {
   if (!d) return;
-  $("quality-sub").textContent = d.range_active
-    ? `leads active in ${rangeLabel()} — click a bucket to work it`
-    : "under-enriched leads — click a bucket to work it";
   const byKey = Object.fromEntries(d.buckets.map(b => [b.key, b]));
   $("quality-tiles").innerHTML = Object.entries(QUALITY_BUCKETS).map(([key, label]) => {
     const b = byKey[key] || { count: 0, missing: key };
@@ -1928,6 +1945,21 @@ async function loadQuality() {
     t.style.cursor = "pointer";
     t.onclick = () => openBucket(t.dataset.key, t.dataset.missing);
   });
+}
+
+async function loadQuality() {
+  // Only blank the list when there is no open bucket to blank. With one open
+  // (a cleanup just ran, say) the rows belong to openBucket, and clearing them
+  // here would strand the list on "Loading…" -- nothing in this function draws
+  // them back.
+  skeleton(...(qualityState.bucket ? ["quality-tiles"] : ["quality-tiles", "quality-table"]));
+  const d = await getR("/api/data-quality").catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  qualityState.summary = d;
+  $("quality-sub").textContent = d.range_active
+    ? `leads active in ${rangeLabel()} — click a bucket to work it`
+    : "under-enriched leads — click a bucket to work it";
+  renderQualityTiles(d);
   $("cleanup-summary").textContent = d.junk_deletable
     ? `${fmt(d.junk_deletable)} truly-empty leads are deletable — preview first.`
     : "No empty leads to clean up.";
@@ -1974,9 +2006,84 @@ async function openBucket(key, missing, resetOffset = true) {
   $("quality-prev").disabled = qualityState.offset === 0;
   $("quality-next").disabled = to >= d.total;
   renderQualityActions();
-  loadQuality();  // refresh tile highlight
+  renderQualityTiles(qualityState.summary);  // move the active-tile outline; no refetch
   if (resetOffset) $("quality-list-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
+
+// Bulk research review. Same picker as the lead pane, queued: one card per
+// lead, decisions accumulate locally and post as one batch. Batching is not
+// only about round trips -- apply_batch is all-or-nothing, so a dropped
+// connection cannot leave you guessing which half of twenty-five judgements
+// landed.
+const serperReview = { field: "linkedin", leads: [], decisions: new Map() };
+
+async function loadSerperReview() {
+  serperReview.field = $("serper-review-field").value;
+  serperReview.decisions.clear();
+  $("serper-review-list").innerHTML = '<div class="stale">Loading…</div>';
+  const d = await getR(`/api/serper/review?field=${encodeURIComponent(serperReview.field)}&limit=25`)
+    .catch(e => { toast(e.message); return null; });
+  if (!d) { $("serper-review-list").innerHTML = ""; return; }
+  serperReview.leads = d.leads || [];
+  renderSerperReview(d.total || 0);
+}
+
+function renderSerperReview(total) {
+  const field = serperReview.field;
+  const list = $("serper-review-list");
+  if (!serperReview.leads.length) {
+    list.innerHTML = '<div class="empty">Nothing awaiting a decision. Run research on some leads first.</div>';
+    $("serper-review-count").textContent = "";
+    $("serper-review-save").disabled = true;
+    return;
+  }
+  $("serper-review-count").textContent =
+    `${fmt(serperReview.leads.length)} of ${fmt(total)} awaiting a decision`;
+  list.innerHTML = serperReview.leads.map(lead => `
+    <div style="border-top:1px solid var(--grid);padding:8px 0" data-lead="${lead.lead_id}">
+      <div style="font-weight:600">${esc(lead.name || "—")}
+        <span class="stale">${esc(lead.email || "")}${lead.company ? " · " + esc(lead.company) : ""}</span></div>
+      ${serperCandidateRows(field, lead.candidates, null)}
+    </div>`).join("");
+  // Strip the per-lead Save buttons the shared renderer adds; this surface
+  // saves the whole batch at once.
+  list.querySelectorAll("[data-serper-apply]").forEach(b => b.remove());
+  // Radio groups must not collide across leads, or picking for one clears another.
+  list.querySelectorAll("[data-lead]").forEach(card => {
+    const id = card.dataset.lead;
+    card.querySelectorAll(`input[type="radio"]`).forEach(r => {
+      r.name = `serper-${field}-${id}`;
+      r.onchange = () => {
+        serperReview.decisions.set(+id, r.value
+          ? { lead_id: +id, field, value: r.value }
+          : { lead_id: +id, field, dismissed: true });
+        $("serper-review-save").disabled = false;
+        $("serper-review-save").textContent = `Save ${serperReview.decisions.size} decision(s)`;
+      };
+    });
+  });
+  $("serper-review-save").disabled = true;
+  $("serper-review-save").textContent = "Save decisions";
+}
+
+$("serper-review-load").onclick = loadSerperReview;
+$("serper-review-field").onchange = loadSerperReview;
+$("serper-review-save").onclick = async () => {
+  const decisions = [...serperReview.decisions.values()];
+  if (!decisions.length) return;
+  const btn = $("serper-review-save");
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    const r = await post("/api/serper/apply", { decisions });
+    if (r.status === "error") throw new Error(r.errors?.[0]?.error || "batch rejected");
+    toast(`${r.applied} decision(s) saved`);
+    loadSerperReview();
+  } catch (e) {
+    // The batch is kept in memory so a failure costs nothing but a retry.
+    toast(e.message); btn.disabled = false;
+    btn.textContent = `Save ${serperReview.decisions.size} decision(s)`;
+  }
+};
 
 function renderQualityActions() {
   const n = qualityState.sel.size;
@@ -2633,6 +2740,7 @@ async function openLead(leadId) {
   renderPhones("lead-phones", "lead", lead.id, "mobile");
   renderLeadCustomFields(lead.id);
   renderLeadProviderRuns(lead.id);
+  renderLeadSerper(lead.id);
   // "to" side of each event: the lead's LinkedIn URL for LinkedIn events, else
   // their email. Paired with the sender (the mailbox / from side).
   const leadTo = ev => ev.channel === "linkedin"
@@ -2889,6 +2997,78 @@ async function renderLeadProviderRuns(leadId) {
     { key: "result_email", label: "Result", render: r => esc(r.result_email || "") },
     { key: "attempted_at", label: "When", render: r => r.attempted_at ? dt(r.attempted_at) : "" },
   ], d.runs || [], { empty: "No provider runs recorded.", filter: false });
+}
+
+// Serper research finds candidates, not answers. Nine people share a name and
+// only one of them is the lead; the machine cannot tell which, so it offers the
+// list and a person picks. Two rules keep that honest:
+//   * nothing starts selected — a pre-ticked radio is a recommendation in
+//     disguise, and someone triaging 200 leads will click straight through it;
+//   * "none of these" is a real answer, recorded like any other, so the lead
+//     stops coming back round and a re-run doesn't ask again.
+const SERPER_FIELD_LABEL = {
+  linkedin: "LinkedIn profile", title: "Job title", company_domain: "Company website",
+};
+
+function serperCandidateRows(field, candidates, decided) {
+  const val = c => field === "company_domain" ? c.domain
+    : field === "title" ? c.suggested_title : c.url;
+  const usable = candidates.filter(c => val(c));
+  if (!usable.length) return "";
+  const rows = usable.map((c, i) => {
+    const v = val(c);
+    const meta = field === "company_domain" ? (c.name || "") : (c.title || "");
+    return `<label style="display:block;padding:4px 0;cursor:pointer">
+      <input type="radio" name="serper-${field}" value="${esc(v)}" ${decided?.value === v ? "checked" : ""}>
+      <b>${esc(v)}</b>
+      ${meta ? `<span class="stale"> — ${esc(meta)}</span>` : ""}
+      ${c.snippet ? `<div class="stale" style="margin-left:20px;font-size:11px">${esc(c.snippet)}</div>` : ""}
+    </label>`;
+  }).join("");
+  // "None of these" is first and is the default, so the operator has to move
+  // the selection deliberately rather than accept whatever ranked highest.
+  const none = `<label style="display:block;padding:4px 0;cursor:pointer">
+      <input type="radio" name="serper-${field}" value="" ${decided && !decided.value ? "checked" : (decided ? "" : "checked")}>
+      <span class="stale">None of these</span></label>`;
+  const status = decided
+    ? `<span class="flag ${decided.dismissed ? "warn" : "ok"}">${decided.dismissed ? "dismissed" : "applied"}</span>`
+    : "";
+  return `<div style="margin:8px 0" data-serper-field="${field}">
+      <div style="font-weight:600;font-size:12px;margin-bottom:2px">${SERPER_FIELD_LABEL[field]} ${status}</div>
+      ${none}${rows}
+      <button class="small" data-serper-apply="${field}">Save choice</button>
+    </div>`;
+}
+
+async function renderLeadSerper(leadId) {
+  const el = $("lead-serper");
+  el.innerHTML = "";
+  const d = await api(`/api/leads/${leadId}/serper-candidates`).catch(() => null);
+  if (!d) return;
+  const blocks = [
+    serperCandidateRows("linkedin", d.linkedin || [], d.decisions?.linkedin),
+    serperCandidateRows("title", d.linkedin || [], d.decisions?.title),
+    serperCandidateRows("company_domain", d.company || [], d.decisions?.company_domain),
+  ].filter(Boolean).join("");
+  if (!blocks) return;
+  const emails = (d.emails || []).filter(e => e.kind === "public");
+  el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Research candidates
+      <span class="sub" style="font-weight:400;color:var(--ink-muted)">ranked, not chosen — pick one or say none</span></h3>
+    ${blocks}
+    ${emails.length ? `<div class="stale" style="margin-top:6px">Public mailboxes found: ${emails.map(e => esc(e.email)).join(", ")}</div>` : ""}`;
+  el.querySelectorAll("[data-serper-apply]").forEach(btn => btn.onclick = async () => {
+    const field = btn.dataset.serperApply;
+    const picked = el.querySelector(`input[name="serper-${field}"]:checked`);
+    const value = picked ? picked.value : "";
+    btn.disabled = true;
+    try {
+      await post("/api/serper/apply", value
+        ? { lead_id: leadId, field, value }
+        : { lead_id: leadId, field, dismissed: true });
+      toast(value ? `${SERPER_FIELD_LABEL[field]} applied` : "Recorded: none of these");
+      openLead(leadId);
+    } catch (e) { toast(e.message); btn.disabled = false; }
+  });
 }
 
 function renderCompanyLink(lead) {

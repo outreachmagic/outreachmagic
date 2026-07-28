@@ -44,6 +44,7 @@ from om_paths import (
 )
 from pipeline_utils import furthest_stage
 from pipeline_update import (
+    _SNAPSHOT_CURSOR_KEYS,
     _chmod_best_effort,
     clear_snapshot_cursors,
     get_agent_key,
@@ -129,6 +130,12 @@ _SNAPSHOT_KIND_STREAM = {
 # Snapshot kinds pulled via the per-kind snapshot_after_id/snapshot_kind cursor
 # mechanism (as opposed to the plain events cursor).
 _SNAPSHOT_PULL_KINDS = ("company", "core", "workspace", "sender_account", "sender_domain")
+# Adding a kind above without giving it a cursor slot is the bug that made every
+# pull re-download the whole workspace stream. Fail at import, not in the field.
+assert set(_SNAPSHOT_PULL_KINDS) <= set(_SNAPSHOT_CURSOR_KEYS), (
+    "snapshot kinds without a cursor slot: "
+    f"{sorted(set(_SNAPSHOT_PULL_KINDS) - set(_SNAPSHOT_CURSOR_KEYS))}"
+)
 _RELAY_STREAM_EVENT = "Event"
 _ARROW_PULL = "↓"
 _ARROW_PUSH = "↑"

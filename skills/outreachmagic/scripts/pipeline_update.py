@@ -879,21 +879,44 @@ def get_last_max_id() -> Optional[int]:
     return load_config().get("last_max_id")
 
 
+# One config slot per snapshot kind pulled by pipeline_sync._SNAPSHOT_PULL_KINDS.
+# Every kind needs its own: the cursors are independent positions in independent
+# relay streams, and two kinds sharing a slot overwrite each other's position on
+# every page -- the lower stream drags the higher one backwards and both
+# re-download from there on the next pull.
 _SNAPSHOT_CURSOR_KEYS = {
     "core": "last_snapshot_core_after_id",
     "workspace": "last_snapshot_workspace_after_id",
     "company": "last_snapshot_company_after_id",
+    "sender_account": "last_snapshot_sender_account_after_id",
+    "sender_domain": "last_snapshot_sender_domain_after_id",
 }
 
 
+def _snapshot_cursor_key(kind: str) -> str:
+    """The config key for `kind`, or a hard failure.
+
+    This used to default to the "workspace" slot for an unknown kind, which is
+    how sender_account and sender_domain shipped sharing the workspace cursor
+    without anything going red. An unknown kind is a missing slot, not a reason
+    to silently write someone else's.
+    """
+    try:
+        return _SNAPSHOT_CURSOR_KEYS[kind]
+    except KeyError:
+        raise ValueError(
+            f"no snapshot cursor slot for kind {kind!r} "
+            f"(known: {', '.join(sorted(_SNAPSHOT_CURSOR_KEYS))})"
+        ) from None
+
+
 def get_snapshot_cursor(kind: str = "workspace") -> int:
-    key = _SNAPSHOT_CURSOR_KEYS.get(kind, _SNAPSHOT_CURSOR_KEYS["workspace"])
     cfg = load_config()
-    return int(cfg.get(key) or 0)
+    return int(cfg.get(_snapshot_cursor_key(kind)) or 0)
 
 
 def set_snapshot_cursor(snapshot_id: int, kind: str = "workspace") -> None:
-    key = _SNAPSHOT_CURSOR_KEYS.get(kind, _SNAPSHOT_CURSOR_KEYS["workspace"])
+    key = _snapshot_cursor_key(kind)
     cfg = load_config()
     cfg[key] = int(snapshot_id)
     save_config(cfg)

@@ -808,38 +808,59 @@ def build_serper_queries(person: dict[str, Any]) -> list[dict[str, str]]:
 
     Returns list of {label, query, always, fallback_query}.
     Always-run queries come first, conditional ones after.
+
+    `company_name` may be empty; `company_domain` is used in its place when it
+    is. If neither is present, no company query is built at all -- see below.
     """
     name = person["full_name"]
-    company = person["company_name"]
+    company = (person.get("company_name") or "").strip()
+    domain = (person.get("company_domain") or "").strip().lower()
     role = person.get("stated_role", "")
     role_frag = build_role_fragment(role)
 
     queries: list[dict[str, str]] = []
 
-    # "Self-Employed", "Freelance", "N/A", etc. aren't real companies -- a
-    # website-discovery search for one is guaranteed to waste a credit on
-    # zero useful results. Skip those two, but still look up the person's own
-    # LinkedIn profile below -- that's independently useful regardless of
-    # whether they have a "real" company.
-    if not is_non_company_name(company):
+    # What we search for the company by, in order of how well it identifies one.
+    #
+    # An empty company name is NOT a company name. is_non_company_name("") is
+    # False -- it answers "is this a known non-company word", and the empty
+    # string isn't one -- so a blank company used to sail past this check and
+    # produce the query `"" official website`, which returns whatever Google
+    # feels like (usa.gov, state.gov, ...) and bills a credit for it. Check for
+    # presence separately from checking for a junk value.
+    #
+    # A domain identifies a company at least as well as its name, so a lead with
+    # no company text but a professional email domain is still worth searching
+    # for -- that is the common case for the leads this tool exists to rescue.
+    subject = ""
+    if company and not is_non_company_name(company):
+        # "Self-Employed", "Freelance", "N/A" etc. are real strings but not real
+        # companies; a website search for one is a guaranteed wasted credit.
+        subject = company
+    elif domain:
+        subject = domain
+
+    if subject:
         # 2a — Company strict (always)
         queries.append({
             "label": "company_discovery_strict",
-            "query": f'"{company}" official website',
+            "query": f'"{subject}" official website',
             "always": True,
-            "fallback_query": f"{company} website",
+            "fallback_query": f"{subject} website",
         })
 
         # 2b — Company broad (conditional placeholder — agent decides)
         queries.append({
             "label": "company_discovery_broad",
-            "query": f"{company} official website",
+            "query": f"{subject} official website",
             "always": False,
             "fallback_query": "",
             "condition": "No organic results with http(s) links in strict search",
         })
 
-    # 2c — LinkedIn profile (always, unquoted company for loose matching)
+    # 2c — LinkedIn profile (always, unquoted company for loose matching).
+    # Runs whether or not the company is identifiable: finding the person is
+    # independently useful, and is often how the company gets identified.
     queries.append({
         "label": "linkedin_profile",
         "query": _linkedin_query(name, company, role_frag),

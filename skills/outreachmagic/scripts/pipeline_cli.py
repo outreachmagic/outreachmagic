@@ -1781,6 +1781,30 @@ def main():
     pstat = sub.add_parser("personalize-status", help="Lead personalization summary")
     pstat.add_argument("--json", action="store_true")
 
+    # Serper research produces candidates, not answers. These two mirror the
+    # personalize-pending / personalize-set --batch pair above, so an agent that
+    # can drive one already knows how to drive the other.
+    srev = sub.add_parser(
+        "serper-review", help="Leads with Serper candidates awaiting a decision")
+    srev.add_argument("--workspace")
+    srev.add_argument("--field", default="linkedin",
+                      help="linkedin | title | company_domain")
+    srev.add_argument("--limit", type=int, default=25)
+    srev.add_argument("--offset", type=int, default=0)
+    srev.add_argument("--json", action="store_true")
+
+    sapp = sub.add_parser(
+        "serper-apply", help="Record a Serper candidate decision (or 'none of these')")
+    sapp.add_argument("--lead-id", type=int)
+    sapp.add_argument("--field", help="linkedin | title | company_domain")
+    sapp.add_argument("--value", help="The chosen candidate's value")
+    sapp.add_argument("--none", dest="dismissed", action="store_true",
+                      help="'None of these' — records the judgement, writes nothing")
+    sapp.add_argument("--batch", action="store_true")
+    sapp.add_argument("--json", dest="json_input",
+                      help="JSON: [{lead_id, field, value?, dismissed?}]")
+    sapp.add_argument("--dry-run", action="store_true")
+
     cpset = sub.add_parser(
         "company-personalize-set",
         help="Write company personalization (any field name, e.g. phone_google_maps)")
@@ -4321,6 +4345,54 @@ def main():
             print(f"{len(result)} leads pending (fields: {', '.join(fields)})")
             for r in result:
                 print(f"  [{r['id']}] {r['name'] or '?'} — {r['email'] or ''}")
+    elif args.command == "serper-review":
+        import serper_review
+        from db_conn import get_conn as _get_conn
+
+        ws_id = None
+        conn = _get_conn()
+        try:
+            if args.workspace:
+                from workspace_routing import resolve_workspace_identity
+                ws = resolve_workspace_identity(conn, args.workspace)
+                if not ws:
+                    print(f"Unknown workspace: {args.workspace}")
+                    return 1
+                ws_id = ws["id"]
+            result = serper_review.review_queue(
+                conn, ws_id, field=args.field, limit=args.limit, offset=args.offset)
+        finally:
+            conn.close()
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"{result['total']} lead(s) awaiting a {args.field} decision "
+                  f"(showing {len(result['leads'])})")
+            for lead in result["leads"]:
+                print(f"  [{lead['lead_id']}] {lead['name'] or '?'} — "
+                      f"{len(lead['candidates'])} candidate(s)")
+                for i, c in enumerate(lead["candidates"][:5], 1):
+                    label = c.get("url") or c.get("domain") or ""
+                    print(f"      {i}. {label}  ({c.get('title') or c.get('name') or ''})")
+    elif args.command == "serper-apply":
+        import serper_review
+
+        if args.batch:
+            if not args.json_input:
+                print("--batch requires --json '[{lead_id, field, value?, dismissed?}]'")
+                return 1
+            result = serper_review.apply_batch(
+                json.loads(args.json_input), dry_run=args.dry_run)
+        else:
+            if not args.lead_id or not args.field:
+                print("--lead-id and --field are required")
+                return 1
+            result = serper_review.apply_decision(
+                args.lead_id, args.field, value=args.value,
+                dismissed=args.dismissed, dry_run=args.dry_run)
+        print(json.dumps(result, indent=2))
+        if result.get("status") == "error":
+            return 1
     elif args.command == "personalize-status":
         result = _pipeline.personalize_status()
         if getattr(args, "json", False):

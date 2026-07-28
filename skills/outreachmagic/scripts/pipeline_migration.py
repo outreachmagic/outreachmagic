@@ -876,6 +876,38 @@ def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
 _TRANSPORT_STRINGS = ("agent_sync", "relay_sync", "relay")
 
 
+def _add_lead_fallback_email(conn: sqlite3.Connection) -> None:
+    """`leads.fallback_email_lead_id`: reach this person at that mailbox.
+
+    The case: no email for Bill Smith, but the company publishes
+    hello@acme.com. Writing hello@ onto Bill is the obvious move and the wrong
+    one -- dedup matches on email via lead_identities, so the second contact
+    given the same fallback merges into the first. Attaching it via lead_emails
+    has the same problem for the same reason (it aliases by design).
+
+    So the mailbox stays its own row (record_type = 'public_email') and Bill
+    points at it. Sending resolves COALESCE(l.email, fb.email) while
+    personalization still comes from Bill: his name, his title, his company.
+
+    The property that makes this the right shape rather than merely a working
+    one: when Bill's real address turns up, leads.email stops being NULL and
+    the COALESCE stops using the fallback. Nothing to clean up, no stale flag,
+    no "which one is live now". Every alternative needs something undone later.
+
+    ON DELETE SET NULL, not CASCADE: deleting a shared mailbox must not delete
+    the people who happened to point at it.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(leads)").fetchall()}
+    if "fallback_email_lead_id" not in cols:
+        conn.execute(
+            "ALTER TABLE leads ADD COLUMN fallback_email_lead_id INTEGER "
+            "REFERENCES leads(id) ON DELETE SET NULL")
+    # Partial: only the handful of leads that actually have a fallback.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_leads_fallback_email "
+        "ON leads(fallback_email_lead_id) WHERE fallback_email_lead_id IS NOT NULL")
+
+
 def _add_lead_record_type(conn: sqlite3.Connection) -> dict:
     """`leads.record_type`: is this row a person, or a stand-in for a company?
 
@@ -2166,6 +2198,7 @@ def migrate_db(conn=None):
     _repair_keyless_workspace_tombstones(conn)
     _fold_shadow_source_personalization(conn)
     _add_lead_record_type(conn)
+    _add_lead_fallback_email(conn)
     _repair_provenance_transport_strings(conn)
     _install_provenance_transport_guard(conn)
 

@@ -21,18 +21,18 @@ import re
 from typing import Any, Iterable, Optional
 from urllib.parse import urlparse
 
-from constants import SHARED_EMAIL_DOMAINS, is_non_company_name
+from constants import (
+    GENERIC_EMAIL_LOCAL_PARTS,
+    SHARED_EMAIL_DOMAINS,
+    is_non_company_name,
+)
 
-# Local parts that mean "the company", not "a person at the company". Used to
-# decide whether a scraped address becomes a public_email record or a candidate
-# address for a real contact -- the two must not be confused, because one is
-# safe to share between several people and the other is not.
-GENERIC_LOCAL_PARTS = frozenset({
-    "admin", "administration", "careers", "contact", "contactus", "enquiries",
-    "enquiry", "general", "help", "hello", "hi", "hr", "info", "information",
-    "jobs", "mail", "media", "office", "press", "recruitment", "sales",
-    "support", "team", "welcome",
-})
+# Local parts that mean "the company", not "a person at the company". Decides
+# whether a scraped address becomes a public_email record or a candidate address
+# for a real contact -- one is safe to share between several people and the
+# other is not, so the two must not be confused. Defined in constants so the
+# extractor and public_emails.py cannot answer it differently.
+GENERIC_LOCAL_PARTS = GENERIC_EMAIL_LOCAL_PARTS
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _LINKEDIN_IN_RE = re.compile(r"^https?://([a-z]{2,3}\.)?linkedin\.com/in/[^/?#]+", re.I)

@@ -229,10 +229,11 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <select id="contacts-status">
           <option value="">Any stage</option>
         </select>
-        <select id="contacts-record-type" title="Company placeholders are account stubs with no person attached">
+        <select id="contacts-record-type" title="Placeholders and public mailboxes are not people; hidden unless asked for">
           <option value="">People only</option>
           <option value="company_placeholder">Company placeholders</option>
-          <option value="all">People + placeholders</option>
+          <option value="public_email">Public mailboxes</option>
+          <option value="all">People + placeholders + mailboxes</option>
         </select>
         <select id="contacts-missing">
           <option value="">All contacts</option>
@@ -251,21 +252,46 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           <option value="">Any sender</option>
         </select>
         <span class="spacer"></span>
-        <button id="contacts-export-btn" class="small">Export CSV</button>
+        <button id="contacts-export-btn" class="small">Configure export…</button>
         <span id="contacts-count" class="stale"></span>
       </div>
-      <div id="contacts-export" class="controls" hidden
-           style="gap:10px;background:var(--page);padding:8px 10px;border-radius:8px;flex-wrap:wrap">
-        <label>Preset <select id="export-preset"></select></label>
-        <label style="flex:1;min-width:260px">Columns
-          <select id="export-fields" multiple size="6" style="width:100%"></select>
-        </label>
-        <div style="display:flex;flex-direction:column;gap:6px">
-          <button class="small primary" id="export-run">Export what's on screen</button>
-          <button class="small" id="export-cancel">Close</button>
+      <dialog id="merge-contacts" style="border:1px solid var(--grid);border-radius:10px;padding:0;max-width:720px;width:94vw">
+        <div style="padding:14px 16px">
+          <h2 style="margin:0 0 2px;font-size:15px">Merge contacts</h2>
+          <div class="stale" style="font-size:12px;margin-bottom:10px">
+            Pick which record survives. Any field it is missing is filled from the others.
+            <b>Merging cannot be undone from here.</b>
+          </div>
+          <div id="merge-contacts-body"></div>
+          <div class="controls" style="margin-top:12px">
+            <button class="small primary" id="merge-contacts-run" disabled>Merge</button>
+            <button class="small" id="merge-contacts-cancel">Cancel</button>
+            <span class="msg" id="merge-contacts-msg"></span>
+          </div>
         </div>
-        <span class="msg" id="export-msg" style="flex-basis:100%"></span>
-      </div>
+      </dialog>
+      <dialog id="contacts-export" style="border:1px solid var(--grid);border-radius:10px;padding:0;max-width:640px;width:92vw">
+        <form method="dialog" style="margin:0">
+          <div style="padding:14px 16px">
+            <h2 style="margin:0 0 2px;font-size:15px">Configure export</h2>
+            <div class="stale" style="font-size:12px;margin-bottom:10px" id="export-scope"></div>
+            <div style="display:flex;gap:14px;align-items:flex-start">
+              <div style="width:190px;display:flex;flex-direction:column;gap:8px">
+                <label style="font-size:12px">Preset<br><select id="export-preset" style="width:100%"></select></label>
+                <div class="stale" style="font-size:11px">The preset seeds the column list. Whatever is selected when you export is what you get.</div>
+              </div>
+              <label style="flex:1;font-size:12px">Columns
+                <select id="export-fields" multiple size="18" style="width:100%;max-width:260px"></select>
+              </label>
+            </div>
+            <div class="controls" style="margin-top:12px">
+              <button class="small primary" id="export-run" value="export">Export</button>
+              <button class="small" id="export-cancel" value="cancel">Cancel</button>
+              <span class="msg" id="export-msg"></span>
+            </div>
+          </div>
+        </form>
+      </dialog>
       <div id="contacts-active-filters" style="margin-bottom:8px"></div>
       <div class="controls" style="gap:14px">
         <label><input type="checkbox" id="contacts-all-page"> Select page</label>
@@ -589,7 +615,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
   <div id="lead-phones" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-custom" style="border-top:1px solid var(--grid);padding-top:12px"></div>
   <div id="lead-runs" style="border-top:1px solid var(--grid);padding-top:12px"></div>
-  <div id="lead-serper" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+  <div id="lead-serper-candidates" style="border-top:1px solid var(--grid);padding-top:12px"></div>
 
   <form id="event-form">
     <h3>Log event</h3>
@@ -1007,8 +1033,10 @@ function resetWorkspaceScopedState() {
     const el = $(id);
     if (el) el.value = "";
   }
+  // The export dialog's column list is per-workspace (personalization fields
+  // differ), so a switch mid-configure would offer the wrong columns.
   const exportPanel = $("contacts-export");
-  if (exportPanel) exportPanel.hidden = true;
+  if (exportPanel?.open) exportPanel.close();
   closeDetails();
 }
 
@@ -1039,10 +1067,23 @@ function setRangeToDay(dateStr) {
   refreshSummary(); loadTab();
 }
 
+// #domain-detail-card went away when clicking a domain started filtering the
+// mailbox list instead of expanding a card below it -- but this kept
+// dereferencing it, so closeDetails() threw on null. It is called last in
+// resetWorkspaceScopedState(), so the throw escaped into the workspace
+// onchange handler and killed the `refreshSummary(); loadTab();` after it:
+// switching workspace repainted nothing until the 60s auto-reload came round.
+// That is the "cards update instantly, the tables take a minute" report, and
+// why changing tabs and back fixed it -- switchTab calls loadTab directly.
+//
+// Tolerating a missing id rather than just deleting the line: these cards are
+// per-tab, and a helper that closes "whatever detail cards exist" should not
+// depend on which tab is mounted.
 function closeDetails() {
-  $("campaign-detail-card").hidden = true;
-  $("domain-detail-card").hidden = true;
-  $("stage-leads-card").hidden = true;
+  for (const id of ["campaign-detail-card", "domain-detail-card", "stage-leads-card"]) {
+    const el = $(id);
+    if (el) el.hidden = true;
+  }
 }
 
 /* ---------- tabs ---------- */
@@ -1512,13 +1553,19 @@ let exportFieldOptions = null;
 
 async function openExportPanel() {
   const panel = $("contacts-export");
-  panel.hidden = false;
   $("export-msg").textContent = "";
+  // One filter set, not two. The button already promised "what's on screen";
+  // a second record-type control in here that disagreed with the one above it
+  // would be two answers to the same question, which is how the contacts list
+  // and pipeline_tags.export_leads drifted apart in the first place.
+  $("export-scope").textContent =
+    `Exports the ${$("contacts-record-type").selectedOptions[0].textContent.toLowerCase()} `
+    + `currently matching your filters — ${$("contacts-count").textContent || "the list below"}.`;
   if (!exportFieldOptions) {
     exportFieldOptions = await get("/api/contacts/export/fields").catch(e => {
       toast(e.message); return null;
     });
-    if (!exportFieldOptions) { panel.hidden = true; return; }
+    if (!exportFieldOptions) return;
     $("export-preset").innerHTML = Object.keys(exportFieldOptions.presets)
       .map(p => `<option value="${esc(p)}"${p === "sequencer-upload" ? " selected" : ""}>${esc(p)}</option>`).join("");
     // Every column the picker can offer, in the order the panes group them.
@@ -1546,25 +1593,26 @@ async function runExport() {
   if (!fields.length) { toast("Pick at least one column"); return; }
   const p = contactsFilterParams();
   p.set("workspace", state.workspace);
-  $("export-msg").textContent = "Exporting…";
+  toast("Exporting…");
   try {
     const d = await api("/api/contacts/export?" + p.toString(),
       { method: "POST", body: JSON.stringify({ fields }) });
-    $("export-msg").innerHTML =
-      `Wrote <b>${fmt(d.count)}</b> row${d.count === 1 ? "" : "s"} to <code>${esc(d.file)}</code>` +
-      (d.truncated ? ` <span class="flag warn">capped at ${fmt(d.limit)}</span>` : "");
+    toast(`Wrote ${fmt(d.count)} row${d.count === 1 ? "" : "s"} to ${d.file}`
+      + (d.truncated ? ` (capped at ${fmt(d.limit)})` : ""));
   } catch (e) {
-    $("export-msg").textContent = e.message;
+    toast(e.message);
   }
 }
 
-$("contacts-export-btn").onclick = () => {
-  const panel = $("contacts-export");
-  if (panel.hidden) openExportPanel(); else panel.hidden = true;
+$("contacts-export-btn").onclick = async () => {
+  await openExportPanel();
+  $("contacts-export").showModal();
 };
-$("export-cancel").onclick = () => { $("contacts-export").hidden = true; };
 $("export-preset").onchange = applyExportPreset;
-$("export-run").onclick = runExport;
+// The dialog's form is method="dialog", so both buttons close it. Export runs
+// on the way out and reports into a toast, because the panel it used to write
+// into is gone by then.
+$("export-run").onclick = () => { setTimeout(runExport, 0); };
 
 let sendersLoaded = false;
 async function fillSenderSelect() {
@@ -1975,6 +2023,77 @@ function compactEventLine(ev) {
   </div>${ev.subject ? `<div class="tl-preview"><b>${esc(ev.subject)}</b></div>` : ""}${ev.body_preview ? `<div class="tl-preview">${esc(ev.body_preview)}</div>` : ""}</div>`;
 }
 
+// Merging is irreversible, so the dialog shows the resulting record before
+// committing -- and gets it from the server, which computes it with the same
+// COALESCE the engine applies. A preview reimplemented here could disagree with
+// what actually happens, which is worse than showing nothing.
+const mergeContacts = { keepId: null, ids: [], companyId: null };
+
+async function openMergeContacts(ids, contacts, companyId) {
+  if (ids.length < 2) return;
+  const byId = Object.fromEntries(contacts.map(c => [c.lead_id, c]));
+  // Default the survivor to the record with the most history, since that is
+  // the one whose id other things are most likely to reference -- but show the
+  // counts, so the default is visible reasoning rather than a hidden rule.
+  mergeContacts.ids = ids;
+  mergeContacts.companyId = companyId;
+  mergeContacts.keepId = [...ids].sort(
+    (a, b) => (byId[b]?.event_count || 0) - (byId[a]?.event_count || 0))[0];
+  $("merge-contacts-body").innerHTML = ids.map(id => {
+    const c = byId[id] || {};
+    return `<label style="display:block;padding:6px 0;border-top:1px solid var(--grid);cursor:pointer">
+      <input type="radio" name="merge-keep" value="${id}" ${id === mergeContacts.keepId ? "checked" : ""}>
+      <b>${esc(c.name || "—")}</b>
+      <span class="stale">${esc(c.title || "")}${c.email ? " · " + esc(c.email) : ""}
+        · ${fmt(c.event_count || 0)} event${c.event_count === 1 ? "" : "s"}</span>
+    </label>`;
+  }).join("") + '<div id="merge-preview" style="margin-top:10px"></div>';
+  $("merge-contacts-body").querySelectorAll('input[name="merge-keep"]').forEach(r =>
+    r.onchange = () => { mergeContacts.keepId = +r.value; renderMergePreview(); });
+  $("merge-contacts-msg").textContent = "";
+  $("merge-contacts").showModal();
+  renderMergePreview();
+}
+
+async function renderMergePreview() {
+  const el = $("merge-preview");
+  el.innerHTML = '<div class="stale">Working out the result…</div>';
+  $("merge-contacts-run").disabled = true;
+  const keep_id = mergeContacts.keepId;
+  const merge_ids = mergeContacts.ids.filter(i => i !== keep_id);
+  const d = await post("/api/leads/merge/preview", { keep_id, merge_ids })
+    .catch(e => { el.innerHTML = `<div class="msg">${esc(e.message)}</div>`; return null; });
+  if (!d) return;
+  const rows = Object.entries(d.result).map(([k, v]) => {
+    const from = d.inherited_from[k];
+    return `<tr><td class="stale">${esc(k)}</td><td>${esc(v ?? "—")}</td>
+      <td class="stale">${from ? `inherited from #${from}` : ""}</td></tr>`;
+  }).join("");
+  el.innerHTML = `<div class="stale" style="font-size:12px;margin-bottom:4px">Resulting record</div>
+    <div class="table-wrap"><table><tbody>${rows}</tbody></table></div>`;
+  $("merge-contacts-run").disabled = false;
+}
+
+$("merge-contacts-cancel").onclick = () => $("merge-contacts").close();
+$("merge-contacts-run").onclick = async () => {
+  const keep_id = mergeContacts.keepId;
+  const merge_ids = mergeContacts.ids.filter(i => i !== keep_id);
+  if (!confirm(`Merge ${merge_ids.length} record(s) into #${keep_id}? This cannot be undone.`)) return;
+  const btn = $("merge-contacts-run");
+  btn.disabled = true; btn.textContent = "Merging…";
+  try {
+    const r = await post("/api/leads/merge", { keep_id, merge_ids });
+    if (r.status === "error") throw new Error(r.errors?.[0]?.error || "merge failed");
+    toast(`Merged ${r.merged} record(s) into #${keep_id}`);
+    $("merge-contacts").close();
+    if (mergeContacts.companyId) renderCompanyActivity(mergeContacts.companyId);
+  } catch (e) {
+    $("merge-contacts-msg").textContent = e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = "Merge";
+  }
+};
+
 // events.sender is the mailbox at our end whichever way the message went, so
 // which side it belongs on depends on direction. Same from/to the contact
 // replies view shows.
@@ -1995,11 +2114,16 @@ async function renderCompanyActivity(companyId) {
   const d = await get(`/api/companies/${companyId}/contact-activity`).catch(() => null);
   if (!d) { el.innerHTML = ""; return; }
   if (!d.contacts.length) { el.innerHTML = head + '<div class="stale">No contacts with events yet.</div>'; return; }
-  el.innerHTML = head + d.contacts.map(ct => {
+  el.innerHTML = head
+    + `<div class="controls" style="padding:4px 0"><span id="ca-merge-sel" class="stale"></span>
+         <span class="spacer"></span>
+         <button class="small" id="ca-merge-btn" disabled>Merge selected…</button></div>`
+    + d.contacts.map(ct => {
     const sent = ct.sentiment ? `<span class="flag ${SENTIMENT_FLAG[String(ct.sentiment).toLowerCase()] ?? ""}">${esc(ct.sentiment)}</span>` : "";
     const last = ct.last_event_type ? `${esc(ct.last_event_type)}${ct.last_event_direction === "inbound" ? " ↩" : ""}` : "";
     return `<div class="ca-contact">
       <div class="ca-head" data-lead="${ct.lead_id}" style="display:flex;gap:8px;align-items:center;cursor:pointer;padding:5px 0;border-top:1px solid var(--grid);font-size:13px">
+        <input type="checkbox" class="ca-sel" data-lead="${ct.lead_id}" title="select for merge">
         <span class="ca-caret" style="width:12px">▸</span>
         <span style="flex:1">${esc(ct.name || "—")}${ct.title ? ` <span class="stale">· ${esc(ct.title)}</span>` : ""}</span>
         ${sent}
@@ -2018,6 +2142,23 @@ async function renderCompanyActivity(companyId) {
     closeCompany?.();
     openLead(+chip.dataset.viaLead);
   });
+  // Merge selection. The rows are the same contacts the pane already lists, so
+  // spotting two records for one person and fixing it happens where you notice
+  // it rather than in a separate tool.
+  const selected = new Set();
+  const syncMergeUi = () => {
+    $("ca-merge-sel").textContent = selected.size ? `${selected.size} selected` : "";
+    $("ca-merge-btn").disabled = selected.size < 2;
+  };
+  el.querySelectorAll(".ca-sel").forEach(cb => cb.onclick = (e) => {
+    e.stopPropagation();          // selecting is not expanding
+    cb.checked ? selected.add(+cb.dataset.lead) : selected.delete(+cb.dataset.lead);
+    syncMergeUi();
+  });
+  $("ca-merge-btn").onclick = () => openMergeContacts(
+    [...selected], d.contacts, companyId);
+  syncMergeUi();
+
   el.querySelectorAll(".ca-head").forEach(h => h.onclick = async () => {
     const body = h.parentElement.querySelector(".ca-body");
     const caret = h.querySelector(".ca-caret");
@@ -3238,7 +3379,7 @@ function serperCandidateRows(field, candidates, decided) {
 }
 
 async function renderLeadSerper(leadId) {
-  const el = $("lead-serper");
+  const el = $("lead-serper-candidates");
   el.innerHTML = "";
   const d = await api(`/api/leads/${leadId}/serper-candidates`).catch(() => null);
   if (!d) return;

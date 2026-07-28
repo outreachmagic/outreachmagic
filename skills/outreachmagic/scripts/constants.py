@@ -75,9 +75,29 @@ COMPANY_DOMAIN_PURPOSES = ("primary", "branch", "email_finding", "parked")
 #                        for tagging, personalization and company facts; NOT a
 #                        person, so it is excluded from sending, enrichment
 #                        targeting and CRM sync until a real contact replaces it.
+#   public_email       — a generic company mailbox (info@, hello@, careers@).
+#                        A real, verifiable, sendable address that belongs to
+#                        an organisation rather than a person. It is its own
+#                        row instead of a second address on somebody's contact
+#                        because lead_emails aliases into lead_identities, and
+#                        a shared address aliased that way collapses two real
+#                        people into one lead the first time it is reused.
 RECORD_TYPE_CONTACT = "contact"
 RECORD_TYPE_COMPANY_PLACEHOLDER = "company_placeholder"
-LEAD_RECORD_TYPES = (RECORD_TYPE_CONTACT, RECORD_TYPE_COMPANY_PLACEHOLDER)
+RECORD_TYPE_PUBLIC_EMAIL = "public_email"
+LEAD_RECORD_TYPES = (
+    RECORD_TYPE_CONTACT, RECORD_TYPE_COMPANY_PLACEHOLDER, RECORD_TYPE_PUBLIC_EMAIL,
+)
+
+# Local parts that name an organisation rather than a person. Shared with the
+# Serper extractor (serper_candidates.GENERIC_LOCAL_PARTS) so "is this a public
+# mailbox" has one answer.
+GENERIC_EMAIL_LOCAL_PARTS = frozenset({
+    "admin", "administration", "careers", "contact", "contactus", "enquiries",
+    "enquiry", "general", "help", "hello", "hi", "hr", "info", "information",
+    "jobs", "mail", "media", "office", "press", "recruitment", "sales",
+    "support", "team", "welcome",
+})
 
 # Tokens that mark a name as a business rather than a person.
 #

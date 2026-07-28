@@ -1784,6 +1784,37 @@ def main():
     # Serper research produces candidates, not answers. These two mirror the
     # personalize-pending / personalize-set --batch pair above, so an agent that
     # can drive one already knows how to drive the other.
+    pe = sub.add_parser(
+        "public-email",
+        help="Generic company mailboxes (info@, hello@) and person→mailbox fallbacks")
+    pe_sub = pe.add_subparsers(dest="public_email_command")
+
+    pe_list = pe_sub.add_parser("list", help="A company's public mailboxes")
+    pe_list.add_argument("--company-id", type=int, required=True)
+    pe_list.add_argument("--json", action="store_true")
+
+    pe_add = pe_sub.add_parser("add", help="Record a public mailbox")
+    pe_add.add_argument("--email", required=True)
+    pe_add.add_argument("--company-id", type=int)
+    pe_add.add_argument("--title", help="Context, e.g. 'Website contact form'")
+
+    pe_link = pe_sub.add_parser(
+        "link", help="Reach a contact at a public mailbox while they have no email")
+    pe_link.add_argument("--lead-id", type=int, required=True)
+    pe_link.add_argument("--to", dest="public_lead_id", type=int, required=True)
+
+    pe_unlink = pe_sub.add_parser("unlink", help="Remove a contact's fallback mailbox")
+    pe_unlink.add_argument("--lead-id", type=int, required=True)
+
+    pe_eff = pe_sub.add_parser(
+        "effective", help="What we would actually send to for a lead")
+    pe_eff.add_argument("--lead-id", type=int, required=True)
+
+    pe_coll = pe_sub.add_parser(
+        "collisions", help="Mailboxes several contacts would both be sent to")
+    pe_coll.add_argument("--workspace")
+    pe_coll.add_argument("--json", action="store_true")
+
     lcamp = sub.add_parser(
         "lead-campaign",
         help="Last known campaign for a lead (its own, else a colleague's)")
@@ -4352,6 +4383,52 @@ def main():
             print(f"{len(result)} leads pending (fields: {', '.join(fields)})")
             for r in result:
                 print(f"  [{r['id']}] {r['name'] or '?'} — {r['email'] or ''}")
+    elif args.command == "public-email":
+        import public_emails as pe_mod
+        from db_conn import get_conn as _get_conn
+
+        cmd = getattr(args, "public_email_command", None)
+        if not cmd:
+            print("Usage: public-email {list|add|link|unlink|effective|collisions}")
+            return 1
+        try:
+            if cmd == "list":
+                conn = _get_conn()
+                try:
+                    result = pe_mod.list_for_company(conn, args.company_id)
+                finally:
+                    conn.close()
+            elif cmd == "add":
+                result = pe_mod.create_public_email(
+                    args.email, company_id=args.company_id, title=args.title)
+            elif cmd == "link":
+                result = pe_mod.link_fallback(args.lead_id, args.public_lead_id)
+            elif cmd == "unlink":
+                result = pe_mod.unlink_fallback(args.lead_id)
+            elif cmd == "effective":
+                conn = _get_conn()
+                try:
+                    result = pe_mod.effective_email(conn, args.lead_id)
+                finally:
+                    conn.close()
+            else:  # collisions
+                conn = _get_conn()
+                try:
+                    ws_id = None
+                    if args.workspace:
+                        from workspace_routing import resolve_workspace_identity
+                        ws = resolve_workspace_identity(conn, args.workspace)
+                        if not ws:
+                            print(f"Unknown workspace: {args.workspace}")
+                            return 1
+                        ws_id = ws["id"]
+                    result = pe_mod.fallback_collisions(conn, ws_id)
+                finally:
+                    conn.close()
+        except pe_mod.PublicEmailError as exc:
+            print(f"Error: {exc}")
+            return 1
+        print(json.dumps(result, indent=2))
     elif args.command == "lead-campaign":
         import dashboard_queries
         from db_conn import get_conn as _get_conn

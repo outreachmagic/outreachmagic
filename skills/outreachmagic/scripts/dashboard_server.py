@@ -585,6 +585,20 @@ def handle_lead_identity(match, query, body):
         linkedin=body.get("linkedin"))
 
 
+def handle_leads_merge_preview(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.merge_leads_preview(
+        int(body.get("keep_id") or 0),
+        [int(i) for i in (body.get("merge_ids") or [])])
+
+
+def handle_leads_merge(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.merge_leads_action(
+        int(body.get("keep_id") or 0),
+        [int(i) for i in (body.get("merge_ids") or [])])
+
+
 def handle_sender_workspaces(match, query, body):
     import pipeline_sender_accounts as psa
 
@@ -834,6 +848,8 @@ ROUTES = [
     ("POST", re.compile(r"^/api/leads/(\d+)/enrich$"), handle_enrich),
     ("POST", re.compile(r"^/api/leads/(\d+)/identity$"), handle_lead_identity),
     ("POST", re.compile(r"^/api/serper/apply$"), handle_serper_apply),
+    ("POST", re.compile(r"^/api/leads/merge/preview$"), handle_leads_merge_preview),
+    ("POST", re.compile(r"^/api/leads/merge$"), handle_leads_merge),
     ("POST", re.compile(r"^/api/senders/workspaces$"), handle_sender_workspaces_set),
     ("POST", re.compile(r"^/api/domains/workspaces$"), handle_domain_workspaces_set),
     ("POST", re.compile(r"^/api/leads/(\d+)/custom-fields$"), handle_lead_custom_field_set),

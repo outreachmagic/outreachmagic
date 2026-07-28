@@ -229,6 +229,12 @@ def _assemble_lead_core_sync_payload(
     # unchanged and no content hash churns on rollout.
     if "record_type" in row.keys() and row["record_type"] and row["record_type"] != "contact":
         payload["record_type"] = row["record_type"]
+    # The fallback mailbox travels as the target's uid, never as a local row id
+    # (sync_contract: ids are not addressable from the relay side). Resolved
+    # back to an id on apply; if the target has not arrived yet, the link is
+    # simply left unset and the next pull fixes it.
+    if "fallback_email_uid" in row.keys() and row["fallback_email_uid"]:
+        payload["fallback_email_uid"] = row["fallback_email_uid"]
     if "superseded_at" in row.keys() and row["superseded_at"]:
         payload["superseded_at"] = row["superseded_at"]
     if personalization_rows:
@@ -567,6 +573,15 @@ def build_lead_core_sync_payload(
             (lead_id,),
         ).fetchall()
     row_dict = dict(row)
+    # Resolve the fallback mailbox to its uid here rather than in the row query:
+    # _lead_row_for_sync is shared with the prefetch path, and a join there
+    # would have to be replicated in the batch prefetch to stay in step.
+    if row_dict.get("fallback_email_lead_id"):
+        fb = conn.execute(
+            "SELECT uid FROM leads WHERE id = ?",
+            (row_dict["fallback_email_lead_id"],)).fetchone()
+        if fb and fb["uid"]:
+            row_dict["fallback_email_uid"] = fb["uid"]
     original_lev, latest_lev = _lev_sources_for_lead(conn, lead_id)
     if original_lev:
         row_dict["original_email_verification_source"] = original_lev
@@ -972,12 +987,30 @@ def apply_agent_lead_core_payload(
 
     # Absent means 'contact' (the sender omits the default), so a missing key
     # must not clear a locally-set placeholder -- only an explicit value applies.
+    #
+    # Read the vocabulary from constants rather than repeating it: this used to
+    # be a hard-coded ("contact", "company_placeholder") pair, so when a third
+    # type was added the push sent it and the pull silently dropped it. A
+    # rebuild-from-relay then demoted every one of those rows back to 'contact',
+    # putting public mailboxes into the contacts list and the email finder.
+    from constants import LEAD_RECORD_TYPES
+
     incoming_record_type = str(payload.get("record_type") or "").strip().lower()
-    if incoming_record_type in ("contact", "company_placeholder"):
+    if incoming_record_type in LEAD_RECORD_TYPES:
         _set("record_type", incoming_record_type)
         bump_updated_at = True
     if payload.get("superseded_at"):
         _set("superseded_at", payload["superseded_at"])
+
+    # Resolve the fallback mailbox uid back to a local id. Snapshot ordering is
+    # not guaranteed, so the target may not exist yet -- leave the link unset
+    # and let a later pull make it. Minting a stub lead to satisfy the FK would
+    # put a nameless, emailless row into the contacts list to fix a pointer.
+    fallback_uid = str(payload.get("fallback_email_uid") or "").strip()
+    if fallback_uid:
+        fb = conn.execute("SELECT id FROM leads WHERE uid = ?", (fallback_uid,)).fetchone()
+        if fb:
+            _set("fallback_email_lead_id", fb["id"])
 
     # Company link; was link_lead_company(company=None), i.e. company_id only,
     # resolved from the email domain.

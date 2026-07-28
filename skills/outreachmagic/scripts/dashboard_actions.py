@@ -89,6 +89,76 @@ def log_event(
         workspace_slug=workspace_slug, idempotency_prefix="dashboard")
 
 
+#: Fields the merge preview compares. The engine fills a blank on the survivor
+#: from the loser (COALESCE, see pipeline.merge_leads); this shows which values
+#: that would actually move, so nobody has to trust a description of the rule.
+MERGE_PREVIEW_FIELDS = (
+    "name", "email", "title", "company", "linkedin_url", "industry", "headcount",
+    "location_city", "location_country", "email_verification_status",
+)
+
+
+def merge_leads_preview(keep_id: int, merge_ids: list[int]) -> dict:
+    """What merging would produce, without doing it.
+
+    Comes from the same COALESCE rule the engine applies rather than a second
+    description of it in JavaScript -- a preview that can disagree with the
+    action is worse than no preview.
+    """
+    conn = get_conn()
+    try:
+        keep = conn.execute("SELECT * FROM leads WHERE id = ?", (keep_id,)).fetchone()
+        if keep is None:
+            raise ValueError(f"lead not found: {keep_id}")
+        losers = []
+        for lead_id in merge_ids:
+            row = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"lead not found: {lead_id}")
+            losers.append(row)
+
+        result, inherited = {}, {}
+        for field in MERGE_PREVIEW_FIELDS:
+            value = (keep[field] or "") if field in keep.keys() else ""
+            value = value.strip() if isinstance(value, str) else value
+            if not value:
+                for row in losers:
+                    candidate = (row[field] or "") if field in row.keys() else ""
+                    candidate = candidate.strip() if isinstance(candidate, str) else candidate
+                    if candidate:
+                        value, inherited[field] = candidate, row["id"]
+                        break
+            result[field] = value or None
+
+        events = {
+            row["id"]: conn.execute(
+                "SELECT COUNT(*) n FROM events WHERE lead_id = ?", (row["id"],)).fetchone()["n"]
+            for row in [keep, *losers]
+        }
+    finally:
+        conn.close()
+    return {
+        "keep_id": keep_id, "merge_ids": list(merge_ids),
+        "result": result, "inherited_from": inherited, "event_counts": events,
+    }
+
+
+def merge_leads_action(keep_id: int, merge_ids: list[int], reason: str = "dashboard") -> dict:
+    """Merge several leads into one. Not reversible from here."""
+    import pipeline as om
+
+    if keep_id in merge_ids:
+        raise ValueError("the surviving lead cannot also be one of the merged leads")
+    merged, errors = [], []
+    for lead_id in merge_ids:
+        result = om.merge_leads(keep_id, int(lead_id), reason=reason)
+        (merged if result.get("status") != "error" else errors).append(result)
+    return {
+        "status": "error" if errors else "ok",
+        "keep_id": keep_id, "merged": len(merged), "errors": errors,
+    }
+
+
 def update_lead_identity(
     lead_id: int, *, name: Optional[str] = None, title: Optional[str] = None,
     linkedin: Optional[str] = None, conn: Optional[sqlite3.Connection] = None,
@@ -1040,12 +1110,24 @@ class SyncManager:
                      FROM leads l LEFT JOIN companies co ON co.id = l.company_id
                     WHERE l.id = ?""", (lead_id,)).fetchone()
             if lead_ctx is not None:
-                serper_review.store_candidates(conn, lead_id, serper_candidates.extract_candidates(
+                extracted = serper_candidates.extract_candidates(
                     sections,
                     name=lead_ctx["name"] or "",
                     company=(lead_ctx["linked_company"] or lead_ctx["company"] or ""),
                     company_domains=[lead_ctx["domain"]] if lead_ctx["domain"] else [],
-                ))
+                )
+                serper_review.store_candidates(conn, lead_id, extracted)
+                # Generic company mailboxes found in the results become records
+                # of their own. Nothing is linked to this lead automatically --
+                # "this mailbox exists" is a fact; "reach Bill here" is a call.
+                if extracted.get("emails"):
+                    import public_emails
+
+                    try:
+                        public_emails.ingest_serper_emails(
+                            conn, lead_id, extracted["emails"])
+                    except public_emails.PublicEmailError as exc:
+                        self._log(f"    (public mailboxes not recorded: {exc})")
         conn.commit()
 
         # log_event requires an explicit workspace in multi-workspace mode. The

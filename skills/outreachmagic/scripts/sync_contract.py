@@ -171,6 +171,7 @@ NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
         "updated_at": "audit/display column only -- 40.7% of rows have updated_at < created_at, so nothing may depend on it for sync semantics (Stage 5)",
         "last_contact_at": "not itself transmitted; written as a side effect when a workspace snapshot's activity block (last_contacted_at) is applied via apply_activity_sync_payload",
         "next_action": "local planning field; no sync payload builder reads it",
+        "fallback_email_lead_id": "local FK; travels as `fallback_email_uid` (the target lead's uid) because local row ids are never addressable from the relay side -- see lead_sync.build_lead_core_payload",
     },
     "lead_identities": {
         "id": "local autoincrement surrogate; not addressable from the relay side",

@@ -2071,6 +2071,16 @@ def merge_leads(
         next_action = (keep["next_action"] or "") or (other["next_action"] or "") or None
         latest_sender = keep["latest_sender"] or other["latest_sender"]
         latest_sender_platform = keep["latest_sender_platform"] or other["latest_sender_platform"]
+        # Never point the survivor at itself: merging two contacts who both fell
+        # back to the same mailbox is fine, but a self-reference would make
+        # effective_email recurse into its own row.
+        fallback_email_lead_id = (
+            keep["fallback_email_lead_id"] if "fallback_email_lead_id" in keep.keys() else None
+        ) or (
+            other["fallback_email_lead_id"] if "fallback_email_lead_id" in other.keys() else None
+        )
+        if fallback_email_lead_id in (keep_id, merge_id):
+            fallback_email_lead_id = None
         if company_id and not conn.execute(
             "SELECT 1 FROM companies WHERE id = ?", (company_id,)
         ).fetchone():
@@ -2143,6 +2153,10 @@ def merge_leads(
                next_action = COALESCE(NULLIF(trim(next_action), ''), ?),
                latest_sender = COALESCE(latest_sender, ?),
                latest_sender_platform = COALESCE(latest_sender_platform, ?),
+               -- The loser's public-mailbox fallback follows it. Dropping this
+               -- would silently un-reach a contact who had no address of their
+               -- own, which is the exact situation the fallback exists for.
+               fallback_email_lead_id = COALESCE(fallback_email_lead_id, ?),
                stage = ?,
                updated_at = datetime('now')
                WHERE id = ?""",
@@ -2155,6 +2169,7 @@ def merge_leads(
                 email_verification_status, email_verified_at,
                 latest_source, latest_source_detail, latest_source_platform, latest_source_at,
                 last_contact_at, next_action, latest_sender, latest_sender_platform,
+                fallback_email_lead_id,
                 new_stage, keep_id,
             ),
         )

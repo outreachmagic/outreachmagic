@@ -86,9 +86,10 @@ LEAD_RECORD_TYPES = (RECORD_TYPE_CONTACT, RECORD_TYPE_COMPANY_PLACEHOLDER)
 # missed stub costs nothing (it just sits in the contacts list), while a real
 # person misclassified as a placeholder is silently dropped from sending,
 # enrichment targeting and CRM sync. Sole traders whose company is their own
-# name -- "Marisol Okonkwo", "Petra Lindqvist" -- match name == company exactly like
-# a Google Maps business does, and three of them were caught by an earlier
-# version of this rule that had no such requirement.
+# name -- "Marisol Okonkwo", "Petra Lindqvist", to use invented examples --
+# match name == company exactly like a Google Maps business does, and three
+# real ones were caught by an earlier version of this rule that had no such
+# requirement.
 COMPANY_NAME_TOKENS = frozenset({
     "inc", "incorporated", "llc", "l.l.c", "ltd", "limited", "plc", "corp",
     "corporation", "co", "company", "group", "holdings", "partners", "associates",

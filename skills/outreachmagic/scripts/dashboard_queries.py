@@ -389,6 +389,11 @@ def domain_health(
             "mailboxes": r["mailboxes"] or 0,
             "mailboxes_total": r["mailboxes_total"],
             "sends": sends,
+            # The raw counts travel alongside the rates so a totals row can be
+            # weighted (sum/sum). Averaging per-domain rates would let a domain
+            # with three sends move the number as much as one with three thousand.
+            "replies": agg["replies"],
+            "bounces": agg["bounces"],
             "reply_rate": (agg["replies"] / sends) if sends else None,
             "bounce_rate": (agg["bounces"] / sends) if sends else None,
             "last_outbound_at": r["last_outbound_at"],

@@ -585,6 +585,45 @@ def handle_lead_identity(match, query, body):
         linkedin=body.get("linkedin"))
 
 
+def handle_sender_workspaces(match, query, body):
+    import pipeline_sender_accounts as psa
+
+    email = _q(query, "email")
+    if not email:
+        raise ValueError("email query parameter is required")
+    return 200, psa.sender_account_workspaces(email)
+
+
+def handle_sender_workspaces_set(match, query, body):
+    import pipeline_sender_accounts as psa
+
+    body = body or {}
+    email = body.get("email")
+    if not email:
+        raise ValueError("email is required")
+    # The full membership set, not a delta -- see set_sender_account_workspaces.
+    return 200, psa.set_sender_account_workspaces(email, body.get("workspaces") or [])
+
+
+def handle_domain_workspaces(match, query, body):
+    import pipeline_sender_accounts as psa
+
+    domain = _q(query, "domain")
+    if not domain:
+        raise ValueError("domain query parameter is required")
+    return 200, psa.domain_workspace_summary(domain)
+
+
+def handle_domain_workspaces_set(match, query, body):
+    import pipeline_sender_accounts as psa
+
+    body = body or {}
+    domain = body.get("domain")
+    if not domain:
+        raise ValueError("domain is required")
+    return 200, psa.set_domain_workspaces(domain, body.get("workspaces") or [])
+
+
 def handle_lead_serper_candidates(match, query, body):
     import serper_review
 
@@ -761,6 +800,8 @@ ROUTES = [
     ("GET", re.compile(r"^/api/data-quality$"), handle_data_quality),
     ("GET", re.compile(r"^/api/serper/review$"), handle_serper_review),
     ("GET", re.compile(r"^/api/leads/(\d+)/serper-candidates$"), handle_lead_serper_candidates),
+    ("GET", re.compile(r"^/api/senders/workspaces$"), handle_sender_workspaces),
+    ("GET", re.compile(r"^/api/domains/workspaces$"), handle_domain_workspaces),
     ("GET", re.compile(r"^/api/enrich/targets$"), handle_enrich_targets),
     ("GET", re.compile(r"^/api/cleanup/preview$"), handle_cleanup_preview),
     ("GET", re.compile(r"^/api/cleanup/empty-leads/preview$"), handle_empty_leads_preview),
@@ -793,6 +834,8 @@ ROUTES = [
     ("POST", re.compile(r"^/api/leads/(\d+)/enrich$"), handle_enrich),
     ("POST", re.compile(r"^/api/leads/(\d+)/identity$"), handle_lead_identity),
     ("POST", re.compile(r"^/api/serper/apply$"), handle_serper_apply),
+    ("POST", re.compile(r"^/api/senders/workspaces$"), handle_sender_workspaces_set),
+    ("POST", re.compile(r"^/api/domains/workspaces$"), handle_domain_workspaces_set),
     ("POST", re.compile(r"^/api/leads/(\d+)/custom-fields$"), handle_lead_custom_field_set),
     ("POST", re.compile(r"^/api/leads/(\d+)/emails$"), handle_lead_email_action),
     ("POST", re.compile(r"^/api/leads/(\d+)/phones$"), handle_lead_phone_action),

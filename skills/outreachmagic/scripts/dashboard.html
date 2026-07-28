@@ -191,6 +191,8 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
     <input type="date" id="range-until" title="To">
     <button class="small" id="range-apply">Apply</button>
   </span>
+  <button class="small" id="refresh-btn" title="Reload this tab's data">↻ Refresh</button>
+  <span id="refresh-age" class="stale"></span>
   <span id="sync-pill" class="pill">idle</span>
   <button id="pull-btn">Pull latest</button>
   <button id="push-btn">Push to relay</button>
@@ -844,10 +846,19 @@ function renderTable(container, cols, rows, opts = {}) {
       return `<tr class="${opts.onRowClick ? "clickable" : ""}" data-i="${rows.indexOf(r)}">${cells}</tr>`;
     }).join("");
     const colgroup = `<colgroup>${cols.map(() => "<col>").join("")}</colgroup>`;
+    // opts.footer(view) -> {colKey: html}. It is handed the *filtered and
+    // sorted* view, not the raw rows, so a totals row always describes what is
+    // actually on screen rather than a set the reader has filtered away.
+    const foot = opts.footer ? (() => {
+      const vals = opts.footer(view) || {};
+      const cells = cols.map((c, ci) =>
+        `<td class="${c.num ? "num" : ""}" data-ci="${ci}"><b>${vals[c.key] ?? ""}</b></td>`).join("");
+      return `<tfoot><tr>${cells}</tr></tfoot>`;
+    })() : "";
     el.innerHTML =
       (opts.filter !== false && rows.length > 8
         ? `<div class="tfilter"><input placeholder="Filter…" value="${esc(st.filter)}"></div>` : "") +
-      `<div class="table-wrap"><table>${colgroup}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+      `<div class="table-wrap"><table>${colgroup}<thead><tr>${head}</tr></thead><tbody>${body}</tbody>${foot}</table></div>`;
     pinColumnWidths(el, cols, widths);
     if (tableKey) wireColResize(el, cols, tableKey);
     const filterInput = el.querySelector(".tfilter input");
@@ -925,7 +936,9 @@ function updateSyncPill(sync) {
     : sync.state === "done" ? `${sync.kind} done` : "idle";
   pill.title = sync.error || "";
   ["pull-btn", "push-btn"].forEach(id => $(id).disabled = sync.state === "running");
-  if (state.syncState === "running" && sync.state === "done") { toast(`${sync.kind} finished`); loadTab(); }
+  // A finished sync is the one moment the data provably changed, so this is
+  // still automatic -- but through refreshNow, which keeps your scroll place.
+  if (state.syncState === "running" && sync.state === "done") { toast(`${sync.kind} finished`); refreshNow(); }
   if (state.syncState === "running" && sync.state === "error") toast(`${sync.kind} failed: ${sync.error}`);
   state.syncState = sync.state;
 }
@@ -1050,7 +1063,15 @@ $("tabs").onclick = (e) => {
 // a stale-workspace bail it returns without touching the DOM, leaving the
 // PREVIOUS workspace's rows on screen looking like current data. Blanking up
 // front means the table either repopulates or goes visibly empty.
+// ...but a *refresh* is a different case: the rows on screen belong to the same
+// workspace and range we are about to re-fetch, so blanking them buys nothing
+// and costs the page its height -- which is what clamped scrollTop to 0 and
+// threw you back to the top. Re-fetching in place leaves the reader where they
+// were and swaps the contents when the answer arrives.
+let refreshingInPlace = false;
+
 function skeleton(...ids) {
+  if (refreshingInPlace) return;
   for (const id of ids) {
     const el = $(id);
     if (el) el.innerHTML = '<div class="stale">Loading…</div>';
@@ -1065,7 +1086,41 @@ function loadTab() {
      campaigns: loadCampaigns,
      attributes: loadAttributes, crm: loadCrm,
      activity: () => loadActivity(true), sync: loadOutbox })[state.tab]();
+  markRefreshed();
 }
+
+/* ---------- refresh: asked for, not imposed ---------- */
+let lastRefreshedAt = null;
+
+function markRefreshed() { lastRefreshedAt = Date.now(); paintRefreshAge(); }
+
+function paintRefreshAge() {
+  const el = $("refresh-age");
+  if (!el || !lastRefreshedAt) return;
+  const secs = Math.round((Date.now() - lastRefreshedAt) / 1000);
+  el.textContent = secs < 45 ? "just now"
+    : secs < 3600 ? `updated ${Math.round(secs / 60)}m ago`
+    : `updated ${Math.round(secs / 3600)}h ago`;
+}
+
+// Reload without losing the reader's place. A refresh is not a navigation:
+// whatever you were looking at should still be under the cursor afterwards.
+async function refreshNow() {
+  const y = window.scrollY;
+  const btn = $("refresh-btn");
+  if (btn) btn.disabled = true;
+  refreshingInPlace = true;
+  try {
+    await refreshSummary();
+    await loadTab();
+  } finally {
+    refreshingInPlace = false;
+    if (btn) btn.disabled = false;
+    // The tables repaint asynchronously; restore after they have height again.
+    requestAnimationFrame(() => window.scrollTo({ top: y }));
+  }
+}
+$("refresh-btn").onclick = refreshNow;
 
 /* shared lead columns for any lead table (contacts, campaign leads) */
 // Best openable LinkedIn URL for a lead row: public URL, else synthesized Sales
@@ -1123,6 +1178,8 @@ function agePredicate(mode) {
 async function loadDeliverability() {
   skeleton("mailboxes", "domains");
   const d = await getR("/api/deliverability").catch(e => { toast(e.message); return null; });
+  // Null means the workspace changed mid-flight and a newer load owns the
+  // screen -- bow out rather than painting the previous workspace's numbers.
   if (!d) return;
   state.deliv = d;
   renderBounceChart(d.series);
@@ -1149,6 +1206,17 @@ function renderDeliv() {
   // range at the top (warmup/SPF/DKIM/DMARC/health are sequencer-only and live
   // on the mailbox edit panel now, not this table).
   const bflag = v => v != null && v >= 0.05 ? `<span class="flag bad">${pct(v)}</span>` : (v != null ? pct(v) : "–");
+  // Totals are weighted: sum(replies)/sum(sends), never the mean of the
+  // per-row rates. A mailbox with 3 sends and 1 reply would otherwise drag a
+  // 33% into an average that describes nobody.
+  const totals = (view) => {
+    const sends = view.reduce((a, r) => a + (r.sends || 0), 0);
+    const replies = view.reduce((a, r) => a + (r.replies || 0), 0);
+    const bounces = view.reduce((a, r) => a + (r.bounces || 0), 0);
+    return { sends, replies, bounces,
+             reply_rate: sends ? replies / sends : null,
+             bounce_rate: sends ? bounces / sends : null };
+  };
   renderTable("mailboxes", [
     { key: "email", label: "Mailbox",
       render: r => `${esc(r.email)}${r.is_active === 0 ? ' <span class="flag warn">decommissioned</span>' : ""}` },
@@ -1158,7 +1226,14 @@ function renderDeliv() {
     { key: "last_outbound_at", label: "Last send", render: r => dt(r.last_outbound_at) || "never" },
     { key: "trending_down", label: "Status", sortVal: r => r.trending_down ? 0 : 1,
       render: r => r.trending_down ? '<span class="flag bad">▲ trending down</span>' : '<span class="flag ok">✓ ok</span>' },
-  ], mailboxes, { empty: "No mailboxes match this filter.", onRowClick: r => openSenderEdit(r) });
+  ], mailboxes, { empty: "No mailboxes match this filter.", onRowClick: r => openSenderEdit(r),
+    footer: (view) => {
+      const t = totals(view);
+      return { email: `${view.length} mailbox${view.length === 1 ? "" : "es"}`,
+               sends: fmt(t.sends),
+               reply_rate: t.reply_rate != null ? pct(t.reply_rate) : "–",
+               bounce_rate: t.bounce_rate != null ? pct(t.bounce_rate) : "–" };
+    } });
   renderTable("domains", [
     { key: "domain", label: "Domain",
       render: r => `${esc(r.domain)}${r.is_active === false ? ' <span class="flag warn">off</span>' : ""}` },
@@ -1174,7 +1249,14 @@ function renderDeliv() {
     { key: "listed", label: "Blacklist", sortVal: r => r.listed ? 0 : 1,
       render: r => r.listed ? '<span class="flag bad">✖ listed</span>'
         : r.registered ? '<span class="flag ok">✓ clean</span>' : '<span class="flag warn">—</span>' },
-  ], domains, { empty: "No sending domains match this filter.", onRowClick: r => showDomain(r.domain) });
+  ], domains, { empty: "No sending domains match this filter.", onRowClick: r => showDomain(r.domain),
+    footer: (view) => {
+      const t = totals(view);
+      return { domain: `${view.length} domain${view.length === 1 ? "" : "s"}`,
+               mailboxes: fmt(view.reduce((a, r) => a + (r.mailboxes || 0), 0)),
+               reply_rate: t.reply_rate != null ? pct(t.reply_rate) : "–",
+               bounce_rate: t.bounce_rate != null ? pct(t.bounce_rate) : "–" };
+    } });
 }
 
 function openSenderEdit(sa) {
@@ -1194,7 +1276,9 @@ function openSenderEdit(sa) {
       <div class="row"><label><input type="checkbox" name="is_active" ${sa.is_active !== 0 ? "checked" : ""}> Live mailbox <span class="sub" style="font-weight:400;color:var(--ink-muted)">uncheck = decommissioned (drops from cost/count/DNSBL)</span></label></div>
       <div class="row"><button class="primary">Save mailbox</button></div>
       <div class="msg" id="sender-msg"></div>
-    </form>`;
+    </form>
+    <div id="sender-ws" style="border-top:1px solid var(--grid);margin-top:12px;padding-top:12px"></div>`;
+  renderSenderWorkspaces(sa.email);
   $("sender-edit-form").onsubmit = (e) => {
     e.preventDefault();
     const body = { email: sa.email };
@@ -1203,6 +1287,69 @@ function openSenderEdit(sa) {
       if (inp.value.trim()) body[inp.name] = inp.value.trim();
     }
     formResult("sender-msg", post("/api/senders/edit", body), loadDeliverability);
+  };
+}
+
+// Membership is submitted as the whole set, never as a delta -- the sync
+// payload sends it in full too, so an empty list has to mean "removed from
+// everywhere" on both sides or the two quietly disagree.
+async function renderSenderWorkspaces(email) {
+  const el = $("sender-ws");
+  if (!el) return;
+  el.innerHTML = '<div class="stale">Loading workspaces…</div>';
+  const d = await api(`/api/senders/workspaces?email=${encodeURIComponent(email)}`).catch(() => null);
+  if (!d || d.status === "error") { el.innerHTML = ""; return; }
+  const member = new Set(d.workspaces || []);
+  el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Workspaces
+      <span class="sub" style="font-weight:400;color:var(--ink-muted)">a mailbox can serve more than one</span></h3>
+    <div style="display:flex;flex-direction:column;gap:3px">
+      ${(d.available || []).map(slug => `<label style="cursor:pointer">
+        <input type="checkbox" class="sender-ws-cb" value="${esc(slug)}" ${member.has(slug) ? "checked" : ""}> ${esc(slug)}
+      </label>`).join("")}
+    </div>
+    <div class="row" style="margin-top:6px"><button class="small" id="sender-ws-save">Save workspaces</button></div>
+    <div class="msg" id="sender-ws-msg"></div>`;
+  $("sender-ws-save").onclick = () => {
+    const workspaces = [...el.querySelectorAll(".sender-ws-cb:checked")].map(cb => cb.value);
+    if (!workspaces.length
+        && !confirm(`Remove ${email} from every workspace? It will stop being counted anywhere.`)) return;
+    formResult("sender-ws-msg",
+      post("/api/senders/workspaces", { email, workspaces }),
+      loadDeliverability);
+  };
+}
+
+async function renderDomainWorkspaces(domain) {
+  const el = $("domain-ws");
+  if (!el) return;
+  el.innerHTML = '<div class="stale">Loading workspaces…</div>';
+  const [summary, wsList] = await Promise.all([
+    api(`/api/domains/workspaces?domain=${encodeURIComponent(domain)}`).catch(() => null),
+    api("/api/workspaces").catch(() => null),
+  ]);
+  if (!summary) { el.innerHTML = ""; return; }
+  // A domain has no membership of its own; its mailboxes do. So this half is
+  // read-only and derived, and the only write is an explicit bulk edit.
+  const current = (summary.workspaces || []).length
+    ? summary.workspaces.map(w => `${esc(w.slug)} <span class="stale">(${w.mailboxes})</span>`).join(", ")
+    : '<span class="stale">none</span>';
+  el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Workspaces
+      <span class="sub" style="font-weight:400;color:var(--ink-muted)">derived from this domain's ${summary.mailboxes} mailbox(es)</span></h3>
+    <div style="margin-bottom:6px">${current}</div>
+    <div style="display:flex;flex-direction:column;gap:3px">
+      ${((wsList?.workspaces) || []).map(w => `<label style="cursor:pointer">
+        <input type="checkbox" class="domain-ws-cb" value="${esc(w.slug)}"> ${esc(w.slug)}
+      </label>`).join("")}
+    </div>
+    <div class="row" style="margin-top:6px"><button class="small" id="domain-ws-save">Assign all mailboxes</button></div>
+    <div class="msg" id="domain-ws-msg"></div>`;
+  $("domain-ws-save").onclick = () => {
+    const workspaces = [...el.querySelectorAll(".domain-ws-cb:checked")].map(cb => cb.value);
+    if (!confirm(`Set workspace membership for all ${summary.mailboxes} mailbox(es) on ${domain} to `
+      + `${workspaces.length ? workspaces.join(", ") : "none"}? This replaces their current membership.`)) return;
+    formResult("domain-ws-msg",
+      post("/api/domains/workspaces", { domain, workspaces }),
+      loadDeliverability);
   };
 }
 
@@ -1221,7 +1368,9 @@ function openDomainEdit(dom, reg) {
       <div class="row"><label><input type="checkbox" name="is_active" ${reg?.is_active !== 0 ? "checked" : ""}> Live domain <span class="sub" style="font-weight:400;color:var(--ink-muted)">uncheck = dropped (skipped by DNSBL/routing)</span></label></div>
       <div class="row"><button class="primary">Save domain</button></div>
       <div class="msg" id="domain-msg"></div>
-    </form>`;
+    </form>
+    <div id="domain-ws" style="border-top:1px solid var(--grid);margin-top:12px;padding-top:12px"></div>`;
+  renderDomainWorkspaces(dom);
   $("domain-edit-form").onsubmit = (e) => {
     e.preventDefault();
     const body = { domain: dom };
@@ -3252,8 +3401,18 @@ $("event-form").onsubmit = (e) => {
   await refreshSummary();
   await loadTab();
   if (params.get("merges") && state.tab === "companies") $("merge-toggle").click();
-  setInterval(refreshSummary, 4000);
-  setInterval(() => { if (document.visibilityState === "visible" && !document.querySelector(".tfilter input:focus")) loadTab(); }, 60000);
+  // The header numbers repaint on a tick because they are cheap and never move
+  // the page. Hidden tabs don't poll: a dashboard left open in a background tab
+  // was querying every four seconds all day for nobody.
+  setInterval(() => { if (document.visibilityState === "visible") refreshSummary(); }, 4000);
+  // The 60s whole-tab reload is gone. It replaced every table's contents with a
+  // one-line "Loading…", which collapsed the page height, which clamped
+  // scrollTop to 0 -- so Deliverability (two tables and nothing else holding
+  // the height) threw you back to the top every minute mid-read. Refreshing is
+  // now something you ask for, plus the moments where the data provably
+  // changed: tab, workspace, range, and the end of a sync.
+  markRefreshed();
+  setInterval(paintRefreshAge, 15000);
   // Stream the sync log into the console while it's open (fast tick; the read
   // is a cheap byte-range tail on the server).
   setInterval(() => { if ($("sync-console").classList.contains("open")) pollConsoleOnce(); }, 1000);

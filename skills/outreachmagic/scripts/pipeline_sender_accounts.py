@@ -379,6 +379,114 @@ def set_sender_account_workspace_link(
     return {"status": "ok", "email": email, "workspace": workspace, "linked": linked}
 
 
+def sender_account_workspaces(
+    email: str, *, org_id: str = DEFAULT_ORG_ID,
+) -> dict:
+    """Which workspaces a mailbox belongs to, and which exist to choose from."""
+    from pipeline_workspace import list_workspaces
+
+    conn = get_conn()
+    try:
+        sender_account_id = find_sender_account_id_by_email(conn, email, org_id=org_id)
+        if not sender_account_id:
+            return {"status": "error", "error": f"unknown sender account: {email}"}
+        member = _sender_account_workspace_slugs(conn, sender_account_id)
+    finally:
+        conn.close()
+    return {
+        "status": "ok", "email": email, "workspaces": member,
+        "available": [w["slug"] for w in list_workspaces()],
+    }
+
+
+def set_sender_account_workspaces(
+    email: str, workspaces: list[str], *, org_id: str = DEFAULT_ORG_ID,
+) -> dict:
+    """Replace a mailbox's whole workspace membership with `workspaces`.
+
+    A full set, not a delta, matching the sync payload's semantic
+    (build_sender_account_sync_payload sends membership in full, so an empty
+    list means "removed from everywhere" rather than "no change"). Sending a
+    delta from the UI and a snapshot on the wire is how the two drift apart.
+    """
+    from pipeline_workspace import list_workspaces
+
+    known = {w["slug"] for w in list_workspaces()}
+    wanted = [s for s in dict.fromkeys(workspaces or []) if s]
+    unknown = [s for s in wanted if s not in known]
+    if unknown:
+        return {"status": "error", "error": f"unknown workspace(s): {', '.join(unknown)}"}
+
+    conn = get_conn()
+    try:
+        sender_account_id = find_sender_account_id_by_email(conn, email, org_id=org_id)
+        if not sender_account_id:
+            return {"status": "error", "error": f"unknown sender account: {email}"}
+        _reconcile_workspace_links(conn, sender_account_id, wanted)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "email": email, "workspaces": wanted}
+
+
+def set_domain_workspaces(
+    domain: str, workspaces: list[str], *, org_id: str = DEFAULT_ORG_ID,
+) -> dict:
+    """Apply a workspace membership to every mailbox on a sending domain.
+
+    A domain has no membership of its own -- its mailboxes do. This is a bulk
+    edit over them, not a new fact about the domain: inventing a domain-level
+    membership row that nothing else reads would be a second source of truth
+    for the same question.
+    """
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT email FROM sender_accounts WHERE LOWER(email_domain) = LOWER(?)",
+            (domain.strip(),),
+        ).fetchall()
+        emails = [r["email"] for r in rows]
+    finally:
+        conn.close()
+    if not emails:
+        return {"status": "error", "error": f"no mailboxes on domain: {domain}"}
+    results = [set_sender_account_workspaces(e, workspaces, org_id=org_id) for e in emails]
+    failed = [r for r in results if r.get("status") != "ok"]
+    return {
+        "status": "error" if failed else "ok",
+        "domain": domain, "mailboxes": len(emails),
+        "updated": len(results) - len(failed),
+        "errors": [r.get("error") for r in failed],
+    }
+
+
+def domain_workspace_summary(domain: str) -> dict:
+    """Workspace membership across a domain's mailboxes, counted.
+
+    Read-only and derived, so the domain pane can show what its mailboxes say
+    without pretending the domain itself carries the fact.
+    """
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT w.slug, COUNT(*) AS mailboxes
+                 FROM sender_accounts sa
+                 JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
+                 JOIN workspaces w ON w.id = wsa.workspace_id
+                WHERE LOWER(sa.email_domain) = LOWER(?)
+                GROUP BY w.slug ORDER BY mailboxes DESC, w.slug""",
+            (domain.strip(),),
+        ).fetchall()
+        total = conn.execute(
+            "SELECT COUNT(*) n FROM sender_accounts WHERE LOWER(email_domain) = LOWER(?)",
+            (domain.strip(),),
+        ).fetchone()["n"]
+    finally:
+        conn.close()
+    return {"domain": domain, "mailboxes": total,
+            "workspaces": [dict(r) for r in rows]}
+
+
 def import_sender_accounts(file_path: str, workspace: Optional[str] = None, org_id: str = DEFAULT_ORG_ID) -> dict:
     from pipeline_workspace import list_workspaces
 

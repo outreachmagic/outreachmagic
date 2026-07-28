@@ -177,7 +177,8 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
   <select id="workspace" title="Workspace"></select>
   <label class="stale">Range
     <select id="range">
-      <option value="7d">Last 7 days</option>
+      <option value="today">Today</option>
+      <option value="yesterday">Yesterday</option>
       <option value="14d">Last 14 days</option>
       <option value="30d" selected>Last 30 days</option>
       <option value="90d">Last 90 days</option>
@@ -683,7 +684,8 @@ async function get(path) {
 const getR = (path) => get(withRange(path));
 function rangeLabel() {
   if (state.until) return `${state.since} → ${state.until}`;
-  const m = { "7d": "last 7 days", "14d": "last 14 days", "30d": "last 30 days", "90d": "last 90 days" };
+  const m = { today: "today", yesterday: "yesterday", "14d": "last 14 days",
+              "30d": "last 30 days", "90d": "last 90 days", all: "all time" };
   return m[state.since] || `since ${state.since}`;
 }
 const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body) });
@@ -1165,17 +1167,14 @@ function renderDeliv() {
     { key: "reply_rate", label: "Avg reply %", num: true, render: r => r.reply_rate != null ? pct(r.reply_rate) : "–" },
     { key: "bounce_rate", label: "Avg bounce %", num: true, render: r => bflag(r.bounce_rate) },
     { key: "provider", label: "Provider", render: r => esc(r.provider ?? r.reseller ?? "–") },
-    { key: "active", label: "Active", sortVal: r => (r.is_active === false ? 1 : 0),
-      render: r => `<label style="cursor:pointer" title="toggle active / not active"><input type="checkbox" class="dom-active" data-domain="${esc(r.domain)}" ${r.is_active !== false ? "checked" : ""}></label>` },
+    // The Active checkbox lived here and in the domain edit panel. One toggle,
+    // in the panel: an in-table checkbox on a row whose click opens that panel
+    // is two ways to do the same thing, and the row-click swallows half the
+    // attempts to use it.
     { key: "listed", label: "Blacklist", sortVal: r => r.listed ? 0 : 1,
       render: r => r.listed ? '<span class="flag bad">✖ listed</span>'
         : r.registered ? '<span class="flag ok">✓ clean</span>' : '<span class="flag warn">—</span>' },
-  ], domains, { empty: "No sending domains match this filter.", onRowClick: r => showDomain(r.domain),
-    onDraw: el => el.querySelectorAll(".dom-active").forEach(cb => cb.onchange = () => {
-      post("/api/domains/edit", { domain: cb.dataset.domain, is_active: cb.checked ? 1 : 0 })
-        .then(() => { toast(`${cb.dataset.domain} ${cb.checked ? "active" : "not active"}`); loadDeliverability(); })
-        .catch(e => { toast(e.message); cb.checked = !cb.checked; });
-    }) });
+  ], domains, { empty: "No sending domains match this filter.", onRowClick: r => showDomain(r.domain) });
 }
 
 function openSenderEdit(sa) {
@@ -1827,6 +1826,17 @@ function compactEventLine(ev) {
   </div>${ev.subject ? `<div class="tl-preview"><b>${esc(ev.subject)}</b></div>` : ""}${ev.body_preview ? `<div class="tl-preview">${esc(ev.body_preview)}</div>` : ""}</div>`;
 }
 
+// events.sender is the mailbox at our end whichever way the message went, so
+// which side it belongs on depends on direction. Same from/to the contact
+// replies view shows.
+function renderFromTo(ct) {
+  const mailbox = ct.last_event_sender, lead = ct.email;
+  if (!mailbox && !lead) return "";
+  const a = ct.last_event_direction === "inbound" ? lead : mailbox;
+  const b = ct.last_event_direction === "inbound" ? mailbox : lead;
+  return `from ${esc(a || "—")} → to ${esc(b || "—")}`;
+}
+
 // Aggregated history for the company: one collapsible row per contact that has
 // events (grouped-by-contact), timeline lazy-loaded on expand.
 async function renderCompanyActivity(companyId) {
@@ -1848,9 +1858,17 @@ async function renderCompanyActivity(companyId) {
         <span class="stale">${last}</span>
         <span class="stale">${dt(ct.last_event_at) || ""}</span>
       </div>
+      <div class="stale" style="padding:0 0 4px 20px;font-size:11px">
+        ${renderFromTo(ct)}${ct.campaign_name ? ` · ${renderLastKnownCampaign(ct)}` : ""}
+      </div>
       <div class="ca-body" style="display:none;padding:2px 0 8px 20px"></div>
     </div>`;
   }).join("");
+  el.querySelectorAll("[data-via-lead]").forEach(chip => chip.onclick = (e) => {
+    e.stopPropagation();
+    closeCompany?.();
+    openLead(+chip.dataset.viaLead);
+  });
   el.querySelectorAll(".ca-head").forEach(h => h.onclick = async () => {
     const body = h.parentElement.querySelector(".ca-body");
     const caret = h.querySelector(".ca-caret");
@@ -2326,17 +2344,32 @@ async function loadReplies() {
     { key: "sentiment", label: "Sentiment", render: r => r.sentiment
         ? `<span class="flag ${SENTIMENT_FLAG[r.sentiment.toLowerCase()] ?? ""}">${esc(r.sentiment)}</span>` : "—" },
     { key: "status_label", label: "Lead status", render: r => esc(r.status_label || "—") },
-    { key: "subject", label: "Latest reply", render: r => esc(r.subject || "—") },
-    { key: "campaign_name", label: "Campaign", render: r => esc(r.campaign_name || "—") },
+    { key: "subject", label: "Last reply", render: r => esc(r.subject || "—") },
+    { key: "campaign_name", label: "Last known campaign", render: renderLastKnownCampaign },
     { key: "event_at", label: "Since", render: r => dt(r.event_at), sortVal: r => r.event_at || "" },
-    { key: "li", label: "LinkedIn", sortVal: () => 0, render: r => r.linkedin_display_url
-        ? `<a href="${esc(r.linkedin_display_url)}" target="_blank" rel="noopener">open ↗</a>` : "" },
-    { key: "copy", label: "Copy", sortVal: () => 0, render: r => r.has_body
-        ? `<button class="small" onclick="toggleCopy(this, ${r.event_id})">View</button>` : "" },
+    // LinkedIn and the copy viewer both live in the contact pane, which this
+    // row already opens. Two columns to reach what one click reaches.
   ], d.replies, { empty: "No replies in this range.",
-    onRowClick: r => openLead(r.lead_id) });
+    onRowClick: r => openLead(r.lead_id),
+    // The "via <colleague>" chip opens that colleague, not the row's lead.
+    onDraw: el => el.querySelectorAll("[data-via-lead]").forEach(chip => chip.onclick = (e) => {
+      e.stopPropagation();
+      openLead(+chip.dataset.viaLead);
+    }) });
 }
 for (const id of ["replies-campaign", "replies-sentiment", "replies-status"]) $(id).onchange = loadReplies;
+
+// A campaign attributed through a colleague is a weaker claim than the lead's
+// own, so it says so and names who — "Acme Q3" that actually came from Mary
+// Chen's send is useful, but only if you can tell.
+function renderLastKnownCampaign(r) {
+  if (!r.campaign_name) return "—";
+  const name = esc(r.campaign_name);
+  if (!r.campaign_via_lead_id) return name;
+  return `${name} <span class="stale" style="cursor:pointer" `
+    + `data-via-lead="${r.campaign_via_lead_id}" title="attributed via a colleague at the same company">`
+    + `via ${esc(r.campaign_via_lead_name || "a colleague")}</span>`;
+}
 
 const DAILY_LABELS = {
   email_sent: "Email sent", email_received: "Email received",
@@ -2817,16 +2850,31 @@ function renderLeadTags(lead) {
     : '<span class="stale">No tags.</span>';
   el.innerHTML = `<h3 style="font-size:13px;margin:0 0 6px">Tags</h3>
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${chips}</div>
-    <div class="row" style="display:flex;gap:6px;margin-top:6px">
-      <input id="lead-tag-input" placeholder="Add a tag…" list="lead-tag-list" style="flex:1">
+    <div class="row" style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+      <select id="lead-tag-pick" style="flex:1;min-width:140px">
+        <option value="">Existing tag…</option>
+      </select>
+      <input id="lead-tag-input" placeholder="…or type a new one" list="lead-tag-list" style="flex:1;min-width:140px">
       <datalist id="lead-tag-list"></datalist>
       <button class="small" id="lead-tag-add">Add</button>
     </div>
     <div class="msg" id="lead-tag-msg"></div>`;
-  // Type-ahead from existing workspace tags.
+  // Two ways in, because they answer different questions. The select shows what
+  // tags exist without having to guess a first letter (a datalist alone only
+  // suggests once you start typing); the input still takes anything new.
   api("/api/tags").then(d => {
+    const all = (d?.tags || []).map(t => t.tag ?? t);
     const dl = $("lead-tag-list");
-    if (dl && d?.tags) dl.innerHTML = d.tags.map(t => `<option value="${esc(t.tag ?? t)}">`).join("");
+    if (dl) dl.innerHTML = all.map(t => `<option value="${esc(t)}">`).join("");
+    const pick = $("lead-tag-pick");
+    if (pick) {
+      // Tags the lead already carries would be no-ops; leaving them in the list
+      // just makes it longer and the useful entries harder to find.
+      const have = new Set(tags);
+      pick.innerHTML = '<option value="">Existing tag…</option>'
+        + all.filter(t => !have.has(t)).map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+      pick.onchange = () => { if (pick.value) tagOp("tag_add", pick.value); };
+    }
   }).catch(() => {});
   const tagOp = (op, value) => formResult("lead-tag-msg",
     post("/api/contacts/bulk", { op, value, lead_ids: [lead.id], workspace: state.workspace }),

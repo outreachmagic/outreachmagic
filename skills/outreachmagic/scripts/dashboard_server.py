@@ -87,7 +87,7 @@ def handle_workspaces(match, query, body):
 @_workspace_scoped
 def handle_summary(conn, ws_id, match, query):
     return dashboard_queries.summary(
-        conn, ws_id, since=_q(query, "since", "7d"), until=_q(query, "until"))
+        conn, ws_id, since=_q(query, "since", "30d"), until=_q(query, "until"))
 
 
 @_workspace_scoped

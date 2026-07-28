@@ -99,6 +99,19 @@ def _since_clause(since: Optional[str], column: str = "e.created_at") -> tuple[s
     low = raw.lower()
     if low == "all":  # the "all available" preset: no date bound at all
         return "", []
+    # Calendar-day presets. Without these, "today" fell through to the absolute
+    # date branch below and compared a timestamp column to the literal string
+    # 'today', which matches nothing and reports it as an empty range rather
+    # than as an error.
+    if low == "today":
+        return f" AND {column} >= date('now', 'start of day')", []
+    if low == "yesterday":
+        # The only closed-interval preset: it emits both bounds itself, so a
+        # caller's `until` would be redundant and is simply narrower if given.
+        return (
+            f" AND {column} >= date('now', '-1 day', 'start of day')"
+            f" AND {column} < date('now', 'start of day')"
+        ), []
     m = re.match(r"^(\d+)\s*h(?:ours?)?$", low)
     if m:
         return f" AND {column} >= datetime('now', ?)", [f"-{int(m.group(1))} hours"]

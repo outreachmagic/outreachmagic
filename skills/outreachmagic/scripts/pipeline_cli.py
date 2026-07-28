@@ -1784,6 +1784,13 @@ def main():
     # Serper research produces candidates, not answers. These two mirror the
     # personalize-pending / personalize-set --batch pair above, so an agent that
     # can drive one already knows how to drive the other.
+    lcamp = sub.add_parser(
+        "lead-campaign",
+        help="Last known campaign for a lead (its own, else a colleague's)")
+    lcamp.add_argument("--lead-id", type=int, required=True)
+    lcamp.add_argument("--workspace")
+    lcamp.add_argument("--json", action="store_true")
+
     srev = sub.add_parser(
         "serper-review", help="Leads with Serper candidates awaiting a decision")
     srev.add_argument("--workspace")
@@ -4345,6 +4352,36 @@ def main():
             print(f"{len(result)} leads pending (fields: {', '.join(fields)})")
             for r in result:
                 print(f"  [{r['id']}] {r['name'] or '?'} — {r['email'] or ''}")
+    elif args.command == "lead-campaign":
+        import dashboard_queries
+        from db_conn import get_conn as _get_conn
+
+        conn = _get_conn()
+        try:
+            ws_id = None
+            if args.workspace:
+                from workspace_routing import resolve_workspace_identity
+                ws = resolve_workspace_identity(conn, args.workspace)
+                if not ws:
+                    print(f"Unknown workspace: {args.workspace}")
+                    return 1
+                ws_id = ws["id"]
+            result = dashboard_queries.lead_campaign(conn, args.lead_id, ws_id)
+        finally:
+            conn.close()
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            if not result["workspaces"]:
+                print(f"Lead {args.lead_id} is not in any workspace.")
+            for r in result["workspaces"]:
+                if not r["campaign_name"]:
+                    print(f"  {r['workspace'] or r['workspace_id']}: no campaign found")
+                    continue
+                via = (f" (via {r['campaign_via_lead_name']})"
+                       if r["campaign_via_lead_id"] else "")
+                print(f"  {r['workspace'] or r['workspace_id']}: "
+                      f"{r['campaign_name']}{via}  [{r['campaign_source']}]")
     elif args.command == "serper-review":
         import serper_review
         from db_conn import get_conn as _get_conn

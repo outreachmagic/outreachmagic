@@ -101,7 +101,7 @@ def list_workspaces(conn: sqlite3.Connection) -> dict:
 
 def summary(
     conn: sqlite3.Connection, workspace_id: str,
-    since: str = "7d", until: Optional[str] = None,
+    since: str = "30d", until: Optional[str] = None,
 ) -> dict:
     # Stage tiles reflect leads *active in the selected range* (so "Interested"
     # matches what the campaigns/replies views show for that window). With the
@@ -680,6 +680,95 @@ def campaign_subjects(
     return {"campaign_id": campaign_id, "subjects": subjects[:limit]}
 
 
+# Attribution priority for "which campaign is this lead from", lowest wins:
+#   0  this lead replied in it        2  a colleague replied in it
+#   1  this lead was sent it          3  a colleague was sent it
+# Expressed as arithmetic rather than four fallback queries, because the whole
+# rule is an ORDER BY -- and four queries is four places for the ordering to
+# drift apart.
+_CAMPAIGN_RANK_SQL = """(CASE WHEN wlc.lead_id = {lead}.id THEN 0 ELSE 2 END)
+                      + (CASE WHEN {reply} THEN 0 ELSE 1 END)"""
+
+
+def last_known_campaign_sql(lead: str = "l", wl: str = "wl") -> str:
+    """Correlated SELECT expressions for a lead's last known campaign.
+
+    Returns campaign_id, campaign_name, campaign_source, campaign_via_lead_id
+    and campaign_via_lead_name -- one ranked subquery per projected column.
+
+    Why a fallback chain at all: the lead's *latest* event frequently carries no
+    campaign_id (a bounce, an unsubscribe, an auto-reply), so reading the
+    campaign off it shows "—" for leads that plainly came from a campaign.
+    Walking back to the most recent event that *does* carry one covers every
+    such event type without naming any of them.
+
+    Why the company level: a reply from someone we never emailed is still
+    attributable -- a colleague's campaign is what put the company in play. That
+    attribution is weaker, so it ranks below the lead's own and the caller is
+    told which it got (`campaign_source`) and through whom.
+
+    Assumes aliases `l` (leads) and `wl` (workspace_leads) are in scope.
+    """
+    reply = (reply_event_sql_condition()
+             .replace("event_type", "ec.event_type")
+             .replace("direction", "ec.direction"))
+    rank = _CAMPAIGN_RANK_SQL.format(lead=lead, reply=reply)
+    pick = f"""(SELECT {{col}}
+                  FROM workspace_lead_events wlc
+                  JOIN events ec ON ec.id = wlc.event_id
+                  JOIN campaigns cc ON cc.id = ec.campaign_id
+                  JOIN leads lc ON lc.id = wlc.lead_id
+                 WHERE wlc.workspace_id = {wl}.workspace_id
+                   AND ec.campaign_id IS NOT NULL
+                   AND (wlc.lead_id = {lead}.id
+                        OR ({lead}.company_id IS NOT NULL
+                            AND lc.company_id = {lead}.company_id))
+                 ORDER BY {rank}, wlc.event_at DESC, wlc.id DESC
+                 LIMIT 1)"""
+    source = (f"CASE WHEN wlc.lead_id = {lead}.id THEN 'self' ELSE 'company' END"
+              f" || CASE WHEN {reply} THEN '_reply' ELSE '_send' END")
+    return ", ".join(
+        f"{pick.format(col=col)} AS {alias}"
+        for col, alias in (
+            ("cc.id", "campaign_id"),
+            ("cc.name", "campaign_name"),
+            (source, "campaign_source"),
+            # Null when the campaign is the lead's own, so the UI only has to
+            # render the "via …" chip when there is genuinely a via.
+            (f"CASE WHEN wlc.lead_id = {lead}.id THEN NULL ELSE lc.id END",
+             "campaign_via_lead_id"),
+            (f"CASE WHEN wlc.lead_id = {lead}.id THEN NULL ELSE lc.name END",
+             "campaign_via_lead_name"),
+        )
+    )
+
+
+def lead_campaign(
+    conn: sqlite3.Connection, lead_id: int, workspace_id: Optional[str] = None,
+) -> dict:
+    """The last known campaign for one lead — the CLI/agent view of the column
+    the replies table and the company pane both show.
+
+    Without a workspace this answers per workspace the lead belongs to, because
+    "which campaign" has a different answer in each and picking one silently
+    would be a guess.
+    """
+    ws_sql, params = "", [lead_id]
+    if workspace_id:
+        ws_sql = " AND wl.workspace_id = ?"
+        params.append(workspace_id)
+    rows = conn.execute(
+        f"""SELECT wl.workspace_id, w.slug AS workspace,
+                   {last_known_campaign_sql()}
+              FROM workspace_leads wl
+              JOIN leads l ON l.id = wl.lead_id
+              LEFT JOIN workspaces w ON w.id = wl.workspace_id
+             WHERE wl.lead_id = ?{ws_sql}""",
+        params,
+    ).fetchall()
+    return {"lead_id": lead_id, "workspaces": [dict(r) for r in rows]}
+
+
 def campaign_replies(
     conn: sqlite3.Connection,
     workspace_id: str,
@@ -703,9 +792,11 @@ def campaign_replies(
     must not empty the status-label dropdown of everything except the labels
     that happen to be positive. Both come back in one round trip; a separate
     facets endpoint would race the list against its own filter options.
-    """
-    from workspace_routing import linkedin_display_url
 
+    The campaign column is `last_known_campaign_sql`, not the latest reply's
+    own campaign_id: a lead whose sentiment came from a bounce has no campaign
+    on that event, and showing "—" for it was wrong rather than unknown.
+    """
     reply_cond = reply_event_sql_condition()
     # Range applies to the sentiment anchor so this list reconciles with the
     # daily sentiment columns rather than the raw reply timestamps.
@@ -752,9 +843,9 @@ def campaign_replies(
                wl.current_status_sentiment AS sentiment,
                wl.current_status_label AS status_label,
                wl.current_sentiment_since AS event_at,
-               l.name AS lead_name, l.linkedin_url, l.linkedin_sales_nav_id,
-               lr.id AS event_id, lr.subject AS subject, lr.campaign_id AS campaign_id,
-               c.name AS campaign_name,
+               l.name AS lead_name,
+               lr.id AS event_id, lr.subject AS subject,
+               {last_known_campaign_sql()},
                (lr.id IS NOT NULL AND json_extract(lr.metadata_json, '$.body') IS NOT NULL)
                    AS has_body
         FROM workspace_leads wl
@@ -766,18 +857,12 @@ def campaign_replies(
               AND wle2.lead_id = wl.lead_id
               AND {reply_cond.replace('event_type', 'e2.event_type').replace('direction', 'e2.direction')}
             ORDER BY wle2.event_at DESC, wle2.id DESC LIMIT 1)
-        LEFT JOIN campaigns c ON c.id = lr.campaign_id
         WHERE {base_where}{narrow}
         ORDER BY wl.current_sentiment_since DESC
         LIMIT ?""",
         params,
     ).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["linkedin_display_url"] = linkedin_display_url(
-            d.pop("linkedin_url"), d.pop("linkedin_sales_nav_id"))
-        out.append(d)
+    out = [dict(r) for r in rows]
     return {
         "campaign_id": campaign_id,
         "sentiment": sentiment,
@@ -2149,9 +2234,16 @@ def company_contact_activity(
     """One row per contact at this company that has at least one event, with its
     event count, latest event, and current sentiment — the roll-up for the
     company pane's aggregated history. The full per-contact timeline is fetched
-    lazily via lead_history when a row is expanded, so this stays cheap."""
+    lazily via lead_history when a row is expanded, so this stays cheap.
+
+    Carries the same from/to the contact replies view shows (`events.sender` is
+    the mailbox; the lead's own address is the other end, and which is which
+    depends on direction), and the same last-known campaign as the replies
+    table — one definition, so the two panes cannot disagree about which
+    campaign a contact came from.
+    """
     rows = conn.execute(
-        """SELECT l.id AS lead_id, l.name, l.title, l.email,
+        f"""SELECT l.id AS lead_id, l.name, l.title, l.email,
                   wl.current_status_sentiment AS sentiment,
                   wl.current_status_label AS status_label,
                   COUNT(DISTINCT wle.event_id) AS event_count,
@@ -2163,7 +2255,12 @@ def company_contact_activity(
                   (SELECT e2.direction
                      FROM workspace_lead_events w2 JOIN events e2 ON e2.id = w2.event_id
                     WHERE w2.workspace_id = wl.workspace_id AND w2.lead_id = l.id
-                    ORDER BY w2.event_at DESC, w2.id DESC LIMIT 1) AS last_event_direction
+                    ORDER BY w2.event_at DESC, w2.id DESC LIMIT 1) AS last_event_direction,
+                  (SELECT e2.sender
+                     FROM workspace_lead_events w2 JOIN events e2 ON e2.id = w2.event_id
+                    WHERE w2.workspace_id = wl.workspace_id AND w2.lead_id = l.id
+                    ORDER BY w2.event_at DESC, w2.id DESC LIMIT 1) AS last_event_sender,
+                  {last_known_campaign_sql()}
            FROM leads l
            JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?
            JOIN workspace_lead_events wle ON wle.lead_id = l.id AND wle.workspace_id = ?

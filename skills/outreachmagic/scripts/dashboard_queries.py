@@ -688,64 +688,159 @@ def campaign_subjects(
 # Attribution priority for "which campaign is this lead from", lowest wins:
 #   0  this lead replied in it        2  a colleague replied in it
 #   1  this lead was sent it          3  a colleague was sent it
-# Expressed as arithmetic rather than four fallback queries, because the whole
-# rule is an ORDER BY -- and four queries is four places for the ordering to
-# drift apart.
-_CAMPAIGN_RANK_SQL = """(CASE WHEN wlc.lead_id = {lead}.id THEN 0 ELSE 2 END)
-                      + (CASE WHEN {reply} THEN 0 ELSE 1 END)"""
+#
+# The rule is a ranking, but it must NOT be written as one correlated subquery
+# per column. That version read beautifully and took 9.5 minutes on the largest
+# real workspace: the `lead_id = l.id OR colleague` disjunction defeats
+# idx_ws_events_lead, so each of the five projected columns degenerated into a
+# scan of every event in the workspace plus a temp-B-tree sort -- 5 x 200 rows
+# of it. EXPLAIN QUERY PLAN showed five CORRELATED SCALAR SUBQUERYs, each
+# "SEARCH wlc USING INDEX idx_ws_events_lead (workspace_id=?)" with no lead_id.
+#
+# Resolved in two indexed passes instead, batched across the whole page:
+#   1. every candidate lead's own campaign-bearing events, keyed on
+#      (workspace_id, lead_id) so the index is fully used;
+#   2. for leads that came back empty AND have a company, the same query over
+#      that company's other leads -- one query for all of them, not per row.
+# Same answer, same ordering, ~4 orders of magnitude faster.
+CAMPAIGN_FIELDS = (
+    "campaign_id", "campaign_name", "campaign_source",
+    "campaign_via_lead_id", "campaign_via_lead_name",
+)
+
+_EMPTY_CAMPAIGN = dict.fromkeys(CAMPAIGN_FIELDS)
 
 
-def last_known_campaign_sql(lead: str = "l", wl: str = "wl") -> str:
-    """Correlated SELECT expressions for a lead's last known campaign.
+def _campaign_events_sql() -> str:
+    """Campaign-bearing events for a set of leads in one workspace.
 
-    Returns campaign_id, campaign_name, campaign_source, campaign_via_lead_id
-    and campaign_via_lead_name -- one ranked subquery per projected column.
-
-    Why a fallback chain at all: the lead's *latest* event frequently carries no
-    campaign_id (a bounce, an unsubscribe, an auto-reply), so reading the
-    campaign off it shows "—" for leads that plainly came from a campaign.
-    Walking back to the most recent event that *does* carry one covers every
-    such event type without naming any of them.
-
-    Why the company level: a reply from someone we never emailed is still
-    attributable -- a colleague's campaign is what put the company in play. That
-    attribution is weaker, so it ranks below the lead's own and the caller is
-    told which it got (`campaign_source`) and through whom.
-
-    Assumes aliases `l` (leads) and `wl` (workspace_leads) are in scope.
+    `is_reply` rides along so the ranking happens where the rows are compared,
+    rather than as a second SQL condition that could drift from the first.
     """
     reply = (reply_event_sql_condition()
              .replace("event_type", "ec.event_type")
              .replace("direction", "ec.direction"))
-    rank = _CAMPAIGN_RANK_SQL.format(lead=lead, reply=reply)
-    pick = f"""(SELECT {{col}}
-                  FROM workspace_lead_events wlc
-                  JOIN events ec ON ec.id = wlc.event_id
-                  JOIN campaigns cc ON cc.id = ec.campaign_id
-                  JOIN leads lc ON lc.id = wlc.lead_id
-                 WHERE wlc.workspace_id = {wl}.workspace_id
-                   AND ec.campaign_id IS NOT NULL
-                   AND (wlc.lead_id = {lead}.id
-                        OR ({lead}.company_id IS NOT NULL
-                            AND lc.company_id = {lead}.company_id))
-                 ORDER BY {rank}, wlc.event_at DESC, wlc.id DESC
-                 LIMIT 1)"""
-    source = (f"CASE WHEN wlc.lead_id = {lead}.id THEN 'self' ELSE 'company' END"
-              f" || CASE WHEN {reply} THEN '_reply' ELSE '_send' END")
-    return ", ".join(
-        f"{pick.format(col=col)} AS {alias}"
-        for col, alias in (
-            ("cc.id", "campaign_id"),
-            ("cc.name", "campaign_name"),
-            (source, "campaign_source"),
-            # Null when the campaign is the lead's own, so the UI only has to
-            # render the "via …" chip when there is genuinely a via.
-            (f"CASE WHEN wlc.lead_id = {lead}.id THEN NULL ELSE lc.id END",
-             "campaign_via_lead_id"),
-            (f"CASE WHEN wlc.lead_id = {lead}.id THEN NULL ELSE lc.name END",
-             "campaign_via_lead_name"),
-        )
-    )
+    return f"""
+        SELECT wlc.lead_id AS lead_id, lc.name AS lead_name, lc.company_id AS company_id,
+               cc.id AS campaign_id, cc.name AS campaign_name,
+               CASE WHEN {reply} THEN 1 ELSE 0 END AS is_reply,
+               wlc.event_at AS event_at, wlc.id AS row_id
+          FROM workspace_lead_events wlc
+          JOIN events ec ON ec.id = wlc.event_id
+          JOIN campaigns cc ON cc.id = ec.campaign_id
+          JOIN leads lc ON lc.id = wlc.lead_id
+         WHERE wlc.workspace_id = ?
+           AND ec.campaign_id IS NOT NULL
+           AND wlc.lead_id IN ({{placeholders}})"""
+
+
+def _best(rows: list) -> Optional[sqlite3.Row]:
+    """Replies outrank sends; within a rank, the most recent wins.
+
+    All three keys sort descending together (is_reply 1 before 0, later before
+    earlier, higher row id before lower), which is the whole ranking -- the same
+    ORDER BY the SQL version used, just applied where the rows already are.
+    """
+    if not rows:
+        return None
+    return max(rows, key=lambda r: (r["is_reply"], r["event_at"] or "", r["row_id"] or 0))
+
+
+def resolve_last_known_campaigns(
+    conn: sqlite3.Connection, workspace_id: str, leads: list,
+) -> dict[int, dict]:
+    """{lead_id: campaign fields} for a page of leads.
+
+    `leads` is any sequence of rows/mappings carrying `lead_id` and `company_id`.
+
+    Why a fallback chain at all: the lead's *latest* event frequently carries no
+    campaign_id (a bounce, an unsubscribe, an auto-reply), so reading the
+    campaign off it shows "—" for leads that plainly came from a campaign.
+    Taking the most recent event that *does* carry one covers every such event
+    type without naming any of them.
+
+    Why the company level: a reply from someone we never emailed is still
+    attributable -- a colleague's campaign is what put the company in play. That
+    is a weaker claim, so it ranks below the lead's own, and the caller is told
+    which it got (`campaign_source`) and through whom.
+    """
+    out: dict[int, dict] = {}
+    wanted = [(int(r["lead_id"]), r["company_id"]) for r in leads]
+    if not wanted:
+        return out
+    for lead_id, _ in wanted:
+        out[lead_id] = dict(_EMPTY_CAMPAIGN)
+
+    # -- pass 1: the lead's own campaigns (fully indexed) --------------------
+    lead_ids = [lid for lid, _ in wanted]
+    own: dict[int, list] = {}
+    sql = _campaign_events_sql().format(placeholders=",".join("?" * len(lead_ids)))
+    for row in conn.execute(sql, (workspace_id, *lead_ids)).fetchall():
+        own.setdefault(row["lead_id"], []).append(row)
+
+    unresolved: dict[int, list[int]] = {}
+    for lead_id, company_id in wanted:
+        best = _best(own.get(lead_id, []))
+        if best is not None:
+            out[lead_id] = {
+                "campaign_id": best["campaign_id"],
+                "campaign_name": best["campaign_name"],
+                "campaign_source": "self_reply" if best["is_reply"] else "self_send",
+                # Null for a lead's own campaign, so the UI only renders the
+                # "via …" chip when there genuinely is a via.
+                "campaign_via_lead_id": None,
+                "campaign_via_lead_name": None,
+            }
+        elif company_id is not None:
+            unresolved.setdefault(int(company_id), []).append(lead_id)
+
+    if not unresolved:
+        return out
+
+    # -- pass 2: colleagues at the same company ------------------------------
+    # One query for every company still unresolved, not one per lead.
+    company_ids = list(unresolved)
+    colleagues = conn.execute(
+        f"""SELECT id, company_id FROM leads
+             WHERE company_id IN ({','.join('?' * len(company_ids))})""",
+        company_ids,
+    ).fetchall()
+    colleague_ids = [r["id"] for r in colleagues]
+    if not colleague_ids:
+        return out
+
+    by_company: dict[int, list] = {}
+    sql = _campaign_events_sql().format(placeholders=",".join("?" * len(colleague_ids)))
+    for row in conn.execute(sql, (workspace_id, *colleague_ids)).fetchall():
+        if row["company_id"] is not None:
+            by_company.setdefault(int(row["company_id"]), []).append(row)
+
+    for company_id, lead_ids_here in unresolved.items():
+        for lead_id in lead_ids_here:
+            # A lead's own events already lost in pass 1 (it had none), but
+            # exclude it anyway so "via" can never name the lead itself.
+            best = _best([r for r in by_company.get(company_id, [])
+                          if r["lead_id"] != lead_id])
+            if best is None:
+                continue
+            out[lead_id] = {
+                "campaign_id": best["campaign_id"],
+                "campaign_name": best["campaign_name"],
+                "campaign_source": "company_reply" if best["is_reply"] else "company_send",
+                "campaign_via_lead_id": best["lead_id"],
+                "campaign_via_lead_name": best["lead_name"],
+            }
+    return out
+
+
+def attach_last_known_campaigns(
+    conn: sqlite3.Connection, workspace_id: str, rows: list[dict],
+) -> list[dict]:
+    """Merge the resolved campaign fields into a list of result dicts."""
+    resolved = resolve_last_known_campaigns(conn, workspace_id, rows)
+    for row in rows:
+        row.update(resolved.get(int(row["lead_id"]), _EMPTY_CAMPAIGN))
+    return rows
 
 
 def lead_campaign(
@@ -764,14 +859,23 @@ def lead_campaign(
         params.append(workspace_id)
     rows = conn.execute(
         f"""SELECT wl.workspace_id, w.slug AS workspace,
-                   {last_known_campaign_sql()}
+                   wl.lead_id AS lead_id, l.company_id AS company_id
               FROM workspace_leads wl
               JOIN leads l ON l.id = wl.lead_id
               LEFT JOIN workspaces w ON w.id = wl.workspace_id
              WHERE wl.lead_id = ?{ws_sql}""",
         params,
     ).fetchall()
-    return {"lead_id": lead_id, "workspaces": [dict(r) for r in rows]}
+    # Resolved per workspace: the same lead can come from a different campaign
+    # in each, and collapsing that to one answer would be a guess.
+    out = []
+    for row in rows:
+        entry = dict(row)
+        entry.update(
+            resolve_last_known_campaigns(conn, row["workspace_id"], [row])
+            .get(int(row["lead_id"]), _EMPTY_CAMPAIGN))
+        out.append(entry)
+    return {"lead_id": lead_id, "workspaces": out}
 
 
 def campaign_replies(
@@ -848,9 +952,8 @@ def campaign_replies(
                wl.current_status_sentiment AS sentiment,
                wl.current_status_label AS status_label,
                wl.current_sentiment_since AS event_at,
-               l.name AS lead_name,
+               l.name AS lead_name, l.company_id AS company_id,
                lr.id AS event_id, lr.subject AS subject,
-               {last_known_campaign_sql()},
                (lr.id IS NOT NULL AND json_extract(lr.metadata_json, '$.body') IS NOT NULL)
                    AS has_body
         FROM workspace_leads wl
@@ -867,7 +970,9 @@ def campaign_replies(
         LIMIT ?""",
         params,
     ).fetchall()
-    out = [dict(r) for r in rows]
+    # Attribution is resolved for the whole page at once, after the list is
+    # known -- doing it inline per row is what made this query take minutes.
+    out = attach_last_known_campaigns(conn, workspace_id, [dict(r) for r in rows])
     return {
         "campaign_id": campaign_id,
         "sentiment": sentiment,
@@ -2265,7 +2370,7 @@ def company_contact_activity(
                      FROM workspace_lead_events w2 JOIN events e2 ON e2.id = w2.event_id
                     WHERE w2.workspace_id = wl.workspace_id AND w2.lead_id = l.id
                     ORDER BY w2.event_at DESC, w2.id DESC LIMIT 1) AS last_event_sender,
-                  {last_known_campaign_sql()}
+                  l.company_id AS company_id
            FROM leads l
            JOIN workspace_leads wl ON wl.lead_id = l.id AND wl.workspace_id = ?
            JOIN workspace_lead_events wle ON wle.lead_id = l.id AND wle.workspace_id = ?
@@ -2277,7 +2382,8 @@ def company_contact_activity(
     ).fetchall()
     return {
         "company_id": company_id,
-        "contacts": [dict(r) for r in rows],
+        "contacts": attach_last_known_campaigns(
+            conn, workspace_id, [dict(r) for r in rows]),
     }
 
 

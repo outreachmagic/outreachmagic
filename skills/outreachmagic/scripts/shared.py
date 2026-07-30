@@ -61,15 +61,20 @@ _API_KEY_VARS = frozenset({
     "ICYPEAS_API_KEY",
     "MILLIONVERIFIER_API_KEY",
     "SCRUBBY_API_KEY",
+    "FIRECRAWL_API_KEY",
     "OUTREACHMAGIC_AGENT_KEY",
 })
 
+# Every base here also belongs in _API_KEY_VARS and _PORTAL_ONLY_KEYS above and
+# below. Missing this one specifically is silent: the key itself works and only
+# its `__1`/`__2` rotation slots stop being recognised.
 _POOL_API_KEY_BASES = (
     "SERPER_API_KEY",
     "TRYKITT_API_KEY",
     "ICYPEAS_API_KEY",
     "MILLIONVERIFIER_API_KEY",
     "SCRUBBY_API_KEY",
+    "FIRECRAWL_API_KEY",
 )
 
 
@@ -98,6 +103,7 @@ _PORTAL_ONLY_KEYS = frozenset({
     "ICYPEAS_API_KEY",
     "MILLIONVERIFIER_API_KEY",
     "SCRUBBY_API_KEY",
+    "FIRECRAWL_API_KEY",
 })
 
 

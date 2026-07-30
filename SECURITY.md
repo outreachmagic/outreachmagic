@@ -52,6 +52,19 @@ We do **not** use our servers as the long-term store for webhook payload content
 | `api.github.com` | Latest release lookup for update checks | None | Public releases API only (read-only; at most once per hour) |
 | `raw.githubusercontent.com` | Tagged release downloads (`pipeline.py update`) | None | Only on explicit user-triggered update |
 
+### Bring-your-own-key providers
+
+Reached only when you have configured that provider's key in the portal, and only by the command named below. No provider is ever called during `init`, `import-profiles`, or `pull`.
+
+| Domain | Purpose | Auth | Data sent |
+|--------|---------|------|-----------|
+| `google.serper.dev` | Web search for lead research and domain discovery (`enrich`, `find-domains`) | `X-API-KEY: SERPER_API_KEY` | One search query per call — a person's name and company, or a company name |
+| `api.firecrawl.dev` | Fetch a company staff page as markdown (`find-contacts` only) | `Authorization: Bearer FIRECRAWL_API_KEY` | One URL per call — **no** lead data |
+| `api.trykitt.ai` | Email finding | `Authorization: Bearer TRYKITT_API_KEY` | Name + company domain for the leads being searched |
+| `app.icypeas.com` | Email finding | API key headers | Name + company domain for the leads being searched |
+| `api.millionverifier.com`, `bulkapi.millionverifier.com` | Email verification | API key in query/body | The email addresses being verified |
+| `api.scrubby.io` | Deep email verification | API key | The email addresses being verified |
+
 ### No automatic upload
 
 - **`import-profiles`** — local SQLite only; sets sync timestamps (`updated_at`) but does **not** call the network.

@@ -109,6 +109,7 @@ def load_config() -> dict[str, Any]:
         ("ICYPEAS_API_KEY", "icypeas_api_key"),
         ("MILLIONVERIFIER_API_KEY", "millionverifier_api_key"),
         ("SCRUBBY_API_KEY", "scrubby_api_key"),
+        ("FIRECRAWL_API_KEY", "firecrawl_api_key"),
     ):
         value = os.environ.get(env_key, "").strip()
         if value:
@@ -123,6 +124,17 @@ def load_config() -> dict[str, Any]:
         cfg["serper_endpoint"] = cc.validate_endpoint_url(
             cfg["serper_endpoint"],
             allowed_host_suffixes=["serper.dev"],
+        )
+    # Firecrawl scrape endpoint (find-contacts). Same shape as Serper above:
+    # the default is trusted as-is, and only a config override is validated --
+    # an override is the SSRF path, and re-parsing the constant on every load
+    # buys nothing.
+    default_firecrawl = "https://api.firecrawl.dev/v1/scrape"
+    cfg.setdefault("firecrawl_endpoint", default_firecrawl)
+    if cfg.get("firecrawl_endpoint") != default_firecrawl:
+        cfg["firecrawl_endpoint"] = cc.validate_endpoint_url(
+            cfg["firecrawl_endpoint"],
+            allowed_host_suffixes=["firecrawl.dev"],
         )
     cfg.setdefault("serper_num_results", 10)
     cfg.setdefault("serper_gl", "us")

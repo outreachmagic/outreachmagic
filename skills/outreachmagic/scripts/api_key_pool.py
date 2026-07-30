@@ -26,6 +26,10 @@ API_KEY_PROVIDERS: tuple[dict[str, str], ...] = (
     {"provider": "trykitt", "env_key": "TRYKITT_API_KEY", "skill": "email-finder"},
     {"provider": "icypeas", "env_key": "ICYPEAS_API_KEY", "skill": "email-finder"},
     {"provider": "millionverifier", "env_key": "MILLIONVERIFIER_API_KEY", "skill": "email-finder"},
+    # `provider` is a cross-repo contract: wbhk-app's ENV_KEY_TO_RUNTIME_PROVIDER
+    # maps FIRECRAWL_API_KEY to this exact string, and on a mismatch the portal's
+    # health chip renders nothing rather than erroring.
+    {"provider": "firecrawl", "env_key": "FIRECRAWL_API_KEY", "skill": "contact-sourcing"},
 )
 
 _STATUS_FILENAME = "api_key_status.json"

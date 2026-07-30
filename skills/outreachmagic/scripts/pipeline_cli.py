@@ -14,6 +14,7 @@ from typing import Any
 
 import agent_secrets_cloud
 import contact_icp
+import contact_review
 import db_health
 import lead_actions
 import pipeline_dedup
@@ -857,6 +858,30 @@ def main():
     icp_delete = icp_sub.add_parser("delete", help="Remove an ICP profile")
     icp_delete.add_argument("--workspace", required=True)
     icp_delete.add_argument("--name", required=True)
+
+    cxp_p = sub.add_parser(
+        "contact-extract-pending",
+        help="Cached staff pages the regex pass could not crack, for the agent to extract",
+    )
+    cxp_p.add_argument("--workspace", help="Limit to companies with a lead in this workspace")
+    cxp_p.add_argument("--icp", dest="icp_name", help="ICP profile name (default: the workspace's only one)")
+    cxp_p.add_argument("--limit", type=int, default=contact_review.DEFAULT_PENDING_LIMIT,
+                       help="Pages per batch. Spawn one subagent per batch — page markdown is large")
+    cxp_p.add_argument("--force", action="store_true",
+                       help="Include pages already extracted under this ICP version")
+    cxp_p.add_argument("--json", action="store_true")
+
+    capp_p = sub.add_parser(
+        "contact-apply",
+        help="Attach extracted contacts as leads (idempotent: re-applying a batch adds nothing)",
+    )
+    capp_p.add_argument("--batch", action="store_true", help="Apply a batch of companies")
+    capp_p.add_argument("--json", dest="json_input",
+                        help='JSON: [{"company_id": N, "contacts": [{"name": "...", "title": "..."}]}]')
+    capp_p.add_argument("--file", help="Read the batch from a file instead of --json")
+    capp_p.add_argument("--workspace", help="Attach the leads to this workspace and use its ICP")
+    capp_p.add_argument("--icp", dest="icp_name", help="ICP profile name")
+    capp_p.add_argument("--dry-run", action="store_true", help="Report what would be attached, write nothing")
 
     # ── Setup & relay commands ──
     login_p = sub.add_parser("login", help="Connect this machine via browser (device authorization)")
@@ -3509,6 +3534,49 @@ def main():
             print(json.dumps(result, indent=2))
         else:
             _print_icp_result(args.icp_cmd, result)
+    elif args.command == "contact-extract-pending":
+        try:
+            result = contact_review.cli_extract_pending(
+                getattr(args, "workspace", None),
+                icp_name=getattr(args, "icp_name", None),
+                limit=args.limit,
+                force=args.force,
+            )
+        except contact_review.ContactReviewError as exc:
+            print(json.dumps({"status": "error", "error": str(exc)}))
+            return 1
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            # Never the markdown: a batch is ~200k tokens and belongs in a
+            # subagent's context, not printed into the main thread.
+            print(f"{result['count']} page(s) awaiting extraction "
+                  f"(icp {result['icp_config_hash'] or 'none'})")
+            for page in result["pending"]:
+                print(f"  [{page['company_id']}] {page['company']} — "
+                      f"regex found {page['regex_found']} — {page['url']}")
+    elif args.command == "contact-apply":
+        if not args.batch:
+            print(json.dumps({"status": "error",
+                              "error": "contact-apply currently supports --batch only"}))
+            return 1
+        try:
+            result = contact_review.cli_apply(
+                getattr(args, "json_input", None),
+                path=getattr(args, "file", None),
+                workspace=getattr(args, "workspace", None),
+                icp_name=getattr(args, "icp_name", None),
+                dry_run=args.dry_run,
+            )
+        except contact_review.ContactReviewError as exc:
+            print(json.dumps({"status": "error", "error": str(exc)}))
+            return 1
+        except OSError as exc:
+            print(json.dumps({"status": "error", "error": f"file error: {exc}"}))
+            return 1
+        print(json.dumps(result, indent=2))
+        if result.get("status") == "error":
+            return 1
     elif args.command == "review":
         if args.review_command == "templates" and args.templates_command == "list":
             print(json.dumps({"templates": ["dedup-review", "lead-review"]}, indent=2))

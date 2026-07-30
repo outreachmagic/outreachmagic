@@ -55,6 +55,10 @@ PHONE_LABELS = (
 PHONE_SOURCES = (
     "google_maps", "apify", "serper", "apollo", "csv_import", "manual",
     "crm", "sequencer",
+    # A number printed next to a person on the company's own staff page
+    # (find-contacts). Distinct from `serper`: that is a search result about the
+    # company, this is the company saying so itself.
+    "staff_page",
 )
 PHONE_OWNER_TYPES = ("lead", "company")
 

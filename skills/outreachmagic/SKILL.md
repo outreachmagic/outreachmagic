@@ -317,6 +317,41 @@ deliberately conservative: a sole trader whose company is their own name looks
 identical to a scraped business, and misclassifying a real person hides them
 from outreach. **Pass the flag when you know the list is companies.**
 
+## Contact sourcing (`find-contacts`)
+
+Turns companies with no people into companies with people: the staff page is
+fetched to markdown, a regex pass pulls name+title pairs, and only the pages it
+could not crack come to you.
+
+```bash
+python3 scripts/pipeline.py icp set --workspace acme --name decision-makers \
+  --whitelist "general manager,service manager,owner" \
+  --blocklist "assistant general manager"
+
+python3 scripts/pipeline.py contact-extract-pending --workspace acme --limit 20 --json
+python3 scripts/pipeline.py contact-apply --batch --workspace acme --json '[...]'
+```
+
+**Spawn a subagent per batch. This is not a style preference.**
+
+`contact-extract-pending` returns whole page bodies — roughly 8–10k tokens each,
+so a batch of 20 is ~200k. Read into the main conversation that is a 10M-token
+run and a context you cannot recover; read into a subagent it dies with the
+batch. For anything over ~5 companies:
+
+> One subagent per batch of 20. The subagent calls `contact-extract-pending`,
+> extracts, calls `contact-apply --batch`, and reports one line:
+> `"batch 3/34: 31 contacts, 4 no-data"`. The main thread never sees markdown.
+
+676 companies is ~34 such batches and ~34 short lines in the main thread.
+
+**Applying is idempotent.** A contact is keyed on name + company domain, never
+on the title (titles get re-scraped differently), so re-running a batch matches
+the same leads instead of duplicating them. `--dry-run` reports what would be
+attached and writes nothing. The ICP blocklist is enforced on apply even though
+you were handed it — a "never contact this person" rule should not depend on
+having been honoured.
+
 ## Lead Fields Reference
 
 | Field | CLI flag | Notes |

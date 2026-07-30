@@ -235,6 +235,26 @@ pipeline.py icp delete --workspace acme --name N
 - `--name` is optional on `show`/`export` when the workspace has exactly one profile; with more than one it is required rather than guessed.
 - `export`/`import` move a profile between workspaces or machines. The document carries no workspace id, and an exported document whose `config` was edited without rehashing is rejected on import. `import` replaces rather than merges — a document states the whole profile.
 
+### Agent-delegated contact extraction
+
+Pages the regex pass could not crack come back as a queue; the agent extracts and posts the result. Same contract as `personalize-pending` / `personalize-set --batch`.
+
+```bash
+pipeline.py contact-extract-pending --workspace acme [--icp NAME] [--limit 20] [--force] [--json]
+pipeline.py contact-apply --batch --json '[{"company_id": 83672, "contacts": [
+    {"name": "Jane Doe", "title": "General Manager", "phone": "555-0100", "email": null}]}]' \
+    [--workspace acme] [--icp NAME] [--dry-run]
+pipeline.py contact-apply --batch --file batch.json --workspace acme
+```
+
+- **One subagent per batch.** `contact-extract-pending` returns whole page bodies (~8–10k tokens each). In the main conversation a 34-batch run is a 10M-token conversation; in a subagent the markdown dies with the batch. The human-readable output deliberately prints only company, URL and `regex_found` — pass `--json` inside the subagent.
+- **A page is offered once per ICP version.** Companies with an agent observation under the current `icp_config_hash` are skipped; editing the profile makes them eligible again, which is exactly when re-deciding is worth doing. `--force` overrides.
+- **Scope.** With `--workspace`, a page qualifies if the company already has a lead there *or* if the fetch was run from that workspace. A company being sourced usually has no contact yet — that is why it is being sourced — so a lead-only filter would empty the queue exactly when it matters.
+- **Applying is idempotent.** A contact is keyed on `name|company_domain`, never on `name|company_domain|title`: titles get re-scraped a word differently and the title-bearing key would mint a second lead for the same person. Re-applying a batch matches instead of duplicating, including when the second pass carries an email the first one didn't.
+- **All-or-nothing.** One bad item rolls the whole batch back — a subagent posting twenty companies and getting "some of it worked" leaves nobody able to say which half.
+- **The blocklist is enforced on apply**, even though the agent was handed the profile. The whitelist is not: an adjacent title the agent judged worth keeping is the judgement it was asked for, and every contact's ICP verdict is reported in the result either way.
+- Every apply writes a `company_contact_observations` row stamped with the ICP version, including when nothing was attached — that is the record that stops the next run paying to learn the same thing.
+
 ## Email verification (MillionVerifier bulk)
 
 ```bash

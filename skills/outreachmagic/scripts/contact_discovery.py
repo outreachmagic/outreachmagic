@@ -126,6 +126,22 @@ def discover_staff_url(
         return {"url": None, "source": None, "serper_used": 0, "error": "no local staff url"}
 
     import enrich
+    import shared as cc
+
+    # Pre-flight the key pool rather than discovering it inside the call. A
+    # missing key is a misconfiguration, not a fact about this company: counting
+    # it as a spent query reported 10 credits for a run that never reached the
+    # network, and recording it as "no staff url" would have written 10 rows
+    # claiming we looked and found nothing.
+    try:
+        api_key_pool, _call, _results = cc.require_api_key_pool()
+        has_key = bool(api_key_pool("SERPER_API_KEY"))
+    except (RuntimeError, ImportError) as exc:
+        return {"url": None, "source": None, "serper_used": 0,
+                "error": f"api key pool unavailable: {exc}"[:300], "config_error": True}
+    if not has_key:
+        return {"url": None, "source": None, "serper_used": 0, "config_error": True,
+                "error": "SERPER_API_KEY not set — add in Dashboard → API Keys, then sync-secrets"}
 
     try:
         raw = enrich.serper_search(build_staff_query(company_name), cfg) or {}
@@ -232,7 +248,13 @@ def run_company_contact_discovery(
     spent["serper"] += discovery["serper_used"]
     url = discovery["url"]
     if not url:
-        return _finish("no_staff_url", error=discovery["error"])
+        # A misconfiguration is not an answer about this company. Filing it as
+        # `no_staff_url` would put a row in the log saying we looked and found
+        # nothing, which a later precision-per-campaign join would believe.
+        return _finish(
+            "config_error" if discovery.get("config_error") else "no_staff_url",
+            error=discovery["error"],
+        )
 
     # The budget is checked only here -- after every free path. An exhausted
     # fetch budget must never block a result that costs nothing.

@@ -162,6 +162,24 @@ def test_limit_caps_the_run():
     assert result["companies_targeted"] == 2
 
 
+def test_company_id_targets_one_company_ignoring_the_undercontacted_filter():
+    """The repair lever: `--reparse --company-id N` has to reach a company that
+    already has contacts, which the default filter excludes."""
+    done = _company_in_workspace("Already Done", "done.test", titled=True)
+    _company_in_workspace("Needs Contacts", "needs.test")
+    result, _post, _s = _run(dry_run=True, company_ids=[done])
+    assert result["companies_targeted"] == 1
+    assert result["results"][0]["company_id"] == done
+
+
+def test_company_id_and_tags_intersect():
+    tagged = _company_in_workspace("Tagged", "tagged.test", tags=("campaign-a",))
+    untagged = _company_in_workspace("Untagged", "untagged.test")
+    result, _post, _s = _run(dry_run=True, company_ids=[tagged, untagged],
+                             tags=["campaign-a"])
+    assert [r["company_id"] for r in result["results"]] == [tagged]
+
+
 def test_an_unknown_workspace_is_an_error():
     assert om.find_contacts_for_workspace("nope")["status"] == "error"
 
@@ -378,6 +396,40 @@ def test_a_serper_result_on_the_right_site_is_used_even_without_a_staff_path():
         result = om.find_contacts_for_workspace("storefront")
     assert result["contacts_attached"] == 1
     assert result["serper_queries_spent"] == 1
+
+
+def test_a_missing_serper_key_is_a_config_error_not_a_verdict():
+    """It cost 10 phantom credits and 10 rows claiming "we looked and found
+    nothing" the first time a real run hit this. A misconfiguration is not a
+    fact about the company, and a later precision join would believe it."""
+    _company_in_workspace("Needs Contacts", "needs.test")
+    with mock.patch("shared.require_api_key_pool", return_value=_fake_pool(keys=())), \
+            mock.patch("enrich.serper_search") as serper:
+        result = om.find_contacts_for_workspace("storefront")
+    assert serper.call_count == 0, "the pool is pre-flighted, not discovered mid-call"
+    assert result["serper_queries_spent"] == 0, "nothing reached the network, nothing was billed"
+    assert result["outcomes"].get("config_error") == 1
+    assert result["outcomes"].get("no_staff_url") is None
+
+    conn = om.get_conn()
+    try:
+        obs = conn.execute("SELECT outcome, error FROM company_contact_observations").fetchone()
+        assert obs["outcome"] == "config_error"
+        assert "SERPER_API_KEY" in obs["error"]
+    finally:
+        conn.close()
+
+
+def test_a_genuine_serper_failure_still_counts_as_spent():
+    """An HTTP-level failure did reach Serper, so it is reported as spent even
+    though it produced nothing -- the opposite mistake from the one above."""
+    _company_in_workspace("Needs Contacts", "needs.test")
+    with mock.patch("shared.require_api_key_pool", return_value=_fake_pool()), \
+            mock.patch("enrich.serper_search",
+                       side_effect=ValueError("Serper HTTP 400: Not enough credits")):
+        result = om.find_contacts_for_workspace("storefront")
+    assert result["serper_queries_spent"] == 1
+    assert result["outcomes"].get("no_staff_url") == 1
 
 
 def test_the_staff_query_carries_no_search_operators():

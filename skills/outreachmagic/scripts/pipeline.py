@@ -1440,6 +1440,7 @@ def find_contacts_for_workspace(
     extractor: str = "regex",
     tags: Optional[list] = None,
     exclude_tags: Optional[list] = None,
+    company_ids: Optional[list] = None,
 ) -> dict:
     """pipeline.py find-contacts: turn companies with no people into companies
     with people. The sibling of find_domains_for_workspace, one layer down.
@@ -1471,18 +1472,25 @@ def find_contacts_for_workspace(
             return {"status": "error",
                     "error": f"no ICP profile named {icp_name!r} in {ws_row['slug']}"}
 
-        clauses = [
-            "wl.workspace_id = ?",
-            "IFNULL(TRIM(c.domain), '') != ''",
+        clauses = ["wl.workspace_id = ?", "IFNULL(TRIM(c.domain), '') != ''"]
+        params: list = [ws_row["id"]]
+        if company_ids:
+            # Naming companies explicitly bypasses the undercontacted filter:
+            # the point of asking for one by id is to re-run it, which is what
+            # makes `--reparse --company-id N` a usable repair tool.
+            clauses.append(f"c.id IN ({','.join('?' * len(company_ids))})")
+            params.extend(int(c) for c in company_ids)
+        else:
             # Companies that already have a real contact are done, unless
             # --force says otherwise. This is the "undercontacted" filter and
             # it is what keeps a re-run from re-paying for finished work.
-            """(? OR NOT EXISTS (SELECT 1 FROM leads l2
-                                  WHERE l2.company_id = c.id
-                                    AND IFNULL(TRIM(l2.title), '') != ''
-                                    AND l2.record_type != 'company_placeholder'))""",
-        ]
-        params: list = [ws_row["id"], 1 if force else 0]
+            clauses.append(
+                """(? OR NOT EXISTS (SELECT 1 FROM leads l2
+                                      WHERE l2.company_id = c.id
+                                        AND IFNULL(TRIM(l2.title), '') != ''
+                                        AND l2.record_type != 'company_placeholder'))"""
+            )
+            params.append(1 if force else 0)
         if tags:
             clauses.append(
                 f"""EXISTS (SELECT 1 FROM workspace_lead_tags t

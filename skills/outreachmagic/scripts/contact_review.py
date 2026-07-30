@@ -226,23 +226,30 @@ def _existing_lead_id(
     identities: list[tuple[str, str]],
     email: Optional[str],
 ) -> Optional[int]:
-    """The lead this contact already is, matched on the composite identity.
+    """The lead this contact already is: by email first, then by the composite.
 
-    resolve_lead() only consults composite identities when the caller has *no*
-    strong one -- reasonable for webhook ingest, wrong here. The second scrape
-    of a person often carries an email the first one didn't, and taking the
-    strong-identity path then means the composite key written on the first run
-    is never consulted and the person is created twice. So the lookup happens
-    here, and only when the email itself matches nothing: an email that already
-    belongs to a lead is the better answer, and resolve_lead handles it.
+    Both lookups happen here rather than inside resolve_lead, for two different
+    reasons:
+
+      * **Composite:** resolve_lead consults composite identities only when the
+        caller has no strong one. The second scrape of a person often carries an
+        email the first one didn't, and on that run the composite key written the
+        first time would never be read -- so the person is created twice.
+      * **Email:** the address is deliberately withheld from resolve_lead (see
+        apply_company_contacts), so it cannot do this lookup at all.
+
+    Whatever this returns is passed as `force_lead_id`, which is why email wins:
+    an address already on a lead is the strongest statement of identity there is.
     """
     from pipeline import find_lead_by_email, normalize_email
+    from workspace_routing import find_lead_by_identity
 
     if email:
         email_norm = normalize_email(email)
-        if email_norm and find_lead_by_email(conn, email_norm):
-            return None
-    from workspace_routing import find_lead_by_identity
+        if email_norm:
+            found = find_lead_by_email(conn, email_norm)
+            if found:
+                return int(found)
 
     for itype, value in identities:
         if itype in _COMPOSITE_TYPES:
@@ -250,6 +257,26 @@ def _existing_lead_id(
             if found:
                 return int(found)
     return None
+
+
+def _set_primary_email(conn: sqlite3.Connection, lead_id: int, email: str) -> None:
+    """Write the scraped address onto a lead that has none.
+
+    Done here because the address is kept out of resolve_lead. Only fills an
+    empty column -- an address already on the lead was chosen by something with
+    more standing than a staff-page scrape (a verification, a reply, an
+    operator), and a page listing a role mailbox must not overwrite it.
+    """
+    from pipeline import email_domain, normalize_email
+
+    email_norm = normalize_email(email)
+    if not email_norm:
+        return
+    conn.execute(
+        """UPDATE leads SET email = ?, email_domain = ?, updated_at = datetime('now')
+            WHERE id = ? AND IFNULL(TRIM(email), '') = ''""",
+        (email_norm, email_domain(email_norm), lead_id),
+    )
 
 
 def _company_row(conn: sqlite3.Connection, company_id: int) -> sqlite3.Row:
@@ -340,7 +367,20 @@ def apply_company_contacts(
         result = resolve_lead(
             name=name,
             title=title,
-            email=email,
+            # The address is deliberately withheld. resolve_lead derives a
+            # company from the email domain and re-links the new lead to it,
+            # creating that company if needed (pipeline.py, the
+            # `domain_from_email != effective_domain` relink). That is right for
+            # a CSV import, where the address is the best evidence of who
+            # employs someone -- and wrong here, where the staff page we just
+            # read *is* that evidence. A dealer group publishing group-wide
+            # addresses otherwise scatters one dealership's roster across
+            # freshly minted duplicate companies: a real 10-company run put 42
+            # contacts onto 12 companies, 5 of them invented.
+            #
+            # The address is not lost: it is in `identities` (so dedup matches
+            # on it), it is what _existing_lead_id resolves first, and
+            # _set_primary_email writes it below.
             company=company["name"],
             company_domain=company["domain"],
             source=SOURCE,
@@ -356,10 +396,15 @@ def apply_company_contacts(
             continue
 
         lead_id = int(result["id"])
+        # Pinned, not filled-if-empty. The staff page is authoritative for who
+        # employs this person, so it overrides whatever any earlier import
+        # inferred from an address.
         conn.execute(
-            "UPDATE leads SET company_id = ? WHERE id = ? AND company_id IS NULL",
-            (company_id, lead_id),
+            "UPDATE leads SET company_id = ? WHERE id = ? AND IFNULL(company_id, -1) != ?",
+            (company_id, lead_id, company_id),
         )
+        if email:
+            _set_primary_email(conn, lead_id, email)
         if workspace_id:
             upsert_workspace_lead(conn, DEFAULT_ORG_ID, workspace_id, lead_id)
         if phone:

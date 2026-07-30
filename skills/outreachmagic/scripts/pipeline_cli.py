@@ -880,6 +880,8 @@ def main():
                       help="Only companies with a lead carrying any of these workspace tags")
     fc_p.add_argument("--exclude-tag", nargs="+", dest="exclude_tags",
                       help="Skip companies with a lead carrying any of these tags")
+    fc_p.add_argument("--company-id", nargs="+", type=int, dest="company_ids",
+                      help="Only these companies, ignoring the undercontacted filter (re-run / repair)")
 
     cxp_p = sub.add_parser(
         "contact-extract-pending",
@@ -3568,6 +3570,7 @@ def main():
             extractor=getattr(args, "extractor", "regex"),
             tags=getattr(args, "tags", None),
             exclude_tags=getattr(args, "exclude_tags", None),
+            company_ids=getattr(args, "company_ids", None),
         )
         if result.get("status") == "error":
             print(json.dumps(result))

@@ -242,6 +242,7 @@ Turns companies that have a domain but no people into companies with people. The
 ```bash
 pipeline.py find-contacts --workspace acme --icp NAME [--tag T ...] [--exclude-tag T ...]
     [--limit N] [--max-fetches N] [--dry-run] [--force] [--reparse] [--extractor regex|agent]
+    [--company-id N ...]
 ```
 
 Per company: staff-page URL → Firecrawl fetch to markdown → regex pass → ICP score → attach or leave for the agent. An observation is written on **every** path, including failure — a company that returned nothing is what stops the next run paying to learn the same thing.
@@ -255,6 +256,10 @@ Per company: staff-page URL → Firecrawl fetch to markdown → regex pass → I
 - `--reparse` re-extracts cached pages: 0 fetches, 0 credits. This is what makes an ICP edit cheap to evaluate.
 - Pages are cached by URL and **never auto-expire**. A cache that silently invalidates itself silently re-spends; re-fetching is always an explicit `--force`.
 - URLs are normalised before they become a cache key — tracking parameters (`?srsltid=`, `utm_*`, `gclid`) and fragments are stripped, so one staff page cannot occupy two cache rows and be billed twice.
+
+**`--company-id N ...`** targets named companies and ignores the undercontacted filter, because the point of asking for one by id is to re-run it. `--reparse --company-id N` is the repair lever: re-extract one company's cached page under current logic, at zero credits.
+
+**The contact is pinned to the company whose page was read.** `resolve_lead` otherwise derives a company from the new lead's *email domain* and re-links the lead to it, creating that company if needed — right for a CSV import, where the address is the best evidence of an employer, and wrong here, where the staff page is that evidence. Dealer groups publish group-wide addresses: unpinned, a 10-company run put 42 contacts onto 12 companies and invented 5 of them. The address is still kept on the lead and registered as an email identity, so dedup by address keeps working.
 
 **URL discovery** tries two free sources before paying Serper: a page already cached for the company, then the `top_links` a previous `find-domains` run stored on its observations. Only on-site links are ever used — a directory profile is not a staff page, and fetching one fills the contact list with other people's data.
 

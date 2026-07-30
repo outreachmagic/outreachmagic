@@ -170,6 +170,130 @@ def test_an_email_found_later_still_resolves_to_the_same_lead():
     assert _lead_count("Dana Whitfield") == 1
 
 
+# ── the company is the one whose page we read ────────────────────────────────
+#
+# A real 10-company run put 42 contacts onto 12 companies and invented 5 of
+# them. resolve_lead derives a company from the new lead's email domain and
+# re-links the lead to it -- correct for a CSV import, where the address is the
+# best evidence of who employs someone, and wrong here, where the staff page we
+# just read is that evidence. Dealer groups publish group-wide addresses.
+
+def test_a_group_email_domain_does_not_move_the_contact():
+    cid = _company(domain="acmesouth.test")
+    contact_review.apply_batch(_batch(cid, [
+        {"name": "Rowan Petrel", "title": "General Manager", "email": "rowan@groupmail.test"},
+    ]))
+    conn = om.get_conn()
+    try:
+        lead = conn.execute("SELECT company_id, email FROM leads").fetchone()
+        assert lead["company_id"] == cid
+        assert lead["email"] == "rowan@groupmail.test", "the address is still kept"
+    finally:
+        conn.close()
+
+
+def test_a_group_email_domain_does_not_invent_a_company():
+    cid = _company(domain="acmesouth.test")
+    contact_review.apply_batch(_batch(cid, [
+        {"name": "Rowan Petrel", "title": "General Manager", "email": "rowan@groupmail.test"},
+        {"name": "Ana Reyes", "title": "Service Manager", "email": "ana@anothergroup.test"},
+    ]))
+    conn = om.get_conn()
+    try:
+        assert conn.execute("SELECT COUNT(*) c FROM companies").fetchone()["c"] == 1
+    finally:
+        conn.close()
+
+
+def test_the_scraped_address_is_registered_for_dedup():
+    """It is withheld from resolve_lead, so it has to reach lead_identities by
+    the explicit identity list or email-based dedup silently stops working."""
+    cid = _company(domain="acmesouth.test")
+    contact_review.apply_batch(_batch(cid, [
+        {"name": "Rowan Petrel", "title": "General Manager", "email": "rowan@groupmail.test"}]))
+    conn = om.get_conn()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) c FROM lead_identities WHERE identity_type = 'email' "
+            "AND identity_value_normalized = 'rowan@groupmail.test'").fetchone()["c"] == 1
+    finally:
+        conn.close()
+
+
+def test_an_address_already_on_another_lead_resolves_to_that_lead():
+    """Email match beats the composite: it is passed as force_lead_id."""
+    cid = _company(domain="acmesouth.test")
+    conn = om.get_conn()
+    existing = om.resolve_lead(name="R. Petrel", email="rowan@groupmail.test", conn=conn)
+    conn.commit()
+    conn.close()
+    contact_review.apply_batch(_batch(cid, [
+        {"name": "Rowan Petrel", "title": "General Manager", "email": "rowan@groupmail.test"}]))
+    assert _lead_count() == 1
+    conn = om.get_conn()
+    try:
+        lead = conn.execute("SELECT id, company_id, title FROM leads").fetchone()
+        assert lead["id"] == existing["id"]
+        assert lead["company_id"] == cid, "and the sourced company is pinned onto it"
+        assert lead["title"] == "General Manager"
+    finally:
+        conn.close()
+
+
+def test_an_existing_address_is_not_overwritten():
+    """A verification or a reply chose that address; a staff page has not
+    earned the right to replace it."""
+    cid = _company(domain="acmesouth.test")
+    contact_review.apply_batch(_batch(cid, [
+        {"name": "Rowan Petrel", "title": "General Manager", "email": "rowan@groupmail.test"}]))
+    contact_review.apply_batch(_batch(cid, [
+        {"name": "Rowan Petrel", "title": "General Manager", "email": "info@acmesouth.test"}]))
+    conn = om.get_conn()
+    try:
+        assert conn.execute("SELECT email FROM leads").fetchone()["email"] == "rowan@groupmail.test"
+    finally:
+        conn.close()
+
+
+def test_an_identifiable_contact_on_the_wrong_company_is_repinned():
+    """Pinned, not filled-if-empty: the page is authoritative for the employer,
+    so it overrides what an earlier import inferred from an address."""
+    cid = _company(domain="acmesouth.test")
+    other = _company("Other Motors", "other.test")
+    conn = om.get_conn()
+    lead = om.resolve_lead(name="R. Petrel", email="rowan@groupmail.test", conn=conn)
+    conn.execute("UPDATE leads SET company_id = ? WHERE id = ?", (other, lead["id"]))
+    conn.commit()
+    conn.close()
+
+    contact_review.apply_batch(_batch(cid, [
+        {"name": "Rowan Petrel", "title": "General Manager", "email": "rowan@groupmail.test"}]))
+    assert _lead_count() == 1
+    conn = om.get_conn()
+    try:
+        assert conn.execute(
+            "SELECT company_id FROM leads WHERE id = ?", (lead["id"],)
+        ).fetchone()["company_id"] == cid
+    finally:
+        conn.close()
+
+
+def test_two_same_named_people_with_no_shared_identity_stay_separate():
+    """The counterpart: without an identity in common there is no basis to call
+    them one person, and the merge queue exists for exactly this."""
+    cid = _company(domain="acmesouth.test")
+    other = _company("Other Motors", "other.test")
+    conn = om.get_conn()
+    lead = om.resolve_lead(name="Rowan Petrel", company="Other Motors",
+                           allow_weak_identity=True, conn=conn)
+    conn.execute("UPDATE leads SET company_id = ? WHERE id = ?", (other, lead["id"]))
+    conn.commit()
+    conn.close()
+    contact_review.apply_batch(_batch(cid, [
+        {"name": "Rowan Petrel", "title": "General Manager"}]))
+    assert _lead_count("Rowan Petrel") == 2
+
+
 # ── what applying does ───────────────────────────────────────────────────────
 
 def test_contacts_are_linked_to_the_company_and_the_workspace():

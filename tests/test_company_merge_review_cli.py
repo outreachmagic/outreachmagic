@@ -199,3 +199,134 @@ def test_backfill_candidates_command_queues_from_audit():
 
     listed = _run("merge-review", "list", "--reason", "backfill_audit")
     assert listed["count"] >= 1
+
+
+# ── choosing which record survives ───────────────────────────────────────────
+#
+# Approving used to keep existing_company_id unconditionally. "Existing" is only
+# whichever row ingest happened to see first, and that is frequently the emptier
+# of the two — so the survivor was being picked by arrival order rather than by
+# which record was better.
+
+
+def _queued_pair():
+    """A queued name_only_domain_attach pair, returning (candidate_id, a, b)."""
+    conn = om.get_conn()
+    a = om.ensure_company(conn, name="Acme Services")
+    conn.commit()
+    b = om.ensure_company(conn, name="Acme Services", domain="unrelated.com")
+    conn.commit()
+    conn.close()
+    listed = om.list_company_merge_candidates(reason="name_only_domain_attach")
+    return listed["candidates"][0]["id"], a, b
+
+
+def test_keep_id_chooses_the_surviving_record():
+    candidate_id, a, b = _queued_pair()
+    out = om.approve_company_merge_candidate(candidate_id, keep_id=b)
+    assert out["merge_result"]["status"] == "merged"
+    conn = om.get_conn()
+    try:
+        assert conn.execute("SELECT 1 FROM companies WHERE id = ?", (a,)).fetchone() is None
+        assert conn.execute("SELECT 1 FROM companies WHERE id = ?", (b,)).fetchone() is not None
+    finally:
+        conn.close()
+
+
+def test_the_survivor_inherits_what_it_was_missing():
+    """The rule the UI promises: the record you keep wins field by field, and
+    fills its blanks from the one merged away. It lives in merge_companies()."""
+    candidate_id, a, b = _queued_pair()
+    conn = om.get_conn()
+    conn.execute("UPDATE companies SET industry = 'Events', headcount = '11-50' WHERE id = ?", (a,))
+    conn.execute("UPDATE companies SET industry = 'Software' WHERE id = ?", (b,))
+    conn.commit()
+    conn.close()
+    om.approve_company_merge_candidate(candidate_id, keep_id=b)
+    conn = om.get_conn()
+    try:
+        row = conn.execute(
+            "SELECT industry, headcount, domain FROM companies WHERE id = ?", (b,)).fetchone()
+    finally:
+        conn.close()
+    assert row["industry"] == "Software"   # the survivor's own value wins
+    assert row["headcount"] == "11-50"     # inherited: the survivor had none
+
+
+def test_keep_id_outside_the_pair_is_rejected():
+    candidate_id, a, b = _queued_pair()
+    out = om.approve_company_merge_candidate(candidate_id, keep_id=999999)
+    assert out["status"] == "error"
+    assert "not part of candidate" in out["error"]
+    conn = om.get_conn()
+    try:
+        assert conn.execute("SELECT 1 FROM companies WHERE id = ?", (a,)).fetchone() is not None
+        assert conn.execute("SELECT 1 FROM companies WHERE id = ?", (b,)).fetchone() is not None
+    finally:
+        conn.close()
+
+
+def test_the_list_flattens_both_sides_and_reports_live_lead_counts():
+    """Three generations of queueing code wrote three payload shapes. Every
+    surface drawing the pair had to know all three; now none of them do. Lead
+    counts come from the live tables, because which side has the leads is
+    usually the whole decision and a weeks-old payload would lie about it."""
+    candidate_id, a, b = _queued_pair()
+    conn = om.get_conn()
+    lead = om.resolve_lead(email="j@unrelated.com", name="Jane", conn=conn)
+    conn.execute("UPDATE leads SET company_id = ? WHERE id = ?", (b, lead["id"]))
+    conn.commit()
+    conn.close()
+    row = om.list_company_merge_candidates(reason="name_only_domain_attach")["candidates"][0]
+    assert row["id"] == candidate_id
+    assert row["existing_name"] == "Acme Services"
+    assert row["candidate_domain"] == "unrelated.com"
+    assert row["existing_leads"] == 0
+    assert row["candidate_leads"] == 1
+    assert row["confidence"]        # recomputed for legacy rows, always present
+
+
+def test_the_list_pages_and_reports_the_full_total():
+    conn = om.get_conn()
+    for i in range(3):
+        om.ensure_company(conn, name=f"Dup {i}")
+        conn.commit()
+        om.ensure_company(conn, name=f"Dup {i}", domain=f"d{i}.com")
+        conn.commit()
+    conn.close()
+    first = om.list_company_merge_candidates(reason="name_only_domain_attach", limit=2)
+    assert first["count"] == 2 and first["total"] == 3
+    second = om.list_company_merge_candidates(
+        reason="name_only_domain_attach", limit=2, offset=2)
+    assert second["count"] == 1 and second["total"] == 3
+    seen = {c["id"] for c in first["candidates"]} | {c["id"] for c in second["candidates"]}
+    assert len(seen) == 3
+
+
+def test_bulk_resolve_reports_each_outcome_separately():
+    """Not all-or-nothing: each candidate is an independent judgement and a
+    merge cannot be undone from here, so one stale row must not roll back the
+    rest of the batch."""
+    import dashboard_actions
+
+    conn = om.get_conn()
+    for i in range(2):
+        om.ensure_company(conn, name=f"Bulk {i}")
+        conn.commit()
+        om.ensure_company(conn, name=f"Bulk {i}", domain=f"b{i}.com")
+        conn.commit()
+    conn.close()
+    ids = [c["id"] for c in om.list_company_merge_candidates(
+        reason="name_only_domain_attach")["candidates"]]
+    out = dashboard_actions.resolve_merge_candidates_bulk(
+        [*ids, "cmc_does_not_exist"], approve=True, keep="candidate")
+    assert out["resolved"] == 2
+    assert out["failed"] == 1
+    assert out["errors"][0]["candidate_id"] == "cmc_does_not_exist"
+
+
+def test_bulk_resolve_rejects_an_unknown_keep_side():
+    import dashboard_actions
+
+    with pytest.raises(ValueError):
+        dashboard_actions.resolve_merge_candidates_bulk(["x"], approve=True, keep="whichever")

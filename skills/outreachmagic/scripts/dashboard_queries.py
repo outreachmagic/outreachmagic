@@ -20,7 +20,7 @@ import time
 from collections import defaultdict
 from typing import Optional
 
-from constants import PIPELINE_STAGES
+from constants import PIPELINE_STAGES, SCHEDULING_PLATFORMS_SQL_LIST
 from platform_registry import reply_event_sql_condition
 from read_queries import _since_clause
 from workspace_routing import DEFAULT_ORG_ID, get_org_routing_config
@@ -716,6 +716,13 @@ def _campaign_events_sql() -> str:
 
     `is_reply` rides along so the ranking happens where the rows are compared,
     rather than as a second SQL condition that could drift from the first.
+
+    Scheduling-platform events are excluded. Calendly and friends send the
+    booked event *type* with the webhook, and ingest stores it as a campaign --
+    which is how "30 Minute Meeting" ended up being reported as the campaign a
+    lead came from. It is a calendar slot, not outbound. Dropping it here fixes
+    the replies table, the company pane and lead_campaign() together, because
+    all three read this one query.
     """
     reply = (reply_event_sql_condition()
              .replace("event_type", "ec.event_type")
@@ -731,6 +738,8 @@ def _campaign_events_sql() -> str:
           JOIN leads lc ON lc.id = wlc.lead_id
          WHERE wlc.workspace_id = ?
            AND ec.campaign_id IS NOT NULL
+           AND LOWER(COALESCE(json_extract(ec.metadata_json, '$.platform'), ''))
+               NOT IN ({SCHEDULING_PLATFORMS_SQL_LIST})
            AND wlc.lead_id IN ({{placeholders}})"""
 
 
@@ -952,7 +961,12 @@ def campaign_replies(
                wl.current_status_sentiment AS sentiment,
                wl.current_status_label AS status_label,
                wl.current_sentiment_since AS event_at,
+               wl.last_activity_at AS last_activity_at,
                l.name AS lead_name, l.company_id AS company_id,
+               l.company AS company, l.title AS title, l.email AS email,
+               l.linkedin_url, l.linkedin_sales_nav_id,
+               (SELECT GROUP_CONCAT(t.tag, ',') FROM workspace_lead_tags t
+                WHERE t.workspace_id = wl.workspace_id AND t.lead_id = wl.lead_id) AS tags,
                lr.id AS event_id, lr.subject AS subject,
                (lr.id IS NOT NULL AND json_extract(lr.metadata_json, '$.body') IS NOT NULL)
                    AS has_body
@@ -1761,9 +1775,16 @@ LEAD_SORTS = {
 LEAD_SORT_COLUMNS = {
     "name": "l.name COLLATE NOCASE",
     "email": "l.email COLLATE NOCASE",
+    # Matches what the LinkedIn column renders (public profile URL, else the
+    # Sales Navigator token). Sorting the stored value rather than the
+    # synthesized URL groups public profiles and Sales Nav tokens into two
+    # blocks instead of interleaving them -- the more useful read of the two.
+    "linkedin": ("COALESCE(NULLIF(TRIM(l.linkedin_url), ''), l.linkedin_sales_nav_id)"
+                 " COLLATE NOCASE"),
     "company": "l.company COLLATE NOCASE",
     "title": "l.title COLLATE NOCASE",
     "status": "wl.status COLLATE NOCASE",
+    "current_status_label": "wl.current_status_label COLLATE NOCASE",
     "current_status_sentiment": "wl.current_status_sentiment COLLATE NOCASE",
     "email_verification_status": "l.email_verification_status COLLATE NOCASE",
     "total_replies_count": "wl.total_replies_count",
@@ -1790,6 +1811,7 @@ def _lead_columns() -> str:
              l.industry, l.headcount,
              l.location_city, l.location_country, l.email_verification_status,
              wl.status, wl.current_status_label, wl.current_status_sentiment,
+             wl.contact_priority,
              wl.last_activity_at, wl.email_sent_count, wl.total_replies_count,
              (SELECT GROUP_CONCAT(t.tag, ',') FROM workspace_lead_tags t
               WHERE t.workspace_id = wl.workspace_id AND t.lead_id = wl.lead_id) AS tags"""
@@ -1889,8 +1911,13 @@ def lead_message_block_sql(direction: str) -> str:
 LEAD_FILTER_KEYS = (
     "q", "status", "campaign_id", "missing", "since", "until", "tag",
     "connected", "sender", "has_linkedin", "verify", "qualify_finding",
-    "record_type",
+    "record_type", "lead_ids",
 )
+
+# An explicit id list is capped for the same reason the "select all matching"
+# fetch is: a caller that hands over the world should get an error, not a query
+# with 200k bind parameters.
+MAX_EXPLICIT_LEAD_IDS = 50_000
 
 
 def lead_filter_clause(
@@ -1908,6 +1935,7 @@ def lead_filter_clause(
     verify: Optional[str] = None,
     qualify_finding: Optional[bool] = None,
     record_type: Optional[str] = None,
+    lead_ids: Optional[list] = None,
 ) -> tuple[str, list]:
     """The shared WHERE for anything selecting workspace leads: (sql, params).
 
@@ -1915,9 +1943,26 @@ def lead_filter_clause(
     Extracted from search_leads so lead_export.py can reuse it verbatim rather
     than growing a second, quietly divergent filter set -- which is what
     pipeline_tags.export_leads had become.
+
+    `lead_ids` narrows to an explicit set -- what the operator ticked, rather
+    than what the filters happen to match. It composes with the other filters
+    (and with the record_type default), so an export of a hand-picked selection
+    goes through this one clause set like everything else.
     """
     where = ["wl.workspace_id = ?"]
     params: list = [workspace_id]
+    if lead_ids is not None:
+        ids = [int(x) for x in lead_ids]
+        if not ids:
+            # An empty explicit selection selects nothing. Falling through to
+            # "no id filter" would silently export the whole filtered list,
+            # which is the bug this parameter exists to fix.
+            return "0", []
+        if len(ids) > MAX_EXPLICIT_LEAD_IDS:
+            raise ValueError(
+                f"too many lead_ids ({len(ids)}); cap is {MAX_EXPLICIT_LEAD_IDS}")
+        where.append(f"wl.lead_id IN ({','.join('?' * len(ids))})")
+        params += ids
     # Company placeholders are accounts, not people. They are excluded unless
     # asked for by name, so the contacts list, its counts, and every bulk action
     # driven off this query keep meaning "people you can actually contact".
@@ -2078,6 +2123,16 @@ _REACHABLE_CONTACT_SQL = """(
 )"""
 
 
+# Text-search predicate over a company's NON-primary domains. Shared by
+# search_companies and company_search_for_link so "search finds it" means the
+# same thing in the Companies list and in the link-lead-to-company picker.
+_COMPANY_IDENTITY_MATCH_SQL = """EXISTS (
+    SELECT 1 FROM company_identities ci
+    WHERE ci.company_id = c.id AND ci.identity_type = 'domain'
+      AND ci.identity_value_normalized LIKE ?
+)"""
+
+
 def _company_tag_exists_sql() -> str:
     """A company carries tag T if ANY of its leads in the workspace carries T.
 
@@ -2097,6 +2152,33 @@ def _company_tag_exists_sql() -> str:
     )"""
 
 
+# Columns the companies list can be sorted by across the WHOLE result set, not
+# just the loaded page. Keys match the table's column keys in dashboard.html.
+COMPANY_SORT_COLUMNS = {
+    "name": "c.name COLLATE NOCASE",
+    "domain": "c.domain COLLATE NOCASE",
+    "domains": "domains",
+    "industry": "c.industry COLLATE NOCASE",
+    "headcount": "c.headcount COLLATE NOCASE",
+    "leads": "leads",
+}
+
+
+def _company_order_by(sort: Optional[str], direction: Optional[str]) -> str:
+    """ORDER BY for search_companies.
+
+    Blank and NULL sort together and always last, in both directions. Sorting
+    by primary domain is a way of working through the companies that *have*
+    one; a descending sort that led with 900 empty cells would answer a
+    different question than the one being asked.
+    """
+    col = COMPANY_SORT_COLUMNS.get(sort or "")
+    if not col:
+        return "leads DESC, c.name COLLATE NOCASE"
+    d = "DESC" if str(direction or "").lower() == "desc" else "ASC"
+    return f"({col} IS NULL OR {col} = ''), {col} {d}, c.id DESC"
+
+
 def search_companies(
     conn: sqlite3.Connection,
     workspace_id: str,
@@ -2104,6 +2186,7 @@ def search_companies(
     limit: int = 50,
     offset: int = 0,
     sort: str = "leads",
+    direction: Optional[str] = None,
     tag: Optional[str] = None,
     missing_domain: Optional[bool] = None,
     no_reachable_contact: Optional[bool] = None,
@@ -2118,8 +2201,13 @@ def search_companies(
     params: list = [workspace_id]
     if q and q.strip():
         term = f"%{q.strip()}%"
-        where.append("(c.name LIKE ? OR c.domain LIKE ? OR c.industry LIKE ?)")
-        params += [term, term, term]
+        # Searching c.domain alone only hits the *primary* domain, so a company
+        # found via any of its other known domains (brand portfolio, a branch
+        # site, the old domain before a rebrand) looked missing. The EXISTS is
+        # index-backed by idx_company_identities_value.
+        where.append(f"(c.name LIKE ? OR c.domain LIKE ? OR c.industry LIKE ?"
+                     f" OR {_COMPANY_IDENTITY_MATCH_SQL})")
+        params += [term, term, term, term]
     if tag:
         where.append(_company_tag_exists_sql())
         params.append(tag)
@@ -2138,13 +2226,23 @@ def search_companies(
             WHERE l3.company_id = c.id AND wl3.workspace_id = wl.workspace_id
               AND l3.record_type = 'contact')""")
     where_sql = " AND ".join(where)
-    order = {
-        "leads": "leads DESC, c.name COLLATE NOCASE",
-        "name": "c.name COLLATE NOCASE ASC",
-    }.get(sort, "leads DESC, c.name COLLATE NOCASE")
+    order = _company_order_by(sort, direction)
+    # When a row matched on an alternate domain rather than its primary, say
+    # which one -- otherwise a hit on "markquartmenomonie.com" under a company
+    # whose primary reads "markquart.com" looks like a search bug.
+    if q and q.strip():
+        matched_sql = """(SELECT ci.identity_value_normalized FROM company_identities ci
+                          WHERE ci.company_id = c.id AND ci.identity_type = 'domain'
+                            AND ci.identity_value_normalized LIKE ?
+                          LIMIT 1) AS matched_domain"""
+        matched_params = [f"%{q.strip()}%"]
+    else:
+        matched_sql = "NULL AS matched_domain"
+        matched_params = []
     rows = conn.execute(
         f"""SELECT c.id, c.name, c.domain, c.industry, c.headcount,
                    c.hq_city, c.hq_country,
+                   {matched_sql},
                    COUNT(DISTINCT wl.lead_id) AS leads,
                    (SELECT COUNT(*) FROM company_identities ci
                     WHERE ci.company_id = c.id AND ci.identity_type = 'domain') AS domains,
@@ -2158,7 +2256,9 @@ def search_companies(
             GROUP BY c.id
             ORDER BY {order}
             LIMIT ? OFFSET ?""",
-        (*params, limit + 1, offset),
+        # matched_params bind inside the SELECT list, which SQLite numbers
+        # BEFORE the WHERE clause -- they have to lead.
+        (*matched_params, *params, limit + 1, offset),
     ).fetchall()
     has_more = len(rows) > limit
     rows = rows[:limit]
@@ -2166,10 +2266,14 @@ def search_companies(
     for r in rows:
         d = dict(r)
         d["tags"] = sorted({t for t in (d.get("tags") or "").split(",") if t})
+        # Only interesting when it isn't already the primary shown in the row.
+        if d.get("matched_domain") == d.get("domain"):
+            d["matched_domain"] = None
         out.append(d)
     return {
         "companies": out,
         "limit": limit, "offset": offset, "has_more": has_more, "q": q, "tag": tag,
+        "sort": sort, "dir": direction,
     }
 
 
@@ -2321,19 +2425,35 @@ def company_detail(conn: sqlite3.Connection, workspace_id: str, company_id: int)
             LIMIT 200""",
         (workspace_id, company_id),
     ).fetchall()
-    # Any open merge candidate that names this company (either side).
-    pending_merges = conn.execute(
-        """SELECT COUNT(*) AS n FROM company_merge_candidates
+    # Any open merge candidate that names this company (either side). The rows
+    # come back, not just the count: "2 pending candidates — go find them on
+    # another card" is a notification, and a notification about a decision you
+    # are already looking at the evidence for is worse than useless.
+    pending = conn.execute(
+        """SELECT * FROM company_merge_candidates
            WHERE status = 'pending'
-             AND (existing_company_id = ? OR candidate_company_id = ?)""",
+             AND (existing_company_id = ? OR candidate_company_id = ?)
+           ORDER BY received_at DESC LIMIT 20""",
         (company_id, company_id),
-    ).fetchone()["n"]
+    ).fetchall()
+    import pipeline as _pipeline
+
+    candidates = []
+    for row in pending:
+        d = dict(row)
+        try:
+            d["payload"] = json.loads(d.get("payload_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            d["payload"] = None
+        d["confidence"] = (d["payload"] or {}).get("confidence")
+        candidates.append(_pipeline._flatten_merge_candidate(conn, d))
     return {
         "company": dict(company),
         "domains": domains,
         "public_emails": public_emails,
         "leads": [dict(r) for r in leads],
-        "pending_merges": pending_merges,
+        "pending_merges": len(candidates),
+        "pending_merge_candidates": candidates,
         "lead_count": len(leads),
     }
 
@@ -2388,17 +2508,32 @@ def company_contact_activity(
 
 
 def company_search_for_link(conn: sqlite3.Connection, q: str, limit: int = 10) -> dict:
-    """Lightweight company autocomplete for the 'link lead → company' control."""
+    """Lightweight company autocomplete for the 'link lead → company' control.
+
+    Matches any known domain, not just the primary -- typing the domain off a
+    lead's email address has to find the company even when that address is on
+    the brand/branch domain rather than the one in companies.domain.
+    """
     term = f"%{(q or '').strip()}%"
     rows = conn.execute(
-        """SELECT id, name, domain, industry,
-                  (SELECT COUNT(*) FROM leads l WHERE l.company_id = c.id) AS leads
-           FROM companies c
-           WHERE c.name LIKE ? OR c.domain LIKE ?
-           ORDER BY leads DESC, c.name COLLATE NOCASE LIMIT ?""",
-        (term, term, limit),
+        f"""SELECT c.id, c.name, c.domain, c.industry,
+                   (SELECT ci.identity_value_normalized FROM company_identities ci
+                    WHERE ci.company_id = c.id AND ci.identity_type = 'domain'
+                      AND ci.identity_value_normalized LIKE ?
+                    LIMIT 1) AS matched_domain,
+                   (SELECT COUNT(*) FROM leads l WHERE l.company_id = c.id) AS leads
+            FROM companies c
+            WHERE c.name LIKE ? OR c.domain LIKE ? OR {_COMPANY_IDENTITY_MATCH_SQL}
+            ORDER BY leads DESC, c.name COLLATE NOCASE LIMIT ?""",
+        (term, term, term, term, limit),
     ).fetchall()
-    return {"companies": [dict(r) for r in rows]}
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("matched_domain") == d.get("domain"):
+            d["matched_domain"] = None
+        out.append(d)
+    return {"companies": out}
 
 
 # ---------------------------------------------------------------------------
@@ -2477,9 +2612,19 @@ def data_quality(
 
 def _lead_domains(conn: sqlite3.Connection, lead_id: int) -> tuple[list[str], str]:
     """Candidate sending domains for a lead's email-finder run, most-trusted
-    first, plus the lead's own email_domain. Company domains come from
-    company_identities (verified first); a company can have several, so the
-    caller decides whether to auto-pick the first or prompt."""
+    first, plus the lead's own email_domain. A company can have several, so the
+    caller decides whether to auto-pick the first or prompt.
+
+    Delegates to rank_company_domains() -- the same ranker the CLI path uses via
+    om_lookup(). This used to hand-roll a company_identities-only query, which
+    made the dashboard blind to the legacy companies.domain column: 44,608 of
+    the 47,309 no-email leads that DO have a resolvable domain came back as
+    "no_domain" in the UI while `pipeline email-finding-candidates` happily
+    listed them. One ranker, one answer -- and the ranking now leads with proven
+    found-count rather than role='primary' then alphabetical.
+    """
+    from pipeline import rank_company_domains
+
     lead = conn.execute(
         "SELECT company_id, email_domain, company FROM leads WHERE id = ?", (lead_id,)
     ).fetchone()
@@ -2488,15 +2633,7 @@ def _lead_domains(conn: sqlite3.Connection, lead_id: int) -> tuple[list[str], st
     if lead:
         company_text = (lead["company"] or "").strip()
         if lead["company_id"]:
-            rows = conn.execute(
-                """SELECT identity_value_normalized AS d
-                   FROM company_identities
-                   WHERE company_id = ? AND identity_type = 'domain'
-                   ORDER BY (role = 'primary') DESC, is_verified DESC, verified_mx DESC,
-                            identity_value_normalized""",
-                (lead["company_id"],),
-            ).fetchall()
-            domains = [r["d"] for r in rows if r["d"]]
+            domains = list(rank_company_domains(conn, int(lead["company_id"])))
         own = (lead["email_domain"] or "").strip().lower()
         if own and own not in domains:
             domains.append(own)
@@ -2508,7 +2645,18 @@ def enrichment_targets(
 ) -> dict:
     """Resolve, per lead, the domain(s) the email-finder would use. Surfaces
     multi-domain (needs a choice) and no-domain (can't run) leads so the UI can
-    warn before spending provider credits."""
+    warn before spending provider credits.
+
+    `tried_domains` / `fresh_domains` mirror the per-(lead, domain) re-run guard
+    in _run_email_finder(), so the dialog shows the same spend the run will
+    actually make -- a lead whose every candidate has been tried reports
+    fresh_domains == [] and is what the run will skip as "already_ran".
+    """
+    from pipeline_provider_attempts import (
+        CAPABILITY_PROVIDERS, attempted_domains, has_attempted,
+    )
+
+    finder_providers = CAPABILITY_PROVIDERS["email_finding"]
     targets = []
     for lead_id in lead_ids:
         lead = conn.execute(
@@ -2530,14 +2678,28 @@ def enrichment_targets(
             })
             continue
         domains, _ = _lead_domains(conn, int(lead_id))
+        # Mirrors _run_email_finder's guard exactly, including its fallback:
+        # no domain history but a prior attempt means the run will skip the
+        # lead wholesale, so the dialog must predict that, not promise a run.
+        tried = attempted_domains(conn, int(lead_id), finder_providers)
+        if tried:
+            fresh = [d for d in domains if d not in tried]
+        elif any(has_attempted(conn, int(lead_id), p) for p in finder_providers):
+            fresh = []
+        else:
+            fresh = list(domains)
         targets.append({
             "lead_id": lead["id"],
             "name": lead["name"],
             "company": lead["company"],
+            "company_id": lead["company_id"],
             "has_email": bool((lead["email"] or "").strip()),
             "domains": domains,
-            "chosen_domain": domains[0] if domains else None,
+            "tried_domains": [d for d in domains if d in tried],
+            "fresh_domains": fresh,
+            "chosen_domain": fresh[0] if fresh else (domains[0] if domains else None),
             "multi_domain": len(domains) > 1,
             "no_domain": not domains,
+            "already_ran": bool(domains) and not fresh,
         })
     return {"targets": targets}

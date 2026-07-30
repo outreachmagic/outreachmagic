@@ -333,9 +333,13 @@ def test_force_bypasses_the_cache():
 
 
 def test_domain_owned_by_another_company_is_not_misattached():
-    """Both companies name-match modernstorefront.com strongly enough to clear
-    the confidence floor, so the ownership guard -- not the floor -- is what
-    stops the second one."""
+    """Both companies name-match the domain strongly enough to clear the
+    confidence floor, so the duplicate-name guard -- not the floor -- is what
+    stops the second one taking it as its identifying domain.
+
+    A shared domain is no longer blocked outright (brand portfolios share one
+    legitimately); what blocks the promotion here is that the two NAMES
+    describe one company."""
     conn = om.get_conn()
     cid_a, lead_a = _company_with_lead(conn, name="Modern Storefront LLC", person="Jane Doe")
     cid_b, lead_b = _company_with_lead(conn, name="Modern Storefront Group", person="John Smith")
@@ -352,10 +356,46 @@ def test_domain_owned_by_another_company_is_not_misattached():
         )
     conn.commit()
 
-    assert outcome["attach"]["attached"] is False
-    assert outcome["attach"]["reason"] == "domain_owned_by_other_company"
+    assert outcome["attach"]["attached"] is True
+    assert outcome["attach"]["primary_backfilled"] is False
+    assert outcome["attach"]["merge_candidate_logged"] is True
     company_b = conn.execute("SELECT domain FROM companies WHERE id = ?", (cid_b,)).fetchone()
     assert company_b["domain"] is None
+
+
+def test_brand_portfolio_siblings_share_a_domain_without_a_merge_candidate():
+    """Two differently-named properties on one brand domain are two companies,
+    not one recorded twice.
+
+    This is the 106-of-107 case that used to fill the merge queue: every Hilton
+    / Marriott / Hyatt property that resolved to the brand domain collided with
+    the first one to claim it and became a "are these the same company?" review
+    row, answered "no" every time and regenerated on the next run."""
+    conn = om.get_conn()
+    sibling = om.ensure_company(conn, name="Hyatt Regency Atlanta Perimeter")
+    conn.execute(
+        """INSERT INTO company_identities
+               (org_id, company_id, identity_type, identity_value_normalized, source)
+           VALUES ('default', ?, 'domain', 'hyatt.com', 'seed')""", (sibling,))
+    conn.commit()
+
+    cid, lead_id = _company_with_lead(conn, name="Grand Hyatt Tampa Bay", person="Pat Poe")
+    outcome = dd._attach_domain(conn, cid, "hyatt.com", role=None, source="test")
+    conn.commit()
+
+    assert outcome["attached"] is True
+    assert outcome["shared_with_companies"] == 1
+    assert "merge_candidate_logged" not in outcome
+    assert conn.execute(
+        """SELECT COUNT(*) c FROM company_merge_candidates
+           WHERE candidate_company_id = ? OR existing_company_id = ?""",
+        (cid, cid)).fetchone()["c"] == 0
+    # Both rows keep the domain, so email finding can try it for either one's leads.
+    assert conn.execute(
+        """SELECT COUNT(*) c FROM company_identities
+           WHERE identity_type = 'domain' AND identity_value_normalized = 'hyatt.com'""",
+    ).fetchone()["c"] == 2
+    conn.close()
 
 
 def test_skips_non_company_names_without_spending_a_credit():

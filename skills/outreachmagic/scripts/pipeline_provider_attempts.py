@@ -159,6 +159,50 @@ def has_attempted(conn: sqlite3.Connection, lead_id: int, provider: str) -> bool
     return row is not None
 
 
+def attempted_domains(
+    conn: sqlite3.Connection, lead_id: int, providers: tuple[str, ...] = (),
+) -> set[str]:
+    """Real domains this lead has already been attempted on, lowercased.
+
+    Reads lead_provider_observations DIRECTLY rather than going through the
+    lead_provider_attempts view: that view is
+    `ROW_NUMBER() PARTITION BY (lead_id, provider)`, so it keeps one row per
+    provider and discards the domain dimension -- which is exactly what the
+    re-run guard needs. With only has_attempted() to go on, a lead whose sole
+    tried domain missed was skipped as "already ran" even after a *second*
+    domain was attached, and forcing past that re-spent on the domain already
+    known to miss.
+
+    THE RESULT IS A LOWER BOUND, and a thin one on historical data. Two reasons
+    a real attempt is invisible here:
+
+      - The old `domain = domain or PROVIDER_DOMAINS.get(provider)` bug (fixed
+        in record_provider_attempt above) wrote the *category* label into this
+        column, so ~9.5k trykitt rows say "email_finding" rather than a domain.
+        Those are filtered out below -- a category label is not a domain and
+        must never match a candidate.
+      - LinkedIn-only lookups have no domain by nature.
+
+    Net: only ~26% of historical finder attempts carry a usable domain. Callers
+    MUST NOT treat an empty result as "never attempted" -- pair it with
+    has_attempted() (see _run_email_finder) or the guard silently gets weaker
+    than the lead-level one it replaced.
+    """
+    sql = (
+        "SELECT DISTINCT LOWER(TRIM(domain)) AS d FROM lead_provider_observations "
+        "WHERE lead_id = ? AND origin = 'attempt' "
+        "  AND domain IS NOT NULL AND TRIM(domain) != '' "
+        # A domain has a dot and no spaces; the legacy category labels
+        # ("email_finding", "email_verification", "research") have neither.
+        "  AND domain LIKE '%.%' AND domain NOT LIKE '% %'"
+    )
+    params: list = [int(lead_id)]
+    if providers:
+        sql += f" AND provider IN ({','.join('?' * len(providers))})"
+        params += [(p or "").strip().lower() for p in providers]
+    return {r["d"] for r in conn.execute(sql, params).fetchall() if r["d"]}
+
+
 # Capability -> the providers that satisfy it. Mirrors PROVIDER_DOMAINS but
 # inverted, so the dashboard can ask "has email-finding run?" without knowing
 # which vendor served it.

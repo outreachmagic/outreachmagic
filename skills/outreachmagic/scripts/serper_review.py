@@ -189,9 +189,11 @@ def _write_field(conn: sqlite3.Connection, lead_id: int, field: str, value: str)
 
 def _link_company_domain(conn: sqlite3.Connection, lead_id: int, domain: str) -> None:
     """Point the lead at the company for `domain`, creating it if needed."""
-    from lead_sync import ensure_company
+    from pipeline import ensure_company
 
-    company_id = ensure_company(conn, domain=domain.strip().lower())
+    # No ad-hoc strip().lower() here -- ensure_company() normalizes, and a
+    # second half-normalization at the call site is how the two drift apart.
+    company_id = ensure_company(conn, domain=domain)
     if company_id:
         conn.execute(
             "UPDATE leads SET company_id = ?, updated_at = datetime('now') WHERE id = ?",
@@ -216,7 +218,13 @@ def apply_batch(decisions: list[dict], *, dry_run: bool = False) -> dict:
                     dry_run=dry_run, conn=conn,
                 ))
             except (SerperReviewError, KeyError, TypeError, ValueError) as exc:
-                errors.append({"item": item, "error": str(exc)})
+                err = {"item": item, "error": str(exc)}
+                # An identity conflict is resolvable — two records for one
+                # person — so the pair has to survive the batch rather than be
+                # flattened to a message the caller can only display.
+                if hasattr(exc, "as_payload"):
+                    err["conflict"] = exc.as_payload()
+                errors.append(err)
         if errors:
             conn.execute("ROLLBACK")
             return {"status": "error", "applied": 0, "errors": errors}

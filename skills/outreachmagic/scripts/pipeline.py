@@ -451,7 +451,15 @@ def ensure_company(
     a generic name, so it logs a company_merge_candidates row for human
     review and creates a new company row instead (Stage C4).
     """
-    domain = (domain or "").strip().lower() or None
+    # normalize_company_domain() rather than a bare strip().lower(): this is the
+    # front door for companies.domain, and a bare strip kept whatever shape the
+    # caller passed. A trailing FQDN root dot ("markquart.com.") from a scraped
+    # source therefore became a company row in its own right, then got copied
+    # into company_identities by merge_companies() and finally showed up in the
+    # merge queue as a near-duplicate of the same company. Also drops values
+    # with no dot, a scheme, a path, or a www. prefix -- none of which are
+    # domains, all of which used to be storable.
+    domain = normalize_company_domain(domain)
     if domain and domain in SHARED_EMAIL_DOMAINS:
         domain = None
     name = (name or "").strip() or None
@@ -679,7 +687,14 @@ def _domain_rank_score(row: dict) -> tuple:
     # first hit, every subdomain ranked above the apex is a provider credit
     # spent to learn nothing.
     is_apex = 1 if company_registrable_domain(domain) == domain else 0
-    role_score = {"email": 2, "branch": 1, "website": 1}.get(row.get("role"), 0)
+    # 'primary' outranks 'email': it is an explicit designation ("this is the
+    # company's domain"), where 'email' is an observation ("an address was seen
+    # here") -- an observation on a branch/regional domain shouldn't displace a
+    # domain someone deliberately marked authoritative. It was missing from
+    # this map entirely, scoring the same 0 as an unlabelled row, which is how
+    # a verified primary lost to an unverified subdomain once the dashboard
+    # started sharing this ranker.
+    role_score = {"primary": 3, "email": 2, "branch": 1, "website": 1}.get(row.get("role"), 0)
     verified_score = 1 if row.get("verified_mx") else 0
     return (found_count, role_score, is_apex, verified_score, row.get("created_at") or "")
 
@@ -2277,12 +2292,17 @@ def merge_companies(
         # company_identities row yet (ensure_company only ever writes that
         # column directly) -- without this, COALESCE below would silently
         # drop a real second domain the moment it differs from keep's.
-        if other["domain"] and other["domain"] != keep["domain"]:
+        # Normalized on the way in: the column is only as clean as whatever
+        # wrote it, and rows predating ensure_company()'s normalization still
+        # carry trailing dots. Copying one verbatim is how a malformed domain
+        # escaped companies.domain into company_identities.
+        other_domain_norm = normalize_company_domain(other["domain"])
+        if other_domain_norm and other_domain_norm != keep["domain"]:
             conn.execute(
                 """INSERT OR IGNORE INTO company_identities
                        (org_id, company_id, identity_type, identity_value_normalized, source)
                    VALUES (?, ?, 'domain', ?, 'legacy_companies_column')""",
-                (DEFAULT_ORG_ID, keep_id, other["domain"]),
+                (DEFAULT_ORG_ID, keep_id, other_domain_norm),
             )
 
         domain = keep["domain"] or other["domain"]
@@ -2297,6 +2317,21 @@ def merge_companies(
         # trg_phone_numbers_company_delete.
         import phone_numbers as _phones
         _phones.reassign_owner(conn, "company", merge_id, keep_id)
+
+        # Contact-sourcing state follows the surviving company. The page cache
+        # is worth real money -- letting ON DELETE CASCADE take it means the
+        # next find-contacts run re-fetches (and re-pays for) pages we already
+        # hold. UPDATE OR IGNORE because url_hash is globally UNIQUE: when both
+        # companies cached the same staff page, keep's copy stands and the
+        # loser's is dropped by the cascade below, which is the right answer.
+        conn.execute(
+            "UPDATE OR IGNORE company_page_cache SET company_id = ? WHERE company_id = ?",
+            (keep_id, merge_id),
+        )
+        conn.execute(
+            "UPDATE company_contact_observations SET company_id = ? WHERE company_id = ?",
+            (keep_id, merge_id),
+        )
 
         merge_entity_key = company_entity_key(conn, merge_id)
         conn.execute(
@@ -2434,15 +2469,68 @@ def _payload_domain_pair(reason: str, payload: dict) -> tuple[Optional[str], Opt
     return payload.get("existing_domain"), payload.get("incoming_domain")
 
 
+def _flatten_merge_candidate(conn: sqlite3.Connection, d: dict) -> dict:
+    """Name/domain/lead-count for both sides of a candidate, as flat keys.
+
+    Three generations of queueing code wrote three payload shapes
+    (existing_/incoming_, existing_/candidate_, and backfill_audit's nested
+    a/b). Reading them apart belongs here, once, and not in every surface that
+    wants to draw the pair -- which is how the review list ended up with a
+    different idea of "the other company" than the CLI had.
+
+    Lead counts come from the live tables rather than the payload: a candidate
+    queued weeks ago should not tell you a company has three leads when it now
+    has thirty. Which side has the leads is usually the whole decision.
+    """
+    payload = d.get("payload") or {}
+    reason = d.get("reason") or ""
+    if reason == "backfill_audit":
+        a, b = payload.get("a") or {}, payload.get("b") or {}
+        existing_name, existing_domain = a.get("name"), a.get("domain")
+        candidate_name, candidate_domain = b.get("name"), b.get("domain")
+    else:
+        existing_name = payload.get("existing_name")
+        existing_domain = payload.get("existing_domain")
+        candidate_name = payload.get("incoming_name") or payload.get("candidate_name")
+        candidate_domain = payload.get("incoming_domain") or payload.get("candidate_domain")
+
+    def _live(company_id):
+        if not company_id:
+            return None, None, 0
+        row = conn.execute(
+            """SELECT c.name, c.domain,
+                      (SELECT COUNT(*) FROM leads l WHERE l.company_id = c.id) AS leads
+                 FROM companies c WHERE c.id = ?""", (company_id,)).fetchone()
+        if row is None:
+            return None, None, 0
+        return row["name"], row["domain"], row["leads"]
+
+    live_e_name, live_e_domain, e_leads = _live(d.get("existing_company_id"))
+    live_c_name, live_c_domain, c_leads = _live(d.get("candidate_company_id"))
+    d["existing_name"] = live_e_name or existing_name
+    d["existing_domain"] = live_e_domain or existing_domain
+    d["existing_leads"] = e_leads
+    d["candidate_name"] = live_c_name or candidate_name
+    d["candidate_domain"] = live_c_domain or candidate_domain
+    d["candidate_leads"] = c_leads
+    return d
+
+
 def list_company_merge_candidates(
     *,
     status: Optional[str] = "pending",
     reason: Optional[str] = None,
     limit: int = 50,
+    offset: int = 0,
     min_confidence: str = "ALL",
 ) -> dict:
     """List queued company merge candidates (ambiguous name-only matches,
-    LinkedIn-URL conflicts, backfill audit findings) for review."""
+    LinkedIn-URL conflicts, backfill audit findings) for review.
+
+    `total` counts everything matching the filters, not the page -- with
+    thousands queued, "50 candidates" and "50 of 2,294" are very different
+    things to be told before you start approving them.
+    """
     conn = get_conn()
     try:
         clauses, params = [], []
@@ -2456,7 +2544,7 @@ def list_company_merge_candidates(
         rows = conn.execute(
             f"SELECT * FROM company_merge_candidates {where} ORDER BY received_at DESC", params,
         ).fetchall()
-        candidates = []
+        matched, candidates = 0, []
         for r in rows:
             d = dict(r)
             try:
@@ -2472,17 +2560,34 @@ def list_company_merge_candidates(
                 confidence = _classify_company_domain_pair(a, b)
             if not pipeline_dedup.meets_min_confidence(confidence, min_confidence):
                 continue
-            candidates.append(d)
-            if len(candidates) >= limit:
-                break
-        return {"status": "ok", "count": len(candidates), "candidates": candidates}
+            # Confidence is recomputed for legacy rows, so it has to be handed
+            # back or the UI would have to redo the same guesswork to draw it.
+            d["confidence"] = confidence
+            matched += 1
+            if matched <= offset:
+                continue
+            if len(candidates) < limit:
+                candidates.append(_flatten_merge_candidate(conn, d))
+        return {"status": "ok", "count": len(candidates), "total": matched,
+                "limit": limit, "offset": offset, "candidates": candidates}
     finally:
         conn.close()
 
 
-def approve_company_merge_candidate(candidate_id: str) -> dict:
-    """Execute a queued company merge candidate: merges existing_company_id
-    (kept) and candidate_company_id (merged away), then marks it resolved."""
+def approve_company_merge_candidate(
+    candidate_id: str, *, keep_id: Optional[int] = None,
+) -> dict:
+    """Execute a queued company merge candidate.
+
+    `keep_id` names which of the two rows survives; it must be one of the pair.
+    The default keeps existing_company_id, which is what this did unconditionally
+    before -- but the queued "existing" side is only whichever row the ingest
+    happened to see first, and that is frequently the emptier of the two.
+
+    The surviving row's own values win field by field, and the merged-away row
+    fills anything the survivor left blank. That rule lives in merge_companies()
+    and is not restated here.
+    """
     conn = get_conn()
     try:
         row = conn.execute(
@@ -2494,9 +2599,17 @@ def approve_company_merge_candidate(candidate_id: str) -> dict:
             return {"status": "error", "error": f"candidate {candidate_id} is not pending (status={row['status']})"}
         if not row["candidate_company_id"]:
             return {"status": "error", "error": f"candidate {candidate_id} has no candidate_company_id to merge"}
+        pair = (int(row["existing_company_id"]), int(row["candidate_company_id"]))
+        if keep_id is None:
+            keep, merge = pair
+        else:
+            keep = int(keep_id)
+            if keep not in pair:
+                return {"status": "error",
+                        "error": f"keep_id {keep} is not part of candidate {candidate_id} {pair}"}
+            merge = pair[0] if keep == pair[1] else pair[1]
         result = merge_companies(
-            int(row["existing_company_id"]), int(row["candidate_company_id"]),
-            reason=f"approved:{row['reason']}", conn=conn,
+            keep, merge, reason=f"approved:{row['reason']}", conn=conn,
         )
         if result.get("status") == "merged":
             conn.execute(
@@ -4242,7 +4355,12 @@ def import_profiles(
     use_shared_conn = not dry_run
     shared_conn: Optional[sqlite3.Connection] = get_conn() if use_shared_conn else None
     if shared_conn is not None:
-        apply_bulk_pull_pragmas(shared_conn)
+        # Keep FK enforcement on: an import creates each row's parents (company,
+        # workspace) ahead of the row itself, so the per-row parent lookup is
+        # index-backed and cheap -- whereas turning FKs off obliges a whole-
+        # database foreign_key_check on the way out, which costs seconds on a
+        # large DB no matter how few rows the CSV had.
+        apply_bulk_pull_pragmas(shared_conn, disable_foreign_keys=False)
 
     for i, raw in enumerate(rows):
         if shared_conn is not None and i and i % IMPORT_CHUNK_SIZE == 0:

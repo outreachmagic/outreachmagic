@@ -106,6 +106,49 @@ class LeadExportTests(unittest.TestCase):
         self.assertEqual(rows[0]["first_name"], "Cher")
         self.assertEqual(rows[0]["last_name"], "")
 
+    # -- an explicit selection --------------------------------------------
+    #
+    # "Configure export" used to send the filters and nothing else, so ticking
+    # 50 rows and hitting Export produced the whole filtered list. A tick list
+    # is a literal answer to "which rows" and has to win outright.
+
+    def test_lead_ids_exports_only_the_selection(self):
+        a = self._lead(name="Jane Doe", email="jane@acme.com", company="Acme Corp")
+        b = self._lead(name="John Roe", email="john@acme.com", company="Acme Corp")
+        self._lead(name="Not Picked", email="nope@acme.com", company="Acme Corp")
+        _cols, rows = self._rows(preset="sequencer-upload", lead_ids=[a, b])
+        self.assertEqual(
+            {r["email"] for r in rows}, {"jane@acme.com", "john@acme.com"})
+
+    def test_an_empty_selection_exports_nothing(self):
+        # Not "no id filter, so export everything" — that is the bug, restated.
+        self._lead(name="Jane Doe", email="jane@acme.com", company="Acme Corp")
+        _cols, rows = self._rows(preset="sequencer-upload", lead_ids=[])
+        self.assertEqual(rows, [])
+
+    def test_lead_ids_reaches_a_company_placeholder(self):
+        # The contacts list hides placeholders by default. If one is on screen
+        # (record_type=all) and gets ticked, exporting it must not silently drop
+        # it back out — the server pairs lead_ids with record_type="all".
+        lead_id = self._lead(name="Acme Corp", email=None, company="Acme Corp")
+        conn = om.get_conn()
+        try:
+            conn.execute("UPDATE leads SET record_type = 'company_placeholder' WHERE id = ?",
+                         (lead_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        _cols, hidden = self._rows(preset="sequencer-upload", lead_ids=[lead_id])
+        self.assertEqual(hidden, [])
+        _cols, shown = self._rows(
+            preset="sequencer-upload", lead_ids=[lead_id], record_type="all")
+        self.assertEqual(len(shown), 1)
+
+    def test_too_many_lead_ids_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._rows(preset="sequencer-upload",
+                       lead_ids=list(range(dq.MAX_EXPLICIT_LEAD_IDS + 1)))
+
     def test_unknown_preset_is_rejected_with_the_valid_list(self):
         with self.assertRaises(lead_export.LeadExportError) as ctx:
             self._rows(preset="whatever")

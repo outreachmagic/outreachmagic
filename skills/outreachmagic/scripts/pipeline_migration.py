@@ -60,6 +60,88 @@ CREATE TABLE IF NOT EXISTS sync_shadow (
 """
 
 
+# Contact sourcing (`find-contacts`): the page cache, the per-company run log,
+# and the ICP config that scores what comes out. Kept here rather than in the
+# owning modules (the pattern provider_observations.TABLE_SQL follows) because
+# the three tables are one feature and two of their owners -- page_cache.py and
+# contact_discovery.py -- arrive in a later phase; the schema has to exist
+# before the code that writes it, so that anything reading a half-built feature
+# reads an empty table rather than crashing on a missing one.
+#
+# None of the three is in sync_contract.SYNC_MAP, so none gets an outbox
+# trigger: a cached page, a fetch log line and a title whitelist are local
+# working state, not entities the relay holds a snapshot of.
+CONTACT_SOURCING_SQL = """
+-- Fetched page bodies, keyed by URL, never auto-invalidated. This is what
+-- makes `--reparse` free: re-extracting with a changed ICP re-reads from here
+-- and spends no Firecrawl credit. `content_hash` lets a re-fetch skip pages
+-- whose body didn't actually change. Inline markdown is fine at this scale
+-- (~676 pages x ~33k chars = ~22 MB); revisit past ~10k pages.
+CREATE TABLE IF NOT EXISTS company_page_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id   INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+    url          TEXT NOT NULL,
+    url_hash     TEXT NOT NULL,
+    fetched_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    fetch_method TEXT NOT NULL DEFAULT 'firecrawl',
+    http_status  INTEGER,
+    content_hash TEXT,
+    char_count   INTEGER,
+    markdown     TEXT,
+    UNIQUE (url_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_company_page_cache_company ON company_page_cache(company_id);
+
+-- One row per company per find-contacts attempt, written on every path
+-- including failure (the discipline lead_provider_observations enforces: a
+-- provider call that returned nothing is a fact worth keeping, and the only
+-- way to know not to pay for it again).
+--
+-- `icp_config_hash` is the load-bearing column. Precision-per-campaign only
+-- means something if a finding joins to the config version that produced it;
+-- without it, editing the whitelist silently rewrites the history of every
+-- earlier run's quality.
+CREATE TABLE IF NOT EXISTS company_contact_observations (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id        INTEGER NOT NULL,
+    workspace_id      TEXT,
+    ran_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    provider          TEXT NOT NULL DEFAULT 'firecrawl',
+    url               TEXT,
+    cache_hit         INTEGER NOT NULL DEFAULT 0,
+    fetch_ms          INTEGER,
+    http_status       INTEGER,
+    regex_found       INTEGER NOT NULL DEFAULT 0,
+    extractor         TEXT,
+    contacts_attached INTEGER NOT NULL DEFAULT 0,
+    contacts_queued   INTEGER NOT NULL DEFAULT 0,
+    icp_config_hash   TEXT,
+    cost_estimate_usd REAL,
+    outcome           TEXT NOT NULL,
+    error             TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cco_company ON company_contact_observations(company_id, ran_at);
+CREATE INDEX IF NOT EXISTS idx_cco_workspace ON company_contact_observations(workspace_id, ran_at);
+CREATE INDEX IF NOT EXISTS idx_cco_icp_hash ON company_contact_observations(icp_config_hash);
+
+-- Who counts as a contact worth keeping, per workspace. In the database rather
+-- than a vault YAML so pull/sync/the dashboard can all see it, and so QC can
+-- join findings against a config version instead of against whatever the file
+-- happens to say today. `icp export`/`icp import` give back the file
+-- ergonomics without the drift.
+CREATE TABLE IF NOT EXISTS workspace_icp_profiles (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    config_json  TEXT NOT NULL,
+    config_hash  TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (workspace_id, name)
+);
+"""
+
+
 def _outbox_upsert_stmt(entity_type: str, id_expr: str) -> str:
     return (
         "INSERT INTO outbox (entity_type, entity_id, op, dirty_at) "
@@ -1231,6 +1313,226 @@ def _repair_provenance_transport_strings(conn: sqlite3.Connection) -> None:
     )
 
 
+def _repair_malformed_company_domains(conn: sqlite3.Connection) -> dict:
+    """One-time cleanup of domains that predate ensure_company()'s normalization.
+
+    Two shapes exist in the wild, both from writers that did a bare
+    strip().lower() instead of normalize_company_domain():
+
+      - A trailing FQDN root dot ("marthaler.com."). Valid DNS, never what we
+        store, and it makes a second identity for a company we already track --
+        which then surfaces as a near-duplicate in the merge review queue.
+      - Values that aren't domains at all ("serhant.", "moov.") -- company
+        NAMES that ended in a period and got fed through the alias path before
+        it normalized. Nothing can be found at them; they are deleted, not
+        repaired, because there is no correct domain to repair them to.
+
+    Runs before the shape-guard triggers would reject the rows anyway; the
+    repair writes a clean value, so it passes them. Idempotent via
+    migration_flags, and small (single-digit rows at the time of writing) --
+    but written as a general sweep rather than a hardcoded id list so a
+    reinstall onto an older database cleans whatever it actually finds.
+    """
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'malformed_company_domains_repair'"
+    ).fetchone():
+        return {"status": "skipped"}
+
+    from pipeline_utils import normalize_company_domain
+
+    summary = {"companies_fixed": 0, "companies_cleared": 0,
+               "identities_fixed": 0, "identities_deleted": 0}
+
+    # Anything whose normalized form differs from what's stored is suspect.
+    # Pull candidates cheaply, then let the normalizer be the judge.
+    for cid, current in conn.execute(
+        "SELECT id, domain FROM companies WHERE domain IS NOT NULL AND ("
+        "  domain LIKE '%.' OR domain LIKE '% %' OR domain NOT LIKE '%.%'"
+        "  OR domain <> LOWER(domain) OR domain LIKE 'http%' OR domain LIKE 'www.%')"
+    ).fetchall():
+        fixed = normalize_company_domain(current)
+        if fixed == current:
+            continue
+        if not fixed:
+            conn.execute("UPDATE companies SET domain = NULL WHERE id = ?", (cid,))
+            summary["companies_cleared"] += 1
+            continue
+        # companies.domain is UNIQUE -- if the clean form is already taken, the
+        # malformed row is the redundant one. Clearing it (rather than merging)
+        # keeps this migration side-effect-free; merge review is the place
+        # where two company rows get reconciled, and it can now see them as the
+        # same domain.
+        taken = conn.execute(
+            "SELECT 1 FROM companies WHERE domain = ? AND id != ?", (fixed, cid),
+        ).fetchone()
+        conn.execute(
+            "UPDATE companies SET domain = ?, updated_at = datetime('now') WHERE id = ?",
+            (None if taken else fixed, cid),
+        )
+        summary["companies_cleared" if taken else "companies_fixed"] += 1
+
+    for iid, _company_id, value in conn.execute(
+        "SELECT id, company_id, identity_value_normalized FROM company_identities "
+        "WHERE identity_type = 'domain' AND ("
+        "  identity_value_normalized LIKE '%.'"
+        "  OR identity_value_normalized LIKE '% %'"
+        "  OR identity_value_normalized NOT LIKE '%.%'"
+        "  OR identity_value_normalized <> LOWER(identity_value_normalized)"
+        "  OR identity_value_normalized LIKE 'http%'"
+        "  OR identity_value_normalized LIKE 'www.%')"
+    ).fetchall():
+        fixed = normalize_company_domain(value)
+        if fixed == value:
+            continue
+        if not fixed:
+            conn.execute("DELETE FROM company_identities WHERE id = ?", (iid,))
+            summary["identities_deleted"] += 1
+            continue
+        # The clean form may already be on file (for this company or another);
+        # the UNIQUE constraint is global today, so collapse rather than clash.
+        exists = conn.execute(
+            "SELECT 1 FROM company_identities WHERE identity_type = 'domain'"
+            "  AND identity_value_normalized = ? AND id != ?", (fixed, iid),
+        ).fetchone()
+        if exists:
+            conn.execute("DELETE FROM company_identities WHERE id = ?", (iid,))
+            summary["identities_deleted"] += 1
+        else:
+            conn.execute(
+                "UPDATE company_identities SET identity_value_normalized = ? WHERE id = ?",
+                (fixed, iid),
+            )
+            summary["identities_fixed"] += 1
+
+    conn.execute(
+        "INSERT INTO migration_flags (name) VALUES ('malformed_company_domains_repair')"
+    )
+    return {"status": "ok", **summary}
+
+
+def _relax_company_identity_domain_uniqueness(conn: sqlite3.Connection) -> dict:
+    """Let more than one company legitimately claim the same domain.
+
+    company_identities was created UNIQUE (org_id, identity_type,
+    identity_value_normalized) -- one domain, one company, globally. That is
+    wrong for brand portfolios, which this dataset is full of: 22 Hilton
+    properties all send mail from hilton.com, a dozen Marriott properties from
+    marriott.com. Only the first could record it. Every subsequent property hit
+    the constraint in _attach_domain(), which had exactly one vocabulary for a
+    collision -- "queue a company merge" -- so a legal shared domain became a
+    human question ("are these the same company?") whose answer was always no,
+    regenerated on every find-domains run. 106 of the 107 pending merge
+    candidates were this.
+
+    The fix is not a new table, it is one column in the constraint. After this,
+    company_identities means "domains worth trying for this company", which can
+    overlap between companies; companies.domain stays globally UNIQUE and keeps
+    meaning "the domain that IDENTIFIES this company" -- which is what
+    ensure_company() matches on, so its behaviour is untouched.
+
+    Relay-side (checked against wbhk-worker): companies are opaque JSON
+    snapshots keyed by uid with no server-side allowlist and no identities
+    table, so nothing upstream enforces the old constraint and no push can
+    fail because of this. The one upstream structure that DOES care is
+    relay_entity_aliases (PK on alias, last-writer-wins) -- see
+    _assemble_company_sync_payload, which now only sends non-shared domains as
+    aliases so a brand domain can't thrash the alias->uid map.
+    """
+    if conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'company_identities_shared_domains'"
+    ).fetchone():
+        return {"status": "skipped"}
+
+    # Only rebuild if the old constraint is actually present -- a fresh install
+    # gets the new shape from the CREATE TABLE above.
+    if not _company_identities_unique_lacks_company_id(conn):
+        conn.execute(
+            "INSERT INTO migration_flags (name) VALUES ('company_identities_shared_domains')")
+        return {"status": "already_relaxed"}
+
+    # Positional access: migrate_db() accepts a caller-supplied connection and
+    # cannot assume get_conn()'s sqlite3.Row factory is in place.
+    before = conn.execute("SELECT COUNT(*) FROM company_identities").fetchone()[0]
+    conn.executescript("""
+        ALTER TABLE company_identities RENAME TO company_identities_old;
+        CREATE TABLE company_identities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            org_id TEXT NOT NULL,
+            company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+            identity_type TEXT NOT NULL,
+            identity_value_normalized TEXT NOT NULL,
+            role TEXT,
+            verified_mx INTEGER,
+            source TEXT,
+            is_verified INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            label TEXT,
+            purpose TEXT,
+            UNIQUE (org_id, company_id, identity_type, identity_value_normalized)
+        );
+        INSERT INTO company_identities
+            (id, org_id, company_id, identity_type, identity_value_normalized,
+             role, verified_mx, source, is_verified, created_at, label, purpose)
+        SELECT id, org_id, company_id, identity_type, identity_value_normalized,
+               role, verified_mx, source, is_verified, created_at, label, purpose
+          FROM company_identities_old;
+        DROP TABLE company_identities_old;
+        CREATE INDEX IF NOT EXISTS idx_company_identities_company_type
+            ON company_identities(company_id, identity_type);
+        CREATE INDEX IF NOT EXISTS idx_company_identities_value
+            ON company_identities(identity_type, identity_value_normalized);
+        -- DROP TABLE takes the table's triggers with it, and the shape guards
+        -- were created against the OLD table earlier in migrate_db. Recreate
+        -- them here or this migration silently disarms them -- CREATE TRIGGER
+        -- IF NOT EXISTS upstream won't fire again on the next run, because the
+        -- migration_flag makes this whole function a no-op by then.
+        CREATE TRIGGER IF NOT EXISTS trg_company_identities_domain_shape_insert
+        BEFORE INSERT ON company_identities
+        WHEN NEW.identity_type = 'domain' AND (
+                 NEW.identity_value_normalized LIKE '%.'
+              OR NEW.identity_value_normalized LIKE '% %'
+              OR NEW.identity_value_normalized NOT LIKE '%.%'
+              OR NEW.identity_value_normalized <> LOWER(NEW.identity_value_normalized)
+              OR NEW.identity_value_normalized LIKE 'http%'
+              OR NEW.identity_value_normalized LIKE 'www.%'
+              OR TRIM(NEW.identity_value_normalized) <> NEW.identity_value_normalized)
+        BEGIN SELECT RAISE(ABORT, 'malformed company identity domain'); END;
+        CREATE TRIGGER IF NOT EXISTS trg_company_identities_domain_shape_update
+        BEFORE UPDATE OF identity_value_normalized ON company_identities
+        WHEN NEW.identity_type = 'domain' AND (
+                 NEW.identity_value_normalized LIKE '%.'
+              OR NEW.identity_value_normalized LIKE '% %'
+              OR NEW.identity_value_normalized NOT LIKE '%.%'
+              OR NEW.identity_value_normalized <> LOWER(NEW.identity_value_normalized)
+              OR NEW.identity_value_normalized LIKE 'http%'
+              OR NEW.identity_value_normalized LIKE 'www.%'
+              OR TRIM(NEW.identity_value_normalized) <> NEW.identity_value_normalized)
+        BEGIN SELECT RAISE(ABORT, 'malformed company identity domain'); END;
+    """)
+    after = conn.execute("SELECT COUNT(*) FROM company_identities").fetchone()[0]
+    conn.execute(
+        "INSERT INTO migration_flags (name) VALUES ('company_identities_shared_domains')")
+    return {"status": "ok", "rows_before": before, "rows_after": after}
+
+
+def _company_identities_unique_lacks_company_id(conn: sqlite3.Connection) -> bool:
+    """True when the table's UNIQUE constraint is still the global one.
+
+    Table-level UNIQUE(...) makes an auto-index whose `sql` is NULL, so it
+    can't be read back as text -- PRAGMA index_info is the only way to see
+    which columns it covers. Positional tuple access throughout: this runs
+    during migration, where the connection's row_factory is not guaranteed.
+    """
+    for row in conn.execute("PRAGMA index_list(company_identities)").fetchall():
+        name, is_unique = row[1], row[2]
+        if not is_unique:
+            continue
+        cols = {r[2] for r in conn.execute(f'PRAGMA index_info("{name}")').fetchall()}
+        if "identity_value_normalized" in cols and "company_id" not in cols:
+            return True
+    return False
+
+
 def _install_provenance_transport_guard(conn: sqlite3.Connection) -> None:
     """RAISE(ABORT) if any code path tries to write a transport string back into
     a provenance column. The backfill above only cleans what's already there;
@@ -1387,9 +1689,22 @@ def migrate_db(conn=None):
             source TEXT,
             is_verified INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE (org_id, identity_type, identity_value_normalized)
+            -- company_id is IN the key on purpose: a domain is not owned by
+            -- one company. Brand portfolios (22 Hilton properties on
+            -- hilton.com) are the normal case, not the exception, and the
+            -- global form of this constraint turned every one of them into a
+            -- bogus merge-review row. companies.domain stays globally UNIQUE
+            -- and remains the "this domain IS this company" identity key.
+            UNIQUE (org_id, company_id, identity_type, identity_value_normalized)
         );
         CREATE INDEX IF NOT EXISTS idx_company_identities_company_type ON company_identities(company_id, identity_type);
+        -- Reverse lookup: "which company owns/uses this value". Backs the
+        -- company-search-by-any-domain predicate and _attach_domain()'s owner
+        -- check. The UNIQUE constraint above happens to serve the same
+        -- prefix today, but that constraint is on its way to being relaxed to
+        -- include company_id (a brand domain legitimately belongs to several
+        -- property rows), which would leave the reverse lookup unindexed.
+        CREATE INDEX IF NOT EXISTS idx_company_identities_value ON company_identities(identity_type, identity_value_normalized);
         -- Human-review queue for ambiguous company matches (name-only fallback
         -- hits, LinkedIn-URL/domain conflicts, backfill audit findings). Shape
         -- mirrors unmapped_campaign_queue: pending -> resolved/dismissed, full
@@ -1612,7 +1927,16 @@ def migrate_db(conn=None):
     from pipeline import backfill_campaigns_from_events, backfill_plusvibe_status_metadata
 
     backfill_campaigns_from_events(conn)
-    backfill_plusvibe_status_metadata(conn)
+    # Not called here: this repairs events, which only ever arrive via a pull, so
+    # it runs at the end of sync_from_relay_org instead of on every invocation.
+    # The one-shot pass over pre-existing events is flagged below.
+    if not conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'plusvibe_status_metadata_backfill'"
+    ).fetchone():
+        backfill_plusvibe_status_metadata(conn)
+        conn.execute(
+            "INSERT INTO migration_flags (name) VALUES ('plusvibe_status_metadata_backfill')"
+        )
     for col, col_type in [
         ("workspace_routing_mode", "TEXT NOT NULL DEFAULT 'single'"),
         ("default_workspace_id", "TEXT"),
@@ -1638,7 +1962,18 @@ def migrate_db(conn=None):
         conn.execute("ALTER TABLE workspace_leads ADD COLUMN current_sentiment_since TEXT")
     except sqlite3.OperationalError:
         pass
-    backfill_workspace_routing(conn)
+    # The per-lead half is one-shot -- on a converged DB it walks all of leads to
+    # issue ~176k INSERT OR IGNOREs that change nothing (~1.5s), on every single
+    # CLI invocation. The campaign-map half still runs every time; see the
+    # function's docstring for why the two halves differ.
+    routing_leads_done = conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'workspace_routing_backfill'"
+    ).fetchone()
+    backfill_workspace_routing(conn, backfill_leads=not routing_leads_done)
+    if not routing_leads_done:
+        conn.execute(
+            "INSERT INTO migration_flags (name) VALUES ('workspace_routing_backfill')"
+        )
     for tbl in ("workspaces", "campaign_workspace_map"):
         try:
             conn.execute(f"ALTER TABLE {tbl} ADD COLUMN cloud_synced INTEGER NOT NULL DEFAULT 0")
@@ -1692,7 +2027,16 @@ def migrate_db(conn=None):
             conn.execute(f"ALTER TABLE workspace_leads ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
-    _backfill_current_sentiment_since(conn)
+    # One-shot: materializes the column from event history. Converges in one
+    # pass (see tests/test_sentiment_backfill_convergence.py), and ingest keeps
+    # it current from there, so re-deriving it on every invocation is pure cost.
+    if not conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'current_sentiment_since_backfill'"
+    ).fetchone():
+        _backfill_current_sentiment_since(conn)
+        conn.execute(
+            "INSERT INTO migration_flags (name) VALUES ('current_sentiment_since_backfill')"
+        )
     for col, col_type in [
         ("headcount_numeric", "INTEGER"),
         ("location_city", "TEXT"),
@@ -1769,7 +2113,15 @@ def migrate_db(conn=None):
            SET last_contacted_at = last_activity_at
            WHERE last_contacted_at IS NULL AND last_activity_at IS NOT NULL"""
     )
-    repair_malformed_tags(conn)
+    # One-shot repair of legacy list-literal tags. Guarded at the call site
+    # rather than inside the function so `pipeline.py tag repair` still forces a
+    # full pass on demand -- unguarded here it re-parses every workspace_lead_tags
+    # row (~71k, ~0.5s) on every invocation to find nothing.
+    if not conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'malformed_tags_repair'"
+    ).fetchone():
+        repair_malformed_tags(conn)
+        conn.execute("INSERT INTO migration_flags (name) VALUES ('malformed_tags_repair')")
     if not conn.execute(
         "SELECT 1 FROM migration_flags WHERE name = 'bounce_events_backfill'"
     ).fetchone():
@@ -1910,6 +2262,54 @@ def migrate_db(conn=None):
         AFTER DELETE ON companies BEGIN
             DELETE FROM phone_numbers WHERE owner_type = 'company' AND owner_id = OLD.id;
         END;
+        -- Shape backstop for stored domains. Every writer is supposed to go
+        -- through pipeline_utils.normalize_company_domain(); these exist
+        -- because call-site discipline decays and a malformed domain is not a
+        -- local mess -- it becomes a distinct company identity, then a
+        -- near-duplicate in the merge queue, then a human decision. SQLite
+        -- can't rewrite NEW in a trigger, so this rejects rather than repairs:
+        -- a bad write fails loudly at the source instead of quietly seeding
+        -- work downstream.
+        CREATE TRIGGER IF NOT EXISTS trg_companies_domain_shape_insert
+        BEFORE INSERT ON companies
+        WHEN NEW.domain IS NOT NULL AND (
+                 NEW.domain LIKE '%.' OR NEW.domain LIKE '% %'
+              OR NEW.domain NOT LIKE '%.%' OR NEW.domain <> LOWER(NEW.domain)
+              OR NEW.domain LIKE 'http%' OR NEW.domain LIKE 'www.%'
+              OR TRIM(NEW.domain) <> NEW.domain)
+        BEGIN SELECT RAISE(ABORT, 'malformed company domain'); END;
+        CREATE TRIGGER IF NOT EXISTS trg_companies_domain_shape_update
+        BEFORE UPDATE OF domain ON companies
+        WHEN NEW.domain IS NOT NULL AND (
+                 NEW.domain LIKE '%.' OR NEW.domain LIKE '% %'
+              OR NEW.domain NOT LIKE '%.%' OR NEW.domain <> LOWER(NEW.domain)
+              OR NEW.domain LIKE 'http%' OR NEW.domain LIKE 'www.%'
+              OR TRIM(NEW.domain) <> NEW.domain)
+        BEGIN SELECT RAISE(ABORT, 'malformed company domain'); END;
+        -- Same rule for the multi-domain table, domain rows only: other
+        -- identity_types (public_email, ...) have their own shapes.
+        CREATE TRIGGER IF NOT EXISTS trg_company_identities_domain_shape_insert
+        BEFORE INSERT ON company_identities
+        WHEN NEW.identity_type = 'domain' AND (
+                 NEW.identity_value_normalized LIKE '%.'
+              OR NEW.identity_value_normalized LIKE '% %'
+              OR NEW.identity_value_normalized NOT LIKE '%.%'
+              OR NEW.identity_value_normalized <> LOWER(NEW.identity_value_normalized)
+              OR NEW.identity_value_normalized LIKE 'http%'
+              OR NEW.identity_value_normalized LIKE 'www.%'
+              OR TRIM(NEW.identity_value_normalized) <> NEW.identity_value_normalized)
+        BEGIN SELECT RAISE(ABORT, 'malformed company identity domain'); END;
+        CREATE TRIGGER IF NOT EXISTS trg_company_identities_domain_shape_update
+        BEFORE UPDATE OF identity_value_normalized ON company_identities
+        WHEN NEW.identity_type = 'domain' AND (
+                 NEW.identity_value_normalized LIKE '%.'
+              OR NEW.identity_value_normalized LIKE '% %'
+              OR NEW.identity_value_normalized NOT LIKE '%.%'
+              OR NEW.identity_value_normalized <> LOWER(NEW.identity_value_normalized)
+              OR NEW.identity_value_normalized LIKE 'http%'
+              OR NEW.identity_value_normalized LIKE 'www.%'
+              OR TRIM(NEW.identity_value_normalized) <> NEW.identity_value_normalized)
+        BEGIN SELECT RAISE(ABORT, 'malformed company identity domain'); END;
         CREATE TABLE IF NOT EXISTS provider_batch_jobs (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             provider        TEXT NOT NULL,
@@ -2172,7 +2572,17 @@ def migrate_db(conn=None):
 
     # leads.stage becomes a cache of workspace_leads.status; see the docstring.
     ensure_derived_lead_stage(conn)
-    backfill_derived_lead_stage(conn)
+    # Reconciles rows that predate the triggers ensure_derived_lead_stage just
+    # installed. Those triggers maintain the cache on every workspace_leads
+    # write, so once this has run the correlated full-table UPDATE can only ever
+    # match zero rows -- it was costing ~0.5s per invocation to prove that.
+    if not conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'derived_lead_stage_backfill'"
+    ).fetchone():
+        backfill_derived_lead_stage(conn)
+        conn.execute(
+            "INSERT INTO migration_flags (name) VALUES ('derived_lead_stage_backfill')"
+        )
 
     # linkedin_bio is already a leads column. A personalization row holding it is
     # a second copy that drifts from the first, and personalization is meant for
@@ -2201,6 +2611,13 @@ def migrate_db(conn=None):
     _add_lead_fallback_email(conn)
     _repair_provenance_transport_strings(conn)
     _install_provenance_transport_guard(conn)
+    # Before the shape-guard triggers get a chance to reject an UPDATE that is
+    # trying to *fix* one of these rows -- the repair writes clean values, so
+    # order only matters for legibility, not correctness.
+    _repair_malformed_company_domains(conn)
+    # After the domain repair: the rebuild copies rows verbatim, so cleaning
+    # them first means the new table never holds a malformed value.
+    _relax_company_identity_domain_uniqueness(conn)
 
     # Clear the machine-written notes relay_ingest used to stamp on every lead.
     # Deliberately an exact-shape match anchored at both ends, not a LIKE '%via
@@ -2223,6 +2640,8 @@ def migrate_db(conn=None):
         pass
 
     _add_company_identity_purpose(conn)
+
+    conn.executescript(CONTACT_SOURCING_SQL)
 
     conn.commit()
     if own_conn:
@@ -2336,14 +2755,23 @@ def repair_malformed_tags(conn: sqlite3.Connection, *, dry_run: bool = False) ->
     }
 
 
-def backfill_workspace_routing(conn: sqlite3.Connection):
-    """Identity aliases for all leads; workspace_leads/maps only in single-workspace mode."""
+def backfill_workspace_routing(conn: sqlite3.Connection, *, backfill_leads: bool = True):
+    """Identity aliases for all leads; workspace_leads/maps only in single-workspace mode.
+
+    `backfill_leads=False` skips the two per-lead loops but still reconciles the
+    campaign map. The lead loops are a true one-shot -- writes create identities
+    and workspace rows as they go, so on a converged DB every statement is an
+    INSERT OR IGNORE that changes nothing, at a cost that scales with total lead
+    count. The campaign loop is not one-shot: new campaigns keep arriving and
+    each needs a default map row, so it always runs (it is bounded by campaign
+    count and already skips names it has seen).
+    """
     ensure_organization(conn)
     config = get_org_routing_config(conn, DEFAULT_ORG_ID)
 
     leads = conn.execute(
         "SELECT id, email, linkedin_url FROM leads"
-    ).fetchall()
+    ).fetchall() if backfill_leads else []
     for lead in leads:
         lid = lead["id"]
         if lead["email"]:

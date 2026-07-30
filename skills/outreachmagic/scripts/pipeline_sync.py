@@ -68,6 +68,7 @@ from pipeline_tags import (
     log_event,
     get_stats,
     get_pipeline,
+    backfill_plusvibe_status_metadata,
     _decode_event_metadata,
 )
 from relay_ingest import (
@@ -2419,6 +2420,14 @@ def sync_from_relay_org(
         if pull_session is not None:
             end_bulk_pull_session(pull_session)
             pull_session.close()
+
+    # PlusVibe events can land with a status label/sentiment that disagrees with
+    # their own webhook event type. Repair runs here, once per pull that actually
+    # brought events in, because a pull is the only way such an event arrives --
+    # migrate_db used to run it on every CLI invocation, rescanning the whole
+    # events table to find nothing on all of them.
+    if imported:
+        backfill_plusvibe_status_metadata()
 
     if page_after_id:
         set_last_max_id(page_after_id)

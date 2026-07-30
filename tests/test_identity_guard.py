@@ -104,3 +104,82 @@ def test_strong_identity_still_creates(kwargs):
     """LinkedIn-only leads are legitimate (55k of them) -- don't sweep them up."""
     assert om.resolve_lead(**kwargs)["status"] == "created"
     assert _lead_count() == 1
+
+
+# ── one identity, two leads ─────────────────────────────────────────────────
+#
+# Saving a LinkedIn URL that belongs to another record ended at "identity
+# conflict: linkedin_url=… belongs to lead 19397, not 184146" — a message that
+# states the resolution ("these are the same person") without offering it. The
+# refusal is still right; what was missing is everything needed to act on it.
+
+
+def _conflicting_pair():
+    import dashboard_actions
+
+    keeper = om.resolve_lead(name="Sam Rivera",
+                             linkedin_url="https://linkedin.com/in/samrivera")["id"]
+    other = om.resolve_lead(name="S. Rivera", email="s@acme-example.com")["id"]
+    return dashboard_actions, keeper, other
+
+
+def test_an_identity_conflict_names_the_other_lead():
+    from workspace_routing import IdentityConflict
+
+    da, keeper, other = _conflicting_pair()
+    with pytest.raises(IdentityConflict) as exc:
+        da.update_lead_identity(other, linkedin="linkedin.com/in/samrivera")
+    conflict = exc.value
+    assert conflict.owner_lead_id == keeper
+    assert conflict.lead_id == other
+    assert conflict.identity_type == "linkedin_url"
+    assert conflict.as_payload()["owner_lead_id"] == keeper
+
+
+def test_an_identity_conflict_is_still_a_value_error():
+    """Subclassing ValueError is load-bearing: callers all over the sync path
+    already catch ValueError, and this must not start escaping them."""
+    from workspace_routing import IdentityConflict
+
+    assert issubclass(IdentityConflict, ValueError)
+    da, _keeper, other = _conflicting_pair()
+    with pytest.raises(ValueError):
+        da.update_lead_identity(other, linkedin="linkedin.com/in/samrivera")
+
+
+def test_the_conflicting_pair_is_queued_for_a_merge_decision():
+    """So the agent triage queue can offer the same decision the UI does.
+
+    Queued by the surface that catches the conflict, not at the raise site: the
+    raise unwinds the caller's transaction, so a row written inside it would go
+    with it."""
+    import dashboard_server
+
+    _da, keeper, other = _conflicting_pair()
+    dashboard_server.dispatch(
+        "POST", f"/api/leads/{other}/identity", {},
+        {"linkedin": "linkedin.com/in/samrivera"})
+    jobs = om.list_merge_proposals(reason="identity_conflict")["proposals"]
+    assert any(j["keep_lead_id"] == keeper and j["merge_lead_id"] == other for j in jobs)
+
+
+def test_the_api_answers_409_with_the_pair():
+    import dashboard_server
+
+    _da, keeper, other = _conflicting_pair()
+    status, payload = dashboard_server.dispatch(
+        "POST", f"/api/leads/{other}/identity", {},
+        {"linkedin": "linkedin.com/in/samrivera"})
+    assert status == 409
+    assert payload["conflict"]["owner_lead_id"] == keeper
+    assert payload["conflict"]["lead_id"] == other
+
+
+def test_a_plain_bad_value_is_still_a_400():
+    import dashboard_server
+
+    _da, _keeper, other = _conflicting_pair()
+    status, payload = dashboard_server.dispatch(
+        "POST", f"/api/leads/{other}/identity", {}, {"linkedin": "not a linkedin url"})
+    assert status == 400
+    assert "conflict" not in payload

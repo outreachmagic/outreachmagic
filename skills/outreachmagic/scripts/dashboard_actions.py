@@ -215,6 +215,125 @@ def update_lead_identity(
     return {"status": "updated", "id": lead_id, "linkedin": linkedin_written}
 
 
+def queue_identity_conflict_merge(conflict) -> Optional[str]:
+    """Record an IdentityConflict as a pending lead merge proposal.
+
+    Called after the failed write has already unwound, on a fresh connection —
+    the raise rolls the caller's transaction back, so queuing inside it would
+    discard the row, and a second connection opened while the caller still held
+    a write lock would block against itself.
+
+    The pair lands in lead_merge_jobs with reason 'identity_conflict', which is
+    the same queue the agent triage prompt works. Best effort: failing to record
+    the offer must not turn a 409 into a 500.
+    """
+    from workspace_routing import DEFAULT_ORG_ID, enqueue_identity_conflict_merge
+
+    conn = get_conn()
+    try:
+        enqueue_identity_conflict_merge(
+            conn, DEFAULT_ORG_ID, conflict.lead_id, conflict.identity_type,
+            conflict.value, source="dashboard")
+        conn.commit()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return "queued"
+
+
+RECORD_TYPES = ("contact", "company_placeholder")
+
+
+def set_record_type(lead_id: int, record_type: str) -> dict:
+    """Reclassify a lead as a person or as an account stub.
+
+    A company placeholder is excluded from the contacts list, from enrichment,
+    and from CRM sync, so mislabelling one is expensive in both directions: a
+    real person marked as a placeholder silently stops being worked, and a stub
+    marked as a contact burns finder credits looking for someone who does not
+    exist. The ordinary UPDATE path fires the outbox trigger, so the relay
+    learns about the change like any other edit.
+    """
+    _require_lead(lead_id)
+    value = (record_type or "").strip()
+    if value not in RECORD_TYPES:
+        raise ValueError(f"record_type must be one of {', '.join(RECORD_TYPES)}")
+    conn = get_conn()
+    try:
+        conn.execute(
+            "UPDATE leads SET record_type = ?, updated_at = datetime('now') WHERE id = ?",
+            (value, lead_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "updated", "id": lead_id, "record_type": value}
+
+
+def set_contact_order(
+    lead_id: int, contact_order, workspace_slug: Optional[str] = None,
+) -> dict:
+    """Set (or clear, with None) a lead's contact priority within a workspace.
+
+    This is workspace_leads.contact_priority — the same column the lead-review
+    sheet round-trip reads and writes as `contact_order`. Until now that sheet
+    was the only way to set it, which is a long way to go to say "call this one
+    first".
+    """
+    _require_lead(lead_id)
+    if contact_order is None or str(contact_order).strip() == "":
+        value = None
+    else:
+        try:
+            value = int(contact_order)
+        except (TypeError, ValueError):
+            raise ValueError(f"contact_order must be a whole number or empty: {contact_order!r}") from None
+        if value < 1:
+            raise ValueError("contact_order starts at 1")
+    conn = get_conn()
+    try:
+        ws_id = _resolve_ws_id(conn, workspace_slug)
+        cur = conn.execute(
+            "UPDATE workspace_leads SET contact_priority = ? WHERE workspace_id = ? AND lead_id = ?",
+            (value, ws_id, lead_id))
+        if not cur.rowcount:
+            raise ValueError(f"lead {lead_id} is not in this workspace")
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "updated", "id": lead_id, "contact_order": value}
+
+
+def delete_leads(lead_ids: list, confirm: bool = False) -> dict:
+    """Delete leads outright, keeping the relay delete tombstones.
+
+    Same mechanics as junk_cleanup.cleanup_empty_leads: the BEFORE DELETE
+    trigger files a 'delete' outbox row keyed on the lead's uid, and we keep it,
+    so the next push removes the lead from the relay and a later pull cannot
+    regrow it. That is what makes this a deletion rather than a local hide --
+    and what makes it irreversible, hence `confirm`.
+    """
+    ids = [int(x) for x in (lead_ids or [])]
+    if not ids:
+        raise ValueError("no lead_ids provided")
+    if not confirm:
+        raise ValueError(
+            "delete_leads is destructive and pushes deletes to the relay; pass confirm=true")
+    conn = get_conn()
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        deleted = 0
+        for i in range(0, len(ids), 500):
+            batch = ids[i:i + 500]
+            cur = conn.execute(
+                f"DELETE FROM leads WHERE id IN ({','.join('?' * len(batch))})", batch)
+            deleted += cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "requested": len(ids), "deleted": deleted}
+
+
 def set_lead_custom_field(
     lead_id: int, scope: str, field: str, value: str,
 ) -> dict:
@@ -377,6 +496,101 @@ def edit_sender_domain(domain: str, fields: dict) -> dict:
     if result.get("status") == "error":
         raise ValueError(result["error"])
     return result
+
+
+def delete_company(company_id: int, confirm: bool = False) -> dict:
+    """Delete a company row outright, keeping the relay delete tombstone.
+
+    Same mechanics as delete_leads: the BEFORE DELETE trigger files a 'delete'
+    outbox row keyed on the company's uid, so the next push removes it upstream
+    and a later pull cannot regrow it. Irreversible, hence `confirm`.
+
+    Its LEADS ARE NOT DELETED -- leads.company_id is ON DELETE SET NULL, so they
+    survive as unlinked contacts and can be re-linked to another company. Its
+    company_identities rows ARE deleted (ON DELETE CASCADE); those are facts
+    about the company, not about the people.
+    """
+    cid = int(company_id)
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, name, domain FROM companies WHERE id = ?", (cid,)).fetchone()
+        if row is None:
+            raise ValueError(f"company {cid} not found")
+        leads = conn.execute(
+            "SELECT COUNT(*) AS n FROM leads WHERE company_id = ?", (cid,)).fetchone()["n"]
+        if not confirm:
+            # Not an error case so much as the preview: the caller gets the
+            # blast radius back and re-calls with confirm.
+            raise ValueError(
+                f"delete_company is destructive and pushes a delete to the relay; "
+                f"pass confirm=true (would orphan {leads} lead(s))")
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("DELETE FROM companies WHERE id = ?", (cid,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "deleted": "company", "id": cid,
+            "name": row["name"], "leads_orphaned": leads}
+
+
+def delete_sender_account(sender_id: int, confirm: bool = False) -> dict:
+    """Delete a sender mailbox row, keeping the relay delete tombstone.
+
+    NOTE the scope: this removes OUR record of the mailbox. It does not
+    disconnect it from the sequencer. If the mailbox is still connected in
+    Instantly/PlusVibe, the next pull re-creates the row -- the honest control
+    for "stop using this mailbox" is is_active = 0, which the edit panel
+    already offers. Deleting is for rows that should never have existed.
+    """
+    sid = int(sender_id)
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, email FROM sender_accounts WHERE id = ?", (sid,)).fetchone()
+        if row is None:
+            raise ValueError(f"sender account {sid} not found")
+        if not confirm:
+            raise ValueError(
+                "delete_sender_account is destructive and pushes a delete to the "
+                "relay; pass confirm=true")
+        conn.execute("DELETE FROM sender_accounts WHERE id = ?", (sid,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "deleted": "sender_account", "id": sid, "email": row["email"]}
+
+
+def delete_sender_domain(domain: str, confirm: bool = False) -> dict:
+    """Delete a sending-domain row, keeping the relay delete tombstone.
+
+    Same caveat as delete_sender_account: it removes our record, not the domain
+    itself, and a domain still present upstream comes back on the next pull.
+    Mailboxes on this domain are left alone -- sender_accounts has no FK to
+    sender_domains, they are joined by the domain string.
+    """
+    dom = (domain or "").strip().lower()
+    if not dom:
+        raise ValueError("domain is required")
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT domain FROM sender_domains WHERE domain = ?", (dom,)).fetchone()
+        if row is None:
+            raise ValueError(f"sender domain {dom!r} not found")
+        mailboxes = conn.execute(
+            "SELECT COUNT(*) AS n FROM sender_accounts WHERE LOWER(email_domain) = ?",
+            (dom,)).fetchone()["n"]
+        if not confirm:
+            raise ValueError(
+                f"delete_sender_domain is destructive and pushes a delete to the "
+                f"relay; pass confirm=true ({mailboxes} mailbox(es) reference it)")
+        conn.execute("DELETE FROM sender_domains WHERE domain = ?", (dom,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "deleted": "sender_domain", "domain": dom,
+            "mailboxes_referencing": mailboxes}
 
 
 BULK_OPS = ("stage", "lead_status", "sentiment", "tag_add", "tag_remove", "email_finder")
@@ -579,17 +793,76 @@ def empty_leads_run(workspace_slug: Optional[str] = None) -> dict:
         conn.close()
 
 
-def resolve_merge_candidate(candidate_id: str, approve: bool, note: Optional[str] = None) -> dict:
-    """Approve (execute the merge) or reject a queued company merge candidate."""
+def resolve_merge_candidate(
+    candidate_id: str, approve: bool, note: Optional[str] = None,
+    keep_id: Optional[int] = None,
+) -> dict:
+    """Approve (execute the merge) or reject a queued company merge candidate.
+
+    `keep_id` names the surviving record; omitted, the queued "existing" side
+    survives, which is what this always did.
+    """
     import pipeline as _pipeline
 
     if approve:
-        result = _pipeline.approve_company_merge_candidate(candidate_id)
+        result = _pipeline.approve_company_merge_candidate(candidate_id, keep_id=keep_id)
     else:
         result = _pipeline.reject_company_merge_candidate(candidate_id, note=note)
     if result.get("status") == "error":
         raise ValueError(result["error"])
     return result
+
+
+def resolve_merge_candidates_bulk(
+    candidate_ids: list, approve: bool, keep: str = "existing",
+    note: Optional[str] = None,
+) -> dict:
+    """Resolve many candidates in one call, reporting each outcome separately.
+
+    Deliberately not all-or-nothing: each candidate is an independent judgement
+    and merges are not undoable from here, so one stale row must not roll back
+    forty good decisions. The caller is told exactly which ones failed.
+
+    `keep` is "existing" or "candidate" — the side of the pair to keep, applied
+    to every id in the batch. Row-by-row choices go through the single-candidate
+    path.
+    """
+    import pipeline as _pipeline
+
+    if keep not in ("existing", "candidate"):
+        raise ValueError("keep must be 'existing' or 'candidate'")
+    ids = [str(x) for x in (candidate_ids or []) if str(x).strip()]
+    if not ids:
+        raise ValueError("no candidate_ids provided")
+    conn = get_conn()
+    try:
+        rows = {
+            r["id"]: r for r in conn.execute(
+                f"""SELECT id, existing_company_id, candidate_company_id
+                      FROM company_merge_candidates
+                     WHERE id IN ({','.join('?' * len(ids))})""", ids).fetchall()
+        }
+    finally:
+        conn.close()
+    results, errors = [], []
+    for cid in ids:
+        row = rows.get(cid)
+        keep_id = None
+        if approve and row is not None:
+            keep_id = row["candidate_company_id"] if keep == "candidate" else row["existing_company_id"]
+        try:
+            if approve:
+                out = _pipeline.approve_company_merge_candidate(cid, keep_id=keep_id)
+            else:
+                out = _pipeline.reject_company_merge_candidate(cid, note=note)
+            if out.get("status") == "error":
+                errors.append({"candidate_id": cid, "error": out["error"]})
+            else:
+                results.append({"candidate_id": cid, **out})
+        except (ValueError, sqlite3.Error) as exc:
+            errors.append({"candidate_id": cid, "error": str(exc)})
+    return {"status": "ok", "resolved": len(results),
+            "failed": len(errors), "results": results, "errors": errors}
 
 
 class SyncManager:
@@ -816,25 +1089,38 @@ class SyncManager:
     ) -> dict:
         """Company/multi-domain-aware email finder over a chosen lead set.
 
-        Resolves each lead's ranked candidate domains (company_identities, then
-        the lead's own email_domain) — or an explicit per-lead override — and
-        runs the provider waterfall against them, stopping the whole batch once
-        every provider is out of credits. Reuses email_finder.save_find_result
-        so a hit flows through import-profiles and the outbox like any write.
+        Resolves each lead's ranked candidate domains (rank_company_domains,
+        then the lead's own email_domain) — or an explicit per-lead override
+        from the dialog's domain picker — and runs the provider waterfall
+        against them, stopping the whole batch once every provider is out of
+        credits. Reuses email_finder.save_find_result so a hit flows through
+        import-profiles and the outbox like any write.
 
-        Leads that already have an email-finding attempt on record are skipped
-        (status "already_ran") unless `force` is set — the re-run guard that
-        keeps a re-selected batch from re-spending finder credits.
+        The re-run guard is per (lead, domain), not per lead: candidate domains
+        already tried for this lead are filtered out, and only a lead with
+        NOTHING left untried is skipped as "already_ran". Attaching a second
+        domain to a company therefore makes its leads runnable again without
+        re-spending on the domain that already missed. `force` bypasses the
+        filter entirely and re-tries every candidate.
         """
         import email_finder
         import dashboard_queries
-        from pipeline_provider_attempts import has_attempted
+        from pipeline_provider_attempts import attempted_domains, has_attempted
         from waterfall import run_find_with_domain_fallback
 
         ids = [int(x) for x in (lead_ids or [])][: SyncManager.MAX_ENRICH_LEADS]
         if not ids:
             raise ValueError("no lead_ids provided")
-        overrides = {int(k): v for k, v in (domains or {}).items()}
+        # {lead_id: "one.com"} or {lead_id: ["first.com", "second.com"]} — the
+        # dialog's "best domain only" strategy sends the scalar form, "choose
+        # per company" can send either. Normalized to a list so the waterfall
+        # call downstream doesn't have to care which the UI picked.
+        overrides: dict[int, list[str]] = {}
+        for k, v in (domains or {}).items():
+            vals = v if isinstance(v, (list, tuple)) else [v]
+            picked = [str(d).strip().lower() for d in vals if d and str(d).strip()]
+            if picked:
+                overrides[int(k)] = picked
         cfg = email_finder.load_config()
         om_dir = email_finder.find_outreachmagic(cfg)
         if not om_dir:
@@ -867,23 +1153,46 @@ class SyncManager:
                 if (lead["email"] or "").strip():
                     summary["results"].append({"lead_id": lead_id, "status": "has_email"})
                     continue
-                if not force and (
-                    has_attempted(conn, lead_id, "trykitt")
-                    or has_attempted(conn, lead_id, "icypeas")
-                ):
-                    summary["skipped_already_ran"] += 1
-                    summary["results"].append(
-                        {"lead_id": lead_id, "status": "already_ran"})
-                    continue
                 auto_domains, company_text = dashboard_queries._lead_domains(conn, lead_id)
-                override = overrides.get(lead_id)
-                cand = [override] if override else auto_domains
+                cand = overrides.get(lead_id) or auto_domains
                 cand = [d for d in cand if d]
                 if not cand:
                     summary["skipped_no_domain"] += 1
                     summary["results"].append({"lead_id": lead_id, "status": "no_domain"})
                     self._log(f"  · {lead['name'] or f'lead {lead_id}'}: no resolvable domain — skipped")
                     continue
+                # Per-(lead, domain) re-run guard, degrading to the old
+                # per-lead one when the history can't say which domain ran.
+                # Only ~26% of historical finder attempts recorded a real
+                # domain (see attempted_domains), so treating "no domains on
+                # record" as "never attempted" would re-spend on three
+                # quarters of every previously-worked list. Order matters:
+                # known domains first, blanket skip only as the fallback.
+                if not force:
+                    guard_providers = tuple(
+                        prov_names or self._EMAIL_FINDER_PROVIDERS)
+                    tried = attempted_domains(conn, lead_id, guard_providers)
+                    if tried:
+                        fresh = [d for d in cand if d not in tried]
+                        if not fresh:
+                            summary["skipped_already_ran"] += 1
+                            summary["results"].append({
+                                "lead_id": lead_id, "status": "already_ran",
+                                "tried_domains": sorted(tried & set(cand)),
+                            })
+                            continue
+                        if len(fresh) != len(cand):
+                            self._log(
+                                f"  · {lead['name'] or f'lead {lead_id}'}: skipping "
+                                f"{len(cand) - len(fresh)} already-tried domain(s)")
+                        cand = fresh
+                    elif any(has_attempted(conn, lead_id, p) for p in guard_providers):
+                        # Attempted before, but nothing on record says on what.
+                        # Same conservative skip as before this change.
+                        summary["skipped_already_ran"] += 1
+                        summary["results"].append(
+                            {"lead_id": lead_id, "status": "already_ran"})
+                        continue
                 result = run_find_with_domain_fallback(
                     cfg, full_name=lead["name"] or "", domains=cand,
                     provider_names=prov_names)

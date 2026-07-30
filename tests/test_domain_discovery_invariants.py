@@ -249,8 +249,15 @@ def test_contacts_are_not_stored_when_the_domain_went_to_a_duplicate_row():
             rep_lead_id=lead["id"])
     conn.commit()
 
-    assert out["attach"]["attached"] is False
-    assert out["attach"]["reason"] == "domain_owned_by_other_company"
+    # The identity row lands now -- a domain may belong to more than one
+    # company (brand portfolios) -- but the two names overlap enough to be one
+    # company recorded twice, so the domain is NOT promoted to this row's
+    # identifying companies.domain while that is an open question.
+    assert out["attach"]["attached"] is True
+    assert out["attach"]["primary_backfilled"] is False
+    assert out["attach"]["reason"] == "possible_duplicate_company"
+    assert conn.execute(
+        "SELECT domain FROM companies WHERE id = ?", (cid,)).fetchone()["domain"] is None
     # No domain established for this row -> no contacts filed against it.
     assert conn.execute(
         """SELECT COUNT(*) c FROM company_identities

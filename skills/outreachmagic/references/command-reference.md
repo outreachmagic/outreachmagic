@@ -213,6 +213,28 @@ Tags narrow only what you pay to search. The freshness cache, the pre-flight ide
 - Tags workspace leads `domain_discovered` / `domain_low_confidence` / `domain_not_found`. Deliberately one flag, not `domain_found_<domain>`: embedding the value minted a tag per domain (288 of 340 tags in one workspace, most used by a single lead) and was a copy of `companies.domain` that nothing kept in step. Query the column for the value; tags mark the segment. A migration collapses existing per-domain tags on first run.
 - Observations store a lean summary (~0.5 KB) — ranked candidates with scores and reasons, found emails, top 3 links. `--debug` adds the full raw Serper response (~5-8 KB), which also crosses the relay wire, so it is off by default.
 
+### ICP profiles (who counts as a contact)
+
+Contact sourcing scores what it extracts against a per-workspace ICP profile: title phrases that qualify, title phrases that disqualify, the page sections worth reading, and how many contacts a page must yield before it stops being "the regex handled it".
+
+```bash
+pipeline.py icp set --workspace acme --name auto-dealer-gm \
+    --whitelist "general manager,service manager,dealer principal" \
+    --blocklist "assistant general manager,sprinter service manager" \
+    [--section-header "our team,meet the staff"] [--min-contacts 2] [--replace]
+pipeline.py icp show   --workspace acme [--name N] [--json]
+pipeline.py icp list   [--workspace acme] [--json]
+pipeline.py icp export --workspace acme [--name N] [--file icp.json]
+pipeline.py icp import --workspace acme (--file icp.json | --json '{...}') [--name N]
+pipeline.py icp delete --workspace acme --name N
+```
+
+- **Terms are canonicalized on the way in** — lowercased, whitespace-collapsed, deduped, sorted — so `"General  Manager"` and `"general manager"` are one rule, not two.
+- **`config_hash` identifies the config's content, not the row.** Reordering terms or re-running the same `icp set` leaves it unchanged (and leaves `updated_at` alone); changing a rule always moves it. Every `find-contacts` observation records the hash it ran under, so "precision on this campaign" joins to the config version that produced it rather than to whatever the profile says today.
+- `set` is a merge: fields you don't pass keep their current value, so tightening a blocklist doesn't mean restating the whitelist. Pass `--whitelist ""` to clear one, or `--replace` to rewrite the whole profile.
+- `--name` is optional on `show`/`export` when the workspace has exactly one profile; with more than one it is required rather than guessed.
+- `export`/`import` move a profile between workspaces or machines. The document carries no workspace id, and an exported document whose `config` was edited without rehashing is rejected on import. `import` replaces rather than merges — a document states the whole profile.
+
 ## Email verification (MillionVerifier bulk)
 
 ```bash

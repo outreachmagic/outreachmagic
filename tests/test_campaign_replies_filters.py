@@ -126,5 +126,40 @@ class CampaignRepliesFilterTests(unittest.TestCase):
         self.assertTrue(d["facets"]["sentiment"], "facets survive an empty result")
 
 
+    # -- the row carries enough to work the lead without opening it ---------
+    #
+    # The table used to be Lead / Sentiment / Status / Subject / Campaign /
+    # Since, which meant opening every row to find out who the person actually
+    # was. These are the columns the pane was being opened for.
+
+    def test_a_reply_row_carries_the_contact_columns(self):
+        lead_id = self._replier("Alice", "positive", "interested")
+        conn = om.get_conn()
+        try:
+            conn.execute("UPDATE leads SET title = ? WHERE id = ?", ("VP Ops", lead_id))
+            conn.execute(
+                "INSERT OR IGNORE INTO workspace_lead_tags (workspace_id, lead_id, tag) "
+                "VALUES (?,?,?)", (self.ws, lead_id, "priority"))
+            conn.execute(
+                "UPDATE workspace_leads SET last_activity_at = ? WHERE lead_id = ?",
+                ("2026-07-04 12:00:00", lead_id))
+            conn.commit()
+        finally:
+            conn.close()
+        row = self._replies()["replies"][0]
+        self.assertEqual(row["company"], "Acme")
+        self.assertEqual(row["title"], "VP Ops")
+        self.assertEqual(row["email"], "alice@acme.com")
+        self.assertEqual(row["tags"], "priority")
+        self.assertEqual(row["last_activity_at"], "2026-07-04 12:00:00")
+        # Distinct from the sentiment anchor, which is what the range filters on.
+        self.assertEqual(row["event_at"], "2026-07-01 10:00:00")
+
+    def test_a_lead_with_no_tags_reports_none_rather_than_dropping_out(self):
+        self._replier("Alice", "positive", "interested")
+        row = self._replies()["replies"][0]
+        self.assertIsNone(row["tags"])
+
+
 if __name__ == "__main__":
     unittest.main()

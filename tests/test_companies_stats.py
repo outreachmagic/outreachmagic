@@ -168,6 +168,46 @@ class CompaniesStatsTests(unittest.TestCase):
         self.assertEqual(o["companies"], 0)
         self.assertEqual(o["avg_contacts_per_company"], 0.0)
 
+    # -- sorting is over the whole table, not the loaded page ---------------
+    #
+    # Header clicks used to reorder the 50 rows already fetched, so "sort by
+    # primary domain" answered a question about page 1 rather than about the
+    # companies. Every sortable column now orders the full result set, which is
+    # only observable across a page boundary.
+
+    def _sorted_page(self, sort, direction, limit=2):
+        return [c["name"] for c in self._search(
+            sort=sort, direction=direction, limit=limit)]
+
+    def test_domain_sort_orders_the_whole_table_not_the_page(self):
+        for name, domain in (("Zebra", "zebra.test"), ("Alpha", "alpha.test"),
+                             ("Middle", "middle.test")):
+            self._lead(name=f"{name} contact", email=f"c@{domain}", company=name)
+        self.assertEqual(self._sorted_page("domain", "asc"), ["Alpha", "Middle"])
+        self.assertEqual(self._sorted_page("domain", "desc"), ["Zebra", "Middle"])
+
+    def test_companies_without_a_domain_sort_last_in_both_directions(self):
+        # The point of sorting by primary domain is working through the ones
+        # that have one. A descending sort led by 900 blanks answers a question
+        # nobody asked.
+        self._lead(name="Has Domain", email="c@haves.test", company="Haves")
+        no_dom = self._lead(name="No Domain contact", company="Havenots")
+        conn = om.get_conn()
+        try:
+            company_id = conn.execute(
+                "SELECT company_id FROM leads WHERE id = ?", (no_dom,)).fetchone()["company_id"]
+            conn.execute("UPDATE companies SET domain = NULL WHERE id = ?", (company_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        for direction in ("asc", "desc"):
+            self.assertEqual(
+                self._sorted_page("domain", direction, limit=2)[0], "Haves", direction)
+
+    def test_an_unknown_sort_key_falls_back_rather_than_erroring(self):
+        self._lead(name="A contact", email="c@a.test", company="A Co")
+        self.assertEqual([c["name"] for c in self._search(sort="'; DROP TABLE")], ["A Co"])
+
 
 if __name__ == "__main__":
     unittest.main()

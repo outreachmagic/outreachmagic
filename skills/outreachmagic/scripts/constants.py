@@ -215,19 +215,59 @@ def is_non_company_name(value: str | None) -> bool:
 
 # Shared SELECT fragment for lead+company joins (read path).
 _SHARED_DOMAIN_SQL_LIST = ", ".join(f"'{d}'" for d in sorted(SHARED_EMAIL_DOMAINS))
-COMPANY_DOMAIN_SQL = f"""CASE
-    WHEN co.domain IS NOT NULL AND TRIM(co.domain) != '' THEN co.domain
-    WHEN l.email_domain IS NOT NULL AND TRIM(l.email_domain) != ''
-         AND LOWER(l.email_domain) NOT IN ({_SHARED_DOMAIN_SQL_LIST}) THEN l.email_domain
-    ELSE NULL
-END AS company_domain"""
+
+# One domain from company_identities for this lead's company, or NULL.
+#
+# companies.domain is globally UNIQUE, so a brand portfolio (22 Hilton
+# properties on hilton.com) can only ever record that domain against ONE of its
+# companies -- the rest carry it in company_identities, whose key includes
+# company_id precisely so they can. Reading only companies.domain therefore made
+# every non-first property of a portfolio look domainless to the email finder.
+#
+# Precedence mirrors rank_company_domains() so the bulk read path and the
+# per-company ranker can't give different answers for the same company:
+# explicit `primary` first, then `email_finding`, then `branch`, then unlabelled
+# -- `parked` means "known but do not use" and is excluded outright.
+# Index-backed by idx_company_identities_company_type (company_id, identity_type).
+_COMPANY_IDENTITY_DOMAIN_SQL = """(
+        SELECT ci.identity_value_normalized
+        FROM company_identities ci
+        WHERE ci.company_id = l.company_id
+          AND ci.identity_type = 'domain'
+          AND TRIM(COALESCE(ci.identity_value_normalized, '')) != ''
+          AND COALESCE(ci.purpose, '') != 'parked'
+        ORDER BY CASE COALESCE(ci.purpose, '')
+                     WHEN 'primary' THEN 0
+                     WHEN 'email_finding' THEN 1
+                     WHEN 'branch' THEN 2
+                     ELSE 3
+                 END,
+                 COALESCE(ci.verified_mx, 0) DESC,
+                 ci.id
+        LIMIT 1
+    )"""
+
+COMPANY_DOMAIN_SQL = f"""COALESCE(
+    NULLIF(TRIM(co.domain), ''),
+    {_COMPANY_IDENTITY_DOMAIN_SQL},
+    CASE
+        WHEN l.email_domain IS NOT NULL AND TRIM(l.email_domain) != ''
+             AND LOWER(l.email_domain) NOT IN ({_SHARED_DOMAIN_SQL_LIST}) THEN l.email_domain
+    END
+) AS company_domain"""
 
 
 def require_professional_domain_clause() -> tuple[str, tuple[str, ...]]:
-    """SQL AND-clause + bind values for leads with a professional company domain."""
+    """SQL AND-clause + bind values for leads with a professional company domain.
+
+    Must stay in lockstep with COMPANY_DOMAIN_SQL: this decides which leads are
+    candidates at all, so a domain source the SELECT can resolve but this clause
+    filters out is a lead that silently never gets found.
+    """
     placeholders = ",".join("?" * len(SHARED_EMAIL_DOMAINS))
     clause = f"""AND (
         (co.domain IS NOT NULL AND TRIM(co.domain) != '')
+        OR {_COMPANY_IDENTITY_DOMAIN_SQL} IS NOT NULL
         OR (
             l.email_domain IS NOT NULL AND TRIM(l.email_domain) != ''
             AND LOWER(l.email_domain) NOT IN ({placeholders})
@@ -244,3 +284,25 @@ AUTO_REPLY_LABELS = frozenset({
     "automatic_reply",
     "auto_reply",
 })
+
+
+# Booking tools publish an event *type* ("30 Minute Meeting", "Discovery Call")
+# with every scheduled-meeting webhook. Ingest stores that as the event's
+# campaign, which is right for the event and wrong for attribution: a Calendly
+# event type is a slot on your calendar, not the outbound campaign that put the
+# meeting there. Attribution excludes these so "last known campaign" keeps
+# naming a campaign you can actually judge.
+SCHEDULING_PLATFORMS = frozenset({
+    "calendly",
+    "cal.com",
+    "calcom",
+    "savvycal",
+    "chilipiper",
+    "chili_piper",
+    "hubspot_meetings",
+    "acuity",
+})
+
+# The same list as a SQL literal, for the attribution query.
+SCHEDULING_PLATFORMS_SQL_LIST = ", ".join(
+    f"'{p}'" for p in sorted(SCHEDULING_PLATFORMS))

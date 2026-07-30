@@ -572,6 +572,18 @@ def _attach_domain(
     if not domain:
         return {"attached": False, "reason": "invalid_domain"}
 
+    # Sharing a domain is legal now: the UNIQUE constraint on
+    # company_identities includes company_id, so this row lands regardless of
+    # who else already records the same domain. That deletes the old
+    # "domain_owned_by_other_company" branch, which used to queue a
+    # domain_discovery_shared_domain merge candidate on every collision --
+    # 106 of the 107 pending candidates, all brand portfolios (hilton.com
+    # across 22 properties), all answered "no, keep separate", all regenerated
+    # on the next find-domains run. Two companies sharing a mail domain is a
+    # fact about hospitality and franchising, not evidence they are one
+    # company. The signal that DOES mean "possibly the same company" is two
+    # rows claiming the same *identifying* domain -- companies.domain -- and
+    # that check is still below.
     conn.execute(
         """INSERT OR IGNORE INTO company_identities
                (org_id, company_id, identity_type, identity_value_normalized, role, source)
@@ -580,39 +592,59 @@ def _attach_domain(
     )
     owner = conn.execute(
         """SELECT company_id, role FROM company_identities
-           WHERE org_id = ? AND identity_type = 'domain' AND identity_value_normalized = ?""",
-        (DEFAULT_ORG_ID, domain),
+           WHERE org_id = ? AND company_id = ? AND identity_type = 'domain'
+             AND identity_value_normalized = ?""",
+        (DEFAULT_ORG_ID, company_id, domain),
     ).fetchone()
-    if owner is None or owner["company_id"] != company_id:
-        # Already claimed by a different company row -- reconciling that is
-        # ensure_company()/company merge-review's job, not this function's;
-        # surface it instead of silently dropping or misattaching it.
-        #
-        # This fires BEFORE the companies.domain clash below and is the more
-        # common of the two, so a merge candidate has to be queued here as
-        # well: "Great Oaks Senior Living" and "Great Oaks Assisted Living"
-        # both resolved to greatoaks.net and nothing was queued, because this
-        # branch returned first.
-        if owner is not None:
+    if owner is None:
+        # The INSERT OR IGNORE didn't land and no row exists for this
+        # (company, domain) -- nothing to report but the failure itself.
+        return {"attached": False, "reason": "identity_insert_failed"}
+    # Who else records this domain? Sharing is fine on its own -- but if one of
+    # them is NAMED like this company, that is the duplicate-row signal the old
+    # ownership guard used to catch, and dropping it wholesale would let "Great
+    # Oaks Senior Living" and "Great Oaks Assisted Living" both quietly claim
+    # greatoaks.net with nothing surfaced for review.
+    others = conn.execute(
+        """SELECT ci.company_id, c.name FROM company_identities ci
+           JOIN companies c ON c.id = ci.company_id
+           WHERE ci.org_id = ? AND ci.identity_type = 'domain'
+             AND ci.identity_value_normalized = ? AND ci.company_id != ?""",
+        (DEFAULT_ORG_ID, domain, company_id),
+    ).fetchall()
+    shared_with = len(others)
+    this_name = conn.execute(
+        "SELECT name FROM companies WHERE id = ?", (company_id,)).fetchone()
+    duplicate_of = None
+    for other in others:
+        if names_look_like_same_company(this_name["name"] if this_name else "", other["name"]):
+            duplicate_of = other["company_id"]
             _queue_merge_candidate(
                 conn,
-                existing_company_id=owner["company_id"],
+                existing_company_id=other["company_id"],
                 candidate_company_id=company_id,
                 reason="domain_discovery_shared_domain",
                 payload={"domain": domain, "source": source,
                          "discovered_for_company_id": company_id},
             )
-        return {
-            "attached": False,
-            "reason": "domain_owned_by_other_company",
-            "other_company_id": owner["company_id"] if owner else None,
-        }
     if role == "email" and not owner["role"]:
         conn.execute(
             """UPDATE company_identities SET role = 'email'
-               WHERE org_id = ? AND identity_type = 'domain' AND identity_value_normalized = ?""",
-            (DEFAULT_ORG_ID, domain),
+               WHERE org_id = ? AND company_id = ? AND identity_type = 'domain'
+                 AND identity_value_normalized = ?""",
+            (DEFAULT_ORG_ID, company_id, domain),
         )
+    if duplicate_of is not None:
+        # We just told a human these two rows may be one company. Promoting the
+        # domain to this row's IDENTIFYING domain in the meantime would presume
+        # the answer, and it is the promotion -- not the identity row -- that
+        # makes downstream code (public-email classification) file facts
+        # against this row. Leave companies.domain alone until merge review
+        # decides. The identity row above still stands, so the discovery is not
+        # lost and email finding can already use the domain.
+        return {"attached": True, "domain": domain, "primary_backfilled": False,
+                "reason": "possible_duplicate_company", "other_company_id": duplicate_of,
+                "merge_candidate_logged": True, "shared_with_companies": shared_with}
     company_row = conn.execute("SELECT domain FROM companies WHERE id = ?", (company_id,)).fetchone()
     if company_row is not None and not company_row["domain"]:
         # companies.domain is UNIQUE. The identity-ownership check above only
@@ -655,8 +687,51 @@ def _attach_domain(
             "UPDATE companies SET domain = ?, updated_at = datetime('now') WHERE id = ?",
             (domain, company_id),
         )
-        return {"attached": True, "domain": domain, "primary_backfilled": True}
-    return {"attached": True, "domain": domain}
+        return {"attached": True, "domain": domain, "primary_backfilled": True,
+                "shared_with_companies": shared_with}
+    return {"attached": True, "domain": domain, "shared_with_companies": shared_with}
+
+
+# Above this share of the shorter name's words, two companies that resolve to
+# the same domain are treated as one company recorded twice. Calibrated on the
+# real pairs in this dataset rather than picked round:
+#
+#   duplicates (queue for review)          overlap
+#     Great Oaks Senior / Assisted Living    0.75
+#     Modern Storefront LLC / Group          1.00
+#     Emory Conference Center Hotel / The …  1.00
+#   brand portfolios (never a merge)
+#     Grand Hyatt Tampa Bay / Hyatt Regency  0.25
+#     Hilton Atlanta Downtown / Garden Inn   0.33
+_SAME_COMPANY_NAME_OVERLAP = 0.6
+
+
+def _name_words(name: str) -> set[str]:
+    """Content words of a company name, entity suffix removed.
+
+    strip_entity_suffix first so "Modern Storefront LLC" and "Modern Storefront
+    Group" compare on what actually distinguishes them.
+    """
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", strip_entity_suffix(name or "").lower())
+    return {w for w in cleaned.split() if w}
+
+
+def names_look_like_same_company(a: str, b: str) -> bool:
+    """Do these two company names plausibly describe ONE company?
+
+    The discriminator for what a shared domain means. Two rows on hilton.com
+    are usually two different hotels; two rows on greatoaks.net are usually one
+    nursing home entered twice. Sharing the domain says nothing either way --
+    the NAMES do.
+
+    Overlap coefficient (intersection over the SHORTER name) rather than
+    Jaccard, so "Emory Conference Center Hotel" and "The Emory Conference
+    Center Hotel" score 1.0 instead of being penalized for the extra word.
+    """
+    wa, wb = _name_words(a), _name_words(b)
+    if not wa or not wb:
+        return False
+    return len(wa & wb) / min(len(wa), len(wb)) >= _SAME_COMPANY_NAME_OVERLAP
 
 
 def duplicate_name_key(name: str) -> str:
@@ -1191,7 +1266,16 @@ def run_company_domain_discovery(
                     source="serper_domain_discovery",
                 )
                 out["attach"] = attach
-                if attach.get("attached"):
+                # `attached` now means "recorded as a known domain for this
+                # company", which a brand-portfolio sibling also gets. Filing
+                # public emails needs the stronger claim -- that this row is
+                # not currently under suspicion of being a duplicate of the
+                # row that already has the domain. merge_candidate_logged is
+                # exactly that suspicion, so it disqualifies: classifying
+                # contacts against a row that may be about to be merged away
+                # is how five greatoaks.net contacts ended up on a company
+                # with no domain.
+                if attach.get("attached") and not attach.get("merge_candidate_logged"):
                     attached_domain = attach.get("domain")
 
         emails = drop_truncated_duplicates(list(all_emails.values()))

@@ -151,6 +151,24 @@ tr.clickable:hover td { background: color-mix(in srgb, var(--series-1) 7%, trans
 .enrich-modal label { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; cursor: pointer; }
 .enrich-modal label input { flex: none; }
 .enrich-modal .stale { margin: 6px 0 2px; }
+.danger-zone { border: 1px solid var(--danger, #c0392b); border-radius: 8px;
+  padding: 12px 14px; margin-top: 18px; }
+.danger-zone h3 { margin: 0 0 8px; font-size: 13px; color: var(--danger, #c0392b); }
+.dz-warn { font-size: 12px; color: var(--ink-2); margin-bottom: 10px; }
+.dz-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.dz-input { flex: 1; min-width: 180px; }
+.dz-btn { border-color: var(--danger, #c0392b); color: var(--danger, #c0392b); }
+.dz-btn:disabled { opacity: .45; cursor: not-allowed; }
+.dz-msg { margin-top: 8px; }
+.copyable { cursor: pointer; }
+.copyable:hover { text-decoration: underline dotted; }
+.eo-sep { border-top: 1px solid var(--border); margin: 12px 0 8px; }
+.eo-picker { max-height: 220px; overflow-y: auto; margin-top: 6px;
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+.eo-grp { padding: 6px 0; }
+.eo-grp + .eo-grp { border-top: 1px solid var(--border); }
+.eo-grp-name { font-size: 12px; font-weight: 600; color: var(--ink-1); }
+.eo-picker label { font-size: 12px; padding: 2px 0 2px 10px; }
 .enrich-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 button.linklike { border: none; background: none; padding: 0; font: inherit; font-weight: 600;
   color: var(--series-1); cursor: pointer; text-decoration: underline; }
@@ -266,6 +284,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           <div class="controls" style="margin-top:12px">
             <button class="small primary" id="merge-contacts-run" disabled>Merge</button>
             <button class="small" id="merge-contacts-cancel">Cancel</button>
+            <button class="small" id="contact-merge-prompt-btn" title="Copy a prompt for your AI agent to work the whole conflict queue">Copy agent prompt</button>
             <span class="msg" id="merge-contacts-msg"></span>
           </div>
         </div>
@@ -387,7 +406,41 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
     </div>
     <div class="card" id="merge-card" hidden>
       <h2>Needs review — company merges <span class="sub">ambiguous / duplicate matches queued for a decision</span></h2>
+      <div class="controls">
+        <label>Confidence
+          <select id="merge-confidence">
+            <option value="ALL">All</option>
+            <option value="HIGH">High</option>
+            <option value="MEDIUM">Medium &amp; up</option>
+            <option value="LOW">Low &amp; up</option>
+          </select>
+        </label>
+        <label>Type
+          <select id="merge-reason"><option value="">All types</option></select>
+        </label>
+        <label>Keep
+          <select id="merge-keep-side" title="which side survives a bulk merge">
+            <option value="existing">Company A</option>
+            <option value="candidate">Company B</option>
+          </select>
+        </label>
+        <span class="spacer"></span>
+        <span id="merge-count" class="stale"></span>
+        <button class="small" id="merge-prompt-btn" title="Copy a prompt for your AI agent to work this queue">Copy agent prompt</button>
+      </div>
+      <div class="controls">
+        <label><input type="checkbox" id="merge-all"> select all on page</label>
+        <span id="merge-selected" class="stale"></span>
+        <span class="spacer"></span>
+        <button class="small primary" id="merge-bulk-approve" disabled>Merge selected</button>
+        <button class="small" id="merge-bulk-reject" disabled>Keep separate</button>
+      </div>
       <div id="merge-list"></div>
+      <div class="controls">
+        <button id="merge-prev" class="small">‹ Prev</button>
+        <span id="merge-page" class="stale"></span>
+        <button id="merge-next" class="small">Next ›</button>
+      </div>
     </div>
   </section>
 
@@ -408,6 +461,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <button class="small" id="serper-review-load">Load queue</button>
         <span class="spacer"></span>
         <span id="serper-review-count" class="stale"></span>
+        <button class="small" id="serper-prompt-btn" title="Copy a prompt for your AI agent to work this queue">Copy agent prompt</button>
         <button class="small primary" id="serper-review-save" disabled>Save decisions</button>
       </div>
       <div id="serper-review-list"></div>
@@ -472,25 +526,11 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <div id="replies-table"></div>
     </div>
     <div class="card">
-      <h2>Campaigns <span class="sub">click a campaign for senders, subject lines &amp; copy</span></h2>
+      <h2>Campaigns <span class="sub">click a campaign to filter the replies above to it</span></h2>
       <div id="campaigns"></div>
     </div>
-    <div class="card" id="campaign-detail-card" hidden>
-      <h2 id="campaign-detail-title">Campaign</h2>
-      <div id="campaign-detail"></div>
-      <h3 style="font-size:13px">Leads in this campaign <span class="sub">click a lead for full history &amp; actions</span></h3>
-      <div class="controls">
-        <input id="campaign-leads-q" placeholder="Search these leads…" style="width:240px">
-        <span class="spacer"></span>
-        <span id="campaign-leads-count" class="stale"></span>
-      </div>
-      <div id="campaign-leads"></div>
-      <div class="controls">
-        <button id="campaign-leads-prev" class="small">‹ Prev</button>
-        <span id="campaign-leads-page" class="stale"></span>
-        <button id="campaign-leads-next" class="small">Next ›</button>
-      </div>
-      <h3 style="font-size:13px;margin-top:14px">Subject lines &amp; copy <span class="sub">expand to audit the exact copy sent</span></h3>
+    <div class="card" id="subjects-card" hidden>
+      <h2>Subject lines &amp; copy <span class="sub" id="subjects-sub">expand a row to audit the exact copy sent</span></h2>
       <div id="subjects"></div>
     </div>
   </section>
@@ -581,6 +621,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
   <button id="lead-back" class="small" style="display:none;margin-bottom:8px" onclick="navBack()">← Back</button>
   <h2 id="lead-name"></h2>
   <div class="meta" id="lead-meta"></div>
+  <div id="lead-stale-banner"></div>
 
   <form id="stage-form">
     <h3>Change stage</h3>
@@ -640,6 +681,8 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
     <h3 style="border-top:1px solid var(--grid);padding-top:12px">Event history</h3>
     <div id="lead-history" class="timeline"></div>
   </div>
+
+  <div id="lead-danger"></div>
 </aside>
 <aside id="editPanel">
   <button style="float:right" onclick="dismissPanels()">✕</button>
@@ -688,7 +731,14 @@ async function api(path, opts = {}) {
     ? { "X-OM-Dashboard": "1", "Content-Type": "application/json" } : {};
   const resp = await fetch(path, { ...opts, headers });
   const payload = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(payload.error || `HTTP ${resp.status}`);
+  if (!resp.ok) {
+    const err = new Error(payload.error || `HTTP ${resp.status}`);
+    // A 409 carries the two leads that claim one identity. Attaching it to the
+    // error means every caller can offer the merge without each one having to
+    // re-parse the message.
+    if (payload.conflict) err.conflict = payload.conflict;
+    throw err;
+  }
   return payload;
 }
 function withRange(path) {
@@ -910,13 +960,91 @@ function renderTable(container, cols, rows, opts = {}) {
     });
     if (opts.onRowClick) el.querySelectorAll("tbody tr").forEach(tr =>
       tr.onclick = (ev) => {
-        if (ev.target.closest("button, a, input, label")) return;
+        // A control in a cell is a control, not a way to open the row.
+        if (ev.target.closest("button, a, input, label, select, .copyable")) return;
         opts.onRowClick(rows[+tr.dataset.i]);
       });
     if (opts.onDraw) opts.onDraw(el);
   };
   draw();
 }
+
+/* ---------- danger zone ---------- */
+// One destructive-action block, rendered at the bottom of every detail pane.
+// Deliberately uniform: these deletes all file a relay tombstone via the
+// BEFORE DELETE outbox trigger, so they are not local hides — they push
+// upstream and a later pull cannot regrow the row.
+//
+// Confirmation is typing the entity's own name, not an OK button. The friction
+// is proportional to the blast radius: every one of these is irreversible and
+// leaves the local database, which is the same bar GitHub sets for the pattern
+// this borrows from.
+//
+//   opts.el       container element id
+//   opts.title    what gets deleted ("this company")
+//   opts.confirm  the exact string the user must type
+//   opts.warning  HTML: what happens, including anything that SURVIVES
+//   opts.onDelete async () => result; the caller reloads/closes on resolve
+function renderDangerZone(opts) {
+  const el = $(opts.el);
+  if (!el) return;
+  el.innerHTML = `
+    <div class="danger-zone">
+      <h3>Danger zone</h3>
+      <div class="dz-warn">${opts.warning}</div>
+      <div class="dz-row">
+        <input class="dz-input" placeholder="Type ${esc(opts.confirm)} to confirm"
+               autocomplete="off" spellcheck="false">
+        <button class="small dz-btn" disabled>Delete ${esc(opts.title)}</button>
+      </div>
+      <div class="msg dz-msg"></div>
+    </div>`;
+  const input = el.querySelector(".dz-input");
+  const btn = el.querySelector(".dz-btn");
+  const msg = el.querySelector(".dz-msg");
+  // Case- and whitespace-insensitive: the point is proving you know WHICH row
+  // you are deleting, not transcription accuracy.
+  const matches = () => input.value.trim().toLowerCase() === String(opts.confirm).trim().toLowerCase();
+  input.oninput = () => { btn.disabled = !matches(); };
+  btn.onclick = async () => {
+    if (!matches()) return;
+    btn.disabled = true;
+    msg.textContent = "deleting…"; msg.className = "msg dz-msg";
+    try {
+      const r = await opts.onDelete();
+      msg.textContent = "Deleted."; msg.className = "msg dz-msg ok";
+      toast(`Deleted ${opts.title}`);
+      if (opts.after) opts.after(r);
+    } catch (e) {
+      msg.textContent = e.message; msg.className = "msg dz-msg err";
+      btn.disabled = false;
+    }
+  };
+}
+
+// Click-to-copy for any [data-copy] cell, delegated once at the document so
+// every table (and every redraw) gets it without wiring per-render handlers.
+// Cells opt in by carrying the class; the row-click guard above knows to leave
+// them alone so copying a URL never also opens the contact pane.
+document.addEventListener("click", async (ev) => {
+  const el = ev.target.closest(".copyable[data-copy]");
+  if (!el) return;
+  ev.stopPropagation();
+  const value = el.dataset.copy;
+  try {
+    await navigator.clipboard.writeText(value);
+    toast("Copied");
+  } catch (e) {
+    // Clipboard API needs a secure context; the dashboard is served over
+    // plain http on localhost in some setups. Select the text instead so
+    // ⌘C still works rather than failing silently.
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+    toast("Select + ⌘C to copy");
+  }
+});
 
 /* ---------- header: workspaces, range, sync ---------- */
 async function loadWorkspaces() {
@@ -964,9 +1092,34 @@ function updateSyncPill(sync) {
   ["pull-btn", "push-btn"].forEach(id => $(id).disabled = sync.state === "running");
   // A finished sync is the one moment the data provably changed, so this is
   // still automatic -- but through refreshNow, which keeps your scroll place.
-  if (state.syncState === "running" && sync.state === "done") { toast(`${sync.kind} finished`); refreshNow(); }
+  if (state.syncState === "running" && sync.state === "done") {
+    toast(`${sync.kind} finished`);
+    refreshNow();
+    markOpenPanesStale(sync.kind);
+  }
   if (state.syncState === "running" && sync.state === "error") toast(`${sync.kind} failed: ${sync.error}`);
   state.syncState = sync.state;
+}
+
+// refreshNow redraws the tab, not the open slideover — so running research from
+// a contact pane wrote new values you could not see without reloading the whole
+// page and finding your place again. This offers the reload of just that pane.
+//
+// It is a button rather than an automatic re-render: the pane holds half-typed
+// edits and a scroll position, and throwing those away to show a title you can
+// already read in the console is a worse trade than one click.
+// SyncManager job kinds that write lead fields. A pull already redraws the tab
+// and is not lead-specific; these two are.
+const RESEARCH_JOBS = new Set(["serper", "email-finder"]);
+function markOpenPanesStale(kind) {
+  if (!RESEARCH_JOBS.has(kind)) return;
+  const banner = $("lead-stale-banner");
+  if (state.lead && banner && $("slideover").style.display === "block") {
+    const leadId = state.lead.id;
+    banner.innerHTML = '<div class="banner warn" style="margin:6px 0">New research results — '
+      + '<button class="linklike" id="lead-refresh-btn">refresh this contact</button></div>';
+    $("lead-refresh-btn").onclick = () => openLead(leadId);
+  }
 }
 
 /* ---------- sync console (streams the same lines the terminal shows) ---------- */
@@ -1024,6 +1177,7 @@ function resetWorkspaceScopedState() {
   contactsSel.clear();
   for (const k of Object.keys(contactsFilters)) delete contactsFilters[k];
   companiesState.offset = 0;
+  companiesState.sortKey = null;
   for (const k of Object.keys(companiesFilters)) delete companiesFilters[k];
   Object.assign(qualityState, { bucket: null, missing: null, offset: 0, total: 0, rows: [], summary: null });
   qualityState.sel = new Set();
@@ -1080,7 +1234,7 @@ function setRangeToDay(dateStr) {
 // per-tab, and a helper that closes "whatever detail cards exist" should not
 // depend on which tab is mounted.
 function closeDetails() {
-  for (const id of ["campaign-detail-card", "domain-detail-card", "stage-leads-card"]) {
+  for (const id of ["subjects-card", "domain-detail-card", "stage-leads-card"]) {
     const el = $(id);
     if (el) el.hidden = true;
   }
@@ -1175,9 +1329,28 @@ function leadLiUrl(r) {
 // Columns the backend can sort whole-list (must match LEAD_SORT_COLUMNS in
 // dashboard_queries.py). Header clicks on other columns are ignored.
 const SORTABLE_LEAD_KEYS = new Set([
-  "name", "email", "company", "title", "status", "current_status_sentiment",
+  "name", "email", "company", "title", "current_status_label", "current_status_sentiment",
   "email_verification_status", "total_replies_count", "email_sent_count", "last_activity_at",
+  "linkedin",
 ]);
+// Cell renderers shared by every lead-shaped table — the contacts list, the
+// quality buckets, and the campaign replies view. One definition, so a row in
+// the replies table cannot describe the same lead differently from the row in
+// contacts.
+function renderCompanyCell(r) {
+  return esc(r.company ?? "")
+    + (r.company_id ? "" : ' <span class="flag warn" title="not linked to a company record">⚠</span>');
+}
+function renderTagChips(r) {
+  if (!r.tags) return "";
+  const arr = r.tags.split(",");
+  const shown = arr.slice(0, 2).map(t => `<span class="tag-chip">${esc(t)}</span>`).join("");
+  return shown + (arr.length > 2
+    ? `<span class="tag-chip" title="${esc(arr.join(', '))}">+${arr.length - 2}</span>` : "");
+}
+function renderSentimentFlag(v) {
+  return v ? `<span class="flag ${SENTIMENT_FLAG[String(v).toLowerCase()] ?? ""}">${esc(v)}</span>` : "–";
+}
 function leadColumns() {
   return [
     { key: "name", label: "Name", render: r => esc(r.name || "—")
@@ -1185,21 +1358,34 @@ function leadColumns() {
             ? ' <span class="flag" title="Company placeholder — an account stub with no person attached. Not sent to, not enriched, not synced to CRM.">company</span>'
             : "")
         + (r.superseded_at ? ' <span class="flag warn" title="Superseded by real contacts at this company; kept for audit">superseded</span>' : "") },
-    { key: "company", label: "Company", render: r => esc(r.company ?? "") + (r.company_id ? "" : ' <span class="flag warn" title="not linked to a company record">⚠</span>') },
+    { key: "company", label: "Company", render: renderCompanyCell },
     { key: "title", label: "Title", render: r => esc(r.title ?? "") },
     { key: "email", label: "Email", render: r => r.email ? esc(r.email) : '<span class="flag warn">no email</span>' },
-    { key: "status", label: "Stage" },
+    linkedinColumn(),
+    // The sequencer's reply label ("Interested", "Out of office"), not the
+    // legacy stage machine. It is what you actually work the list by.
+    { key: "current_status_label", label: "Lead status", render: r => esc(r.current_status_label ?? "—") },
     { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
-    { key: "tags", label: "Tags", maxw: 190, render: r => {
-        if (!r.tags) return "";
-        const arr = r.tags.split(",");
-        const shown = arr.slice(0, 2).map(t => `<span class="tag-chip">${esc(t)}</span>`).join("");
-        return shown + (arr.length > 2
-          ? `<span class="tag-chip" title="${esc(arr.join(', '))}">+${arr.length - 2}</span>` : "");
-      } },
-    { key: "li", label: "LinkedIn", sortVal: () => 0, render: r => { const u = leadLiUrl(r); return u ? `<a href="${esc(u)}" target="_blank" rel="noopener">↗</a>` : ""; } },
+    { key: "tags", label: "Tags", maxw: 190, render: renderTagChips },
     { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
   ];
+}
+
+// The LinkedIn cell, shared by every table that shows an email — the URL as
+// selectable, click-to-copy text rather than an ↗ link, because the value
+// itself is what gets pasted into a sequencer or a sheet and a bare arrow
+// can't be copied. leadLiUrl() supplies the public profile URL, else a Sales
+// Navigator URL synthesized from the stored member token, else nothing.
+//
+// Sorting is server-side on COALESCE(linkedin_url, linkedin_sales_nav_id), so
+// it orders the whole result set rather than the loaded page. Note that public
+// URLs and bare Sales Nav tokens therefore sort as two blocks; that groups
+// rather than interleaves them, which is the more useful read anyway.
+function linkedinColumn() {
+  return { key: "linkedin", label: "LinkedIn", maxw: 260, render: r => {
+    const u = leadLiUrl(r);
+    return u ? `<span class="copyable" data-copy="${esc(u)}" title="click to copy">${esc(u)}</span>` : "";
+  } };
 }
 
 /* ---------- deliverability ---------- */
@@ -1318,8 +1504,19 @@ function openSenderEdit(sa) {
       <div class="row"><button class="primary">Save mailbox</button></div>
       <div class="msg" id="sender-msg"></div>
     </form>
-    <div id="sender-ws" style="border-top:1px solid var(--grid);margin-top:12px;padding-top:12px"></div>`;
+    <div id="sender-ws" style="border-top:1px solid var(--grid);margin-top:12px;padding-top:12px"></div>
+    <div id="sender-danger"></div>`;
   renderSenderWorkspaces(sa.email);
+  renderDangerZone({
+    el: "sender-danger", title: "mailbox", confirm: sa.email,
+    warning: `Permanently deletes our record of <b>${esc(sa.email)}</b> and pushes the
+      delete to the relay. <b>This does not disconnect the mailbox from your
+      sequencer</b> — if it is still connected there, the next pull recreates
+      this row. To stop counting a mailbox you still own, untick
+      <b>Live mailbox</b> above instead.`,
+    onDelete: () => post("/api/senders/delete", { id: sa.id, confirm: true }),
+    after: () => { dismissPanels(); loadDeliverability(); },
+  });
   $("sender-edit-form").onsubmit = (e) => {
     e.preventDefault();
     const body = { email: sa.email };
@@ -1410,8 +1607,20 @@ function openDomainEdit(dom, reg) {
       <div class="row"><button class="primary">Save domain</button></div>
       <div class="msg" id="domain-msg"></div>
     </form>
-    <div id="domain-ws" style="border-top:1px solid var(--grid);margin-top:12px;padding-top:12px"></div>`;
+    <div id="domain-ws" style="border-top:1px solid var(--grid);margin-top:12px;padding-top:12px"></div>
+    <div id="domain-danger"></div>`;
   renderDomainWorkspaces(dom);
+  renderDangerZone({
+    el: "domain-danger", title: "domain", confirm: dom,
+    warning: `Permanently deletes our record of <b>${esc(dom)}</b> (reseller, cost,
+      notes, workspace routing) and pushes the delete to the relay. Mailboxes on
+      this domain are <b>not</b> deleted. <b>This does not affect the domain's
+      registration or DNS</b> — and if it is still in use upstream, the next
+      pull recreates the row. To retire a domain you still own, untick
+      <b>Live domain</b> above instead.`,
+    onDelete: () => post("/api/domains/delete", { domain: dom, confirm: true }),
+    after: () => { dismissPanels(); loadDeliverability(); },
+  });
   $("domain-edit-form").onsubmit = (e) => {
     e.preventDefault();
     const body = { domain: dom };
@@ -1558,9 +1767,13 @@ async function openExportPanel() {
   // a second record-type control in here that disagreed with the one above it
   // would be two answers to the same question, which is how the contacts list
   // and pipeline_tags.export_leads drifted apart in the first place.
-  $("export-scope").textContent =
-    `Exports the ${$("contacts-record-type").selectedOptions[0].textContent.toLowerCase()} `
-    + `currently matching your filters — ${$("contacts-count").textContent || "the list below"}.`;
+  // A tick list is a literal answer to "which rows", so it wins over the
+  // filters entirely — exporting 50 selected contacts must not also export the
+  // 8,000 the filters happen to match, which is what it used to do.
+  $("export-scope").textContent = contactsSel.size
+    ? `Exports the ${fmt(contactsSel.size)} selected contact${contactsSel.size === 1 ? "" : "s"} — not the whole filtered list.`
+    : `Exports the ${$("contacts-record-type").selectedOptions[0].textContent.toLowerCase()} `
+      + `currently matching your filters — ${$("contacts-count").textContent || "the list below"}.`;
   if (!exportFieldOptions) {
     exportFieldOptions = await get("/api/contacts/export/fields").catch(e => {
       toast(e.message); return null;
@@ -1593,10 +1806,12 @@ async function runExport() {
   if (!fields.length) { toast("Pick at least one column"); return; }
   const p = contactsFilterParams();
   p.set("workspace", state.workspace);
+  const body = { fields };
+  if (contactsSel.size) body.lead_ids = [...contactsSel];
   toast("Exporting…");
   try {
     const d = await api("/api/contacts/export?" + p.toString(),
-      { method: "POST", body: JSON.stringify({ fields }) });
+      { method: "POST", body: JSON.stringify(body) });
     toast(`Wrote ${fmt(d.count)} row${d.count === 1 ? "" : "s"} to ${d.file}`
       + (d.truncated ? ` (capped at ${fmt(d.limit)})` : ""));
   } catch (e) {
@@ -1803,8 +2018,84 @@ $("contacts-status").onchange = $("contacts-missing").onchange = $("contacts-sor
 $("contacts-prev").onclick = () => { contactsState.offset = Math.max(0, contactsState.offset - contactsState.limit); loadContacts(false); };
 $("contacts-next").onclick = () => { contactsState.offset += contactsState.limit; loadContacts(false); };
 
+/* ---------- agent triage prompts ---------- */
+// These queues are judgement calls the pipeline refuses to make on its own, and
+// they accumulate faster than anyone works them by hand. The agent that hosts
+// this skill can already run every command involved — what it was missing was
+// the framing and the rules.
+//
+// The rules live in references/agent-triage.md, not in these strings. One copy
+// of the judgement criteria, and the agent reads the current version rather than
+// whatever was true when the button was written.
+const TRIAGE_DOC = "<SKILLS>/outreachmagic/references/agent-triage.md";
+const AGENT_PROMPTS = {
+  research: `Work the pending Serper research decisions in Outreach Magic.
+
+Read ${TRIAGE_DOC} first — it has the decision rules.
+
+  pipeline.py serper-review --field linkedin --limit 25 --json
+  pipeline.py serper-apply --batch --json '[{"lead_id": N, "field": "linkedin", "value": "..."}]'
+
+Do the same for --field title and --field company_domain.
+
+Decide each one from the evidence in the candidates, searching the web where
+that would settle it. "None of these" (dismissed: true) is a real answer — use
+it rather than attaching a profile you are not confident in.
+
+Do not guess to clear the queue. Leave anything genuinely ambiguous pending and
+ask me about it, with what you would need in order to decide.`,
+
+  companyMerges: `Work the pending company merges in Outreach Magic.
+
+Read ${TRIAGE_DOC} first — it has the decision rules and how to choose which
+record survives.
+
+  pipeline.py company merge-review list --min-confidence HIGH --limit 50
+  pipeline.py company merge-review approve --id <candidate_id> --keep-id <company_id>
+  pipeline.py company merge-review reject --id <candidate_id> --note "<why>"
+
+Start with HIGH confidence, then MEDIUM. Open both domains before deciding a
+name-only match — two companies sharing a name is common and merging them
+corrupts both accounts.
+
+Merges cannot be undone from these tools. Leave anything you are unsure of
+pending and ask me, with what you would need in order to decide.`,
+
+  contactMerges: `Work the pending contact merges in Outreach Magic — records that
+ended up claiming the same identity.
+
+Read ${TRIAGE_DOC} first — it has the decision rules.
+
+  pipeline.py merge-review list --reason identity_conflict --limit 50
+  pipeline.py merge-review list --reason email_find_conflict --limit 50
+  pipeline.py merge-review approve --id <job_id>
+  pipeline.py merge-review reject --id <job_id> --note "<why>"
+
+A shared LinkedIn URL is strong evidence of one person recorded twice. A shared
+role mailbox (info@, sales@) is not — that is a company address.
+
+Leave anything ambiguous pending and ask me about it.`,
+};
+
+async function copyAgentPrompt(key, btn) {
+  const text = AGENT_PROMPTS[key];
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Agent prompt copied — paste it to your agent");
+  } catch (e) {
+    // Clipboard access can be refused; showing the text is still useful.
+    window.prompt("Copy this prompt for your agent:", text);
+  }
+  if (btn) { btn.textContent = "Copied ✓"; setTimeout(() => btn.textContent = "Copy agent prompt", 2000); }
+}
+
 /* ---------- companies (Section C) ---------- */
-const companiesState = { offset: 0, limit: 50 };
+// Must match COMPANY_SORT_COLUMNS in dashboard_queries.py. Tags are a
+// GROUP_CONCAT of the loaded page's rows, so there is nothing to sort on
+// server-side and a header click on it is ignored.
+const SORTABLE_COMPANY_KEYS = new Set(
+  ["name", "domain", "domains", "industry", "headcount", "leads"]);
+const companiesState = { offset: 0, limit: 50, sortKey: null, sortDir: -1 };
 const companiesFilters = {};   // tag / missing_domain / no_reachable_contact / placeholder_only
 let companiesTimer = null;
 
@@ -1837,9 +2128,14 @@ function renderCompaniesFilterChips() {
 async function loadCompanies(resetOffset = true) {
   if (resetOffset) companiesState.offset = 0;
   const p = new URLSearchParams({
-    q: $("companies-q").value.trim(), sort: $("companies-sort").value,
+    // A clicked column header wins over the dropdown, same rule the contacts
+    // table uses. Either way the backend sorts the whole result set, so page 3
+    // of "sort by primary domain" means what it says.
+    q: $("companies-q").value.trim(),
+    sort: companiesState.sortKey || $("companies-sort").value,
     limit: companiesState.limit, offset: companiesState.offset,
   });
+  if (companiesState.sortKey) p.set("dir", companiesState.sortDir < 0 ? "desc" : "asc");
   for (const [k, v] of Object.entries(companiesFilters)) if (v) p.set(k, v);
   renderCompaniesFilterChips();
   $("companies-table").innerHTML = '<div class="stale">Loading…</div>';
@@ -1847,7 +2143,12 @@ async function loadCompanies(resetOffset = true) {
   if (!d) { $("companies-table").innerHTML = ""; return; }
   renderTable("companies-table", [
     { key: "name", label: "Company", render: r => esc(r.name || "—") },
-    { key: "domain", label: "Primary domain", render: r => esc(r.domain ?? "–") },
+    // matched_domain is set when the search term hit one of the company's
+    // OTHER domains — without showing it, a result whose primary domain
+    // doesn't contain what you typed reads as a broken search.
+    { key: "domain", label: "Primary domain",
+      render: r => esc(r.domain ?? "–") + (r.matched_domain
+        ? ` <span class="flag" title="matched on this other known domain">${esc(r.matched_domain)}</span>` : "") },
     { key: "domains", label: "Branches", num: true,
       render: r => r.domains > 1 ? `<b>${r.domains}</b>` : (r.domains || 0) },
     { key: "industry", label: "Industry", render: r => esc(r.industry ?? "–") },
@@ -1856,7 +2157,13 @@ async function loadCompanies(resetOffset = true) {
       render: r => esc((r.tags || []).join(", ")) || "–" },
     { key: "leads", label: "Leads", num: true, render: r => fmt(r.leads) },
   ], d.companies, { empty: "No companies match.", filter: false,
-    onRowClick: r => openCompany(r.id) });
+    onRowClick: r => openCompany(r.id),
+    sortKey: companiesState.sortKey, sortDir: companiesState.sortDir,
+    serverSort: (k, dir) => {
+      if (!SORTABLE_COMPANY_KEYS.has(k)) { toast("Column not sortable"); return; }
+      companiesState.sortKey = k; companiesState.sortDir = dir === "desc" ? -1 : 1;
+      loadCompanies(true);
+    } });
   $("companies-page").textContent = `${companiesState.offset + 1}–${companiesState.offset + d.companies.length}`;
   $("companies-prev").disabled = companiesState.offset === 0;
   $("companies-next").disabled = !d.has_more;
@@ -1907,7 +2214,9 @@ function loadCompaniesStats() {
   }).catch(() => {});
 }
 $("companies-q").oninput = () => { clearTimeout(companiesTimer); companiesTimer = setTimeout(() => loadCompanies(), 300); };
-$("companies-sort").onchange = () => loadCompanies();
+// Choosing from the dropdown drops a sticky header sort — otherwise the
+// dropdown would appear to do nothing, because the header key wins.
+$("companies-sort").onchange = () => { companiesState.sortKey = null; loadCompanies(); };
 $("companies-prev").onclick = () => { companiesState.offset = Math.max(0, companiesState.offset - companiesState.limit); loadCompanies(false); };
 $("companies-next").onclick = () => { companiesState.offset += companiesState.limit; loadCompanies(false); };
 
@@ -1924,7 +2233,7 @@ async function openCompany(companyId) {
   const emailChips = d.public_emails.length
     ? d.public_emails.map(x => `<span class="domain-chip">${esc(x.value)}</span>`).join("") : "";
   $("edit-body").innerHTML = `
-    ${d.pending_merges ? `<div class="banner warn">${d.pending_merges} pending merge candidate(s) involve this company — see Review merges.</div>` : ""}
+    <div id="company-pending-merges"></div>
     <form id="company-edit-form">
       <h3>Edit company <span class="sub" style="font-weight:400;color:var(--ink-muted)">authoritative — overwrites</span></h3>
       <div class="row"><input name="name" placeholder="Name" value="${esc(c.name ?? "")}"></div>
@@ -1939,23 +2248,29 @@ async function openCompany(companyId) {
     <div id="company-phones" style="border-top:1px solid var(--grid);padding-top:12px"></div>
     <div style="border-top:1px solid var(--grid);padding-top:12px">
       <h3 style="font-size:13px">Leads at this company (${d.lead_count}${d.lead_count >= 200 ? "+" : ""})</h3>
+      <div class="controls" style="padding:2px 0">
+        <span id="company-leads-sel" class="stale"></span>
+        <span class="spacer"></span>
+        <button class="small" id="company-leads-delete" disabled>Delete selected</button>
+      </div>
       <div id="company-leads"></div>
     </div>
-    <div id="company-activity" style="border-top:1px solid var(--grid);padding-top:12px"></div>`;
+    <div id="company-activity" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+    <div id="company-danger"></div>`;
   renderCompanyDomains(companyId);
   renderPhones("company-phones", "company", companyId, "main");
   renderCompanyActivity(companyId);
-  renderTable("company-leads", [
-    { key: "name", label: "Name", render: r => esc(r.name || "—") },
-    { key: "title", label: "Title", render: r => esc(r.title ?? "") },
-    // Sentiment stands in for the stage when the stage is the catch-all
-    // "not_interested" — the sentiment is the informative signal there.
-    { key: "status", label: "Stage", render: r => r.status === "not_interested" && r.current_status_sentiment
-        ? `<span class="flag ${SENTIMENT_FLAG[String(r.current_status_sentiment).toLowerCase()] ?? ""}">${esc(r.current_status_sentiment)}</span>`
-        : esc(r.status ?? "—") },
-    { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
-  ], d.leads, { empty: "No leads in this workspace.", filter: d.leads.length > 8,
-    onRowClick: r => { navPush("company", companyId); closeEditPanel(); openLead(r.lead_id); } });
+  renderDangerZone({
+    el: "company-danger", title: "company", confirm: c.name || `company ${companyId}`,
+    warning: `Permanently deletes <b>${esc(c.name || "this company")}</b> and its known
+      domains, and pushes the delete to the relay. Its
+      <b>${fmt(d.lead_count)} lead${d.lead_count === 1 ? "" : "s"} are NOT deleted</b> —
+      they stay as contacts with no company attached, and can be re-linked.`,
+    onDelete: () => post(`/api/companies/${companyId}/delete`, { confirm: true }),
+    after: () => { dismissPanels(); loadCompanies(false); },
+  });
+  renderCompanyPendingMerges(companyId, d.pending_merge_candidates || []);
+  renderCompanyLeads(companyId, d.leads);
   $("company-edit-form").onsubmit = (e) => {
     e.preventDefault();
     const body = {};
@@ -1963,6 +2278,118 @@ async function openCompany(companyId) {
     formResult("company-msg", post(`/api/companies/${companyId}/edit`, body), () => loadCompanies(false));
   };
   updateBackBtns();
+}
+
+// The banner used to say "2 pending merge candidate(s) involve this company —
+// see Review merges", which is a notification about a decision you are already
+// looking at the evidence for. Same rows, decidable in place.
+function renderCompanyPendingMerges(companyId, candidates) {
+  const el = $("company-pending-merges");
+  if (!el) return;
+  if (!candidates.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="banner warn" style="margin-bottom:8px">
+      ${candidates.length} pending merge candidate${candidates.length === 1 ? "" : "s"} involve this company.
+    </div>` + candidates.map(m => {
+    const other = m.existing_company_id === companyId
+      ? { id: m.candidate_company_id, name: m.candidate_name, domain: m.candidate_domain, leads: m.candidate_leads }
+      : { id: m.existing_company_id, name: m.existing_name, domain: m.existing_domain, leads: m.existing_leads };
+    const conf = m.confidence
+      ? `<span class="flag ${CONFIDENCE_FLAG[m.confidence] ?? ""}">${esc(m.confidence)}</span>` : "";
+    return `<div class="merge-item" data-id="${esc(m.id)}">
+      <div class="pair"><b>${esc(other.name || `company #${other.id}`)}</b>
+        ${domainLink(other.domain)}
+        <span class="stale">· ${fmt(other.leads || 0)} lead${other.leads === 1 ? "" : "s"}</span>
+        ${conf} <span class="stale">${esc(m.reason || "")}</span></div>
+      <div class="controls" style="margin:8px 0 0">
+        <label title="which record survives the merge">Keep
+          <select data-keep="${esc(m.id)}">
+            <option value="${companyId}">this company</option>
+            ${other.id ? `<option value="${other.id}">${esc(other.name || `#${other.id}`)}</option>` : ""}
+          </select>
+        </label>
+        <button class="primary small" data-act="approve">Merge</button>
+        <button class="small" data-act="reject">Keep separate</button>
+      </div></div>`;
+  }).join("");
+  el.querySelectorAll("button[data-act]").forEach(btn => btn.onclick = () => {
+    const item = btn.closest(".merge-item");
+    const id = item.dataset.id;
+    const approve = btn.dataset.act === "approve";
+    const keepId = +item.querySelector("select[data-keep]").value;
+    if (approve && !confirm(
+      `Keep company #${keepId} and merge the other into it? `
+      + "This reassigns all its leads and cannot be undone here.")) return;
+    post(`/api/merge-candidates/${encodeURIComponent(id)}/resolve`,
+         approve ? { approve: true, keep_id: keepId } : { approve: false })
+      .then(() => {
+        toast(approve ? "Merged" : "Kept separate");
+        loadCompanies(false);
+        // The surviving record is what to look at next; a merged-away id 404s.
+        openCompany(approve ? keepId : companyId);
+      })
+      .catch(e => toast(e.message));
+  });
+}
+
+// Record type and contact order are stored per lead and per workspace-lead
+// respectively, and until now could only be set by round-tripping a review
+// sheet. They are decisions you make while looking at the roster of an account,
+// which is here.
+const RECORD_TYPES = ["contact", "company_placeholder"];
+const CONTACT_ORDERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+function renderCompanyLeads(companyId, leads) {
+  const sel = new Set();
+  const syncSel = () => {
+    $("company-leads-sel").textContent = sel.size ? `${sel.size} selected` : "";
+    $("company-leads-delete").disabled = !sel.size;
+  };
+  renderTable("company-leads", [
+    { key: "_sel", label: "", sortVal: () => 0,
+      render: r => `<input type="checkbox" class="cl-sel" data-id="${r.lead_id}">` },
+    { key: "name", label: "Name", render: r => esc(r.name || "—") },
+    { key: "title", label: "Title", render: r => esc(r.title ?? "") },
+    { key: "current_status_label", label: "Lead status", render: r => esc(r.current_status_label ?? "—") },
+    { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
+    { key: "record_type", label: "Record type", sortVal: r => r.record_type || "",
+      render: r => `<select class="cl-rt" data-id="${r.lead_id}">${RECORD_TYPES.map(t =>
+        `<option value="${t}"${(r.record_type || "contact") === t ? " selected" : ""}>${t.replace("_", " ")}</option>`).join("")}</select>` },
+    { key: "contact_priority", label: "Order", sortVal: r => r.contact_priority ?? 99,
+      render: r => `<select class="cl-order" data-id="${r.lead_id}">
+        <option value="">—</option>${CONTACT_ORDERS.map(n =>
+          `<option value="${n}"${Number(r.contact_priority) === n ? " selected" : ""}>${n}</option>`).join("")}</select>` },
+  ], leads, { empty: "No leads in this workspace.", filter: leads.length > 8,
+    onRowClick: r => { navPush("company", companyId); closeEditPanel(); openLead(r.lead_id); },
+    onDraw: el => {
+      el.querySelectorAll(".cl-sel").forEach(cb => cb.onchange = () => {
+        cb.checked ? sel.add(+cb.dataset.id) : sel.delete(+cb.dataset.id);
+        syncSel();
+      });
+      el.querySelectorAll(".cl-rt").forEach(s => s.onchange = () =>
+        post(`/api/leads/${s.dataset.id}/record-type`, { record_type: s.value })
+          .then(() => toast("Record type updated"))
+          .catch(e => { toast(e.message); openCompany(companyId); }));
+      el.querySelectorAll(".cl-order").forEach(s => s.onchange = () =>
+        post(`/api/leads/${s.dataset.id}/contact-order`,
+             { workspace: state.workspace, contact_order: s.value === "" ? null : +s.value })
+          .then(() => toast("Contact order updated"))
+          .catch(e => { toast(e.message); openCompany(companyId); }));
+    } });
+  $("company-leads-delete").onclick = async () => {
+    const ids = [...sel];
+    if (!ids.length) return;
+    // Deleting pushes a tombstone, so the contact leaves the sequencer too and
+    // a pull cannot regrow it. That is the point, and it is not reversible.
+    if (!confirm(`Delete ${ids.length} contact${ids.length === 1 ? "" : "s"}? `
+      + "This also removes them from the relay on the next push and cannot be undone.")) return;
+    try {
+      const r = await post("/api/leads/delete", { lead_ids: ids, confirm: true });
+      toast(`Deleted ${r.deleted} contact${r.deleted === 1 ? "" : "s"}`);
+      openCompany(companyId);
+      loadCompanies(false);
+    } catch (e) { toast(e.message); }
+  };
+  syncSel();
 }
 
 // A PROSPECT company's domains, from company_identities. This pane used to show
@@ -1981,8 +2408,10 @@ async function renderCompanyDomains(companyId) {
     const meta = [
       dm.role, dm.verified_mx ? "MX ✓" : null, dm.label, dm.source,
     ].filter(Boolean).map(esc).join(" · ");
+    // Deciding whether a domain belongs to this company usually means looking
+    // at the site. Copy-pasting it into a new tab was the missing step.
     return `<div style="display:flex;gap:8px;align-items:center;padding:3px 0">
-      <span style="flex:1;min-width:0">${esc(dm.value)}
+      <span style="flex:1;min-width:0">${domainLink(dm.value)}
         ${dm.is_primary ? '<span class="flag ok">primary</span>' : ""}
         <span class="stale">${meta}</span></span>
       <select data-domain="${esc(dm.value)}" class="dom-purpose">
@@ -2055,6 +2484,25 @@ async function openMergeContacts(ids, contacts, companyId) {
   renderMergePreview();
 }
 
+// Saving a LinkedIn URL that already belongs to another lead used to end at
+// "identity conflict: … belongs to lead 19397, not 184146" — a dead end that
+// states the resolution without offering it. It is the same two-record merge
+// the company pane already does, so it opens the same dialog.
+async function offerIdentityConflictMerge(conflict) {
+  const ids = [conflict.owner_lead_id, conflict.lead_id];
+  const contacts = [];
+  for (const id of ids) {
+    // The dialog labels its radios from these; the server-side preview is what
+    // actually decides the merge, so a failed lookup costs a label, not safety.
+    const d = await api(`/api/leads/${id}/history`).catch(() => null);
+    const lead = d?.lead || {};
+    contacts.push({ lead_id: id, name: lead.name || `lead #${id}`, title: lead.title,
+                    email: lead.email, event_count: (d?.events || []).length });
+  }
+  toast(`${conflict.identity_type.replace("_", " ")} already belongs to another record — merge them?`);
+  openMergeContacts(ids, contacts, null);
+}
+
 async function renderMergePreview() {
   const el = $("merge-preview");
   el.innerHTML = '<div class="stale">Working out the result…</div>';
@@ -2075,6 +2523,9 @@ async function renderMergePreview() {
 }
 
 $("merge-contacts-cancel").onclick = () => $("merge-contacts").close();
+// This dialog handles one pair; the queue behind it holds every other pair that
+// hit the same conflict. The button hands that whole queue to an agent.
+$("contact-merge-prompt-btn").onclick = (e) => { e.preventDefault(); copyAgentPrompt("contactMerges", e.target); };
 $("merge-contacts-run").onclick = async () => {
   const keep_id = mergeContacts.keepId;
   const merge_ids = mergeContacts.ids.filter(i => i !== keep_id);
@@ -2087,6 +2538,10 @@ $("merge-contacts-run").onclick = async () => {
     toast(`Merged ${r.merged} record(s) into #${keep_id}`);
     $("merge-contacts").close();
     if (mergeContacts.companyId) renderCompanyActivity(mergeContacts.companyId);
+    // Reached from an identity conflict rather than the company pane: land on
+    // the surviving record, since the one you were editing may be the one that
+    // just went away.
+    else if ($("slideover").style.display === "block") openLead(keep_id);
   } catch (e) {
     $("merge-contacts-msg").textContent = e.message;
   } finally {
@@ -2181,37 +2636,156 @@ $("merge-toggle").onclick = () => {
   if (!card.hidden) {
     $("merge-list").innerHTML = '<div class="empty">Loading…</div>';
     card.scrollIntoView({ behavior: "smooth", block: "start" });
-    loadMergeReview();
+    loadMergeReview(true);
   }
 };
-async function loadMergeReview() {
-  const d = await api("/api/merge-candidates?limit=50").catch(e => { toast(e.message); return null; });
-  if (!d) return;
-  const items = d.candidates || [];
-  $("merge-list").innerHTML = items.length ? items.map(m => {
-    const p = m.payload || {};
-    const a = p.existing_name || `company #${m.existing_company_id}`;
-    const aD = p.existing_domain ? ` <span class="stale">${esc(p.existing_domain)}</span>` : "";
-    const b = p.incoming_name || p.candidate_name || (m.candidate_company_id ? `company #${m.candidate_company_id}` : "—");
-    const bD = (p.incoming_domain || p.candidate_domain) ? ` <span class="stale">${esc(p.incoming_domain || p.candidate_domain)}</span>` : "";
-    const conf = p.confidence ? `<span class="flag ${p.confidence === "HIGH" ? "ok" : p.confidence === "LOW" ? "bad" : "warn"}">${esc(p.confidence)}</span>` : "";
-    return `<div class="merge-item" data-id="${esc(m.id)}">
-      <div class="pair"><b>${esc(a)}</b>${aD} <span class="vs">↔</span> <b>${esc(b)}</b>${bD}
-        ${conf} <span class="stale">${esc(m.reason || "")}</span></div>
-      <div class="controls" style="margin:8px 0 0">
-        <button class="primary small" data-act="approve">Merge</button>
-        <button class="small" data-act="reject">Keep separate</button>
-      </div></div>`;
-  }).join("") : '<div class="empty">Nothing queued for review — no ambiguous company matches.</div>';
-  $("merge-list").querySelectorAll("button[data-act]").forEach(btn => btn.onclick = () => {
-    const id = btn.closest(".merge-item").dataset.id;
-    const approve = btn.dataset.act === "approve";
-    if (approve && !confirm("Merge these two companies? This reassigns all leads and cannot be undone here.")) return;
-    post(`/api/merge-candidates/${encodeURIComponent(id)}/resolve`, { approve })
-      .then(() => { toast(approve ? "Merged" : "Kept separate"); loadMergeReview(); loadCompanies(false); })
-      .catch(e => toast(e.message));
-  });
+// The queue runs to thousands of rows. As an unsorted, unfiltered list of
+// cards it could only be worked one decision at a time, in whatever order it
+// happened to be queued — so it never got worked at all. Same data as a table:
+// sortable, filterable by how sure the matcher was and by what kind of match it
+// found, and selectable in bulk.
+const mergeState = { offset: 0, limit: 50, total: 0, rows: [], sel: new Set(), keep: new Map() };
+
+// A company you can click through to is a company you can actually verify.
+function domainLink(domain) {
+  if (!domain) return '<span class="stale">no domain</span>';
+  const href = /^https?:\/\//i.test(domain) ? domain : "https://" + domain;
+  return `<a href="${esc(href)}" target="_blank" rel="noopener" title="open in a new tab">${esc(domain)} ↗</a>`;
 }
+const CONFIDENCE_FLAG = { HIGH: "ok", MEDIUM: "warn", LOW: "bad" };
+
+// Which side survives. The queued "existing" side is only whichever row ingest
+// saw first, which is often the emptier of the two — so this is a real choice,
+// not a formality. Whichever wins keeps its own values field by field and
+// inherits anything it left blank from the other (merge_companies decides that;
+// nothing here re-implements it).
+function mergeKeepFor(m) {
+  return mergeState.keep.get(m.id) ?? m.existing_company_id;
+}
+
+function mergeSideCell(m, side) {
+  const isExisting = side === "existing";
+  const id = isExisting ? m.existing_company_id : m.candidate_company_id;
+  const name = (isExisting ? m.existing_name : m.candidate_name) || (id ? `company #${id}` : "—");
+  const domain = isExisting ? m.existing_domain : m.candidate_domain;
+  const leads = isExisting ? m.existing_leads : m.candidate_leads;
+  const radio = id
+    ? `<input type="radio" name="keep-${esc(m.id)}" value="${id}" data-keep="${esc(m.id)}"`
+      + `${mergeKeepFor(m) === id ? " checked" : ""} title="keep this record">`
+    : "";
+  return `<label style="display:flex;gap:6px;align-items:baseline;cursor:pointer">${radio}
+    <span><b>${esc(name)}</b><br>${domainLink(domain)}
+    <span class="stale"> · ${fmt(leads || 0)} lead${leads === 1 ? "" : "s"}</span></span></label>`;
+}
+
+async function loadMergeReview(resetOffset = false) {
+  if (resetOffset) { mergeState.offset = 0; mergeState.sel = new Set(); }
+  const p = new URLSearchParams({
+    limit: mergeState.limit, offset: mergeState.offset,
+    min_confidence: $("merge-confidence").value,
+  });
+  if ($("merge-reason").value) p.set("reason", $("merge-reason").value);
+  $("merge-list").innerHTML = '<div class="stale">Loading…</div>';
+  const d = await api("/api/merge-candidates?" + p.toString())
+    .catch(e => { toast(e.message); return null; });
+  if (!d) { $("merge-list").innerHTML = ""; return; }
+  mergeState.rows = d.candidates || [];
+  mergeState.total = d.total || 0;
+  fillMergeReasons(mergeState.rows);
+  $("merge-count").textContent = mergeState.total
+    ? `${fmt(mergeState.total)} pending` : "";
+  $("merge-all").checked = false;
+  renderTable("merge-list", [
+    { key: "_sel", label: "", sortVal: () => 0,
+      render: m => `<input type="checkbox" class="msel" data-id="${esc(m.id)}" ${mergeState.sel.has(m.id) ? "checked" : ""}>` },
+    { key: "existing_name", label: "Company A", wrap: true, render: m => mergeSideCell(m, "existing") },
+    { key: "candidate_name", label: "Company B", wrap: true, render: m => mergeSideCell(m, "candidate") },
+    { key: "confidence", label: "Confidence",
+      render: m => m.confidence
+        ? `<span class="flag ${CONFIDENCE_FLAG[m.confidence] ?? ""}">${esc(m.confidence)}</span>` : "–" },
+    { key: "reason", label: "Type", render: m => esc(m.reason || "") },
+    { key: "received_at", label: "Queued", render: m => dt(m.received_at) || "–" },
+    { key: "_act", label: "", sortVal: () => 0,
+      render: m => `<button class="primary small" data-act="approve" data-id="${esc(m.id)}">Merge</button>
+        <button class="small" data-act="reject" data-id="${esc(m.id)}">Keep separate</button>` },
+  ], mergeState.rows, {
+    empty: "Nothing queued for review — no ambiguous company matches.", filter: false,
+    onDraw: el => {
+      el.querySelectorAll("input[data-keep]").forEach(r => r.onchange = () =>
+        mergeState.keep.set(r.dataset.keep, +r.value));
+      el.querySelectorAll(".msel").forEach(cb => cb.onchange = () => {
+        cb.checked ? mergeState.sel.add(cb.dataset.id) : mergeState.sel.delete(cb.dataset.id);
+        syncMergeSelection();
+      });
+      el.querySelectorAll("button[data-act]").forEach(btn => btn.onclick = () => {
+        const m = mergeState.rows.find(x => x.id === btn.dataset.id);
+        const approve = btn.dataset.act === "approve";
+        if (approve && !confirm(
+          `Keep company #${mergeKeepFor(m)} and merge the other into it? `
+          + "This reassigns all its leads and cannot be undone here.")) return;
+        post(`/api/merge-candidates/${encodeURIComponent(m.id)}/resolve`,
+             approve ? { approve: true, keep_id: mergeKeepFor(m) } : { approve: false })
+          .then(() => { toast(approve ? "Merged" : "Kept separate"); loadMergeReview(); loadCompanies(false); })
+          .catch(e => toast(e.message));
+      });
+    } });
+  const to = mergeState.offset + mergeState.rows.length;
+  $("merge-page").textContent = mergeState.total ? `${mergeState.offset + 1}–${to} of ${fmt(mergeState.total)}` : "";
+  $("merge-prev").disabled = mergeState.offset === 0;
+  $("merge-next").disabled = to >= mergeState.total;
+  syncMergeSelection();
+}
+
+// The type list is whatever the queue actually contains, so a reason that stops
+// being produced stops being offered instead of sitting there matching nothing.
+function fillMergeReasons(rows) {
+  const sel = $("merge-reason"), cur = sel.value;
+  const seen = [...new Set(rows.map(r => r.reason).filter(Boolean))].sort();
+  const known = new Set([cur, ...seen].filter(Boolean));
+  sel.innerHTML = '<option value="">All types</option>'
+    + [...known].sort().map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join("");
+  sel.value = cur;
+}
+
+function syncMergeSelection() {
+  const n = mergeState.sel.size;
+  $("merge-selected").textContent = n ? `${n} selected` : "";
+  $("merge-bulk-approve").disabled = !n;
+  $("merge-bulk-reject").disabled = !n;
+  $("merge-bulk-approve").textContent = n ? `Merge ${n} selected` : "Merge selected";
+}
+
+$("merge-all").onchange = () => {
+  mergeState.sel = $("merge-all").checked ? new Set(mergeState.rows.map(r => r.id)) : new Set();
+  $("merge-list").querySelectorAll(".msel").forEach(cb => cb.checked = $("merge-all").checked);
+  syncMergeSelection();
+};
+for (const id of ["merge-confidence", "merge-reason"]) $(id).onchange = () => loadMergeReview(true);
+$("merge-prev").onclick = () => { mergeState.offset = Math.max(0, mergeState.offset - mergeState.limit); loadMergeReview(); };
+$("merge-next").onclick = () => { mergeState.offset += mergeState.limit; loadMergeReview(); };
+
+async function bulkResolveMerges(approve) {
+  const ids = [...mergeState.sel];
+  if (!ids.length) return;
+  const keep = $("merge-keep-side").value;
+  // Bulk merging is irreversible from here, and the "keep" side applies to the
+  // whole batch — both facts belong in the confirm, not in a tooltip.
+  if (approve && !confirm(
+    `Merge ${ids.length} pair(s), keeping ${keep === "existing" ? "Company A" : "Company B"} in each? `
+    + "This reassigns leads and cannot be undone here.")) return;
+  try {
+    const r = await post("/api/merge-candidates/bulk-resolve", { ids, approve, keep });
+    toast(`${approve ? "Merged" : "Kept separate"}: ${r.resolved}`
+      + (r.failed ? ` · ${r.failed} failed` : ""));
+    if (r.failed) console.warn("merge failures", r.errors);
+    mergeState.sel = new Set();
+    loadMergeReview();
+    loadCompanies(false);
+  } catch (e) { toast(e.message); }
+}
+$("merge-bulk-approve").onclick = () => bulkResolveMerges(true);
+$("merge-bulk-reject").onclick = () => bulkResolveMerges(false);
+$("merge-prompt-btn").onclick = (e) => copyAgentPrompt("companyMerges", e.target);
 
 function openEditPanel(title, meta) {
   $("edit-title").innerHTML = title;
@@ -2376,6 +2950,7 @@ function renderSerperReview(total) {
 
 $("serper-review-load").onclick = loadSerperReview;
 $("serper-review-field").onchange = loadSerperReview;
+$("serper-prompt-btn").onclick = (e) => copyAgentPrompt("research", e.target);
 $("serper-review-save").onclick = async () => {
   const decisions = [...serperReview.decisions.values()];
   if (!decisions.length) return;
@@ -2438,18 +3013,67 @@ function loadEnrichPrefs() {
 }
 function saveEnrichPrefs(p) { localStorage.setItem("om_enrich_prefs", JSON.stringify(p)); }
 
-function askEnrichOptions(kind, count) {
+// Group multi-domain targets by company so the per-company picker is a short
+// list. ~300 multi-domain leads typically sit behind ~40 companies — choosing
+// once per company and fanning the answer back out to its leads is the
+// difference between a usable control and a 300-row chore.
+function groupTargetsByCompany(targets) {
+  const groups = new Map();
+  for (const t of targets) {
+    if (!t.multi_domain || t.no_domain) continue;
+    // Leads with no company_id can't be grouped; each is its own bucket.
+    const key = t.company_id != null ? `c${t.company_id}` : `l${t.lead_id}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, company: t.company || "(no company)", domains: t.domains,
+            tried: t.tried_domains || [], leadIds: [] };
+      groups.set(key, g);
+    }
+    g.leadIds.push(t.lead_id);
+    // Union the domain lists — two leads at one company can resolve slightly
+    // differently if one carries its own email_domain.
+    for (const d of t.domains) if (!g.domains.includes(d)) g.domains.push(d);
+  }
+  return [...groups.values()];
+}
+
+// opts.targets (email kind only) = the /api/enrich/targets rows, so the dialog
+// can offer a domain strategy instead of silently waterfalling everything.
+function askEnrichOptions(kind, count, opts = {}) {
   return new Promise(resolve => {
     const p = loadEnrichPrefs();
     const trykitt = p.trykitt !== false, icypeas = p.icypeas !== false, deep = !!p.deep;
+    const strategy = p.domain_strategy || "waterfall";
+    const targets = opts.targets || [];
+    const groups = kind === "email" ? groupTargetsByCompany(targets) : [];
+    const multi = groups.reduce((n, g) => n + g.leadIds.length, 0);
+    const alreadyRan = targets.filter(t => t.already_ran).length;
     const ov = document.createElement("div");
     ov.className = "enrich-ov";
+    const domainBlock = (kind === "email" && multi) ? `
+      <div class="eo-sep"></div>
+      <div class="stale">${fmt(multi)} lead${multi === 1 ? "" : "s"} across
+        ${fmt(groups.length)} compan${groups.length === 1 ? "y" : "ies"} have more than one known domain.</div>
+      <label><input type="radio" name="eo-dom" value="best" ${strategy === "best" ? "checked" : ""}>
+        Best domain only <span class="stale">— 1 lookup per lead, cheapest</span></label>
+      <label><input type="radio" name="eo-dom" value="waterfall" ${strategy === "waterfall" ? "checked" : ""}>
+        Waterfall all domains <span class="stale">— stop at the first hit</span></label>
+      <label><input type="radio" name="eo-dom" value="pick" ${strategy === "pick" ? "checked" : ""}>
+        Choose per company…</label>
+      <div id="eo-picker" class="eo-picker" hidden></div>` : "";
+    const forceBlock = (kind === "email" && alreadyRan) ? `
+      <div class="eo-sep"></div>
+      <label><input type="checkbox" id="eo-force">
+        Re-run ${fmt(alreadyRan)} already-tried lead${alreadyRan === 1 ? "" : "s"}</label>
+      <div class="stale">Off = domains already tried for a lead are skipped. On = every
+        candidate domain is tried again and re-charged.</div>` : "";
     ov.innerHTML = `<div class="enrich-modal">
       <h3>${kind === "email" ? "Find emails" : "Research (Serper)"} — ${fmt(count)} lead${count === 1 ? "" : "s"}</h3>
       ${kind === "email" ? `
         <label><input type="checkbox" id="eo-trykitt" ${trykitt ? "checked" : ""}> TryKitt</label>
         <label><input type="checkbox" id="eo-icypeas" ${icypeas ? "checked" : ""}> Icypeas</label>
-        <div class="stale">Fewer providers = fewer credits. A credit is spent only when an email is found.</div>`
+        <div class="stale">Fewer providers = fewer credits. A credit is spent only when an email is found.</div>
+        ${domainBlock}${forceBlock}`
       : `
         <label><input type="checkbox" id="eo-deep" ${deep ? "checked" : ""}> Deep research — full query pack</label>
         <div class="stale">Off = core queries only (cheapest). Deep runs more Serper calls per lead.</div>`}
@@ -2458,22 +3082,66 @@ function askEnrichOptions(kind, count) {
         <button class="small primary" id="eo-run">Run</button>
       </div></div>`;
     document.body.appendChild(ov);
+
+    // Per-company radio table, built once and shown only for the "pick"
+    // strategy. Defaults to each company's top-ranked untried domain.
+    const picker = ov.querySelector("#eo-picker");
+    if (picker) {
+      picker.innerHTML = groups.map((g, gi) => {
+        const preferred = g.domains.find(d => !g.tried.includes(d)) || g.domains[0];
+        return `<div class="eo-grp">
+          <div class="eo-grp-name">${esc(g.company)}
+            <span class="stale">· ${fmt(g.leadIds.length)} lead${g.leadIds.length === 1 ? "" : "s"}</span></div>
+          ${g.domains.map(d => `<label><input type="radio" name="eo-g${gi}" value="${esc(d)}"
+              ${d === preferred ? "checked" : ""}> ${esc(d)}${
+              g.tried.includes(d) ? ' <span class="flag warn">tried</span>' : ""}</label>`).join("")}
+        </div>`;
+      }).join("");
+      const syncPicker = () => {
+        const v = ov.querySelector('input[name=eo-dom]:checked')?.value;
+        picker.hidden = v !== "pick";
+      };
+      ov.querySelectorAll('input[name=eo-dom]').forEach(r => r.onchange = syncPicker);
+      syncPicker();
+    }
+
     const close = v => { ov.remove(); resolve(v); };
     ov.onclick = e => { if (e.target === ov) close(null); };
     ov.querySelector("#eo-cancel").onclick = () => close(null);
     ov.querySelector("#eo-run").onclick = () => {
-      if (kind === "email") {
-        const providers = [];
-        if (ov.querySelector("#eo-trykitt").checked) providers.push("trykitt");
-        if (ov.querySelector("#eo-icypeas").checked) providers.push("icypeas");
-        if (!providers.length) { toast("Pick at least one provider"); return; }
-        saveEnrichPrefs({ ...loadEnrichPrefs(), trykitt: providers.includes("trykitt"), icypeas: providers.includes("icypeas") });
-        close({ providers });
-      } else {
+      if (kind !== "email") {
         const deepV = ov.querySelector("#eo-deep").checked;
         saveEnrichPrefs({ ...loadEnrichPrefs(), deep: deepV });
         close({ deep: deepV });
+        return;
       }
+      const providers = [];
+      if (ov.querySelector("#eo-trykitt").checked) providers.push("trykitt");
+      if (ov.querySelector("#eo-icypeas").checked) providers.push("icypeas");
+      if (!providers.length) { toast("Pick at least one provider"); return; }
+      const strat = ov.querySelector('input[name=eo-dom]:checked')?.value || "waterfall";
+      // {lead_id: [domain, ...]} — omitted entirely for "waterfall", which is
+      // the backend's own default (rank the candidates, try in order).
+      let domains = null;
+      if (strat === "best") {
+        domains = {};
+        for (const g of groups) {
+          const best = g.domains.find(d => !g.tried.includes(d)) || g.domains[0];
+          for (const id of g.leadIds) domains[id] = [best];
+        }
+      } else if (strat === "pick") {
+        domains = {};
+        groups.forEach((g, gi) => {
+          const chosen = ov.querySelector(`input[name=eo-g${gi}]:checked`)?.value;
+          if (!chosen) return;
+          for (const id of g.leadIds) domains[id] = [chosen];
+        });
+      }
+      const force = !!ov.querySelector("#eo-force")?.checked;
+      saveEnrichPrefs({ ...loadEnrichPrefs(),
+        trykitt: providers.includes("trykitt"), icypeas: providers.includes("icypeas"),
+        domain_strategy: strat });
+      close({ providers, domains, force });
     };
   });
 }
@@ -2497,14 +3165,24 @@ async function doFindEmails() {
   const t = targets?.targets || [];
   const noDom = t.filter(x => x.no_domain).length;
   const multi = t.filter(x => x.multi_domain).length;
-  const runnable = ids.length - noDom;
-  if (!runnable) { toast("None of the selected leads have a resolvable domain."); return; }
-  if (noDom || multi) {
-    toast(`${runnable} runnable · ${noDom} no-domain (skipped)${multi ? ` · ${multi} multi-domain` : ""}`);
+  const ranBefore = t.filter(x => x.already_ran).length;
+  // "Runnable" is what the backend will actually spend on: everything minus
+  // the no-domain leads minus the ones whose every candidate domain is
+  // already tried. Counting only no-domain used to promise a run for leads
+  // the guard was about to skip.
+  const runnable = ids.length - noDom - ranBefore;
+  if (!runnable && !ranBefore) { toast("None of the selected leads have a resolvable domain."); return; }
+  if (noDom || multi || ranBefore) {
+    toast(`${runnable} runnable${noDom ? ` · ${noDom} no-domain` : ""}`
+      + `${ranBefore ? ` · ${ranBefore} already tried` : ""}`
+      + `${multi ? ` · ${multi} multi-domain` : ""}`);
   }
-  const opts = await askEnrichOptions("email", runnable);
+  const opts = await askEnrichOptions("email", runnable, { targets: t });
   if (!opts) return;
-  startEnrichJob("/api/enrich/email-finder", { lead_ids: ids, providers: opts.providers });
+  const body = { lead_ids: ids, providers: opts.providers };
+  if (opts.domains) body.domains = opts.domains;
+  if (opts.force) body.force = true;
+  startEnrichJob("/api/enrich/email-finder", body);
 }
 
 async function doSerper() {
@@ -2590,7 +3268,18 @@ async function loadCampaigns() {
       render: r => r.bounce_rate != null && r.bounce_rate >= 0.05
         ? `<span class="flag bad">${pct(r.bounce_rate)}</span>` : pct(r.bounce_rate) },
   ], audit.campaigns, { empty: "No campaigns with activity in this workspace.",
-    onRowClick: r => showCampaign(r.id, r.name) });
+    // Clicking a campaign filters the Replies table above rather than opening a
+    // second lead list underneath. There was only ever one question being asked
+    // of both — "who replied, out of which campaign" — and two tables answering
+    // it separately meant scrolling past the answer to reach a copy of it.
+    onRowClick: r => selectCampaign(r.id, r.name) });
+}
+
+function selectCampaign(campaignId, name) {
+  $("replies-campaign").value = campaignId;
+  loadReplies();
+  showSubjects(campaignId, name);
+  $("replies-table").closest(".card").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function fillCampaignSelects() {
@@ -2630,15 +3319,23 @@ async function loadReplies() {
   fillReplyFacet("replies-status", d.facets?.status_label || []);
   $("replies-count").textContent = `${fmt(d.replies.length)} lead${d.replies.length === 1 ? "" : "s"}`;
   renderTable("replies-table", [
-    { key: "lead_name", label: "Lead", render: r => esc(r.lead_name || "—") },
-    { key: "sentiment", label: "Sentiment", render: r => r.sentiment
-        ? `<span class="flag ${SENTIMENT_FLAG[r.sentiment.toLowerCase()] ?? ""}">${esc(r.sentiment)}</span>` : "—" },
+    { key: "lead_name", label: "Name", render: r => esc(r.lead_name || "—") },
+    { key: "company", label: "Company", render: renderCompanyCell },
+    { key: "title", label: "Title", render: r => esc(r.title ?? "") },
+    { key: "email", label: "Email", render: r => r.email ? esc(r.email) : '<span class="flag warn">no email</span>' },
+    linkedinColumn(),
+    { key: "sentiment", label: "Sentiment", render: r => renderSentimentFlag(r.sentiment) },
     { key: "status_label", label: "Lead status", render: r => esc(r.status_label || "—") },
-    { key: "subject", label: "Last reply", render: r => esc(r.subject || "—") },
+    { key: "tags", label: "Tags", maxw: 190, render: renderTagChips },
+    // Which campaign put this reply in front of you is the question you are
+    // here to answer, so it comes before what the reply said.
     { key: "campaign_name", label: "Last known campaign", render: renderLastKnownCampaign },
+    { key: "subject", label: "Last reply", render: r => esc(r.subject || "—") },
+    // "Since" is the sentiment anchor — it is what makes this list reconcile
+    // with the daily sentiment columns. "Last activity" is the lead's most
+    // recent event of any kind. They answer different questions.
     { key: "event_at", label: "Since", render: r => dt(r.event_at), sortVal: r => r.event_at || "" },
-    // LinkedIn and the copy viewer both live in the contact pane, which this
-    // row already opens. Two columns to reach what one click reaches.
+    { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
   ], d.replies, { empty: "No replies in this range.",
     onRowClick: r => openLead(r.lead_id),
     // The "via <colleague>" chip opens that colleague, not the row's lead.
@@ -2647,7 +3344,16 @@ async function loadReplies() {
       openLead(+chip.dataset.viaLead);
     }) });
 }
-for (const id of ["replies-campaign", "replies-sentiment", "replies-status"]) $(id).onchange = loadReplies;
+for (const id of ["replies-sentiment", "replies-status"]) $(id).onchange = loadReplies;
+// The dropdown and the campaigns table set the same selection, so they move the
+// copy-audit card the same way. Back to "All campaigns" means there is no one
+// campaign whose copy to show.
+$("replies-campaign").onchange = () => {
+  const sel = $("replies-campaign");
+  loadReplies();
+  if (sel.value) showSubjects(sel.value, sel.selectedOptions[0].textContent);
+  else $("subjects-card").hidden = true;
+};
 
 // A campaign attributed through a colleague is a weaker claim than the lead's
 // own, so it says so and names who — "Acme Q3" that actually came from Mary
@@ -2707,64 +3413,22 @@ function renderDaily(d) {
     onRowClick: r => setRangeToDay(r.date) });
 }
 
-const campaignLeadsState = { campaignId: null, name: "", offset: 0, limit: 50, total: 0, sortKey: null, sortDir: -1 };
-let campaignLeadsTimer = null;
+const campaignSubjects = { campaignId: null, name: "" };
 
-async function showCampaign(campaignId, name) {
-  campaignLeadsState.campaignId = campaignId;
-  campaignLeadsState.name = name;
-  campaignLeadsState.offset = 0;
-  $("campaign-leads-q").value = "";
-  const [detail, subjects] = await Promise.all([
-    getR(`/api/campaigns/detail?campaign_id=${campaignId}`),
-    get(`/api/campaigns/subjects?campaign_id=${campaignId}&limit=25`),
-  ]).catch(e => { toast(e.message); return [null, null]; });
-  if (!detail) return;
-  $("campaign-detail-card").hidden = false;
-  $("campaign-detail-title").textContent = name;
-  const a = detail.activity || {};
-  const stagesLine = detail.lead_statuses.filter(s => s.count > 0)
-    .map(s => `${esc(s.stage.replace("_", " "))}: <b>${fmt(s.count)}</b>`).join(" · ");
-  $("campaign-detail").innerHTML = `
-    <p class="stale">${fmt(a.events)} events · ${fmt(a.leads_touched)} leads active in ${esc(rangeLabel())} ·
-       ${dt(a.first_activity_at) || "?"} → ${dt(a.last_activity_at) || "?"} UTC
-       <span title="senders now live on the Deliverability tab">· senders → Deliverability</span></p>
-    <p>${stagesLine || ""}</p>`;
-  loadCampaignLeads();
-  renderSubjects(subjects);
-  $("campaign-detail-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
-async function loadCampaignLeads(resetOffset = false) {
-  if (resetOffset) campaignLeadsState.offset = 0;
-  const c = campaignLeadsState;
-  const p = new URLSearchParams({
-    campaign_id: c.campaignId, q: $("campaign-leads-q").value.trim(),
-    limit: c.limit, offset: c.offset,
-  });
-  if (c.sortKey) { p.set("sort", c.sortKey); p.set("dir", c.sortDir < 0 ? "desc" : "asc"); }
-  const d = await getR("/api/campaigns/leads?" + p.toString())
+// The campaigns table's row click filters the replies above; the copy audit is
+// the one thing that list cannot show, so it stays — as its own card that
+// follows the same selection.
+async function showSubjects(campaignId, name) {
+  campaignSubjects.campaignId = campaignId;
+  campaignSubjects.name = name;
+  $("subjects-card").hidden = false;
+  $("subjects-sub").textContent = `${name} — expand a row to audit the exact copy sent`;
+  $("subjects").innerHTML = '<div class="stale">Loading…</div>';
+  const d = await get(`/api/campaigns/subjects?campaign_id=${campaignId}&limit=25`)
     .catch(e => { toast(e.message); return null; });
-  if (!d) return;
-  c.total = d.total;
-  renderTable("campaign-leads", leadColumns(), d.leads,
-    { empty: "No leads active in this campaign for the selected range.", filter: false,
-      onRowClick: r => openLead(r.lead_id),
-      sortKey: c.sortKey, sortDir: c.sortDir,
-      serverSort: (k, dir) => {
-        if (!SORTABLE_LEAD_KEYS.has(k)) { toast("Column not sortable"); return; }
-        c.sortKey = k; c.sortDir = dir === "desc" ? -1 : 1;
-        loadCampaignLeads(true);
-      } });
-  const to = c.offset + d.leads.length;
-  $("campaign-leads-count").textContent = `${fmt(d.total)} leads`;
-  $("campaign-leads-page").textContent = d.total ? `${c.offset + 1}–${to} of ${fmt(d.total)}` : "";
-  $("campaign-leads-prev").disabled = c.offset === 0;
-  $("campaign-leads-next").disabled = to >= d.total;
+  if (!d) { $("subjects").innerHTML = ""; return; }
+  renderSubjects(d);
 }
-$("campaign-leads-q").oninput = () => { clearTimeout(campaignLeadsTimer); campaignLeadsTimer = setTimeout(() => loadCampaignLeads(true), 300); };
-$("campaign-leads-prev").onclick = () => { campaignLeadsState.offset = Math.max(0, campaignLeadsState.offset - campaignLeadsState.limit); loadCampaignLeads(); };
-$("campaign-leads-next").onclick = () => { campaignLeadsState.offset += campaignLeadsState.limit; loadCampaignLeads(); };
 
 function renderSubjects(d) {
   if (!d) return;
@@ -3036,6 +3700,7 @@ async function openLead(leadId) {
   if (!d) return;
   const lead = d.lead;
   state.lead = lead;
+  $("lead-stale-banner").innerHTML = "";
   $("lead-name").textContent = lead.name;
   $("lead-meta").textContent = [lead.title, lead.company, lead.email].filter(Boolean).join(" · ")
     + ` — stage: ${lead.stage ?? "?"}`
@@ -3089,6 +3754,14 @@ async function openLead(leadId) {
     </div>`; }).join("") : '<div class="empty">No events for this lead yet.</div>';
   renderLeadEnrich(lead);
   renderCompanyLink(lead);
+  renderDangerZone({
+    el: "lead-danger", title: "contact", confirm: lead.name || `lead ${lead.id}`,
+    warning: `Permanently deletes <b>${esc(lead.name || "this contact")}</b> and their
+      event history from this database, and pushes the delete to the relay so a
+      later sync cannot bring them back. Their company is not affected.`,
+    onDelete: () => post("/api/leads/delete", { lead_ids: [lead.id], confirm: true }),
+    after: () => { dismissPanels(); loadContacts(false); },
+  });
   $("overlay").style.display = "block";
   $("slideover").style.display = "block";
   updateBackBtns();
@@ -3114,16 +3787,34 @@ function renderLeadEnrich(lead) {
   const startJob = async (path, label, capability, kind) => {
     const runs = state.leadRuns || {};
     const prior = runs[capability];
+    // For email finding the guard is per-domain now, so "already ran" is only
+    // a hard stop when every candidate domain was tried. Ask the server rather
+    // than assuming: a lead whose company gained a second domain since the
+    // last run is freshly runnable and shouldn't demand a force-confirm.
+    let targets = [];
+    if (kind === "email") {
+      const d = await getR(`/api/enrich/targets?lead_ids=${lead.id}`).catch(() => null);
+      targets = d?.targets || [];
+    }
+    const exhausted = kind === "email"
+      ? targets.some(t => t.already_ran)
+      : !!(prior && prior.ran);
     let force = false;
-    if (prior && prior.ran) {
-      if (!confirm(`${label} already ran on this lead${prior.last_attempted_at ? " (" + prior.last_attempted_at + ")" : ""}. Run again anyway? Spends credits.`)) return;
+    if (exhausted) {
+      const when = prior?.last_attempted_at ? " (" + prior.last_attempted_at + ")" : "";
+      if (!confirm(`${label} already tried every known domain for this lead${when}. Run again anyway? Spends credits.`)) return;
       force = true;
     }
-    const opts = await askEnrichOptions(kind, 1);
+    const opts = await askEnrichOptions(kind, 1, { targets });
     if (!opts) return;
     const msg = $("lead-enrich-msg");
     msg.textContent = "starting…"; msg.className = "msg";
-    startEnrichJob(path, { lead_ids: [lead.id], force, ...opts })
+    // opts.force is the dialog's own checkbox; neither it nor the confirm
+    // above should be able to clear the other (a spread of {force:false}
+    // over a confirmed force:true silently un-forced the run).
+    const body = { lead_ids: [lead.id], ...opts, force: force || !!opts.force };
+    if (!body.domains) delete body.domains;
+    startEnrichJob(path, body)
       .then(() => { msg.textContent = `${label} started — see the console.`; msg.className = "msg ok"; });
   };
   const fe = $("lead-find-email"), sr = $("lead-serper");
@@ -3405,7 +4096,11 @@ async function renderLeadSerper(leadId) {
         : { lead_id: leadId, field, dismissed: true });
       toast(value ? `${SERPER_FIELD_LABEL[field]} applied` : "Recorded: none of these");
       openLead(leadId);
-    } catch (e) { toast(e.message); btn.disabled = false; }
+    } catch (e) {
+      btn.disabled = false;
+      if (e.conflict) { offerIdentityConflictMerge(e.conflict); return; }
+      toast(e.message);
+    }
   });
 }
 
@@ -3501,7 +4196,11 @@ function formResult(msgId, promise, refresh) {
   promise.then(() => {
     msg.textContent = "Saved."; msg.className = "msg ok";
     refresh?.();
-  }).catch((e) => { msg.textContent = e.message; msg.className = "msg err"; });
+  }).catch((e) => {
+    msg.textContent = e.message; msg.className = "msg err";
+    // Two records for one person is a fixable answer, not just a rejection.
+    if (e.conflict) offerIdentityConflictMerge(e.conflict);
+  });
 }
 
 $("stage-form").onsubmit = (e) => {

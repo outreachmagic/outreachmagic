@@ -119,6 +119,28 @@ def test_unknown_route_404(base_url):
     assert status == 404
 
 
+def test_an_unexpected_handler_error_answers_500_instead_of_dropping_the_socket():
+    """A handler raising something other than ValueError/sqlite3.Error used to
+    escape into the HTTP plumbing, which closes the connection with no response.
+    The browser reports that as "Failed to fetch", so a one-word bad import read
+    as a network problem for a day. Every failure gets an answer."""
+    import re
+
+    def _boom(match, query, body):
+        raise ImportError("cannot import name 'ensure_company' from 'lead_sync'")
+
+    route = ("GET", re.compile(r"^/api/__boom$"), _boom)
+    dashboard_server.ROUTES.append(route)
+    try:
+        status, payload = dashboard_server.dispatch("GET", "/api/__boom", {}, None)
+    finally:
+        dashboard_server.ROUTES.remove(route)
+    assert status == 500
+    assert "ImportError" in payload["error"]
+    assert "ensure_company" in payload["error"]
+    assert "traceback" in payload
+
+
 def test_serves_html_page(base_url):
     req = urllib.request.Request(base_url + "/")
     with urllib.request.urlopen(req, timeout=10) as resp:

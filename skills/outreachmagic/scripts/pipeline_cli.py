@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import agent_secrets_cloud
+import contact_icp
 import db_health
 import lead_actions
 import pipeline_dedup
@@ -22,6 +23,34 @@ import review_cloud
 from constants import COMPANY_DOMAIN_PURPOSES, PHONE_LABELS, PHONE_SOURCES
 import routing_cloud
 import workspace_archive
+
+
+def _print_icp_result(subcommand: str, result: dict) -> None:
+    """Human-readable form of an `icp` result. --json prints the dict instead."""
+    def _profile_lines(profile: dict, indent: str = "  ") -> None:
+        config = profile.get("config") or {}
+        for field in ("whitelist", "blocklist", "section_headers"):
+            terms = config.get(field) or []
+            print(f"{indent}{field:<16} {', '.join(terms) if terms else '—'}")
+        print(f"{indent}{'min_contacts':<16} {config.get('min_contacts')}")
+        print(f"{indent}{'config_hash':<16} {profile.get('config_hash')}")
+
+    if subcommand == "list":
+        scope = result.get("workspace") or "all workspaces"
+        print(f"{result['count']} ICP profile(s) in {scope}")
+        for profile in result["profiles"]:
+            print(f"  {profile.get('workspace') or '?'}/{profile['name']}  "
+                  f"({profile['config_hash']})")
+        return
+    if subcommand == "delete":
+        print(f"Deleted ICP profile {result['workspace']}/{result['name']}")
+        return
+    if subcommand == "show":
+        verb = "Profile"
+    else:
+        verb = "Created" if result.get("created") else "Updated"
+    print(f"{verb} {result['workspace']}/{result['name']}")
+    _profile_lines(result)
 
 
 def _remap_to_lead_review_export(args) -> None:
@@ -786,6 +815,49 @@ def main():
     fd_p.add_argument("--tag", nargs="+", dest="tags", help="Only companies with a lead carrying any of these workspace tags")
     fd_p.add_argument("--exclude-tag", nargs="+", dest="exclude_tags", help="Skip companies with a lead carrying any of these tags (e.g. needs_review)")
 
+    icp_p = sub.add_parser(
+        "icp",
+        help="Per-workspace ICP profiles: which contact titles find-contacts keeps",
+    )
+    icp_sub = icp_p.add_subparsers(dest="icp_cmd")
+
+    icp_set = icp_sub.add_parser("set", help="Create or update an ICP profile")
+    icp_set.add_argument("--workspace", required=True)
+    icp_set.add_argument("--name", help=f"Profile name (default: {contact_icp.DEFAULT_PROFILE_NAME})")
+    icp_set.add_argument("--whitelist", help="Comma-separated titles that qualify a contact (\"\" clears)")
+    icp_set.add_argument("--blocklist", help="Comma-separated titles that disqualify one (\"\" clears)")
+    icp_set.add_argument("--section-header", dest="section_headers",
+                         help="Comma-separated page headings worth reading (\"\" clears)")
+    icp_set.add_argument("--min-contacts", type=int,
+                         help="Below this many regex hits, a page goes to the agent queue (default 1)")
+    icp_set.add_argument("--replace", action="store_true",
+                         help="Rewrite the whole profile; unspecified fields reset to defaults")
+    icp_set.add_argument("--json", action="store_true")
+
+    icp_show = icp_sub.add_parser("show", help="Print one ICP profile")
+    icp_show.add_argument("--workspace", required=True)
+    icp_show.add_argument("--name", help="Required only when the workspace has more than one")
+    icp_show.add_argument("--json", action="store_true")
+
+    icp_list = icp_sub.add_parser("list", help="List ICP profiles")
+    icp_list.add_argument("--workspace", help="Omit to list every workspace's profiles")
+    icp_list.add_argument("--json", action="store_true")
+
+    icp_export = icp_sub.add_parser("export", help="Emit a portable JSON copy of a profile")
+    icp_export.add_argument("--workspace", required=True)
+    icp_export.add_argument("--name")
+    icp_export.add_argument("--file", help="Write to this path instead of stdout")
+
+    icp_import = icp_sub.add_parser("import", help="Load a profile from an exported JSON document")
+    icp_import.add_argument("--workspace", required=True)
+    icp_import.add_argument("--file", help="Path to an exported ICP document")
+    icp_import.add_argument("--json", dest="json_input", help="The document inline")
+    icp_import.add_argument("--name", help="Import under this name instead of the document's")
+
+    icp_delete = icp_sub.add_parser("delete", help="Remove an ICP profile")
+    icp_delete.add_argument("--workspace", required=True)
+    icp_delete.add_argument("--name", required=True)
+
     # ── Setup & relay commands ──
     login_p = sub.add_parser("login", help="Connect this machine via browser (device authorization)")
     login_p.add_argument(
@@ -1180,6 +1252,7 @@ def main():
     company_mr_list_p.add_argument("--status", default="pending", help="Filter by status (default: pending)")
     company_mr_list_p.add_argument("--reason", help="Filter by reason (e.g. name_only_domain_attach, backfill_audit)")
     company_mr_list_p.add_argument("--limit", type=int, default=50)
+    company_mr_list_p.add_argument("--offset", type=int, default=0)
     company_mr_list_p.add_argument(
         "--min-confidence",
         choices=pipeline_dedup.CONFIDENCE_ORDER,
@@ -1188,6 +1261,10 @@ def main():
     )
     company_mr_approve_p = company_mr_sub.add_parser("approve", help="Execute a proposed company merge")
     company_mr_approve_p.add_argument("--id", required=True, help="Candidate id from 'company merge-review list'")
+    company_mr_approve_p.add_argument(
+        "--keep-id", type=int,
+        help="Which of the pair survives (default: existing_company_id). The survivor's own "
+             "values win field by field and it inherits whatever it left blank from the other.")
     company_mr_reject_p = company_mr_sub.add_parser("reject", help="Dismiss a proposed company merge without merging")
     company_mr_reject_p.add_argument("--id", required=True)
     company_mr_reject_p.add_argument("--note", help="Optional reason for the rejection")
@@ -3394,6 +3471,44 @@ def main():
         drop = set() if getattr(args, "dry_run", False) else {"results"}
         summary = {k: v for k, v in result.items() if k not in drop}
         print(json.dumps(summary, indent=2))
+    elif args.command == "icp":
+        if not getattr(args, "icp_cmd", None):
+            print("Usage: pipeline.py icp {set|show|list|export|import|delete} --workspace SLUG")
+            return 1
+        try:
+            if args.icp_cmd == "set":
+                result = contact_icp.cli_set(
+                    args.workspace, args.name,
+                    whitelist=args.whitelist,
+                    blocklist=args.blocklist,
+                    section_headers=args.section_headers,
+                    min_contacts=args.min_contacts,
+                    replace=args.replace,
+                )
+            elif args.icp_cmd == "show":
+                result = contact_icp.cli_show(args.workspace, args.name)
+            elif args.icp_cmd == "list":
+                result = contact_icp.cli_list(getattr(args, "workspace", None))
+            elif args.icp_cmd == "export":
+                result = contact_icp.cli_export(args.workspace, args.name, args.file)
+            elif args.icp_cmd == "import":
+                result = contact_icp.cli_import(
+                    args.workspace, path=args.file, payload=args.json_input, name=args.name,
+                )
+            else:
+                result = contact_icp.cli_delete(args.workspace, args.name)
+        except contact_icp.IcpError as exc:
+            print(json.dumps({"status": "error", "error": str(exc)}))
+            return 1
+        except OSError as exc:
+            print(json.dumps({"status": "error", "error": f"file error: {exc}"}))
+            return 1
+        # export is a document meant to be piped into a file, so it prints
+        # itself whole regardless of --json; the rest respect the flag.
+        if args.icp_cmd == "export" or getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            _print_icp_result(args.icp_cmd, result)
     elif args.command == "review":
         if args.review_command == "templates" and args.templates_command == "list":
             print(json.dumps({"templates": ["dedup-review", "lead-review"]}, indent=2))
@@ -3919,10 +4034,12 @@ def main():
                     status=getattr(args, "status", "pending"),
                     reason=getattr(args, "reason", None),
                     limit=getattr(args, "limit", 50),
+                    offset=getattr(args, "offset", 0),
                     min_confidence=getattr(args, "min_confidence", "ALL"),
                 ), indent=2))
             elif cmr_action == "approve":
-                print(json.dumps(_pipeline.approve_company_merge_candidate(args.id), indent=2))
+                print(json.dumps(_pipeline.approve_company_merge_candidate(
+                    args.id, keep_id=getattr(args, "keep_id", None)), indent=2))
             elif cmr_action == "reject":
                 print(json.dumps(
                     _pipeline.reject_company_merge_candidate(args.id, note=getattr(args, "note", None)), indent=2,

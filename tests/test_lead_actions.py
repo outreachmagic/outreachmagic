@@ -236,3 +236,104 @@ class TestCliParity:
         assert exc.value.code == 1
         out = capsys.readouterr().out.strip()
         assert json.loads(out.splitlines()[-1]) == {"error": "workspace not found: ghost"}
+
+
+# ── company-pane record edits ────────────────────────────────────────────────
+#
+# Record type and contact order are decisions you make while looking at the
+# roster of an account. Until now the only way to set either was to round-trip a
+# review sheet, which is a long way to go to say "call this one first".
+
+
+class TestRecordTypeAndContactOrder:
+    def _lead_in_workspace(self):
+        import dashboard_actions
+
+        lead_id = _add_lead()
+        lead_actions.log_event_scoped(lead_id, "email_sent", workspace_slug="alpha")
+        return dashboard_actions, lead_id
+
+    def test_record_type_round_trips(self):
+        da, lead_id = self._lead_in_workspace()
+        assert da.set_record_type(lead_id, "company_placeholder")["record_type"] == "company_placeholder"
+        conn = om.get_conn()
+        try:
+            assert conn.execute(
+                "SELECT record_type FROM leads WHERE id = ?", (lead_id,)
+            ).fetchone()["record_type"] == "company_placeholder"
+        finally:
+            conn.close()
+        da.set_record_type(lead_id, "contact")
+
+    def test_an_unknown_record_type_is_rejected(self):
+        da, lead_id = self._lead_in_workspace()
+        with pytest.raises(ValueError, match="record_type must be"):
+            da.set_record_type(lead_id, "prospect")
+
+    def test_contact_order_round_trips_and_clears(self):
+        da, lead_id = self._lead_in_workspace()
+        assert da.set_contact_order(lead_id, 3, workspace_slug="alpha")["contact_order"] == 3
+        conn = om.get_conn()
+        try:
+            read = lambda: conn.execute(  # noqa: E731
+                "SELECT contact_priority FROM workspace_leads WHERE lead_id = ?",
+                (lead_id,)).fetchone()["contact_priority"]
+            assert read() == 3
+            # "" is how a <select> spells "no order", and must clear rather than
+            # raise or write a zero.
+            da.set_contact_order(lead_id, "", workspace_slug="alpha")
+            assert read() is None
+        finally:
+            conn.close()
+
+    def test_contact_order_must_be_a_number_from_one(self):
+        da, lead_id = self._lead_in_workspace()
+        for bad in ("first", 0, -2):
+            with pytest.raises(ValueError):
+                da.set_contact_order(lead_id, bad, workspace_slug="alpha")
+
+    def test_contact_order_needs_the_lead_to_be_in_that_workspace(self):
+        import dashboard_actions
+
+        lead_id = _add_lead()   # never associated with a workspace
+        with pytest.raises(ValueError, match="not in this workspace"):
+            dashboard_actions.set_contact_order(lead_id, 1, workspace_slug="alpha")
+
+
+class TestDeleteLeads:
+    def test_delete_keeps_the_relay_tombstone(self):
+        """Deleting has to remove the contact from the relay too, or the next
+        pull regrows it. The BEFORE DELETE trigger files the tombstone; keeping
+        it is what makes this a deletion rather than a local hide."""
+        import dashboard_actions
+
+        lead_id = _add_lead()
+        lead_actions.log_event_scoped(lead_id, "email_sent", workspace_slug="alpha")
+        out = dashboard_actions.delete_leads([lead_id], confirm=True)
+        assert out["deleted"] == 1
+        conn = om.get_conn()
+        try:
+            assert conn.execute("SELECT 1 FROM leads WHERE id = ?", (lead_id,)).fetchone() is None
+            assert conn.execute(
+                "SELECT COUNT(*) AS n FROM outbox WHERE entity_type = 'lead_core' AND op = 'delete'"
+            ).fetchone()["n"] >= 1
+        finally:
+            conn.close()
+
+    def test_delete_refuses_without_confirmation(self):
+        import dashboard_actions
+
+        lead_id = _add_lead()
+        with pytest.raises(ValueError, match="confirm"):
+            dashboard_actions.delete_leads([lead_id])
+        conn = om.get_conn()
+        try:
+            assert conn.execute("SELECT 1 FROM leads WHERE id = ?", (lead_id,)).fetchone() is not None
+        finally:
+            conn.close()
+
+    def test_delete_refuses_an_empty_list(self):
+        import dashboard_actions
+
+        with pytest.raises(ValueError, match="no lead_ids"):
+            dashboard_actions.delete_leads([], confirm=True)

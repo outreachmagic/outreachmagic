@@ -580,8 +580,24 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
         "WHERE company_id = ? AND identity_type = 'domain'",
         (company_id,),
     ).fetchall()
+    # Only domains that belong to exactly ONE company become aliases. The
+    # relay's relay_entity_aliases is PRIMARY KEY (org, entity_type, alias)
+    # with last-writer-wins on conflict, so a brand domain shared by 22 Hilton
+    # properties would have all 22 fighting over one alias row -- the mapping
+    # would flip to whichever pushed most recently and resolve inbound
+    # webhooks to an arbitrary property. An alias has to identify one entity
+    # to be worth anything; a shared domain doesn't, so it is not sent as one.
+    # It still round-trips in full via domain_identities below, which is
+    # per-company payload and has no such collision.
     for id_row in identity_rows:
-        aliases.append(id_row["identity_value_normalized"])
+        value = id_row["identity_value_normalized"]
+        shared = conn.execute(
+            "SELECT 1 FROM company_identities WHERE identity_type = 'domain'"
+            "  AND identity_value_normalized = ? AND company_id != ? LIMIT 1",
+            (value, company_id),
+        ).fetchone()
+        if not shared:
+            aliases.append(value)
     seen: set[str] = set()
     aliases = [a for a in aliases if a and not (a in seen or seen.add(a))]
     if aliases:
@@ -703,7 +719,7 @@ def apply_agent_company_sync_payload(company_id: int, payload: dict, *, conn=Non
                     """INSERT INTO company_identities
                            (org_id, company_id, identity_type, identity_value_normalized, role, label, purpose, verified_mx, source)
                        VALUES (?, ?, 'domain', ?, ?, ?, ?, ?, 'relay_pull')
-                       ON CONFLICT (org_id, identity_type, identity_value_normalized) DO UPDATE SET
+                       ON CONFLICT (org_id, company_id, identity_type, identity_value_normalized) DO UPDATE SET
                            role = COALESCE(excluded.role, company_identities.role),
                            label = COALESCE(excluded.label, company_identities.label),
                            purpose = COALESCE(excluded.purpose, company_identities.purpose),
@@ -739,7 +755,7 @@ def apply_agent_company_sync_payload(company_id: int, payload: dict, *, conn=Non
                 """INSERT INTO company_identities
                        (org_id, company_id, identity_type, identity_value_normalized, role, label, verified_mx, source)
                    VALUES (?, ?, 'public_email', ?, ?, ?, ?, 'relay_pull')
-                   ON CONFLICT (org_id, identity_type, identity_value_normalized) DO UPDATE SET
+                   ON CONFLICT (org_id, company_id, identity_type, identity_value_normalized) DO UPDATE SET
                        role = COALESCE(excluded.role, company_identities.role),
                        label = COALESCE(excluded.label, company_identities.label),
                        verified_mx = COALESCE(excluded.verified_mx, company_identities.verified_mx)""",

@@ -490,9 +490,12 @@ def build_import_identities(
     add("phone", profile.get("phone") or extra.get("phone"))
 
     norm_name = normalize_person_name(profile.get("name"))
-    domain = (company_domain or extra.get("company_domain") or "").strip().lower()
-    if domain:
-        domain = re.sub(r"^www\.", "", domain.split("/")[0].split("?")[0])
+    # This hand-rolled normalization handled scheme-less www. + path stripping
+    # but not www2./www3., not a trailing FQDN root dot, and not the "no dot at
+    # all" case -- so it produced identity keys that disagreed with the ones
+    # ensure_company()/company_identities store. One normalizer, one key.
+    from pipeline_utils import normalize_company_domain
+    domain = normalize_company_domain(company_domain or extra.get("company_domain")) or ""
     company = profile.get("company")
     title = (profile.get("title") or "").strip().lower()
 
@@ -1414,6 +1417,33 @@ def lead_external_id_value(
     return row["identity_value_normalized"] if row else None
 
 
+class IdentityConflict(ValueError):
+    """One identity, two leads.
+
+    A ValueError subclass so every existing `except ValueError` keeps working
+    and the API still answers 400-shaped errors. The extra fields are what lets
+    a caller offer the merge instead of dead-ending on the message: the whole
+    resolution is "these are the same person", and the person reading the error
+    already knows that.
+    """
+
+    def __init__(self, message: str, *, owner_lead_id: int, lead_id: int,
+                 identity_type: str, value: str):
+        super().__init__(message)
+        self.owner_lead_id = owner_lead_id
+        self.lead_id = lead_id
+        self.identity_type = identity_type
+        self.value = value
+
+    def as_payload(self) -> dict:
+        return {
+            "owner_lead_id": self.owner_lead_id,
+            "lead_id": self.lead_id,
+            "identity_type": self.identity_type,
+            "value": self.value,
+        }
+
+
 def upsert_identity_alias(
     conn: sqlite3.Connection,
     org_id: str,
@@ -1435,9 +1465,19 @@ def upsert_identity_alias(
         (org_id, identity_type, stored_value),
     ).fetchone()
     if existing and int(existing["lead_id"]) != lead_id:
-        raise ValueError(
+        # Two records claiming one identity is usually one person recorded
+        # twice, so the refusal names the other lead. Queuing the merge is NOT
+        # done here: this raise unwinds the caller's transaction, which would
+        # take the queue row with it, and opening a second connection while the
+        # caller holds a write lock deadlocks against yourself. The surface that
+        # catches this queues it afterwards -- see dashboard_server.dispatch.
+        raise IdentityConflict(
             f"identity conflict: {identity_type}={stored_value} belongs to lead "
-            f"{existing['lead_id']}, not {lead_id}"
+            f"{existing['lead_id']}, not {lead_id}",
+            owner_lead_id=int(existing["lead_id"]),
+            lead_id=lead_id,
+            identity_type=identity_type,
+            value=stored_value,
         )
     conn.execute(
         """INSERT OR IGNORE INTO lead_identities (

@@ -17,6 +17,7 @@
         "install.sh",
         "SECURITY.md",
         "references/command-reference.md",
+        "references/agent-triage.md",
         "scripts/dashboard.html"
       ],
       "install_required": []

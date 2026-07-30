@@ -46,7 +46,19 @@ BASE_COLUMNS: dict[str, str] = {
     "company_domain": _COMPANY_DOMAIN_EXPR,
     "industry": "l.industry",
     "headcount": "l.headcount",
-    "linkedin": "l.linkedin_url",
+    # A complete, openable URL — same value the dashboard's LinkedIn column
+    # shows, so an export matches what was on screen. Mirrors
+    # workspace_routing.linkedin_display_url(): prefer the public profile,
+    # scheme-prefix it when the stored value is bare (Sales Navigator exports
+    # omit it), else synthesize the Sales Navigator URL from the member token.
+    # The raw token is still available on its own as linkedin_sales_nav_id.
+    "linkedin": ("CASE"
+                 " WHEN TRIM(COALESCE(l.linkedin_url, '')) != ''"
+                 "  THEN CASE WHEN l.linkedin_url LIKE 'http%' THEN TRIM(l.linkedin_url)"
+                 "            ELSE 'https://' || LTRIM(TRIM(l.linkedin_url), '/') END"
+                 " WHEN TRIM(COALESCE(l.linkedin_sales_nav_id, '')) != ''"
+                 "  THEN 'https://www.linkedin.com/sales/lead/' || TRIM(l.linkedin_sales_nav_id)"
+                 " ELSE NULL END"),
     "linkedin_sales_nav_id": "l.linkedin_sales_nav_id",
     "location_city": "l.location_city",
     "location_state": "l.location_state",

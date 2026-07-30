@@ -19,6 +19,7 @@ import re
 import sqlite3
 import sys
 import threading
+import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,7 +32,7 @@ if __package__ is None and str(Path(__file__).parent) not in sys.path:
 import dashboard_actions
 import dashboard_queries
 from db_conn import database_has_schema, format_database_recovery_message, get_conn
-from workspace_routing import resolve_workspace_identity
+from workspace_routing import IdentityConflict, resolve_workspace_identity
 
 DEFAULT_PORT = 8765
 MAX_BODY_BYTES = 64 * 1024
@@ -120,6 +121,7 @@ def handle_companies(conn, ws_id, match, query):
     return dashboard_queries.search_companies(
         conn, ws_id, q=_q(query, "q"),
         sort=_q(query, "sort", "leads"),
+        direction=_q(query, "dir"),
         limit=_int_q(query, "limit", 50, lo=1, hi=200),
         offset=_int_q(query, "offset", 0, hi=10_000_000),
         tag=_q(query, "tag"),
@@ -161,7 +163,11 @@ def handle_merge_candidates(match, query, body):
     import pipeline as _pipeline
 
     result = _pipeline.list_company_merge_candidates(
-        status="pending", limit=_int_q(query, "limit", 50, lo=1, hi=200))
+        status=_q(query, "status", "pending"),
+        reason=_q(query, "reason"),
+        min_confidence=(_q(query, "min_confidence") or "ALL").upper(),
+        limit=_int_q(query, "limit", 50, lo=1, hi=200),
+        offset=_int_q(query, "offset", 0, hi=1_000_000))
     return 200, result
 
 
@@ -208,10 +214,37 @@ def handle_edit_domain(match, query, body):
     return 200, dashboard_actions.edit_sender_domain(domain, body)
 
 
+def handle_delete_company(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.delete_company(
+        int(match.group(1)), confirm=bool(body.get("confirm")))
+
+
+def handle_delete_sender(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.delete_sender_account(
+        int(body.get("id") or 0), confirm=bool(body.get("confirm")))
+
+
+def handle_delete_domain(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.delete_sender_domain(
+        body.get("domain"), confirm=bool(body.get("confirm")))
+
+
 def handle_resolve_merge(match, query, body):
     body = body or {}
+    keep_id = body.get("keep_id")
     return 200, dashboard_actions.resolve_merge_candidate(
-        match.group(1), approve=bool(body.get("approve")), note=body.get("note"))
+        match.group(1), approve=bool(body.get("approve")), note=body.get("note"),
+        keep_id=int(keep_id) if keep_id else None)
+
+
+def handle_resolve_merges_bulk(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.resolve_merge_candidates_bulk(
+        body.get("ids") or [], approve=bool(body.get("approve")),
+        keep=body.get("keep") or "existing", note=body.get("note"))
 
 
 @_workspace_scoped
@@ -346,8 +379,14 @@ def handle_contacts_export(match, query, body):
     browser gets a download link, not 100k rows to assemble into a Blob.
 
     Filters ride the URL query string — the same keys, read by the same helpers,
-    as GET /api/contacts. The body carries only the column choice. That way
-    "export what's on screen" cannot drift from what's on screen.
+    as GET /api/contacts. The body carries the column choice, and optionally an
+    explicit `lead_ids` selection. That way "export what's on screen" cannot
+    drift from what's on screen.
+
+    `lead_ids` in the body *replaces* the filters rather than narrowing them:
+    a tick list is a literal answer to "which rows", and re-applying the filters
+    on top of it would quietly drop rows whose filter state changed after they
+    were ticked. Ids go in the body because 50k of them do not fit in a URL.
     """
     import lead_export
 
@@ -355,7 +394,11 @@ def handle_contacts_export(match, query, body):
     conn = get_conn()
     try:
         ws = _resolve_workspace(conn, _q(query, "workspace"))
-        filters = _lead_filters_from(query)
+        lead_ids = body.get("lead_ids")
+        if lead_ids is not None:
+            filters = {"lead_ids": _parse_lead_ids(lead_ids), "record_type": "all"}
+        else:
+            filters = _lead_filters_from(query)
         try:
             return 200, lead_export.export_to_csv(
                 conn, ws["id"],
@@ -406,8 +449,11 @@ def handle_data_quality(conn, ws_id, match, query):
 
 
 def _parse_lead_ids(raw) -> list:
+    """Lead ids from either a query-string blob ("1,2 3") or a JSON body list."""
     if not raw:
         return []
+    if isinstance(raw, (list, tuple)):
+        return [int(x) for x in raw if str(x).strip().lstrip("-").isdigit()]
     return [int(x) for x in str(raw).replace(",", " ").split() if x.strip().isdigit()]
 
 
@@ -680,6 +726,25 @@ def handle_serper_apply(match, query, body):
         dry_run=bool(body.get("dry_run")))
 
 
+def handle_record_type(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.set_record_type(
+        int(match.group(1)), body.get("record_type") or "")
+
+
+def handle_contact_order(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.set_contact_order(
+        int(match.group(1)), body.get("contact_order"),
+        workspace_slug=body.get("workspace"))
+
+
+def handle_delete_leads(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.delete_leads(
+        _parse_lead_ids(body.get("lead_ids")), confirm=bool(body.get("confirm")))
+
+
 def handle_lead_custom_field_set(match, query, body):
     body = body or {}
     return 200, dashboard_actions.set_lead_custom_field(
@@ -850,6 +915,9 @@ ROUTES = [
     ("POST", re.compile(r"^/api/serper/apply$"), handle_serper_apply),
     ("POST", re.compile(r"^/api/leads/merge/preview$"), handle_leads_merge_preview),
     ("POST", re.compile(r"^/api/leads/merge$"), handle_leads_merge),
+    ("POST", re.compile(r"^/api/leads/delete$"), handle_delete_leads),
+    ("POST", re.compile(r"^/api/leads/(\d+)/record-type$"), handle_record_type),
+    ("POST", re.compile(r"^/api/leads/(\d+)/contact-order$"), handle_contact_order),
     ("POST", re.compile(r"^/api/senders/workspaces$"), handle_sender_workspaces_set),
     ("POST", re.compile(r"^/api/domains/workspaces$"), handle_domain_workspaces_set),
     ("POST", re.compile(r"^/api/leads/(\d+)/custom-fields$"), handle_lead_custom_field_set),
@@ -867,6 +935,13 @@ ROUTES = [
     ("POST", re.compile(r"^/api/companies/(\d+)/domains$"), handle_set_company_domain),
     ("POST", re.compile(r"^/api/senders/edit$"), handle_edit_sender),
     ("POST", re.compile(r"^/api/domains/edit$"), handle_edit_domain),
+    # Danger-zone deletes. Each files a relay tombstone via the BEFORE DELETE
+    # outbox trigger, so they remove the row upstream too -- all require
+    # confirm:true in the body.
+    ("POST", re.compile(r"^/api/companies/(\d+)/delete$"), handle_delete_company),
+    ("POST", re.compile(r"^/api/senders/delete$"), handle_delete_sender),
+    ("POST", re.compile(r"^/api/domains/delete$"), handle_delete_domain),
+    ("POST", re.compile(r"^/api/merge-candidates/bulk-resolve$"), handle_resolve_merges_bulk),
     ("POST", re.compile(r"^/api/merge-candidates/([\w-]+)/resolve$"), handle_resolve_merge),
 ]
 
@@ -881,10 +956,28 @@ def dispatch(method: str, path: str, query: dict, body) -> tuple[int, dict]:
             continue
         try:
             return handler(match, query, body)
+        except IdentityConflict as exc:
+            # 409, and the pair travels with it: "this LinkedIn URL belongs to
+            # lead 19397" is only actionable if the surface can offer to merge
+            # 19397 with the lead you were editing. Caught before ValueError,
+            # which it subclasses. Queued here rather than at the raise site
+            # because the raise unwinds the transaction that would carry it.
+            dashboard_actions.queue_identity_conflict_merge(exc)
+            return 409, {"error": str(exc), "conflict": exc.as_payload()}
         except ValueError as exc:
             return 400, {"error": str(exc)}
         except sqlite3.Error as exc:
             return 500, {"error": f"database error: {exc}"}
+        except Exception as exc:  # noqa: BLE001 - see below
+            # Anything else used to escape into the HTTP plumbing, which closes
+            # the connection without a response -- the browser then reports
+            # "Failed to fetch", which reads as a network problem and hides the
+            # actual error. A one-word bad import cost a day that way. The
+            # server is loopback-only and host-checked, so the message and
+            # traceback go back to the operator rather than into a void.
+            traceback.print_exc()
+            return 500, {"error": f"{type(exc).__name__}: {exc}",
+                         "traceback": traceback.format_exc()}
     return 404, {"error": f"no such endpoint: {method} {path}"}
 
 

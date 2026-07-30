@@ -209,6 +209,24 @@ class DecisionTests(unittest.TestCase):
             conn.close()
         self.assertTrue(blob["decisions"]["linkedin"]["dismissed"])
 
+    def test_applying_a_company_domain_links_the_lead_to_a_company(self):
+        """The whole company_domain path ran through an import that did not
+        exist (`from lead_sync import ensure_company`; it lives in pipeline).
+        The ImportError escaped the dispatcher, the socket closed, and the
+        browser said "Failed to fetch" — so this end-to-end assertion, not a
+        mock, is what pins it."""
+        serper_review.apply_decision(
+            self.lead_id, "company_domain", value="northfield.test")
+        conn = om.get_conn()
+        try:
+            row = conn.execute(
+                """SELECT co.domain FROM leads l JOIN companies co ON co.id = l.company_id
+                   WHERE l.id = ?""", (self.lead_id,)).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row, "lead was not linked to a company")
+        self.assertEqual(row["domain"], "northfield.test")
+
     def test_unknown_field_is_rejected(self):
         with self.assertRaises(serper_review.SerperReviewError):
             serper_review.apply_decision(self.lead_id, "favourite_colour", value="blue")
@@ -323,6 +341,81 @@ class RoundTripTests(unittest.TestCase):
             conn.close()
         self.assertIsNotNone(row)
         json.loads(row["field_value"])   # round-trips as JSON
+
+
+class FreeTierQueryPatternTests(unittest.TestCase):
+    """Serper's free plan refuses search-operator syntax outright:
+
+        HTTP 400 {"message": "Query pattern not allowed for free accounts."}
+
+    The pack's LinkedIn lookup is `site:linkedin.com/in <name>`, so on a free
+    key every lead died on that query and the run reported "0 Serper calls" —
+    which reads as "nothing ran" rather than "the shape was refused".
+    """
+
+    def setUp(self):
+        import enrich
+
+        self.enrich = enrich
+        self.calls = []
+        self.config = {"serper_endpoint": "https://example.test/search"}
+
+    def _patch(self, responder):
+        original = self.enrich._serper_post
+
+        def fake(api_key, query, config):
+            self.calls.append(query)
+            return responder(query)
+
+        self.enrich._serper_post = fake
+        self.addCleanup(setattr, self.enrich, "_serper_post", original)
+
+    @staticmethod
+    def _refused():
+        return ValueError(
+            'Serper HTTP 400 for \'q\': {"message": "Query pattern not allowed '
+            'for free accounts.","statusCode":400}')
+
+    def test_plain_query_drops_operators_and_quotes(self):
+        self.assertEqual(
+            self.enrich.plain_query("site:linkedin.com/in Jane Doe VP Acme"),
+            "linkedin.com/in Jane Doe VP Acme")
+        self.assertEqual(
+            self.enrich.plain_query('"Acme Events" official website'),
+            "Acme Events official website")
+
+    def test_a_refused_pattern_is_retried_without_operators(self):
+        self._patch(lambda q: (_ for _ in ()).throw(self._refused())
+                    if q.startswith("site:") else {"organic": [{"link": "ok"}]})
+        got = self.enrich._serper_search_with_key(
+            "k", "site:linkedin.com/in Jane Doe", self.config)
+        self.assertEqual(got, {"organic": [{"link": "ok"}]})
+        self.assertEqual(
+            self.calls, ["site:linkedin.com/in Jane Doe", "linkedin.com/in Jane Doe"])
+
+    def test_the_retry_happens_at_most_once(self):
+        self._patch(lambda q: (_ for _ in ()).throw(self._refused()))
+        with self.assertRaises(ValueError):
+            self.enrich._serper_search_with_key(
+                "k", "site:linkedin.com/in Jane Doe", self.config)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_other_failures_are_not_retried(self):
+        # A retry is a second billed call. Only the pattern refusal earns one —
+        # not quota, not auth, not a 500.
+        self._patch(lambda q: (_ for _ in ()).throw(
+            ValueError('Serper HTTP 403 for \'q\': {"message":"Not enough credits"}')))
+        with self.assertRaises(ValueError):
+            self.enrich._serper_search_with_key(
+                "k", "site:linkedin.com/in Jane Doe", self.config)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_an_operator_free_query_is_not_retried(self):
+        # Nothing to strip means the retry would be the identical call.
+        self._patch(lambda q: (_ for _ in ()).throw(self._refused()))
+        with self.assertRaises(ValueError):
+            self.enrich._serper_search_with_key("k", "acme official website", self.config)
+        self.assertEqual(len(self.calls), 1)
 
 
 if __name__ == "__main__":

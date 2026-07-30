@@ -17,6 +17,7 @@ Rank 1 is what covers the bounce: walking back to the most recent event that
 anywhere. Ranks 2-3 are the company fallback, and the caller is told it got one.
 """
 
+import json
 import sys
 import tempfile
 import unittest
@@ -73,11 +74,13 @@ class LastKnownCampaignTests(unittest.TestCase):
         return self.conn.execute(
             "INSERT INTO campaigns (name) VALUES (?)", (name,)).lastrowid
 
-    def _event(self, lead_id, event_type, direction, at, campaign_id=None):
+    def _event(self, lead_id, event_type, direction, at, campaign_id=None,
+               platform=None):
         event_id = self.conn.execute(
-            "INSERT INTO events (lead_id, event_type, direction, campaign_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (lead_id, event_type, direction, campaign_id, at)).lastrowid
+            "INSERT INTO events (lead_id, event_type, direction, campaign_id, "
+            "metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (lead_id, event_type, direction, campaign_id,
+             json.dumps({"platform": platform}) if platform else "{}", at)).lastrowid
         self.conn.execute(
             "INSERT INTO workspace_lead_events "
             "(workspace_id, org_id, lead_id, event_id, event_type, event_at, idempotency_key) "
@@ -170,6 +173,49 @@ class LastKnownCampaignTests(unittest.TestCase):
         got = self._resolve(lead)
         self.assertIsNone(got["campaign_name"])
         self.assertIsNone(got["campaign_via_lead_id"])
+
+    # -- scheduling platforms are not campaigns -----------------------------
+    #
+    # Calendly sends the booked event *type* with every webhook ("30 Minute
+    # Meeting"), and ingest files it as a campaign. It names a slot on your
+    # calendar, not the outbound that produced the meeting, so it must never be
+    # the answer to "which campaign did this lead come from".
+
+    def test_a_calendly_event_type_is_not_a_campaign(self):
+        lead = self._lead("Booker")
+        camp = self._campaign("30 Minute Meeting")
+        self._event(lead, "meeting_booked", "inbound", "2026-07-02T09:00:00",
+                    camp, platform="calendly")
+        self.assertIsNone(self._resolve(lead)["campaign_name"])
+
+    def test_a_real_send_wins_over_a_later_calendly_booking(self):
+        lead = self._lead("Booker")
+        real = self._campaign("Q3 Outbound")
+        booking = self._campaign("60 Minute Meeting")
+        self._event(lead, "email_sent", "outbound", "2026-07-01T09:00:00", real)
+        # Later, inbound, and would otherwise outrank the send on both keys.
+        self._event(lead, "meeting_booked", "inbound", "2026-07-02T09:00:00",
+                    booking, platform="calendly")
+        got = self._resolve(lead)
+        self.assertEqual(got["campaign_name"], "Q3 Outbound")
+        self.assertEqual(got["campaign_source"], "self_send")
+
+    def test_a_colleagues_booking_does_not_attribute_either(self):
+        target = self._lead("Target")
+        colleague = self._lead("Colleague")
+        booking = self._campaign("Discovery Call")
+        self._event(colleague, "meeting_booked", "inbound", "2026-07-02T09:00:00",
+                    booking, platform="calendly")
+        self.assertIsNone(self._resolve(target)["campaign_name"])
+
+    def test_a_sequencer_platform_is_still_a_campaign(self):
+        # The exclusion is by platform, not by event type — a meeting booked
+        # through the sequencer itself still attributes.
+        lead = self._lead("Booker")
+        camp = self._campaign("Q3 Outbound")
+        self._event(lead, "meeting_booked", "inbound", "2026-07-02T09:00:00",
+                    camp, platform="plusvibe")
+        self.assertEqual(self._resolve(lead)["campaign_name"], "Q3 Outbound")
 
     def test_attribution_does_not_cross_workspaces(self):
         other_ws = "other-ws"

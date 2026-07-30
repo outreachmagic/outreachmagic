@@ -67,8 +67,18 @@ def format_database_recovery_message(db_path=None) -> str:
     )
 
 
-def apply_bulk_pull_pragmas(conn: sqlite3.Connection) -> None:
-    """Tune SQLite for large batched pull pages (caller commits once per page)."""
+def apply_bulk_pull_pragmas(
+    conn: sqlite3.Connection, *, disable_foreign_keys: bool = True
+) -> None:
+    """Tune SQLite for large batched pull pages (caller commits once per page).
+
+    `disable_foreign_keys=False` keeps FK enforcement on for the session. Trading
+    away the per-row parent lookup is only worth it when the session is big
+    enough to amortize the whole-database `PRAGMA foreign_key_check` that paying
+    for it obliges end_bulk_pull_session to run -- true for a multi-page relay
+    pull, badly false for a short CSV import, where that check is far and away
+    the largest cost of the whole command.
+    """
     cid = id(conn)
     if cid in _BULK_PULL_PRAGMA_SAVES:
         return
@@ -81,6 +91,7 @@ def apply_bulk_pull_pragmas(conn: sqlite3.Connection) -> None:
         cache_row[0] if cache_row else -2000,
         temp_row[0] if temp_row else 0,
         fk_row[0] if fk_row else 1,
+        disable_foreign_keys,
     )
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA cache_size=-64000")
@@ -93,7 +104,8 @@ def apply_bulk_pull_pragmas(conn: sqlite3.Connection) -> None:
     #
     # No-op inside a transaction -- callers must apply this on a fresh
     # connection before any DML, which is what the pull path does.
-    conn.execute("PRAGMA foreign_keys=OFF")
+    if disable_foreign_keys:
+        conn.execute("PRAGMA foreign_keys=OFF")
 
 
 def end_bulk_pull_session(conn: sqlite3.Connection) -> None:
@@ -108,13 +120,13 @@ def end_bulk_pull_session(conn: sqlite3.Connection) -> None:
             conn.rollback()
         except sqlite3.Error:
             pass
-    sync_val, cache_val, temp_val, fk_val = saved
+    sync_val, cache_val, temp_val, fk_val, fk_disabled = saved
     try:
         conn.execute(f"PRAGMA synchronous={sync_val}")
         conn.execute(f"PRAGMA cache_size={cache_val}")
         conn.execute(f"PRAGMA temp_store={temp_val}")
         conn.execute(f"PRAGMA foreign_keys={'ON' if fk_val else 'OFF'}")
-        if fk_val:
+        if fk_val and fk_disabled:
             # FK enforcement was off for the duration of the pull; confirm the
             # page writes didn't leave orphans behind now that it's back on.
             violations = conn.execute("PRAGMA foreign_key_check").fetchall()

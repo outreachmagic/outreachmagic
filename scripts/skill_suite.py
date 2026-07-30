@@ -68,6 +68,16 @@ def manifest_relative_paths(name: str, suite: dict[str, Any] | None = None) -> t
 
     extra = list(cfg.get("extra_files") or [])
     if layout == "flat_scripts":
+        # In a flat_scripts install, a manifest key is a path *relative to the
+        # scripts directory* -- that is how update_skill() resolves it, both for
+        # a dev_repo copy and for a download. So a non-.py file that lives in
+        # scripts/ has to be keyed without the prefix. Keying it "scripts/
+        # dashboard.html" made the updater look for scripts/scripts/
+        # dashboard.html and abort mid-copy, which left installs with new Python
+        # and the previous UI. Keys outside scripts/ (references/*) keep their
+        # path: they are relative to the skill root and update never copies them.
+        extra = [rel[len("scripts/"):] if rel.startswith("scripts/") else rel
+                 for rel in extra]
         paths = script_paths + extra
         if "VERSION" not in paths:
             paths.append("VERSION")

@@ -885,7 +885,39 @@ def build_curl_command(query: str, config: dict[str, Any]) -> str:
     )
 
 
-def _serper_search_with_key(api_key: str, query: str, config: dict[str, Any]) -> dict[str, Any]:
+# Serper's free tier rejects search-operator syntax outright:
+#   HTTP 400 {"message": "Query pattern not allowed for free accounts."}
+# `site:linkedin.com/in <name>` is the pack's LinkedIn lookup, so on a free key
+# every lead failed on its first query and the run reported "0 Serper calls" --
+# which reads as "nothing ran" rather than "the query shape was refused".
+_FREE_TIER_PATTERN_MARKER = "query pattern not allowed"
+# Operators that take an argument; the argument is kept, the operator dropped.
+# `site:linkedin.com/in Jane` -> `linkedin.com/in Jane`, which still finds the
+# profile because the host is a strong term in its own right.
+_SEARCH_OPERATORS = ("site:", "inurl:", "intitle:", "intext:", "filetype:", "related:", "cache:")
+
+
+def plain_query(query: str) -> str:
+    """`query` with search-operator syntax removed, for a free-tier retry.
+
+    Drops the operator prefixes and the phrase quotes, keeping every term. The
+    result is a weaker search -- unquoted, unscoped -- but a weaker search that
+    runs beats a stronger one that 400s.
+    """
+    out = []
+    for token in (query or "").split():
+        low = token.lower()
+        for op in _SEARCH_OPERATORS:
+            if low.startswith(op):
+                token = token[len(op):]
+                break
+        token = token.replace('"', "")
+        if token:
+            out.append(token)
+    return " ".join(out)
+
+
+def _serper_post(api_key: str, query: str, config: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps({
         "q": query,
         "num": config.get("serper_num_results", 10),
@@ -907,9 +939,24 @@ def _serper_search_with_key(api_key: str, query: str, config: dict[str, Any]) ->
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        raise ValueError(f"Serper HTTP {e.code}: {body}") from e
+        raise ValueError(f"Serper HTTP {e.code} for {query!r}: {body}") from e
     except urllib.error.URLError as e:
-        raise ValueError(f"Serper request failed: {e}") from e
+        raise ValueError(f"Serper request failed for {query!r}: {e}") from e
+
+
+def _serper_search_with_key(api_key: str, query: str, config: dict[str, Any]) -> dict[str, Any]:
+    """One Serper call, retried once without operators if the plan refuses them.
+
+    The retry is a second billed call, so it only fires on the specific 400 that
+    says the *pattern* was the problem -- not on quota, auth, or any other 400.
+    """
+    try:
+        return _serper_post(api_key, query, config)
+    except ValueError as exc:
+        plain = plain_query(query)
+        if _FREE_TIER_PATTERN_MARKER not in str(exc).lower() or plain == query or not plain:
+            raise
+        return _serper_post(api_key, plain, config)
 
 
 def serper_search(query: str, config: dict[str, Any]) -> dict[str, Any]:

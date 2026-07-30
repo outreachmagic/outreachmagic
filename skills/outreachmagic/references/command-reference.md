@@ -235,6 +235,29 @@ pipeline.py icp delete --workspace acme --name N
 - `--name` is optional on `show`/`export` when the workspace has exactly one profile; with more than one it is required rather than guessed.
 - `export`/`import` move a profile between workspaces or machines. The document carries no workspace id, and an exported document whose `config` was edited without rehashing is rejected on import. `import` replaces rather than merges — a document states the whole profile.
 
+### Contact sourcing (Firecrawl)
+
+Turns companies that have a domain but no people into companies with people. The sibling of `find-domains`, one layer down.
+
+```bash
+pipeline.py find-contacts --workspace acme --icp NAME [--tag T ...] [--exclude-tag T ...]
+    [--limit N] [--max-fetches N] [--dry-run] [--force] [--reparse] [--extractor regex|agent]
+```
+
+Per company: staff-page URL → Firecrawl fetch to markdown → regex pass → ICP score → attach or leave for the agent. An observation is written on **every** path, including failure — a company that returned nothing is what stops the next run paying to learn the same thing.
+
+**Targets** companies in the workspace with a domain and no titled contact. `--force` includes ones that already have contacts and re-fetches cached pages.
+
+**Credit discipline** (Firecrawl bills per page and credits do not roll over):
+
+- `--dry-run` reports `companies_targeted`, `firecrawl_credits_worst_case` and `serper_queries_worst_case`, and spends nothing. **The estimate counts cache misses, not targets** — counting targets over-reports on every run after the first, and a cap nobody believes is a cap nobody uses.
+- `--max-fetches N` hard-caps Firecrawl pages and stops cleanly with `stopped_reason: "fetch_budget_exhausted"`. It is checked *after* the free paths, so an exhausted budget never blocks a result that costs nothing.
+- `--reparse` re-extracts cached pages: 0 fetches, 0 credits. This is what makes an ICP edit cheap to evaluate.
+- Pages are cached by URL and **never auto-expire**. A cache that silently invalidates itself silently re-spends; re-fetching is always an explicit `--force`.
+- URLs are normalised before they become a cache key — tracking parameters (`?srsltid=`, `utm_*`, `gclid`) and fragments are stripped, so one staff page cannot occupy two cache rows and be billed twice.
+
+**URL discovery** tries two free sources before paying Serper: a page already cached for the company, then the `top_links` a previous `find-domains` run stored on its observations. Only on-site links are ever used — a directory profile is not a staff page, and fetching one fills the contact list with other people's data.
+
 ### Agent-delegated contact extraction
 
 Pages the regex pass could not crack come back as a queue; the agent extracts and posts the result. Same contract as `personalize-pending` / `personalize-set --batch`.

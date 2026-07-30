@@ -328,9 +328,16 @@ python3 scripts/pipeline.py icp set --workspace acme --name decision-makers \
   --whitelist "general manager,service manager,owner" \
   --blocklist "assistant general manager"
 
+# Always dry-run first: reports targets and worst-case credits, spends nothing.
+python3 scripts/pipeline.py find-contacts --workspace acme --icp decision-makers --dry-run
+python3 scripts/pipeline.py find-contacts --workspace acme --icp decision-makers --max-fetches 50
+
+# The tail the regex pass could not crack:
 python3 scripts/pipeline.py contact-extract-pending --workspace acme --limit 20 --json
 python3 scripts/pipeline.py contact-apply --batch --workspace acme --json '[...]'
 ```
+
+**Always `--dry-run` before a real run, and always pass `--max-fetches`.** Firecrawl bills per page and the credits do not roll over. The dry run counts cache misses, so its estimate stays honest on a second pass, and `--reparse` re-extracts cached pages for zero credits when the ICP changes.
 
 **Spawn a subagent per batch. This is not a style preference.**
 

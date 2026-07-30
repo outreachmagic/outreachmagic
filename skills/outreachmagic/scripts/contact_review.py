@@ -277,6 +277,7 @@ def apply_company_contacts(
     url: Optional[str] = None,
     extractor: str = EXTRACTOR_AGENT,
     dry_run: bool = False,
+    record: bool = True,
 ) -> dict:
     """Attach one company's extracted contacts. Returns what happened, per contact.
 
@@ -369,7 +370,10 @@ def apply_company_contacts(
             "created": result.get("status") == "created", "icp": verdict,
         })
 
-    if not dry_run:
+    # `record=False` is for contact_discovery, whose own single-exit _finish()
+    # already writes one row per company. Two writers on one code path is how a
+    # run reports twice as many attempts as it made.
+    if not dry_run and record:
         record_observation(
             conn, company_id,
             outcome="applied" if applied else "no_contacts",

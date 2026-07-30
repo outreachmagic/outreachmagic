@@ -859,6 +859,28 @@ def main():
     icp_delete.add_argument("--workspace", required=True)
     icp_delete.add_argument("--name", required=True)
 
+    fc_p = sub.add_parser(
+        "find-contacts",
+        help="Fetch staff pages and extract contacts for companies with none (Firecrawl)",
+    )
+    fc_p.add_argument("--workspace", required=True, help="Workspace whose companies to source")
+    fc_p.add_argument("--icp", dest="icp_name", help="ICP profile name (default: the workspace's only one)")
+    fc_p.add_argument("--limit", type=int, help="Cap number of companies this run")
+    fc_p.add_argument("--max-fetches", type=int,
+                      help="Hard cap on Firecrawl pages this run; stops cleanly when reached")
+    fc_p.add_argument("--dry-run", action="store_true",
+                      help="Target count and worst-case credits, counting cache misses only. Spends nothing")
+    fc_p.add_argument("--force", action="store_true",
+                      help="Include companies that already have contacts, and re-fetch cached pages")
+    fc_p.add_argument("--reparse", action="store_true",
+                      help="Re-extract cached pages: 0 fetches, 0 credits")
+    fc_p.add_argument("--extractor", choices=("regex", "agent"), default="regex",
+                      help="regex (default) attaches what the pass is sure of; the rest queue for the agent")
+    fc_p.add_argument("--tag", nargs="+", dest="tags",
+                      help="Only companies with a lead carrying any of these workspace tags")
+    fc_p.add_argument("--exclude-tag", nargs="+", dest="exclude_tags",
+                      help="Skip companies with a lead carrying any of these tags")
+
     cxp_p = sub.add_parser(
         "contact-extract-pending",
         help="Cached staff pages the regex pass could not crack, for the agent to extract",
@@ -3534,6 +3556,26 @@ def main():
             print(json.dumps(result, indent=2))
         else:
             _print_icp_result(args.icp_cmd, result)
+    elif args.command == "find-contacts":
+        result = _pipeline.find_contacts_for_workspace(
+            args.workspace,
+            icp_name=getattr(args, "icp_name", None),
+            limit=getattr(args, "limit", None),
+            max_fetches=getattr(args, "max_fetches", None),
+            force=getattr(args, "force", False),
+            reparse=getattr(args, "reparse", False),
+            dry_run=getattr(args, "dry_run", False),
+            extractor=getattr(args, "extractor", "regex"),
+            tags=getattr(args, "tags", None),
+            exclude_tags=getattr(args, "exclude_tags", None),
+        )
+        if result.get("status") == "error":
+            print(json.dumps(result))
+            return 1
+        # --dry-run exists to show which companies would be sourced, so it
+        # keeps the per-company rows; a real run is hundreds of them.
+        drop = set() if getattr(args, "dry_run", False) else {"results"}
+        print(json.dumps({k: v for k, v in result.items() if k not in drop}, indent=2))
     elif args.command == "contact-extract-pending":
         try:
             result = contact_review.cli_extract_pending(

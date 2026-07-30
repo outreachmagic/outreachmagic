@@ -1428,6 +1428,224 @@ def find_domains_for_workspace(
         conn.close()
 
 
+def find_contacts_for_workspace(
+    workspace: str,
+    *,
+    icp_name: Optional[str] = None,
+    limit: Optional[int] = None,
+    max_fetches: Optional[int] = None,
+    force: bool = False,
+    reparse: bool = False,
+    dry_run: bool = False,
+    extractor: str = "regex",
+    tags: Optional[list] = None,
+    exclude_tags: Optional[list] = None,
+) -> dict:
+    """pipeline.py find-contacts: turn companies with no people into companies
+    with people. The sibling of find_domains_for_workspace, one layer down.
+
+    Targets companies in `workspace` that have a domain but no titled contact,
+    which is the population contact sourcing exists for. As with find-domains,
+    tags narrow only what you pay for -- the page cache is keyed on URL and is
+    org-wide, so a page fetched from any workspace is never re-fetched here.
+    """
+    import contact_discovery
+    import contact_icp
+    import enrich
+    import page_cache
+
+    conn = get_conn()
+    try:
+        ws_row = resolve_workspace_identity(conn, workspace)
+        if not ws_row:
+            return {"status": "error", "error": f"workspace not found: {workspace}"}
+
+        icp = icp_hash = None
+        try:
+            profile = contact_icp.get_profile(conn, ws_row["id"], icp_name)
+        except contact_icp.IcpError as exc:
+            return {"status": "error", "error": str(exc)}
+        if profile:
+            icp, icp_hash = profile["config"], profile["config_hash"]
+        elif icp_name:
+            return {"status": "error",
+                    "error": f"no ICP profile named {icp_name!r} in {ws_row['slug']}"}
+
+        clauses = [
+            "wl.workspace_id = ?",
+            "IFNULL(TRIM(c.domain), '') != ''",
+            # Companies that already have a real contact are done, unless
+            # --force says otherwise. This is the "undercontacted" filter and
+            # it is what keeps a re-run from re-paying for finished work.
+            """(? OR NOT EXISTS (SELECT 1 FROM leads l2
+                                  WHERE l2.company_id = c.id
+                                    AND IFNULL(TRIM(l2.title), '') != ''
+                                    AND l2.record_type != 'company_placeholder'))""",
+        ]
+        params: list = [ws_row["id"], 1 if force else 0]
+        if tags:
+            clauses.append(
+                f"""EXISTS (SELECT 1 FROM workspace_lead_tags t
+                            WHERE t.workspace_id = wl.workspace_id AND t.lead_id = l.id
+                              AND t.tag IN ({",".join("?" * len(tags))}))"""
+            )
+            params.extend(tags)
+        if exclude_tags:
+            clauses.append(
+                f"""NOT EXISTS (SELECT 1 FROM workspace_lead_tags t2
+                                JOIN leads l2 ON l2.id = t2.lead_id
+                                WHERE t2.workspace_id = wl.workspace_id
+                                  AND l2.company_id = c.id
+                                  AND t2.tag IN ({",".join("?" * len(exclude_tags))}))"""
+            )
+            params.extend(exclude_tags)
+
+        rows = conn.execute(
+            f"""SELECT c.id AS company_id, c.name AS company_name, c.domain AS domain
+                FROM workspace_leads wl
+                JOIN leads l ON l.id = wl.lead_id
+                JOIN companies c ON c.id = l.company_id
+                WHERE {" AND ".join(clauses)}
+                GROUP BY c.id
+                ORDER BY c.id""",
+            params,
+        ).fetchall()
+        if limit:
+            rows = rows[: int(limit)]
+
+        cfg = enrich.load_config()
+
+        if dry_run:
+            # The estimate counts cache MISSES, not targets. Counting targets
+            # over-reports on every run after the first, and a cap nobody
+            # believes is a cap nobody uses.
+            known, needs_search = [], 0
+            for row in rows:
+                url, _src = contact_discovery.staff_url_from_local_evidence(
+                    conn, row["company_id"], row["domain"])
+                if url:
+                    known.append(url)
+                else:
+                    needs_search += 1
+            misses = len(page_cache.cache_misses(conn, known)) + needs_search
+            if max_fetches is not None:
+                misses = min(misses, int(max_fetches))
+            return {
+                "status": "ok", "workspace": ws_row["slug"], "dry_run": True,
+                "icp": profile["name"] if profile else None,
+                "icp_config_hash": icp_hash,
+                "companies_targeted": len(rows),
+                "staff_url_known": len(known),
+                "needs_url_discovery": needs_search,
+                "firecrawl_credits_worst_case": misses,
+                "serper_queries_worst_case": needs_search,
+                "already_cached": len(known) - len(page_cache.cache_misses(conn, known)),
+                "results": [
+                    {"company_id": r["company_id"], "company_name": r["company_name"] or "",
+                     "domain": r["domain"], "status": "dry_run"} for r in rows
+                ],
+            }
+
+        # SIGTERM/SIGINT: finish the company in flight, then report. Work is
+        # committed per company, so a killed run has still banked its pages --
+        # but a run that printed nothing left the operator unable to tell what
+        # it had cost, which is how find-domains got restarted three times.
+        interrupted: list[str] = []
+
+        def _on_signal(signum, _frame):
+            if not interrupted:
+                interrupted.append(signal.Signals(signum).name)
+                print(f"\n[outreachmagic] {interrupted[0]} received — finishing the "
+                      f"current company, then reporting what was done.",
+                      file=sys.stderr, flush=True)
+
+        previous_handlers = {}
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                previous_handlers[sig] = signal.signal(sig, _on_signal)
+            except (ValueError, OSError):
+                pass
+
+        results: list[dict] = []
+        counts: dict[str, int] = {}
+        fetches_spent = serper_spent = attached_total = 0
+        stopped_reason = None
+        started = time.time()
+
+        for position, row in enumerate(rows, start=1):
+            if interrupted:
+                break
+            budget = None if max_fetches is None else int(max_fetches) - fetches_spent
+            outcome = contact_discovery.run_company_contact_discovery(
+                conn, cfg,
+                company_id=row["company_id"],
+                company_name=row["company_name"] or "",
+                domain=row["domain"],
+                workspace_id=ws_row["id"],
+                icp=icp, icp_hash=icp_hash,
+                force=force, reparse=reparse,
+                fetch_budget=budget, extractor=extractor,
+            )
+            conn.commit()
+
+            fetches_spent += outcome.get("fetches_spent", 0)
+            serper_spent += outcome.get("serper_spent", 0)
+            attached_total += outcome.get("attached", 0)
+            status = str(outcome.get("status") or "?")
+            counts[status] = counts.get(status, 0) + 1
+            # Per-company rows are dropped from the summary on a real run (it
+            # is hundreds of them); the contacts themselves are in the DB.
+            results.append({k: v for k, v in outcome.items() if k != "contacts"})
+
+            if status == "budget_exhausted":
+                stopped_reason = "fetch_budget_exhausted"
+
+            print(
+                f"[{position:>5}/{len(rows)}] {(row['company_name'] or '')[:34]:36} "
+                f"{status:<16} +{outcome.get('attached', 0)} contacts"
+                f"{'  (cached)' if outcome.get('cache_hit') else ''}",
+                file=sys.stderr, flush=True,
+            )
+            if position % 25 == 0 or position == len(rows):
+                elapsed = max(time.time() - started, 0.001)
+                remaining = (len(rows) - position) / (position / elapsed)
+                print(f"    ── {position}/{len(rows)}  {int(elapsed // 60)}m "
+                      f"{int(elapsed % 60)}s  ETA {int(remaining // 60)}m  "
+                      f"contacts {attached_total}  credits {fetches_spent}",
+                      file=sys.stderr, flush=True)
+
+        for sig, handler in previous_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+
+        summary = {
+            "status": "ok",
+            "workspace": ws_row["slug"],
+            "icp": profile["name"] if profile else None,
+            "icp_config_hash": icp_hash,
+            "extractor": extractor,
+            "reparse": reparse,
+            "companies_targeted": len(rows),
+            "contacts_attached": attached_total,
+            "firecrawl_credits_spent": fetches_spent,
+            "serper_queries_spent": serper_spent,
+            "outcomes": counts,
+            "dry_run": False,
+            "results": results,
+        }
+        if interrupted:
+            summary["stopped_reason"] = f"interrupted ({interrupted[0]})"
+            summary["companies_remaining"] = len(rows) - len(results)
+        elif stopped_reason:
+            summary["stopped_reason"] = stopped_reason
+            summary["companies_remaining"] = len(rows) - len(results)
+        return summary
+    finally:
+        conn.close()
+
+
 def _update_company_fields(
     conn: sqlite3.Connection,
     rec: dict,

@@ -118,8 +118,14 @@ CREATE TABLE IF NOT EXISTS company_contact_observations (
     icp_config_hash   TEXT,
     cost_estimate_usd REAL,
     outcome           TEXT NOT NULL,
-    error             TEXT
+    error             TEXT,
+    decision_json     TEXT
 );
+-- `decision_json` holds what a human was offered and what they chose, on the
+-- rows `contact-review` writes (`extractor = 'human'`). Rejections are kept
+-- deliberately -- which candidates were put in front of someone and refused is
+-- the only way to find out whether the ICP's ordering is worth anything, and a
+-- count of "queued" cannot answer that. Null on machine-written rows.
 CREATE INDEX IF NOT EXISTS idx_cco_company ON company_contact_observations(company_id, ran_at);
 CREATE INDEX IF NOT EXISTS idx_cco_workspace ON company_contact_observations(workspace_id, ran_at);
 CREATE INDEX IF NOT EXISTS idx_cco_icp_hash ON company_contact_observations(icp_config_hash);
@@ -2642,6 +2648,15 @@ def migrate_db(conn=None):
     _add_company_identity_purpose(conn)
 
     conn.executescript(CONTACT_SOURCING_SQL)
+
+    # Phase 8: what a human was offered and what they chose, on contact-review
+    # rows. Added by ALTER as well as in the CREATE above, because the three
+    # contact-sourcing tables shipped before there was a review surface.
+    try:
+        conn.execute(
+            "ALTER TABLE company_contact_observations ADD COLUMN decision_json TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     if own_conn:

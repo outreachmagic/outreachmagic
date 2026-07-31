@@ -36,6 +36,19 @@ groups, so "applied twice" is the normal case, not the edge case. Two mechanisms
     companies that already have an agent observation under the same
     `icp_config_hash`; changing the profile makes them eligible again, which is
     exactly when re-deciding is worth doing.
+
+### The human queue
+
+`contact-review` is the third surface, and it follows `serper_review.py`'s three
+rules exactly: nothing is pre-selected, "none of these" is an answer that gets
+recorded, and rejections are kept. Where it differs is that it stores no
+candidate blob -- a page's people are a pure function of the cached page, so a
+candidate's id is its position in `regex_pass` output, re-derived on demand.
+See the section header above `_attached_names` for what that buys and costs.
+
+    pipeline.py contact-review --workspace W --json
+    pipeline.py contact-apply --company-id N --contact-ids 3,7
+    pipeline.py contact-review --company-id N --none-of-these
 """
 
 from __future__ import annotations
@@ -61,8 +74,27 @@ SOURCE = "contact_sourcing"
 PROVIDER = "firecrawl"
 EXTRACTOR_REGEX = "regex"
 EXTRACTOR_AGENT = "agent"
+EXTRACTOR_HUMAN = "human"
 
 DEFAULT_PENDING_LIMIT = 20
+DEFAULT_REVIEW_LIMIT = 25
+
+# "This company belongs to the workspace" -- an existing lead there, OR a
+# contact-sourcing run launched from it. The second half is load-bearing: a
+# company being sourced usually has *no* contact in the workspace yet -- that is
+# the entire reason it is being sourced -- so a lead-only join would empty both
+# queues exactly when they matter. Takes the workspace id three times; an empty
+# string means "every workspace".
+_WORKSPACE_SCOPE_SQL = """
+    (? = ''
+     OR EXISTS (SELECT 1 FROM leads l
+                  JOIN workspace_leads wl ON wl.lead_id = l.id
+                 WHERE l.company_id = pc.company_id
+                   AND wl.workspace_id = ?)
+     OR EXISTS (SELECT 1 FROM company_contact_observations o
+                 WHERE o.company_id = pc.company_id
+                   AND o.workspace_id = ?))
+"""
 
 
 class ContactReviewError(ValueError):
@@ -89,24 +121,66 @@ def record_observation(
     cost_estimate_usd: Optional[float] = None,
     provider: str = PROVIDER,
     error: Optional[str] = None,
+    decision: Optional[dict] = None,
 ) -> int:
     """Append one row to company_contact_observations.
 
     Called on every path including failure. A page that returned nothing is a
     fact worth keeping -- it is the only thing that stops the next run paying to
     find out the same thing again. `contact_discovery.py` writes through here too.
+
+    `decision` is what a human was offered and what they chose. Only the review
+    surface passes it; every machine-written row leaves it null.
     """
     cur = conn.execute(
         """INSERT INTO company_contact_observations (
                company_id, workspace_id, provider, url, cache_hit, fetch_ms,
                http_status, regex_found, extractor, contacts_attached,
-               contacts_queued, icp_config_hash, cost_estimate_usd, outcome, error
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               contacts_queued, icp_config_hash, cost_estimate_usd, outcome, error,
+               decision_json
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (company_id, workspace_id, provider, url, 1 if cache_hit else 0, fetch_ms,
          http_status, int(regex_found), extractor, int(contacts_attached),
-         int(contacts_queued), icp_config_hash, cost_estimate_usd, outcome, error),
+         int(contacts_queued), icp_config_hash, cost_estimate_usd, outcome, error,
+         json.dumps(decision, separators=(",", ":")) if decision else None),
     )
     return int(cur.lastrowid)
+
+
+# ── cached pages ─────────────────────────────────────────────────────────────
+
+def _cached_pages(
+    conn: sqlite3.Connection, workspace_id: Optional[str] = None,
+) -> sqlite3.Cursor:
+    """Every cached staff page in a workspace, newest first.
+
+    Returned as an open cursor and iterated lazily rather than fetchall()'d:
+    every row carries a whole page body, and both queues stop as soon as they
+    have filled a batch.
+    """
+    return conn.execute(
+        f"""SELECT pc.company_id, pc.url, pc.markdown, pc.content_hash,
+                   c.name AS company, c.domain
+              FROM company_page_cache pc
+              JOIN companies c ON c.id = pc.company_id
+             WHERE pc.markdown IS NOT NULL AND TRIM(pc.markdown) != ''
+               AND {_WORKSPACE_SCOPE_SQL}
+             ORDER BY pc.fetched_at DESC""",
+        (workspace_id or "", workspace_id or "", workspace_id or ""),
+    )
+
+
+def _latest_cached_page(
+    conn: sqlite3.Connection, company_id: int,
+) -> Optional[sqlite3.Row]:
+    """The page `contact-review` and `--reparse` both read for one company."""
+    return conn.execute(
+        """SELECT company_id, url, markdown, content_hash
+             FROM company_page_cache
+            WHERE company_id = ? AND markdown IS NOT NULL AND TRIM(markdown) != ''
+            ORDER BY fetched_at DESC LIMIT 1""",
+        (company_id,),
+    ).fetchone()
 
 
 # ── the pending queue ────────────────────────────────────────────────────────
@@ -127,28 +201,7 @@ def extract_pending(
     a disposable context that dies with the batch, not in the main thread.
     """
     icp = icp or {}
-    # "Belongs to this workspace" is either an existing lead there OR a
-    # contact-sourcing run launched from it. The second half is load-bearing: a
-    # company being sourced usually has *no* contact in the workspace yet --
-    # that is the entire reason it is being sourced -- so a lead-only join
-    # would empty the queue exactly when it matters.
-    rows = conn.execute(
-        """SELECT pc.company_id, pc.url, pc.markdown, pc.content_hash,
-                  c.name AS company, c.domain
-             FROM company_page_cache pc
-             JOIN companies c ON c.id = pc.company_id
-            WHERE pc.markdown IS NOT NULL AND TRIM(pc.markdown) != ''
-              AND (? = ''
-                   OR EXISTS (SELECT 1 FROM leads l
-                                JOIN workspace_leads wl ON wl.lead_id = l.id
-                               WHERE l.company_id = pc.company_id
-                                 AND wl.workspace_id = ?)
-                   OR EXISTS (SELECT 1 FROM company_contact_observations o
-                               WHERE o.company_id = pc.company_id
-                                 AND o.workspace_id = ?))
-            ORDER BY pc.fetched_at DESC""",
-        (workspace_id or "", workspace_id or "", workspace_id or ""),
-    )  # iterated lazily, not fetchall(): every row carries a whole page body.
+    rows = _cached_pages(conn, workspace_id)
 
     already = set()
     if not force:
@@ -518,7 +571,288 @@ def apply_batch(
     }
 
 
+# ── the human review queue ───────────────────────────────────────────────────
+#
+# `serper_review.py` is the model, and its three rules hold here unchanged:
+# nothing is pre-selected, "none of these" is an answer, and rejections are
+# kept. What differs is where the candidates live. Serper stores an extracted
+# blob per lead; contact sourcing does not need to, because a page's people are
+# a *pure function of the cached page* -- `regex_pass` is deterministic and
+# ICP-agnostic, and `score_against_icp` never drops anything. So a candidate's
+# id is simply its position in that list, re-derived on demand, and no second
+# copy of the page's contents exists to drift from the cache.
+#
+# The consequence to be honest about: ids move if the page body changes. They
+# do *not* move when the ICP changes -- only the verdicts do. The review payload
+# therefore carries `content_hash`, and `contact-apply --content-hash` verifies
+# it for a caller who wants the guarantee across a re-fetch.
+
+def _attached_names(conn: sqlite3.Connection, company_id: int) -> set[str]:
+    """Normalised names already on this company, so review can mark them.
+
+    An already-attached person is still shown -- "the ICP kept someone it
+    shouldn't have" is a thing a reviewer needs to see -- but they are labelled,
+    so nobody spends judgement re-picking a contact they already have.
+    """
+    rows = conn.execute(
+        "SELECT name FROM leads WHERE company_id = ? AND IFNULL(TRIM(name), '') != ''",
+        (company_id,),
+    ).fetchall()
+    out = set()
+    for row in rows:
+        key = normalize_person_name(row["name"]) or (row["name"] or "").strip().lower()
+        if key:
+            out.add(key)
+    return out
+
+
+def _candidates_from_page(
+    page: sqlite3.Row,
+    company_name: Optional[str],
+    icp: Optional[dict],
+    attached: set[str],
+) -> list[dict]:
+    scored = ce.score_against_icp(
+        ce.regex_pass(page["markdown"]), icp, company_name=company_name)
+    out = []
+    for index, item in enumerate(scored):
+        key = (normalize_person_name(item.candidate.name)
+               or item.candidate.name.strip().lower())
+        # Score order is *page* order here, and deliberately so: the id has to
+        # mean the same thing on the next call, and a sort key that depends on
+        # the ICP would renumber every candidate when the whitelist is edited.
+        out.append({"id": index, **item.as_dict(), "attached": key in attached})
+    return out
+
+
+def company_candidates(
+    conn: sqlite3.Connection,
+    company_id: int,
+    *,
+    icp: Optional[dict] = None,
+) -> dict:
+    """Everyone on this company's cached page, with the ICP's verdict and an id."""
+    company = _company_row(conn, company_id)
+    page = _latest_cached_page(conn, company_id)
+    if page is None:
+        raise ContactReviewError(f"no cached page for company {company_id}")
+    return {
+        "company_id": company_id,
+        "company": company["name"],
+        "domain": company["domain"],
+        "url": page["url"],
+        "content_hash": page["content_hash"],
+        "candidates": _candidates_from_page(
+            page, company["name"], icp, _attached_names(conn, company_id)),
+    }
+
+
+def _decided_companies(
+    conn: sqlite3.Connection, icp_hash: Optional[str],
+) -> set[int]:
+    """Companies a human has already ruled on under this ICP version.
+
+    Scoped to the ICP hash for the same reason the agent queue is: editing the
+    profile is exactly when re-deciding is worth doing, and until then asking
+    again wastes the one resource this queue spends, which is attention.
+    """
+    return {
+        r["company_id"] for r in conn.execute(
+            """SELECT DISTINCT company_id FROM company_contact_observations
+                WHERE extractor = ? AND IFNULL(icp_config_hash, '') = ?""",
+            (EXTRACTOR_HUMAN, icp_hash or ""),
+        ).fetchall()
+    }
+
+
+def review_queue(
+    conn: sqlite3.Connection,
+    workspace_id: Optional[str] = None,
+    *,
+    icp: Optional[dict] = None,
+    icp_hash: Optional[str] = None,
+    limit: int = DEFAULT_REVIEW_LIMIT,
+    offset: int = 0,
+    force: bool = False,
+) -> dict:
+    """Companies whose cached page has people nobody has ruled on yet.
+
+    A company with nothing left to choose between is not in the queue: every
+    candidate already attached is a decision that has effectively been made, and
+    a queue that shows it is a queue an operator learns to skim.
+    """
+    already = set() if force else _decided_companies(conn, icp_hash)
+    companies: list[dict] = []
+    wanted = max(1, int(limit)) + max(0, int(offset))
+
+    for row in _cached_pages(conn, workspace_id):
+        if len(companies) >= wanted:
+            break
+        if row["company_id"] in already:
+            continue
+        candidates = _candidates_from_page(
+            row, row["company"], icp, _attached_names(conn, row["company_id"]))
+        if not any(not c["attached"] for c in candidates):
+            continue
+        companies.append({
+            "company_id": row["company_id"],
+            "company": row["company"],
+            "domain": row["domain"],
+            "url": row["url"],
+            "content_hash": row["content_hash"],
+            # No `chosen`, no default, no truncation to the ICP's keeps. The
+            # rejects are the entire reason a human is looking.
+            "candidates": candidates,
+        })
+
+    page = companies[offset:offset + max(1, int(limit))]
+    return {
+        "icp_config_hash": icp_hash,
+        "limit": limit, "offset": offset,
+        # `count` is what came back, not what exists -- the same meaning it has
+        # on `contact-extract-pending`. A true total would mean scoring every
+        # cached page in the workspace on every call, and each of those rows
+        # carries a whole page body. Page until a call returns fewer than
+        # `limit`; that is the end.
+        "count": len(page),
+        "companies": page,
+    }
+
+
+# ── recording a decision ─────────────────────────────────────────────────────
+
+def _decision_payload(candidates: list[dict], chosen_ids: set[int]) -> dict:
+    """What was offered, and what was taken. Both halves are kept."""
+    return {
+        "chosen": [
+            {"id": c["id"], "name": c["name"], "title": c["title"],
+             "reason": c["reason"]}
+            for c in candidates if c["id"] in chosen_ids
+        ],
+        "rejected": [
+            {"id": c["id"], "name": c["name"], "title": c["title"],
+             "reason": c["reason"]}
+            for c in candidates if c["id"] not in chosen_ids
+        ],
+    }
+
+
+def review_company(
+    conn: sqlite3.Connection,
+    company_id: int,
+    *,
+    contact_ids: Optional[Iterable[int]] = None,
+    dismissed: bool = False,
+    workspace_id: Optional[str] = None,
+    icp: Optional[dict] = None,
+    icp_hash: Optional[str] = None,
+    content_hash: Optional[str] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Apply a human's picks for one company, or record "none of these".
+
+    Both land as a single observation with `extractor = 'human'`, so the queue
+    stops offering the company and the next run can tell a decision from a page
+    nobody has looked at. Those are different states, and collapsing them is how
+    a review queue silently re-asks.
+    """
+    view = company_candidates(conn, company_id, icp=icp)
+    if content_hash and view["content_hash"] != content_hash:
+        raise ContactReviewError(
+            f"company {company_id}: the page changed since it was reviewed "
+            f"(expected {content_hash}, cached {view['content_hash']}); "
+            "re-run contact-review to renumber the candidates")
+
+    candidates = view["candidates"]
+    by_id = {c["id"]: c for c in candidates}
+    chosen_ids: set[int] = set()
+    if not dismissed:
+        for raw in contact_ids or ():
+            cid = int(raw)
+            if cid not in by_id:
+                raise ContactReviewError(
+                    f"company {company_id}: no candidate with id {cid} "
+                    f"(this page offers 0-{len(candidates) - 1})"
+                    if candidates else
+                    f"company {company_id}: the cached page offers no candidates")
+            chosen_ids.add(cid)
+        if not chosen_ids:
+            raise ContactReviewError(
+                "pass --contact-ids, or --none-of-these to record that none fit")
+
+    applied = {"attached": 0, "contacts": [], "rejections": []}
+    if chosen_ids:
+        applied = apply_company_contacts(
+            conn, company_id,
+            [{"name": by_id[i]["name"], "title": by_id[i]["title"],
+              "email": by_id[i]["email"], "phone": by_id[i]["phone"]}
+             for i in sorted(chosen_ids)],
+            workspace_id=workspace_id, icp=icp, icp_hash=icp_hash,
+            url=view["url"], extractor=EXTRACTOR_HUMAN, dry_run=dry_run,
+            # One row per decision, written below with the decision on it. The
+            # apply writing its own would report the company reviewed twice.
+            record=False,
+        )
+
+    decision = _decision_payload(candidates, chosen_ids)
+    if not dry_run:
+        record_observation(
+            conn, company_id,
+            outcome="dismissed" if dismissed else "reviewed",
+            workspace_id=workspace_id,
+            url=view["url"],
+            cache_hit=True,
+            extractor=EXTRACTOR_HUMAN,
+            regex_found=len(candidates),
+            contacts_attached=applied["attached"],
+            contacts_queued=len(decision["rejected"]),
+            icp_config_hash=icp_hash,
+            decision=decision,
+        )
+
+    return {
+        "status": "dry_run" if dry_run else ("dismissed" if dismissed else "reviewed"),
+        "company_id": company_id,
+        "company": view["company"],
+        "url": view["url"],
+        "offered": len(candidates),
+        "attached": applied["attached"],
+        "contacts": applied["contacts"],
+        "rejections": applied["rejections"],
+        "decision": decision,
+    }
+
+
 # ── CLI entry points ─────────────────────────────────────────────────────────
+
+def _resolve_context(
+    conn: sqlite3.Connection,
+    workspace: Optional[str],
+    icp_name: Optional[str],
+) -> tuple[Optional[str], Optional[str], Optional[dict], Optional[str]]:
+    """The workspace and the ICP version a command runs under.
+
+    A *named* profile that does not exist is an error rather than a fall-through
+    to no ICP: silently running the whole thing unfiltered because of a typo in
+    `--icp` is how a queue fills with people nobody wanted.
+    """
+    workspace_id = ws_slug = None
+    if workspace:
+        ws = resolve_workspace_identity(conn, workspace)
+        if not ws:
+            raise ContactReviewError(f"workspace not found: {workspace}")
+        workspace_id, ws_slug = ws["id"], ws["slug"]
+
+    icp = icp_hash = None
+    if workspace_id:
+        profile = contact_icp.get_profile(conn, workspace_id, icp_name)
+        if profile:
+            icp, icp_hash = profile["config"], profile["config_hash"]
+        elif icp_name:
+            raise ContactReviewError(
+                f"no ICP profile named {icp_name!r} in {workspace}")
+    return workspace_id, ws_slug, icp, icp_hash
+
 
 def cli_extract_pending(
     workspace: Optional[str] = None,
@@ -529,23 +863,8 @@ def cli_extract_pending(
 ) -> dict:
     conn = get_conn()
     try:
-        workspace_id = None
-        ws_slug = None
-        if workspace:
-            ws = resolve_workspace_identity(conn, workspace)
-            if not ws:
-                raise ContactReviewError(f"workspace not found: {workspace}")
-            workspace_id, ws_slug = ws["id"], ws["slug"]
-
-        icp = icp_hash = None
-        if workspace_id:
-            profile = contact_icp.get_profile(conn, workspace_id, icp_name)
-            if profile:
-                icp, icp_hash = profile["config"], profile["config_hash"]
-            elif icp_name:
-                raise ContactReviewError(
-                    f"no ICP profile named {icp_name!r} in {workspace}")
-
+        workspace_id, ws_slug, icp, icp_hash = _resolve_context(
+            conn, workspace, icp_name)
         pending = extract_pending(
             conn, workspace_id, icp=icp, icp_hash=icp_hash, limit=limit, force=force)
     finally:
@@ -577,3 +896,95 @@ def cli_apply(
     if not isinstance(items, list):
         raise ContactReviewError("the batch must be a JSON array of {company_id, contacts}")
     return apply_batch(items, workspace=workspace, icp_name=icp_name, dry_run=dry_run)
+
+
+def cli_review(
+    workspace: Optional[str] = None,
+    *,
+    company_id: Optional[int] = None,
+    icp_name: Optional[str] = None,
+    limit: int = DEFAULT_REVIEW_LIMIT,
+    offset: int = 0,
+    force: bool = False,
+    none_of_these: bool = False,
+) -> dict:
+    """Show the queue, one company from it, or record "none of these"."""
+    if none_of_these and not company_id:
+        raise ContactReviewError("--none-of-these needs --company-id")
+
+    conn = get_conn()
+    try:
+        workspace_id, ws_slug, icp, icp_hash = _resolve_context(
+            conn, workspace, icp_name)
+
+        if none_of_these:
+            conn.execute("BEGIN")
+            try:
+                result = review_company(
+                    conn, int(company_id), dismissed=True,
+                    workspace_id=workspace_id, icp=icp, icp_hash=icp_hash)
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+            return {"status": result["status"], "workspace": ws_slug,
+                    "icp_config_hash": icp_hash, **result}
+
+        if company_id:
+            view = company_candidates(conn, int(company_id), icp=icp)
+            return {"status": "ok", "workspace": ws_slug,
+                    "icp_config_hash": icp_hash, "count": 1, "companies": [view]}
+
+        queue = review_queue(
+            conn, workspace_id, icp=icp, icp_hash=icp_hash,
+            limit=limit, offset=offset, force=force)
+        return {"status": "ok", "workspace": ws_slug, **queue}
+    finally:
+        conn.close()
+
+
+def cli_apply_ids(
+    company_id: int,
+    contact_ids: Iterable[int],
+    *,
+    workspace: Optional[str] = None,
+    icp_name: Optional[str] = None,
+    content_hash: Optional[str] = None,
+    dry_run: bool = False,
+) -> dict:
+    """`contact-apply --company-id N --contact-ids 3,7` -- the id-based path."""
+    conn = get_conn()
+    try:
+        conn.execute("BEGIN")
+        try:
+            workspace_id, ws_slug, icp, icp_hash = _resolve_context(
+                conn, workspace, icp_name)
+            result = review_company(
+                conn, int(company_id), contact_ids=contact_ids,
+                workspace_id=workspace_id, icp=icp, icp_hash=icp_hash,
+                content_hash=content_hash, dry_run=dry_run)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("ROLLBACK" if dry_run else "COMMIT")
+    finally:
+        conn.close()
+    return {"workspace": ws_slug, "icp_config_hash": icp_hash, **result}
+
+
+def parse_contact_ids(raw: Optional[str]) -> list[int]:
+    """`3,7` / `3 7` -> [3, 7]. Rejects anything that isn't an id.
+
+    A silently-dropped token here attaches the wrong person, so a bad one is an
+    error rather than a skip.
+    """
+    out: list[int] = []
+    for token in (raw or "").replace(",", " ").split():
+        try:
+            out.append(int(token))
+        except ValueError:
+            raise ContactReviewError(
+                f"--contact-ids takes numbers from contact-review; got {token!r}") from None
+    if not out:
+        raise ContactReviewError("--contact-ids is empty")
+    return out

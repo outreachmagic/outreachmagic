@@ -54,6 +54,27 @@ def _print_icp_result(subcommand: str, result: dict) -> None:
     _profile_lines(result)
 
 
+def _print_contact_review(result: dict) -> None:
+    """Human-readable form of the contact-review queue.
+
+    Every candidate is printed, kept and rejected alike, with the id to pass to
+    `contact-apply --contact-ids` and no mark on any of them. Printing only what
+    the ICP kept, or starring a suggestion, would make this a recommendation to
+    click through rather than a decision to make.
+    """
+    print(f"{result['count']} company/companies to review "
+          f"(icp {result.get('icp_config_hash') or 'none'})")
+    for company in result["companies"]:
+        print(f"\n[{company['company_id']}] {company['company']} — {company['url']}")
+        for candidate in company["candidates"]:
+            mark = "already attached" if candidate["attached"] else (
+                "keep" if candidate["kept"] else candidate["reason"])
+            title = candidate["title"] or "—"
+            print(f"  {candidate['id']:>3}. {candidate['name']:<28} {title:<36} ({mark})")
+        print(f"       contact-apply --company-id {company['company_id']} --contact-ids …"
+              f"   |   contact-review --company-id {company['company_id']} --none-of-these")
+
+
 def _remap_to_lead_review_export(args) -> None:
     """Route sheets export (or export --format sheets) to review export lead-review."""
     args.command = "review"
@@ -895,6 +916,23 @@ def main():
                        help="Include pages already extracted under this ICP version")
     cxp_p.add_argument("--json", action="store_true")
 
+    crev_p = sub.add_parser(
+        "contact-review",
+        help="Human triage: the people on a cached staff page, with the ICP's verdict on each",
+    )
+    crev_p.add_argument("--workspace", help="Limit to companies in this workspace")
+    crev_p.add_argument("--company-id", type=int, help="Just this company")
+    crev_p.add_argument("--icp", dest="icp_name", help="ICP profile name (default: the workspace's only one)")
+    crev_p.add_argument("--limit", type=int, default=contact_review.DEFAULT_REVIEW_LIMIT,
+                        help="Companies per page of the queue")
+    crev_p.add_argument("--offset", type=int, default=0)
+    crev_p.add_argument("--force", action="store_true",
+                        help="Include companies already reviewed under this ICP version")
+    crev_p.add_argument("--none-of-these", action="store_true", dest="none_of_these",
+                        help="Record that no candidate on --company-id's page fits. "
+                             "A decision, not a skip: the company leaves the queue")
+    crev_p.add_argument("--json", action="store_true")
+
     capp_p = sub.add_parser(
         "contact-apply",
         help="Attach extracted contacts as leads (idempotent: re-applying a batch adds nothing)",
@@ -903,6 +941,13 @@ def main():
     capp_p.add_argument("--json", dest="json_input",
                         help='JSON: [{"company_id": N, "contacts": [{"name": "...", "title": "..."}]}]')
     capp_p.add_argument("--file", help="Read the batch from a file instead of --json")
+    capp_p.add_argument("--company-id", type=int,
+                        help="Apply picks from contact-review for one company (with --contact-ids)")
+    capp_p.add_argument("--contact-ids",
+                        help="Candidate ids from contact-review, e.g. 3,7")
+    capp_p.add_argument("--content-hash",
+                        help="Refuse if the cached page changed since contact-review "
+                             "printed these ids (they are positions in the page)")
     capp_p.add_argument("--workspace", help="Attach the leads to this workspace and use its ICP")
     capp_p.add_argument("--icp", dest="icp_name", help="ICP profile name")
     capp_p.add_argument("--dry-run", action="store_true", help="Report what would be attached, write nothing")
@@ -3600,19 +3645,52 @@ def main():
             for page in result["pending"]:
                 print(f"  [{page['company_id']}] {page['company']} — "
                       f"regex found {page['regex_found']} — {page['url']}")
+    elif args.command == "contact-review":
+        try:
+            result = contact_review.cli_review(
+                getattr(args, "workspace", None),
+                company_id=getattr(args, "company_id", None),
+                icp_name=getattr(args, "icp_name", None),
+                limit=args.limit,
+                offset=args.offset,
+                force=args.force,
+                none_of_these=args.none_of_these,
+            )
+        except contact_review.ContactReviewError as exc:
+            print(json.dumps({"status": "error", "error": str(exc)}))
+            return 1
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        elif args.none_of_these:
+            print(f"[{result['company_id']}] {result['company']} — none of these "
+                  f"({result['offered']} candidate(s) recorded as rejected)")
+        else:
+            _print_contact_review(result)
     elif args.command == "contact-apply":
-        if not args.batch:
-            print(json.dumps({"status": "error",
-                              "error": "contact-apply currently supports --batch only"}))
+        company_id = getattr(args, "company_id", None)
+        if not args.batch and not company_id:
+            print(json.dumps({
+                "status": "error",
+                "error": "contact-apply needs --batch, or --company-id with --contact-ids"}))
             return 1
         try:
-            result = contact_review.cli_apply(
-                getattr(args, "json_input", None),
-                path=getattr(args, "file", None),
-                workspace=getattr(args, "workspace", None),
-                icp_name=getattr(args, "icp_name", None),
-                dry_run=args.dry_run,
-            )
+            if company_id:
+                result = contact_review.cli_apply_ids(
+                    company_id,
+                    contact_review.parse_contact_ids(getattr(args, "contact_ids", None)),
+                    workspace=getattr(args, "workspace", None),
+                    icp_name=getattr(args, "icp_name", None),
+                    content_hash=getattr(args, "content_hash", None),
+                    dry_run=args.dry_run,
+                )
+            else:
+                result = contact_review.cli_apply(
+                    getattr(args, "json_input", None),
+                    path=getattr(args, "file", None),
+                    workspace=getattr(args, "workspace", None),
+                    icp_name=getattr(args, "icp_name", None),
+                    dry_run=args.dry_run,
+                )
         except contact_review.ContactReviewError as exc:
             print(json.dumps({"status": "error", "error": str(exc)}))
             return 1

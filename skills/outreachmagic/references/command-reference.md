@@ -283,6 +283,26 @@ pipeline.py contact-apply --batch --file batch.json --workspace acme
 - **The blocklist is enforced on apply**, even though the agent was handed the profile. The whitelist is not: an adjacent title the agent judged worth keeping is the judgement it was asked for, and every contact's ICP verdict is reported in the result either way.
 - Every apply writes a `company_contact_observations` row stamped with the ICP version, including when nothing was attached — that is the record that stops the next run paying to learn the same thing.
 
+### Human contact review
+
+The third extraction surface, for when a person should look at the page. Mirrors `serper-review` / `serper-apply`.
+
+```bash
+pipeline.py contact-review --workspace acme [--icp NAME] [--limit 25] [--offset N] [--force] [--json]
+pipeline.py contact-review --company-id 83544 [--json]          # just this one
+pipeline.py contact-apply --company-id 83544 --contact-ids 3,7 [--workspace acme] [--icp NAME]
+    [--content-hash HASH] [--dry-run]
+pipeline.py contact-review --company-id 83544 --none-of-these --workspace acme
+```
+
+- **Nothing is pre-selected.** Every person the page presents comes back, kept and rejected alike, with the ICP's verdict (`whitelist`, `blocklist`, `not_in_whitelist`, `no_title`, `section`, `company_name`) and no `chosen` field. Showing only the ICP's keeps would make this a queue that can never correct the ICP; starring a suggestion makes it a recommendation to click through.
+- **"None of these" is an answer**, recorded like any other. The company leaves the queue and a re-run does not ask again. The *absence* of a decision means "not looked at yet", which is a different state.
+- **Rejections are kept**, in `company_contact_observations.decision_json` alongside what was chosen — which candidates were offered and refused is the only way to find out whether the ICP's ordering is worth anything.
+- **Ids are positions in the cached page**, re-derived on demand rather than stored: `regex_pass` is deterministic and ICP-agnostic and `score_against_icp` never drops anything, so there is no second copy of the page's people to drift from the cache. Editing the ICP changes the verdicts and never the numbering. **Re-fetching the page does renumber them** — pass the `content_hash` from the review payload to `contact-apply --content-hash` to make a stale pick an error instead of a wrong attach.
+- **A company already reviewed under the current `icp_config_hash` is not offered again**; editing the profile makes it eligible, same rule as the agent queue. `--force` overrides. A company whose candidates are all already attached also drops out — there is nothing left to choose between.
+- **The blocklist is enforced on apply**, even against a human pick. A reviewer can overrule the whitelist; "never contact this person" is not a judgement call.
+- An empty `--contact-ids` is an error, not a silent dismissal: "I picked nobody" and "none of these fit" look identical in the data and are not the same statement.
+
 ## Email verification (MillionVerifier bulk)
 
 ```bash

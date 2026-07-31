@@ -43,6 +43,7 @@ from om_paths import (
     working_paths_payload,
 )
 from pipeline_utils import furthest_stage
+from progress import warn
 from pipeline_update import (
     _SNAPSHOT_CURSOR_KEYS,
     _chmod_best_effort,
@@ -1828,10 +1829,9 @@ def _ingest_relay_page(
                         skipped += 1
                         skipped_errors += 1
                         if not quiet:
-                            print(
+                            warn(
                                 f"Warning: assigned resolution for relay {relay_id} "
-                                f"but workspace '{resolution.get('workspace_slug')}' not found",
-                                file=sys.stderr,
+                                f"but workspace '{resolution.get('workspace_slug')}' not found"
                             )
                         continue
                     if _pull_page_already_ingested(event, ingested_prefetch, local_client_id):
@@ -1846,7 +1846,7 @@ def _ingest_relay_page(
                         )
                     except Exception as exc:
                         if not quiet:
-                            print(f"Warning: skipped webhook event {relay_id}: {exc}")
+                            warn(f"Warning: skipped webhook event {relay_id}: {exc}")
                         skipped += 1
                         skipped_errors += 1
                         continue
@@ -1878,7 +1878,7 @@ def _ingest_relay_page(
                 ingested = ingest_relay_event(event, **ingest_kw)
             except Exception as exc:
                 if not quiet:
-                    print(f"Warning: skipped webhook event {event.get('relay_id') or '?'}: {exc}")
+                    warn(f"Warning: skipped webhook event {event.get('relay_id') or '?'}: {exc}")
                 skipped += 1
                 skipped_errors += 1
                 continue

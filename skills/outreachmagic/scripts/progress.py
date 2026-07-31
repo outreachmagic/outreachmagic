@@ -115,6 +115,19 @@ def _safe_print(file, *args, **kwargs) -> None:
         pass
 
 
+def warn(*args, **kwargs) -> None:
+    """A diagnostic to stderr that cannot fail.
+
+    Non-negotiable for anything inside a per-item loop whose caller catches
+    exceptions. A pull driven by a harness that keeps stdout and closes stderr
+    raises BrokenPipeError on the *first stderr write*; `ingest_relay_event`'s
+    caller catches Exception and files it as "skipped webhook event N", so five
+    webhook events were dropped because five diagnostics could not be printed.
+    A warning must never be able to destroy the thing it is warning about.
+    """
+    _safe_print(kwargs.pop("file", sys.stderr), *args, **kwargs)
+
+
 def print_result_line(
     n: int,
     total: int,

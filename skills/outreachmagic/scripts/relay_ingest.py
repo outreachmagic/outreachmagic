@@ -21,6 +21,7 @@ from constants import (
     PLUSVIBE_SENT_EVENTS,
 )
 from db_conn import get_conn
+from progress import warn
 from platform_registry import (
     CHANNEL_BY_PLATFORM,
     PLUSVIBE_INTERESTED_STAGE_EVENTS,
@@ -547,10 +548,7 @@ def _skip_duplicate_event(
     if own_conn:
         conn.close()
     if not quiet:
-        print(
-            f"[relay] skipped {reason} (dedupe_key={dedupe_key})",
-            file=sys.stderr,
-        )
+        warn(f"[relay] skipped {reason} (dedupe_key={dedupe_key})")
 
 
 def relay_dedupe_hash(dedupe_key: str) -> bytes:
@@ -949,10 +947,9 @@ def ingest_relay_event(
         and platform in PLUSVIBE_PLATFORMS
     ):
         if not quiet:
-            print(
+            warn(
                 f"[relay] skipped {platform} event with no campaign "
-                f"(type={envelope_event_type})",
-                file=sys.stderr,
+                f"(type={envelope_event_type})"
             )
         if defer_mark and pending_marks is not None:
             pending_marks.append((dedupe_key, None))
@@ -985,7 +982,7 @@ def ingest_relay_event(
         if not quiet:
             if campaign_ctx.source_platform not in _no_campaign_platforms_warned:
                 _no_campaign_platforms_warned.add(campaign_ctx.source_platform)
-                print(om.format_no_campaign_event_message(campaign_ctx), file=sys.stderr)
+                warn(om.format_no_campaign_event_message(campaign_ctx))
         return None
 
     workspace_id = force_workspace_id
@@ -1013,7 +1010,7 @@ def ingest_relay_event(
                 _unmapped_key = campaign_ctx.campaign_platform_id or campaign_ctx.campaign_name_raw or str(campaign_ctx.source_platform)
                 if _unmapped_key not in _unmapped_campaigns_reported:
                     _unmapped_campaigns_reported.add(_unmapped_key)
-                    print(om.format_unmapped_campaign_message(campaign_ctx), file=sys.stderr)
+                    warn(om.format_unmapped_campaign_message(campaign_ctx))
             return None
         workspace_id = routing.workspace_id
 

@@ -335,6 +335,11 @@ python3 scripts/pipeline.py find-contacts --workspace acme --icp decision-makers
 # The tail the regex pass could not crack:
 python3 scripts/pipeline.py contact-extract-pending --workspace acme --limit 20 --json
 python3 scripts/pipeline.py contact-apply --batch --workspace acme --json '[...]'
+
+# Or hand a page to a person: every candidate, with the ICP's verdict on each.
+python3 scripts/pipeline.py contact-review --workspace acme --icp decision-makers
+python3 scripts/pipeline.py contact-apply --company-id 83544 --contact-ids 3,7 --workspace acme
+python3 scripts/pipeline.py contact-review --company-id 83544 --none-of-these --workspace acme
 ```
 
 **Always `--dry-run` before a real run, and always pass `--max-fetches`.** Firecrawl bills per page and the credits do not roll over. The dry run counts cache misses, so its estimate stays honest on a second pass, and `--reparse` re-extracts cached pages for zero credits when the ICP changes.
@@ -358,6 +363,15 @@ the same leads instead of duplicating them. `--dry-run` reports what would be
 attached and writes nothing. The ICP blocklist is enforced on apply even though
 you were handed it — a "never contact this person" rule should not depend on
 having been honoured.
+
+**`contact-review` is the human surface, and you should not pre-empt it.** It
+prints every person on the page — the ones the ICP kept and the ones it refused,
+with the reason — and nothing is marked. Don't summarise it down to a
+recommendation: the rejects are why someone is looking, and the whole point is
+to find out where the ICP is wrong. Candidate ids are positions in the cached
+page, so they survive an ICP edit but not a re-fetch; pass the payload's
+`content_hash` to `contact-apply --content-hash` when the two are not seconds
+apart. `--none-of-these` is a decision that gets recorded, not a skip.
 
 ## Lead Fields Reference
 

@@ -332,6 +332,65 @@ CREATE INDEX IF NOT EXISTS idx_wlt_workspace_tag ON workspace_lead_tags(workspac
 CREATE INDEX IF NOT EXISTS idx_wlt_lead ON workspace_lead_tags(lead_id);
 CREATE INDEX IF NOT EXISTS idx_wlt_tag_ws_lead ON workspace_lead_tags(tag, workspace_id, lead_id);
 
+-- Suppression: contacts that must never leave this workspace in an export.
+--
+-- Two tables, because the requirement is that a suppression survives a round
+-- trip. Stored as a tag or a lead column it would die the moment a re-import
+-- overwrote the row, or the lead was deleted and re-created with a new id. So
+-- the rule is authored against an IDENTIFIER VALUE and resolved to leads at
+-- match time: suppressing acme.com covers the 40 Acme contacts on file today
+-- AND the 12 imported next month, with no second action.
+--
+-- `suppression_entries` is the durable artifact and is synced. Revocation is
+-- a soft delete (`revoked_at`): a tombstone that propagates as an upsert is
+-- far more reliable across the relay than one that propagates as a delete,
+-- and "who un-suppressed this, and when" is a question people actually ask.
+CREATE TABLE IF NOT EXISTS suppression_entries (
+    id                TEXT PRIMARY KEY,
+    org_id            TEXT NOT NULL,
+    -- NULL workspace_id == org-wide. Most suppressions are workspace-scoped
+    -- (a lead blocked for one client stays available for another), but a hard
+    -- bounce or a legal removal request genuinely is global.
+    workspace_id      TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    scope             TEXT NOT NULL DEFAULT 'workspace',
+    entry_type        TEXT NOT NULL,
+    value_raw         TEXT NOT NULL,
+    value_normalized  TEXT NOT NULL,
+    reason            TEXT NOT NULL DEFAULT 'manual',
+    note              TEXT,
+    source            TEXT,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    created_by        TEXT,
+    expires_at        TEXT,
+    revoked_at        TEXT,
+    UNIQUE (org_id, workspace_id, entry_type, value_normalized)
+);
+
+CREATE INDEX IF NOT EXISTS idx_supp_lookup
+    ON suppression_entries(org_id, entry_type, value_normalized) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_supp_workspace
+    ON suppression_entries(workspace_id, entry_type) WHERE revoked_at IS NULL;
+
+-- Materialized (workspace, lead) matches. Derived state: rebuildable from
+-- suppression_entries at any time, and deliberately NOT in the sync contract.
+--
+-- Materialized rather than evaluated live because lead_filter_clause() is the
+-- hot path for the contacts list, its counts, the export and every bulk
+-- action. Five OR'd correlated subqueries against 175k leads on every
+-- keystroke is the same shape as the 571s campaign-attribution query; one
+-- indexed NOT EXISTS is the shape that already works here.
+CREATE TABLE IF NOT EXISTS workspace_lead_suppressions (
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    entry_id        TEXT NOT NULL REFERENCES suppression_entries(id) ON DELETE CASCADE,
+    matched_on      TEXT NOT NULL,
+    matched_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (workspace_id, lead_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wls_lead ON workspace_lead_suppressions(workspace_id, lead_id);
+CREATE INDEX IF NOT EXISTS idx_wls_entry ON workspace_lead_suppressions(entry_id);
+
 CREATE TABLE IF NOT EXISTS workspace_lead_linkedin_status (
     id                 TEXT PRIMARY KEY,
     workspace_id       TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,

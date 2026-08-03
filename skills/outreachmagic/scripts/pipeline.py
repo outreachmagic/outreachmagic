@@ -1081,16 +1081,35 @@ def claim_public_emails(
         ws_row = resolve_workspace_identity(conn, workspace)
         if not ws_row:
             return {"status": "error", "error": f"workspace not found: {workspace}"}
+        report: dict = {}
         hits = domain_discovery.find_claimable_public_emails(
-            conn, ws_row["id"], tags=tags, include_free_providers=include_free_providers,
+            conn, ws_row["id"], tags=tags,
+            include_free_providers=include_free_providers, report=report,
         )
+        # Counted here rather than inside the matcher: the matcher only sees
+        # leads that already joined a public_email row, so it cannot tell an
+        # empty scope from a scope with nothing scraped for it.
+        scope_sql = ["wl.workspace_id = ?", "(l.email IS NULL OR TRIM(l.email) = '')"]
+        scope_params: list = [ws_row["id"]]
+        if tags:
+            scope_sql.append(
+                f"""EXISTS (SELECT 1 FROM workspace_lead_tags t
+                            WHERE t.workspace_id = wl.workspace_id AND t.lead_id = l.id
+                              AND t.tag IN ({",".join("?" * len(tags))}))""")
+            scope_params.extend(tags)
+        report.setdefault("funnel", {})["leads_without_email_scanned"] = conn.execute(
+            f"""SELECT COUNT(*) AS n FROM workspace_leads wl
+                  JOIN leads l ON l.id = wl.lead_id
+                 WHERE {" AND ".join(scope_sql)}""",
+            scope_params,
+        ).fetchone()["n"]
     finally:
         conn.close()
 
     if dry_run or not hits:
         return {
             "status": "ok", "workspace": workspace, "claimable": len(hits),
-            "dry_run": dry_run, "claims": hits,
+            "dry_run": dry_run, "claims": hits, **report,
         }
 
     rows = [{
@@ -1107,6 +1126,7 @@ def claim_public_emails(
     return {
         "status": "ok", "workspace": workspace, "claimable": len(hits),
         "claims": hits, "applied": {k: v for k, v in applied.items() if k != "results"},
+        **report,
     }
 
 
@@ -1139,6 +1159,13 @@ def export_domain_corpus(path: str) -> dict:
         json.dump(rows, fh, indent=1)
     return {"status": "ok", "observations": len(rows), "path": path,
             "warning": "contains live company names -- do not commit"}
+
+
+# Consecutive provider errors that end a find-domains run. Low on purpose:
+# the failure this guards against is "every API key is dead", which shows up
+# as an unbroken run of errors within seconds. Anything transient recovers
+# well inside this.
+CONSECUTIVE_ERROR_ABORT = 10
 
 
 def find_domains_for_workspace(
@@ -1216,6 +1243,32 @@ def find_domains_for_workspace(
             rows = rows[: int(limit)]
 
         cfg = enrich.load_config()
+
+        # Ask Serper what's left before committing the batch. Worst case here
+        # is 2 queries per company; refusing at the door beats discovering it
+        # 40% in, which is what wrote 1,023 useless error observations.
+        if not dry_run and rows:
+            import api_key_pool
+
+            pre = api_key_pool.preflight(
+                "serper", "SERPER_API_KEY",
+                need=min(len(rows) * 2, int(max_queries)) if max_queries else len(rows) * 2,
+            )
+            # Only a POSITIVELY KNOWN shortfall stops the run. An unreachable
+            # balance endpoint, an unsupported provider or a missing key all
+            # leave total_remaining None, and none of them are grounds to
+            # refuse work the normal path might complete perfectly well.
+            if pre.get("total_remaining") is not None and not pre.get("sufficient"):
+                return {
+                    "status": "error",
+                    "error": "insufficient Serper credits for this batch",
+                    "preflight": pre,
+                    "message": api_key_pool.format_preflight(pre),
+                }
+            if pre.get("total_remaining") is not None:
+                print(f"[outreachmagic] {api_key_pool.format_preflight(pre)}",
+                      file=sys.stderr, flush=True)
+
         results: list[dict] = []
         found = 0
         found_no_email = 0
@@ -1223,6 +1276,14 @@ def find_domains_for_workspace(
         resolved_from_db = 0
         budget_exhausted = 0
         not_found = 0
+        # Separated from not_found on purpose. "The search ran and nothing
+        # matched" and "the search never happened" are different facts about
+        # different problems, and collapsing them cost a day: a run that lost
+        # every Serper key reported 878 companies as not_found, and the bug
+        # report that followed went after the name scorer.
+        errored = 0
+        no_results = 0
+        consecutive_errors = 0
         cached = 0
         skipped = 0
         queries_spent = 0
@@ -1234,6 +1295,9 @@ def find_domains_for_workspace(
         # Built once: a per-company duplicate-name lookup would be a full
         # table scan each time, O(n^2) across the workspace.
         name_index = domain_discovery.build_company_name_index(conn)
+        # Same one-build-per-run reasoning: a per-company lookup over every
+        # known domain would be a full scan each time.
+        domain_label_index = domain_discovery.build_company_domain_label_index(conn)
 
         if dry_run:
             # Worst case is 2 queries/company (q1 + q2 or q3); report it so the
@@ -1300,6 +1364,7 @@ def find_domains_for_workspace(
                     rep_lead_id=rep_lead_id, force=force,
                     retry_unresolved=retry_unresolved,
                     debug=debug, query_budget=budget, name_index=name_index,
+                    domain_label_index=domain_label_index,
                 )
                 if name_key:
                     name_memo[name_key] = outcome
@@ -1330,12 +1395,14 @@ def find_domains_for_workspace(
                 print(
                     f"    ── {position}/{len(rows)}  {int(elapsed // 60)}m {int(elapsed % 60)}s"
                     f"  ETA {int(remaining // 60)}m  found {found}  from-db {resolved_from_db}"
-                    f"  held {low_confidence}  none {not_found}"
+                    f"  held {low_confidence}  none {not_found}  ERRORS {errored}"
                     f"  credits {queries_spent}",
                     file=sys.stderr, flush=True,
                 )
 
             status = outcome.get("status")
+            if status != "error":
+                consecutive_errors = 0
             if status == "found":
                 found += 1
             elif status == "found_no_email":
@@ -1348,6 +1415,28 @@ def find_domains_for_workspace(
                 cached += 1
             elif status == "skipped":
                 skipped += 1
+            elif status == "error":
+                errored += 1
+                consecutive_errors += 1
+                # Circuit breaker. Every key being dead is not a per-company
+                # problem and it does not heal by trying the next 1,200
+                # companies: on 2026-08-03 the run kept going and wrote 1,023
+                # error observations, each of which then blocked its company
+                # from re-search. Stop at the point the evidence is
+                # unambiguous and report it as the run-level failure it is.
+                if consecutive_errors >= CONSECUTIVE_ERROR_ABORT:
+                    stopped_reason = "provider_errors"
+                    print(
+                        f"\n[outreachmagic] Aborting: {consecutive_errors} consecutive provider "
+                        f"errors — last was {str(outcome.get('error') or '')[:120]}\n"
+                        f"  Check credits: pipeline.py api-keys --check-credits",
+                        file=sys.stderr, flush=True,
+                    )
+                    conn.commit()
+                    break
+                continue
+            elif status == "no_results":
+                no_results += 1
             else:
                 not_found += 1
 
@@ -1359,7 +1448,11 @@ def find_domains_for_workspace(
                     (ws_row["id"], company_id),
                 ).fetchall()
             ]
-            if lead_ids:
+            # An errored search tags nothing. `domain_not_found` is a claim
+            # about the company ("we looked, there is none") and a dead API key
+            # is not evidence for it -- tagging anyway would have written the
+            # lie into the tag namespace too, on top of the observation cache.
+            if lead_ids and status not in ("error", "no_results"):
                 if status == "low_confidence":
                     # Deliberately not domain_found_*: nothing was written to
                     # companies.domain, and the tag is the review queue.
@@ -1409,6 +1502,8 @@ def find_domains_for_workspace(
             "resolved_from_db": resolved_from_db,
             "budget_exhausted": budget_exhausted,
             "not_found": not_found,
+            "errored": errored,
+            "no_results": no_results,
             "cached": cached,
             "skipped": skipped,
             "serper_queries_spent": queries_spent,
@@ -1420,6 +1515,15 @@ def find_domains_for_workspace(
         if interrupted:
             summary["stopped_reason"] = f"interrupted ({interrupted[0]})"
             summary["companies_remaining"] = len(rows) - len(results)
+        elif stopped_reason == "provider_errors":
+            summary["status"] = "error"
+            summary["stopped_reason"] = stopped_reason
+            summary["companies_remaining"] = len(rows) - len(results)
+            summary["error"] = (
+                f"aborted after {CONSECUTIVE_ERROR_ABORT} consecutive provider errors; "
+                "no domains were searched for the remaining companies. "
+                "Check credits: pipeline.py api-keys --check-credits"
+            )
         elif stopped_reason:
             summary["stopped_reason"] = stopped_reason
             summary["companies_remaining"] = budget_exhausted
@@ -4419,6 +4523,10 @@ def apply_email_find_results(
                     domain=item.get("domain"),
                     result_email=item.get("result_email"),
                     result_validity=item.get("result_validity"),
+                    # Carries the signal fingerprint build_import_profile
+                    # stamped, so a later run can tell a search made without a
+                    # LinkedIn URL from one made with it.
+                    metadata=item.get("metadata"),
                 )
                 # Stage D5: a domain that just produced a real email is
                 # strong evidence it's this company's actual mail-sending
@@ -4839,6 +4947,40 @@ def import_profiles(
 
         ws_conn.commit()
         ws_conn.close()
+
+    # Suppression is applied AFTER the rows land, never instead of landing
+    # them. A contact on the suppression list is still a contact you imported
+    # and still worth having on file; it is exports that must not carry it. The
+    # count is reported because "how many of these did I already burn?" is the
+    # first useful thing to know about a freshly bought list -- and a spike in
+    # `newly_suppressed` usually means a vendor resold a segment.
+    if not dry_run and workspace_id:
+        imported_ids = [
+            int(r["lead_id"]) for r in summary.get("results") or []
+            if isinstance(r, dict) and r.get("lead_id")
+        ]
+        if imported_ids:
+            try:
+                import suppression
+
+                sup_conn = get_conn()
+                try:
+                    before = suppression.summarize_for_leads(
+                        sup_conn, workspace_id, imported_ids)["total"]
+                    suppression.reconcile(
+                        sup_conn, workspace_id=workspace_id, lead_ids=imported_ids)
+                    after = suppression.summarize_for_leads(
+                        sup_conn, workspace_id, imported_ids)
+                finally:
+                    sup_conn.close()
+                if after["total"]:
+                    after["already_suppressed"] = before
+                    after["newly_suppressed"] = after["total"] - before
+                    summary["suppressed"] = after
+            except (sqlite3.Error, ImportError):
+                # Never fail an import over suppression bookkeeping; the rows
+                # are already committed and `suppression reconcile` recovers.
+                pass
 
     warnings = build_import_quality_warnings(summary)
     if warnings:

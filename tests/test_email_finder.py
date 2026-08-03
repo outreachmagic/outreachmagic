@@ -71,13 +71,17 @@ class TestBuildImportProfile(unittest.TestCase):
             find_result={"email": "j@acme.com", "validity": "valid"},
             normalize_linkedin_fn=norm.normalize_linkedin,
         )
+        attempt = profile["_provider_attempts"][0]
         self.assertEqual(
-            profile["_provider_attempts"],
-            [{
+            {k: v for k, v in attempt.items() if k != "metadata"},
+            {
                 "provider": "trykitt", "status": "found", "domain": "acme.com",
                 "result_email": "j@acme.com", "result_validity": "valid",
-            }],
+            },
         )
+        # Every attempt records the signal set it was made under, so a later
+        # run can tell "searched with a LinkedIn URL" from "searched without".
+        self.assertEqual(attempt["metadata"]["signals"], ["domain", "name"])
         self.assertEqual(profile["notes"], "trykitt verify: valid")
 
     def test_miss_tags(self):
@@ -89,9 +93,10 @@ class TestBuildImportProfile(unittest.TestCase):
             find_result={"status": "not_found", "provider": "trykitt"},
             normalize_linkedin_fn=norm.normalize_linkedin,
         )
+        attempt = profile["_provider_attempts"][0]
         self.assertEqual(
-            profile["_provider_attempts"],
-            [{"provider": "trykitt", "status": "not_found", "domain": "acme.com"}],
+            {k: v for k, v in attempt.items() if k != "metadata"},
+            {"provider": "trykitt", "status": "not_found", "domain": "acme.com"},
         )
         self.assertNotIn("email", profile)
 
@@ -104,14 +109,36 @@ class TestBuildImportProfile(unittest.TestCase):
             find_result={"email": "j@acme.com", "validity": "ultra_sure", "provider": "icypeas"},
             normalize_linkedin_fn=norm.normalize_linkedin,
         )
+        attempt = profile["_provider_attempts"][0]
         self.assertEqual(
-            profile["_provider_attempts"],
-            [{
+            {k: v for k, v in attempt.items() if k != "metadata"},
+            {
                 "provider": "icypeas", "status": "found", "domain": "acme.com",
                 "result_email": "j@acme.com", "result_validity": "ultra_sure",
-            }],
+            },
         )
         self.assertEqual(profile["notes"], "icypeas certainty: ultra_sure")
+
+
+class TestSignalFingerprint(unittest.TestCase):
+    """A not_found searched without a LinkedIn URL says nothing about a search
+    that has one. The fingerprint is what lets --retry-changed-signal tell the
+    two apart without re-billing everything else."""
+
+    def test_adding_a_signal_changes_the_fingerprint(self):
+        without = norm.signal_fingerprint(name="Jane Doe", domain="acme.com")
+        with_li = norm.signal_fingerprint(
+            name="Jane Doe", domain="acme.com", linkedin="linkedin.com/in/janedoe")
+        self.assertNotEqual(without, with_li)
+
+    def test_same_signals_are_stable_regardless_of_formatting(self):
+        self.assertEqual(
+            norm.signal_fingerprint(name="Jane  Doe", domain="ACME.com"),
+            norm.signal_fingerprint(name="jane doe", domain="@acme.com"),
+        )
+
+    def test_no_signals_is_empty(self):
+        self.assertEqual(norm.signal_fingerprint(), "")
 
 
 class TestNormalizeLinkedin(unittest.TestCase):

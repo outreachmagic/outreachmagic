@@ -126,7 +126,11 @@ class ApiKeyPoolTests(unittest.TestCase):
         text = api_key_pool.format_api_keys_report_text(report)
         self.assertIn("Serper (lead-enrich):", text)
         self.assertIn("Primary", text)
-        self.assertIn("never_used", text)
+        # The machine-readable status is still `never_used`; the rendered line
+        # says what that means, since "never_used" next to a key that has been
+        # called a thousand times is exactly the confusion this wording fixes.
+        self.assertEqual(report["providers"][0]["keys"][0]["status"], "never_used")
+        self.assertIn("configured, not yet used", text)
 
 
 if __name__ == "__main__":

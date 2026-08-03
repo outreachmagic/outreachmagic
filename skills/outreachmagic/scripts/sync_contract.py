@@ -25,6 +25,7 @@ ENTITY_TYPES = (
     "company",
     "sender_account",
     "sender_domain",
+    "suppression",
 )
 
 # The table that *owns* each entity. A DELETE here means the entity itself is
@@ -36,6 +37,7 @@ OWNER_TABLES = {
     "companies": "company",
     "sender_accounts": "sender_account",
     "sender_domains": "sender_domain",
+    "suppression_entries": "suppression",
 }
 
 # table -> (entity_type, entity_id expression). `{row}` is substituted with NEW
@@ -66,6 +68,12 @@ SYNC_MAP = {
     # sender_domains is keyed by the domain itself, not a surrogate id.
     "sender_accounts":               ("sender_account", "{row}.id"),
     "sender_domains":                ("sender_domain", "{row}.domain"),
+    # --- suppression -----------------------------------------------------
+    # The authored rules travel; workspace_lead_suppressions deliberately does
+    # NOT appear here. It is derived state, rebuilt locally from these entries
+    # by suppression.reconcile(), and shipping a materialized index across the
+    # wire would mean two sources of truth for the same fact.
+    "suppression_entries":           ("suppression", "{row}.id"),
 }
 
 
@@ -124,6 +132,13 @@ SYNCED_COLUMNS: dict[str, frozenset[str]] = {
         "email_sent_count", "linkedin_sent_count", "total_replies_count", "last_contacted_at",
     }),
     "workspace_lead_tags": frozenset({"tag"}),
+    # Everything an operator authored. `revoked_at` is on the wire because
+    # revocation is a soft delete: propagating it as an upsert is far more
+    # reliable than propagating a row deletion, and it keeps the audit trail.
+    "suppression_entries": frozenset({
+        "scope", "entry_type", "value_raw", "value_normalized", "reason",
+        "note", "source", "created_at", "created_by", "expires_at", "revoked_at",
+    }),
     "workspace_lead_linkedin_status": frozenset({
         "sender_profile", "is_connected", "is_request_pending",
     }),
@@ -210,6 +225,11 @@ NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
         "latest_sender": "not read by the workspace payload builder; leads.latest_sender (the core-level column) is what travels",
         "created_at": "audit only",
         "updated_at": "audit only",
+    },
+    "suppression_entries": {
+        "id": "the wire key (entity_id), not a payload field",
+        "org_id": "routing; carried by the envelope",
+        "workspace_id": "routing; carried by the envelope",
     },
     "workspace_lead_tags": {
         "id": "local surrogate",

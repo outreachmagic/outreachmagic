@@ -349,3 +349,97 @@ def cleanup_junk_leads(
     finally:
         if own_conn:
             conn.close()
+
+
+def email_hygiene(
+    conn: Optional[sqlite3.Connection] = None,
+    *,
+    workspace_id: Optional[str] = None,
+    dry_run: bool = True,
+) -> dict:
+    """Canonicalize stored `leads.email` values that were written before
+    normalization was enforced, and re-open them for verification.
+
+    Two classes get repaired: addresses whose *string* is malformed (trailing
+    dot, stray case, whitespace) and addresses that cannot be parsed at all.
+    The first are rewritten; the second are reported, never guessed at.
+
+    `email_verification_status` is cleared on any address this changes. A
+    verdict reached about a different string is not a verdict about this one --
+    the seven trailing-dot addresses were all marked `invalid` and five were
+    live, so keeping the old status would preserve exactly the wrong answer.
+    """
+    from normalize import canonicalize_email
+
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    try:
+        params: list = []
+        scope = ""
+        if workspace_id:
+            scope = (" AND EXISTS (SELECT 1 FROM workspace_leads wl"
+                     " WHERE wl.lead_id = l.id AND wl.workspace_id = ?)")
+            params.append(workspace_id)
+        rows = conn.execute(
+            f"""SELECT l.id, l.email, l.email_verification_status
+                  FROM leads l
+                 WHERE l.email IS NOT NULL AND TRIM(l.email) != ''{scope}""",
+            params,
+        ).fetchall()
+
+        repairs: dict[str, int] = {}
+        changes: list[tuple[int, str, str]] = []
+        unparseable: list[dict] = []
+        collisions: list[dict] = []
+        seen: dict[str, int] = {}
+        for row in rows:
+            address, applied = canonicalize_email(row["email"])
+            if not address:
+                unparseable.append({"lead_id": row["id"], "email": row["email"]})
+                continue
+            if address == row["email"]:
+                seen.setdefault(address, row["id"])
+                continue
+            for name in applied:
+                repairs[name] = repairs.get(name, 0) + 1
+            # Canonicalizing can collide two rows onto one address. That is a
+            # merge decision, not a hygiene one, so it is reported and skipped.
+            owner = seen.get(address)
+            if owner is not None and owner != row["id"]:
+                collisions.append({"lead_id": row["id"], "email": row["email"],
+                                   "canonical": address, "already_on_lead_id": owner})
+                continue
+            seen[address] = row["id"]
+            changes.append((row["id"], row["email"], address))
+
+        result = {
+            "dry_run": dry_run,
+            "scanned": len(rows),
+            "would_repair" if dry_run else "repaired": len(changes),
+            "repairs": repairs,
+            "unparseable": len(unparseable),
+            "unparseable_examples": unparseable[:10],
+            "collisions": len(collisions),
+            "collision_examples": collisions[:10],
+            "examples": [
+                {"lead_id": lid, "from": old, "to": new} for lid, old, new in changes[:10]
+            ],
+        }
+        if dry_run or not changes:
+            return result
+
+        for lead_id, _old, new in changes:
+            conn.execute(
+                """UPDATE leads
+                      SET email = ?, email_domain = ?,
+                          email_verification_status = NULL, email_verified_at = NULL
+                    WHERE id = ?""",
+                (new, new.split("@", 1)[1], lead_id),
+            )
+        conn.commit()
+        result["verification_cleared"] = len(changes)
+        return result
+    finally:
+        if own_conn:
+            conn.close()

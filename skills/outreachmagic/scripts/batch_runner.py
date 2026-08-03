@@ -129,6 +129,11 @@ class BatchOptions:
     # results and every one is risky/catch-all, further leads there are paying
     # real credits for addresses nobody can trust.
     skip_catchall_after: int = 0
+    # Re-attempt leads whose prior `not_found` was searched under a different
+    # signal set (typically: before a LinkedIn URL existed for them). Unlike
+    # --skip-om this keeps the has-email check, so leads enriched since the
+    # last run are not re-billed.
+    retry_changed_signal: bool = False
 
 
 def build_import_profile(
@@ -185,6 +190,21 @@ def build_import_profile(
         "company_domain": domain,
     }
     if provider_attempts:
+        # Stamp every attempt with the signal set it was made under. A
+        # `not_found` searched without a LinkedIn URL is not evidence about a
+        # search that has one, and `--retry-changed-signal` reads this back to
+        # tell the two apart. Stored in metadata (already a carried column)
+        # rather than a new schema column.
+        from normalize import signal_fingerprint
+
+        for entry in provider_attempts:
+            fingerprint = signal_fingerprint(
+                name=full_name, domain=entry.get("domain") or domain, linkedin=linkedin)
+            if fingerprint:
+                entry.setdefault("metadata", {})["signal_fingerprint"] = fingerprint
+                entry["metadata"]["signals"] = sorted(
+                    k for k, v in (("name", full_name), ("domain", entry.get("domain") or domain),
+                                   ("linkedin", linkedin)) if v)
         profile["_provider_attempts"] = provider_attempts
     if lead_id is not None:
         profile["id"] = lead_id
@@ -555,6 +575,7 @@ def skip_resolved_before_api(
     workspace: str,
     skill_dir: Path,
     provider_names: list[str],
+    retry_changed_signal: bool = False,
 ) -> tuple[list[tuple[int, dict[str, Any]]], dict[int, dict[str, Any]], list[tuple[int, dict[str, Any], str]]]:
     """Fresh OM lookup immediately before API calls; return (api_chunk, lookup, skipped)."""
     if not chunk:
@@ -569,7 +590,10 @@ def skip_resolved_before_api(
     api_chunk: list[tuple[int, dict[str, Any]]] = []
     skipped: list[tuple[int, dict[str, Any], str]] = []
     for idx, row in chunk:
-        reason = skip_reason_from_lookup(lookup_by_index.get(idx), provider_names)
+        reason = skip_reason_from_lookup(
+            lookup_by_index.get(idx), provider_names,
+            current_fingerprint=row_fingerprint(row),
+            retry_changed_signal=retry_changed_signal)
         if reason:
             skipped.append((idx, row, reason))
         else:
@@ -597,10 +621,30 @@ def count_rows_missing_om_match(people: list[dict[str, Any]]) -> int:
     return missing
 
 
+def row_fingerprint(row: dict[str, Any]) -> str:
+    """The signal fingerprint for a batch input row, as it stands right now."""
+    from normalize import signal_fingerprint
+
+    name, domain, _company, linkedin, _lead_id = row_fields(row)
+    return signal_fingerprint(name=name, domain=domain, linkedin=linkedin)
+
+
 def skip_reason_from_lookup(
     lookup: Optional[dict[str, Any]],
     provider_names: list[str],
+    *,
+    current_fingerprint: str = "",
+    retry_changed_signal: bool = False,
 ) -> Optional[str]:
+    """Why this lead should be skipped, or None to search it.
+
+    `retry_changed_signal` makes a prior `not_found` retry-eligible when the
+    signal set has since changed -- typically because a LinkedIn enrichment
+    sweep landed a URL the earlier search did not have. That is a materially
+    different query, and treating it as already-done is what forced the choice
+    between `--skip-om` (which also disables the has-email check, re-billing
+    leads that were since enriched) and simply missing the emails.
+    """
     if not lookup or lookup.get("status") != "found":
         return None
     email = (lookup.get("email") or "").strip()
@@ -628,6 +672,18 @@ def skip_reason_from_lookup(
             # once a real domain becomes available (e.g. from a later Serper
             # domain_lookup) it must be retried, not skipped forever. See
             # debug-email-finding-domain-bug.md.
+            #
+            # Generalized: the domain rule above is one instance of "an attempt
+            # made without signal X does not settle a search that has X".
+            # With --retry-changed-signal, ANY change to the signal set
+            # re-opens the lead. Attempts predating the fingerprint (no
+            # recorded value) keep the old behaviour and still block, so
+            # enabling the flag does not re-bill the entire back catalogue.
+            if retry_changed_signal and current_fingerprint:
+                prior_fingerprint = str(
+                    (prior.get("metadata") or {}).get("signal_fingerprint") or "")
+                if prior_fingerprint and prior_fingerprint != current_fingerprint:
+                    continue
             return f"{p}_attempted"
     return None
 
@@ -1001,7 +1057,10 @@ def _run_batch_inner(
             }
             continue
         seen_this_batch.add(dup_key)
-        reason = skip_reason_from_lookup(lookup_by_index.get(i), provider_names)
+        reason = skip_reason_from_lookup(
+            lookup_by_index.get(i), provider_names,
+            current_fingerprint=row_fingerprint(row),
+            retry_changed_signal=opts.retry_changed_signal)
         if reason:
             if reason == "has_email":
                 skipped_email += 1
@@ -1017,7 +1076,10 @@ def _run_batch_inner(
                 skipped_names.append(name)
             continue
         if writer and lead_resume_key(row, index=i) in writer.done_keys:
-            resume_reason = skip_reason_from_lookup(lookup_by_index.get(i), provider_names)
+            resume_reason = skip_reason_from_lookup(
+                lookup_by_index.get(i), provider_names,
+                current_fingerprint=row_fingerprint(row),
+                retry_changed_signal=opts.retry_changed_signal)
             if resume_reason == "has_email":
                 skipped_email += 1
                 pre_skipped[i] = {
@@ -1343,6 +1405,7 @@ def _run_batch_inner(
                 workspace=opts.workspace,
                 skill_dir=skill_dir,
                 provider_names=provider_names,
+                retry_changed_signal=opts.retry_changed_signal,
             )
             for idx, _row, reason in fresh_skips:
                 results[idx] = {

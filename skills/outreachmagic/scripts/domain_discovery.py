@@ -36,6 +36,7 @@ from urllib.parse import urlparse
 
 import enrich
 from constants import SHARED_EMAIL_DOMAINS, is_non_company_name
+from normalize import validate_domain
 from pipeline_utils import company_registrable_domain, normalize_company_domain, normalize_company_name
 from provider_observations import KIND_DOMAIN_LOOKUP, ORIGIN_ATTEMPT, record_observation
 from workspace_routing import DEFAULT_ORG_ID
@@ -163,6 +164,61 @@ _ENTITY_SUFFIX_RE = re.compile(
 )
 
 
+# Words that make a name a business regardless of how person-like it reads.
+# "Jensen Dental Group" is a company; "Rick Jensen" is not.
+_BUSINESS_WORDS = frozenset({
+    "group", "clinic", "health", "healthcare", "medical", "dental", "law",
+    "firm", "associates", "partners", "services", "solutions", "systems",
+    "care", "center", "centre", "hospital", "hospice", "agency", "studio",
+    "consulting", "management", "properties", "realty", "insurance", "capital",
+    "holdings", "ventures", "industries", "labs", "technologies", "software",
+    "motors", "auto", "automotive", "dealership", "construction", "supply",
+    "company", "enterprises", "institute", "school", "academy", "university",
+    "college", "foundation", "society", "association", "council", "bank",
+    "financial", "advisors", "media", "marketing", "design", "engineering",
+})
+
+_PERSON_SUFFIXES = frozenset({
+    "jr", "sr", "ii", "iii", "iv", "md", "dds", "dmd", "phd", "esq", "cpa",
+    "pmp", "rn", "np", "pa", "do",
+})
+
+
+def looks_like_person_name(name: str) -> bool:
+    """True when a *company* name is really a person's name.
+
+    Group-level contact sourcing sometimes files a person under their own name
+    as the company ("Rick Jensen", "Ann Perry"). Those rows then go through
+    domain discovery, which correctly scores `drrickjensen.com` as an excellent
+    match -- because by string similarity it is one. The scoring is not wrong;
+    it is being asked the wrong question. The result was law-firm and personal
+    addresses landing on dealership contacts and needing a manual audit.
+
+    Deliberately conservative: two or three alphabetic tokens, no legal suffix,
+    no business word, no digits. A false positive here only costs a domain
+    going to human review, but a false negative writes a junk domain that
+    nothing downstream ever corrects.
+    """
+    raw = (name or "").strip()
+    if not raw or any(ch.isdigit() for ch in raw):
+        return False
+    if _ENTITY_SUFFIX_RE.search(raw):
+        return False
+    tokens = [t for t in re.sub(r"[^a-z']+", " ", raw.lower()).split() if t]
+    # Drop a trailing credential ("Al-Tarik Samuel, PMP") before counting.
+    while tokens and tokens[-1] in _PERSON_SUFFIXES:
+        tokens.pop()
+    if not 2 <= len(tokens) <= 3:
+        return False
+    if any(t in _BUSINESS_WORDS for t in tokens):
+        return False
+    # A middle initial is a strong person signal; a single-letter token
+    # anywhere else usually is not a name at all.
+    if any(len(t) == 1 for t in (tokens[:1] + tokens[-1:])):
+        return False
+    return True
+
+
 def strip_entity_suffix(name: str) -> str:
     """Strip a trailing legal-entity suffix so a quoted-vs-unquoted mismatch
     never costs a hit. Loops because "Company, Inc., LLC" has two."""
@@ -248,6 +304,24 @@ def _is_word_subset(label: str, name_tokens: list[str]) -> bool:
     return pos == len(label) and used >= 2
 
 
+_APOSTROPHE_RE = re.compile(r"['’ʼ]")
+
+
+def _name_tokens(name: str) -> list[str]:
+    """Lowercase word tokens, with possessive apostrophes CLOSED UP rather than
+    treated as separators.
+
+    "Children's Healthcare of Atlanta" split on every non-alphanumeric gives
+    ["children", "s", "healthcare", "of", "atlanta"], whose initials are
+    "cshoa" -- so choa.org scored 0 and a 13-lead health system was recorded as
+    having no findable domain. Closing the apostrophe gives "childrens" and the
+    acronym the domain actually uses. Same fix carries St. Joseph's/Candler ->
+    sjc, which sjchs.org then matches as an acronym prefix.
+    """
+    collapsed = _APOSTROPHE_RE.sub("", (name or "").lower())
+    return [t for t in re.sub(r"[^a-z0-9]+", " ", collapsed).split() if t]
+
+
 def _trigrams(text: str) -> set[str]:
     if len(text) < 3:
         return {text} if text else set()
@@ -280,7 +354,7 @@ def score_domain_match(company_name: str, domain: str) -> tuple[int, str]:
     if not label:
         return (0, "no_domain_label")
 
-    raw_tokens = [t for t in re.sub(r"[^a-z0-9]+", " ", (company_name or "").lower()).split() if t]
+    raw_tokens = _name_tokens(company_name)
     collapsed_raw = "".join(raw_tokens)
     name_norm = normalize_company_name(company_name)
     collapsed_norm = re.sub(r"[^a-z0-9]", "", name_norm)
@@ -313,9 +387,7 @@ def score_domain_match(company_name: str, domain: str) -> tuple[int, str]:
     # Both conventions occur and neither dominates, so both are tried:
     # "Village Park Senior Living, LLC" -> vpsl.com drops the entity suffix,
     # "Refrigerated Warehousing Inc" -> rwizero.com keeps it (RWI).
-    stripped_tokens = [
-        t for t in re.sub(r"[^a-z0-9]+", " ", strip_entity_suffix(company_name).lower()).split() if t
-    ]
+    stripped_tokens = _name_tokens(strip_entity_suffix(company_name))
     acronyms = {
         "".join(t[0] for t in raw_tokens),
         "".join(t[0] for t in stripped_tokens),
@@ -545,7 +617,17 @@ def _recent_domain_lookup(
 ) -> Optional[dict[str, Any]]:
     """Org-wide cache: any workspace's prior search for this company_id
     counts, so the same company never gets re-searched just because a second
-    campaign/workspace also wants its domain."""
+    campaign/workspace also wants its domain.
+
+    Error observations are NOT a cache hit. An error is the absence of an
+    answer -- "all 3 key(s) for SERPER_API_KEY failed" says nothing about the
+    company -- but without this filter it satisfied the lookup and locked the
+    company out of re-search for the whole freshness window. One credit-
+    exhausted run on 2026-08-03 left 1,023 domainless companies unreachable
+    that way, and the batch summary reported them as `not_found`, which sent
+    the investigation after the name scorer instead of the dead API key.
+    A genuine `not_found` still counts: the search ran and answered.
+    """
     if force:
         return None
     window = window or f"-{FRESHNESS_DAYS} days"
@@ -554,6 +636,7 @@ def _recent_domain_lookup(
             FROM lead_provider_observations o
             JOIN leads l ON l.id = o.lead_id
             WHERE l.company_id = ? AND o.kind = ? AND o.provider = 'serper'
+              AND o.status != 'error'
               AND o.observed_at >= datetime('now', ?)
             ORDER BY o.observed_at DESC LIMIT 1""",
         (company_id, KIND_DOMAIN_LOOKUP, window),
@@ -761,12 +844,58 @@ def build_company_name_index(conn: sqlite3.Connection) -> dict[str, tuple[int, s
     return index
 
 
+def build_company_domain_label_index(
+    conn: sqlite3.Connection,
+) -> dict[str, tuple[int, str]]:
+    """registrable domain label -> (company_id, domain), for domains already known.
+
+    Companion to build_company_name_index, keyed the other way round. The
+    duplicate-name index only finds siblings whose names collapse identically
+    ("Acme Widgets, Inc." vs "Acme Widgets"); a brand that appears under a
+    longer descriptive name is invisible to it. "Amedisys Home Health &
+    Hospice" and "Amedisys" do not share a name key, so a sibling row already
+    holding amedisys.com was never consulted and the company went to a paid
+    search anyway -- three of the fourteen companies in the 2026-08-03 report
+    were exactly this.
+    """
+    index: dict[str, tuple[int, str, str]] = {}
+    for row in conn.execute(
+        "SELECT id, name, domain FROM companies WHERE domain IS NOT NULL AND TRIM(domain) != ''",
+    ).fetchall():
+        registrable = company_registrable_domain((row["domain"] or "").lower()) or row["domain"]
+        label = re.sub(r"[^a-z0-9]", "", str(registrable).split(".", 1)[0].lower())
+        if len(label) >= 5 and label not in index:
+            # The sibling's own name travels with it: matching on the domain
+            # label alone is not enough to prove the two rows are the same
+            # brand (see the guard in domain_from_local_evidence).
+            index[label] = (row["id"], row["domain"], row["name"] or "")
+    return index
+
+
+def _brand_prefix_candidates(company_name: str) -> list[str]:
+    """Leading-token concatenations of a company name, longest first.
+
+    "Amedisys Home Health Hospice" -> amedisyshomehealth, amedisyshome,
+    amedisys. Longest first so a more specific sibling wins over a shorter,
+    more collidable one. Bounded by token count, so this is a handful of dict
+    lookups rather than a scan of every known domain.
+    """
+    tokens = _name_tokens(strip_entity_suffix(company_name))
+    out: list[str] = []
+    for count in range(len(tokens), 0, -1):
+        candidate = "".join(tokens[:count])
+        if len(candidate) >= 5:
+            out.append(candidate)
+    return out
+
+
 def domain_from_local_evidence(
     conn: sqlite3.Connection,
     company_id: int,
     company_name: str,
     *,
     name_index: Optional[dict[str, tuple[int, str]]] = None,
+    domain_label_index: Optional[dict[str, tuple[int, str]]] = None,
 ) -> Optional[dict[str, Any]]:
     """A domain the DB already knows, found without spending a Serper credit.
 
@@ -827,6 +956,66 @@ def domain_from_local_evidence(
                     "evidence": f"duplicate_company({hit[0]},{reason})",
                     "duplicate_of_company_id": hit[0],
                 }
+
+    # 3. A SIBLING BRAND row already resolved this brand under a shorter name.
+    #
+    #    Step 2 only fires when two names collapse identically, so a brand
+    #    filed once as "Amedisys" and again as "Amedisys Home Health & Hospice"
+    #    was searched and paid for twice. Here the known domain's label is
+    #    matched against the leading tokens of this company's name instead.
+    #
+    #    Guarded the same way step 2 is, and for the same reason: the match is
+    #    only accepted when score_domain_match independently agrees at a STRICT
+    #    tier. A shared leading word is not on its own evidence of a shared
+    #    company -- "Sterling Group" and "Sterling Partners" are different
+    #    businesses -- so the name-side check has to hold too.
+    if looks_like_person_name(company_name):
+        # A person-shaped company name matching a personal domain is the exact
+        # failure mode find-domains already refuses to auto-attach for. Do not
+        # let the free path do what the paid path is forbidden to.
+        return None
+    if domain_label_index is None:
+        domain_label_index = build_company_domain_label_index(conn)
+    collapsed_self = duplicate_name_key(company_name)
+    for candidate in _brand_prefix_candidates(company_name):
+        hit = domain_label_index.get(candidate)
+        if hit is None or hit[0] == company_id:
+            continue
+        sibling_id, sibling_domain, sibling_name = hit
+        # One name must be a leading prefix of the other: the two rows are the
+        # same brand at different levels of specificity ("DaVita" /
+        # "DaVita Kidney Care", "Amedisys" / "Amedisys Home Health & Hospice").
+        # Direction does not matter -- either can be the row that happens to
+        # hold the domain.
+        #
+        # Matching on the shared domain label alone is NOT sufficient:
+        # "Sterling Group" and "Sterling Partners" would both find a sibling
+        # holding sterling.com, and score_domain_match would call it
+        # domain_is_name_prefix for both -- because it is, for the wrong
+        # company. Neither name is a prefix of the other, so this rejects it.
+        #
+        # Exception: some company rows are named after their own domain
+        # ("enhabit.com"). There is no independent name evidence to check in
+        # that case, and demanding it would reject the clearest matches there
+        # are -- the row's name IS the domain. The label match plus the STRICT
+        # score below is the whole of the evidence for those.
+        collapsed_sibling = duplicate_name_key(sibling_name)
+        sibling_is_domain_named = bool(
+            sibling_name and validate_domain(sibling_name.strip().lower()))
+        if not sibling_is_domain_named and (
+            not collapsed_sibling or not (
+                collapsed_self.startswith(collapsed_sibling)
+                or collapsed_sibling.startswith(collapsed_self)
+            )
+        ):
+            continue
+        _score, reason = score_domain_match(company_name, sibling_domain)
+        if reason in STRICT_MATCH_REASONS:
+            return {
+                "domain": sibling_domain,
+                "evidence": f"sibling_brand({sibling_id},{reason})",
+                "duplicate_of_company_id": sibling_id,
+            }
     return None
 
 
@@ -1086,6 +1275,7 @@ def run_company_domain_discovery(
     debug: bool = False,
     query_budget: Optional[int] = None,
     name_index: Optional[dict[str, tuple[int, str]]] = None,
+    domain_label_index: Optional[dict[str, tuple[int, str]]] = None,
 ) -> dict[str, Any]:
     """Run the targeted waterfall for one company. Returns a status summary and
     never raises: a Serper/network failure is recorded as an 'error'
@@ -1104,7 +1294,9 @@ def run_company_domain_discovery(
     # domain (identity row, the company's own leads' email addresses, or a
     # duplicate company row), and a search would just re-derive it.
     if not force:
-        local = domain_from_local_evidence(conn, company_id, company_name, name_index=name_index)
+        local = domain_from_local_evidence(
+            conn, company_id, company_name,
+            name_index=name_index, domain_label_index=domain_label_index)
         if local is not None:
             # Two rows sharing a name AND a domain are one company; surface
             # the merge for review even though the domain itself is safe to
@@ -1231,7 +1423,8 @@ def run_company_domain_discovery(
             all_emails.setdefault(e["email"], e)
 
     def _finish(
-        status: str, winner: Optional[dict[str, Any]], confidence: float, *, role: Optional[str] = None,
+        status: str, winner: Optional[dict[str, Any]], confidence: float, *,
+        role: Optional[str] = None, error: Optional[str] = None,
     ) -> dict[str, Any]:
         """Single exit point. The domain is attached FIRST, then addresses are
         classified against whatever that attach actually established -- an
@@ -1253,9 +1446,23 @@ def run_company_domain_discovery(
             "confidence": confidence,
             "queries_run": queries_run,
         }
+        if error:
+            out["error"] = error
         attached_domain: Optional[str] = None
         if winner is not None:
-            if confidence < MIN_ATTACH_CONFIDENCE:
+            # A company row that is really a person never auto-attaches. The
+            # scorer will happily match "Rick Jensen" to drrickjensen.com --
+            # correctly, as a string -- and the email finder then guesses
+            # addresses at a personal domain for a dealership contact. Route it
+            # to review instead; a human can tell in a second what no amount of
+            # scoring can.
+            if looks_like_person_name(company_name):
+                out["status"] = "low_confidence"
+                out["attach"] = {"attached": False, "reason": "person_shaped_company_name"}
+                out["review_reason"] = (
+                    f"{company_name!r} looks like a person, not a company; "
+                    "a domain matching it is probably their personal site")
+            elif confidence < MIN_ATTACH_CONFIDENCE:
                 # Recorded and reviewable, but nothing is written to
                 # companies.domain -- nothing downstream ever corrects a wrong one.
                 out["status"] = "low_confidence"
@@ -1310,8 +1517,18 @@ def run_company_domain_discovery(
     # company is not findable this way and a second generic query is a wasted
     # credit -- at thousands of companies that is the difference between one
     # and two credits on every dead end.
-    if q1["error"] or q1["organic_count"] == 0 or _budget_left() < 1:
-        return _finish("not_found", None, 0.0)
+    #
+    # These three exits used to collapse into one "not_found", which is the
+    # single most expensive piece of dishonesty in this module: a batch that
+    # died on exhausted Serper credits reported 878 companies as "no domain
+    # found", and the resulting bug report went after the name scorer for a
+    # day. They mean completely different things and now say so.
+    if q1["error"]:
+        return _finish("error", None, 0.0, error=q1["error"])
+    if q1["organic_count"] == 0:
+        return _finish("no_results", None, 0.0)
+    if _budget_left() < 1:
+        return _finish("budget_exhausted", None, 0.0)
 
     q3 = _run_query(build_discovery_query(company_name, "alt_domain"), 3)
     _collect(q3)
@@ -1409,9 +1626,13 @@ def find_claimable_public_emails(
     *,
     tags: Optional[list] = None,
     include_free_providers: bool = False,
+    report: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     """Leads with no email whose company has a public address matching their
     own name. Read-only.
+
+    Pass a dict as `report` to have the drop-by-drop funnel written into it.
+    Kept out of the return value so every existing caller is unaffected.
 
     Corporate-domain addresses only by default: a free-provider match
     (rebekah.<company>@gmail.com) is plausible but unverifiable, and a wrong
@@ -1447,12 +1668,36 @@ def find_claimable_public_emails(
         params,
     ).fetchall()
 
+    # Every stage that drops a pair is counted. A bare "0 claimable" cannot
+    # distinguish "no public emails have ever been scraped for these companies"
+    # from "37 were scraped and every one is info@" -- opposite situations with
+    # opposite next actions, and the command gave no way to tell them apart.
+    funnel = {
+        "leads_without_email_scanned": 0,
+        "pairs_considered": len(rows),
+        "companies_with_public_email": len({r["company_id"] for r in rows}),
+        "rejected_free_provider": 0,
+        "rejected_no_name_match": 0,
+        "rejected_ambiguous": 0,
+        "claimable": 0,
+    }
+    reject_samples: dict[str, list[dict]] = {}
+
+    def _reject(reason: str, row) -> None:
+        funnel[reason] += 1
+        samples = reject_samples.setdefault(reason, [])
+        if len(samples) < 5:
+            samples.append({"lead_name": row["lead_name"], "email": row["email"],
+                            "company_name": row["company_name"]})
+
     hits: list[dict[str, Any]] = []
     for row in rows:
         if row["role"] != "corporate" and not include_free_providers:
+            _reject("rejected_free_provider", row)
             continue
         pattern = match_public_email_to_lead(row["lead_name"], row["email"])
         if not pattern:
+            _reject("rejected_no_name_match", row)
             continue
         hits.append({
             "lead_id": row["lead_id"],
@@ -1471,4 +1716,10 @@ def find_claimable_public_emails(
     from collections import Counter
     by_email = Counter(h["email"] for h in hits)
     by_lead = Counter(h["lead_id"] for h in hits)
-    return [h for h in hits if by_email[h["email"]] == 1 and by_lead[h["lead_id"]] == 1]
+    claimable = [h for h in hits if by_email[h["email"]] == 1 and by_lead[h["lead_id"]] == 1]
+    funnel["rejected_ambiguous"] = len(hits) - len(claimable)
+    funnel["claimable"] = len(claimable)
+    if report is not None:
+        report["funnel"] = funnel
+        report["rejected_examples"] = reject_samples
+    return claimable

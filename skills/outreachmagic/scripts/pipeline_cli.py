@@ -23,6 +23,13 @@ import query_cli
 import review_cloud
 from constants import COMPANY_DOMAIN_PURPOSES, PHONE_LABELS, PHONE_SOURCES
 import routing_cloud
+
+
+def suppression_module():
+    """Imported lazily so building the parser doesn't drag in the DB layer."""
+    import suppression
+
+    return suppression
 import workspace_archive
 
 
@@ -751,6 +758,15 @@ def main():
                           help="Filter by email verification (preset mode)")
     export_p.add_argument("--record-type", dest="record_type",
                           help="contact (default), company_placeholder, or all")
+    # Repeatable rather than comma-joined: a tag may itself contain a comma.
+    export_p.add_argument("--tags-any", action="append", dest="tags_any", metavar="TAG",
+                          help="Leads carrying ANY of these tags (repeatable)")
+    export_p.add_argument("--tags-all", action="append", dest="tags_all", metavar="TAG",
+                          help="Leads carrying EVERY one of these tags (repeatable)")
+    export_p.add_argument("--exclude-tag", action="append", dest="tags_none", metavar="TAG",
+                          help="Exclude leads carrying any of these tags (repeatable)")
+    export_p.add_argument("--suppressed", choices=("exclude", "only", "all"),
+                          help="Suppressed contacts: exclude (default), only, or all")
 
     efc_p = sub.add_parser(
         "email-finding-candidates",
@@ -777,6 +793,14 @@ def main():
              "company domain, but a linkedin_url -- shaped for TryKitt's optional "
              "linkedinStandardProfileURL signal. Run separately from the default "
              "domain-based mode, not combined with it.",
+    )
+    efc_p.add_argument(
+        "--has-linkedin",
+        action="store_true",
+        help="Only candidates that carry a LinkedIn URL, WITH their domain. Unlike "
+             "--linkedin-only (which is the no-domain population), this selects the "
+             "cohort a LinkedIn enrichment sweep just improved, so they can be "
+             "re-searched with the stronger signal set.",
     )
     efc_p.add_argument(
         "--lead-ids",
@@ -820,6 +844,54 @@ def main():
     cpe_p.add_argument("--tag", nargs="+", dest="tags", help="Limit to leads carrying any of these workspace tags")
     cpe_p.add_argument("--include-free-providers", action="store_true", help="Also claim gmail/yahoo matches (plausible but unverifiable)")
     cpe_p.add_argument("--dry-run", action="store_true", help="Show what would be claimed without writing")
+
+    sup_p = sub.add_parser(
+        "suppression",
+        help="Suppression lists: contacts excluded from exports for a workspace",
+    )
+    sup_sub = sup_p.add_subparsers(dest="suppression_command", required=True)
+
+    sup_add = sup_sub.add_parser("add", help="Add a suppression rule")
+    sup_add.add_argument("--workspace", help="Workspace to suppress in (omit for org-wide)")
+    sup_add.add_argument("--org-wide", action="store_true", help="Apply across every workspace")
+    sup_add.add_argument("--type", dest="entry_type",
+                         help=f"One of: {', '.join(suppression_module().ENTRY_TYPES)}")
+    sup_add.add_argument("--value", help="Email, domain, LinkedIn URL, or id")
+    sup_add.add_argument("--reason", default="manual",
+                         help=f"One of: {', '.join(suppression_module().REASONS)}")
+    sup_add.add_argument("--note")
+    sup_add.add_argument("--file", help="CSV/JSON of {type,value,reason,note} rows for bulk add")
+
+    sup_list = sup_sub.add_parser("list", help="Show suppression rules and their match counts")
+    sup_list.add_argument("--workspace")
+    sup_list.add_argument("--type", dest="entry_type")
+    sup_list.add_argument("--reason")
+    sup_list.add_argument("--include-revoked", action="store_true")
+    sup_list.add_argument("--json", action="store_true")
+
+    sup_rm = sup_sub.add_parser("remove", help="Revoke a rule (soft delete, keeps the audit trail)")
+    sup_rm.add_argument("--workspace")
+    sup_rm.add_argument("--org-wide", action="store_true")
+    sup_rm.add_argument("--type", dest="entry_type", required=True)
+    sup_rm.add_argument("--value", required=True)
+
+    sup_chk = sup_sub.add_parser(
+        "check", help="Why is this contact suppressed? Answers for any identifier")
+    sup_chk.add_argument("--workspace")
+    sup_chk.add_argument("--value", required=True)
+
+    sup_st = sup_sub.add_parser("stats", help="Suppressed contact counts by reason and type")
+    sup_st.add_argument("--workspace", required=True)
+
+    sup_rec = sup_sub.add_parser("reconcile", help="Rebuild materialized suppression matches")
+    sup_rec.add_argument("--workspace")
+
+    eh_p = sub.add_parser(
+        "email-hygiene",
+        help="Canonicalize malformed stored emails (trailing dots, case, whitespace) and re-open them for verification",
+    )
+    eh_p.add_argument("--workspace", help="Limit to leads in this workspace (default: org-wide)")
+    eh_p.add_argument("--apply", action="store_true", help="Write the repairs (default is a dry run)")
 
     fd_p = sub.add_parser(
         "find-domains",
@@ -992,6 +1064,11 @@ def main():
         "--push",
         action="store_true",
         help="Report runtime status to dashboard (no secret values)",
+    )
+    api_keys_p.add_argument(
+        "--check-credits",
+        action="store_true",
+        help="Query each provider for its live remaining balance",
     )
 
     pull_p = sub.add_parser("pull", help="Pull events from relay to local database")
@@ -2352,7 +2429,11 @@ def main():
         return
 
     if args.command == "api-keys":
-        _pipeline.api_keys_cli(as_json=getattr(args, "json", False), push=getattr(args, "push", False))
+        _pipeline.api_keys_cli(
+            as_json=getattr(args, "json", False),
+            push=getattr(args, "push", False),
+            check_credits=getattr(args, "check_credits", False),
+        )
         return
 
     if args.command not in _pipeline._DB_OPTIONAL_COMMANDS and not _pipeline.database_has_schema():
@@ -3032,15 +3113,26 @@ def main():
             else:
                 candidates = pipeline_lead_review.email_finder_candidates_from_leads(pool)
                 skipped_key = "skipped_no_domain"
-            print(json.dumps({
+            out = {
                 "status": "ok",
                 "workspace": args.workspace,
                 "scanned": len(scope_leads),
                 "skipped_has_email": skipped_has_email,
                 skipped_key: len(pool) - len(candidates),
-                "count": len(candidates),
-                "candidates": candidates,
-            }, indent=2))
+            }
+            # Applied to the built rows, not the scope query: the row builders
+            # are what decide whether a lead's LinkedIn URL survives into the
+            # batch payload, so filtering here guarantees every returned row
+            # actually carries the signal the flag promises.
+            if getattr(args, "has_linkedin", False):
+                before = len(candidates)
+                candidates = [
+                    c for c in candidates if (c.get("linkedin_url") or "").strip()
+                ]
+                out["skipped_no_linkedin"] = before - len(candidates)
+            out["count"] = len(candidates)
+            out["candidates"] = candidates
+            print(json.dumps(out, indent=2))
         except ValueError as e:
             print(json.dumps({"error": str(e)}))
             sys.exit(1)
@@ -3078,6 +3170,10 @@ def main():
                     since=getattr(args, "since", None),
                     verify=getattr(args, "verify", None),
                     record_type=getattr(args, "record_type", None),
+                    tags_any=getattr(args, "tags_any", None),
+                    tags_all=getattr(args, "tags_all", None),
+                    tags_none=getattr(args, "tags_none", None),
+                    suppressed=getattr(args, "suppressed", None),
                 )
             except lead_export.LeadExportError as exc:
                 print(json.dumps({"error": str(exc)}))
@@ -3535,6 +3631,98 @@ def main():
             include_free_providers=getattr(args, "include_free_providers", False),
             dry_run=getattr(args, "dry_run", False),
         ), indent=2))
+    elif args.command == "suppression":
+        import suppression
+
+        conn = _pipeline.get_conn()
+        try:
+            ws_id = None
+            if getattr(args, "workspace", None) and not getattr(args, "org_wide", False):
+                ws_row = _pipeline.resolve_workspace_identity(conn, args.workspace)
+                if not ws_row:
+                    print(json.dumps({"error": f"workspace not found: {args.workspace}"}))
+                    sys.exit(1)
+                ws_id = ws_row["id"]
+
+            cmd = args.suppression_command
+            if cmd == "add":
+                if getattr(args, "file", None):
+                    path = _pipeline.resolve_project_path(args.file, kind="input")
+                    text = path.read_text(encoding="utf-8")
+                    if path.suffix.lower() == ".json":
+                        rows = json.loads(text)
+                    else:
+                        import csv as _csv
+                        import io
+
+                        rows = list(_csv.DictReader(io.StringIO(text)))
+                    result = suppression.add_entries_bulk(
+                        conn, rows, workspace_id=ws_id,
+                        default_reason=args.reason, source="import",
+                    )
+                else:
+                    if not args.entry_type or args.value is None:
+                        print(json.dumps({"error": "--type and --value are required (or use --file)"}))
+                        sys.exit(1)
+                    result = suppression.add_entry(
+                        conn, entry_type=args.entry_type, value=args.value,
+                        workspace_id=ws_id, reason=args.reason,
+                        note=getattr(args, "note", None), source="agent",
+                    )
+                print(json.dumps(result, indent=2))
+            elif cmd == "list":
+                entries = suppression.list_entries(
+                    conn, workspace_id=ws_id,
+                    entry_type=getattr(args, "entry_type", None),
+                    reason=getattr(args, "reason", None),
+                    include_revoked=getattr(args, "include_revoked", False),
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps({"entries": entries}, indent=2))
+                elif not entries:
+                    print("No suppression rules.")
+                else:
+                    print(f"{'TYPE':<16} {'VALUE':<40} {'REASON':<18} {'CONTACTS':>8}  SCOPE")
+                    for e in entries:
+                        scope = "org-wide" if not e["workspace_id"] else "workspace"
+                        mark = " (revoked)" if e["revoked_at"] else ""
+                        print(f"{e['entry_type']:<16} {e['value_normalized'][:39]:<40} "
+                              f"{e['reason']:<18} {e['matched_contacts']:>8}  {scope}{mark}")
+            elif cmd == "remove":
+                print(json.dumps(suppression.revoke_entry(
+                    conn, entry_type=args.entry_type, value=args.value,
+                    workspace_id=ws_id,
+                ), indent=2))
+            elif cmd == "check":
+                print(json.dumps(suppression.check(
+                    conn, args.value, workspace_id=ws_id), indent=2))
+            elif cmd == "stats":
+                print(json.dumps(suppression.stats(conn, ws_id), indent=2))
+            elif cmd == "reconcile":
+                print(json.dumps(suppression.reconcile(
+                    conn, workspace_id=ws_id), indent=2))
+        except suppression.SuppressionError as exc:
+            print(json.dumps({"error": str(exc)}))
+            sys.exit(1)
+        finally:
+            conn.close()
+    elif args.command == "email-hygiene":
+        import junk_cleanup
+
+        conn = _pipeline.get_conn()
+        try:
+            ws_id = None
+            if getattr(args, "workspace", None):
+                ws_row = _pipeline.resolve_workspace_identity(conn, args.workspace)
+                if not ws_row:
+                    print(json.dumps({"error": f"workspace not found: {args.workspace}"}))
+                    sys.exit(1)
+                ws_id = ws_row["id"]
+            print(json.dumps(junk_cleanup.email_hygiene(
+                conn, workspace_id=ws_id, dry_run=not getattr(args, "apply", False),
+            ), indent=2))
+        finally:
+            conn.close()
     elif args.command == "find-domains":
         if getattr(args, "export_corpus", None):
             print(json.dumps(_pipeline.export_domain_corpus(args.export_corpus), indent=2))

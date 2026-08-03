@@ -287,7 +287,11 @@ def test_zero_organic_results_spends_exactly_one_query():
     conn.commit()
 
     assert calls == ["Modern Storefront email"]
-    assert outcome["status"] == "not_found"
+    # `no_results`, not `not_found`: the search ran and the internet had
+    # nothing, which is a different fact from "the scorer rejected what came
+    # back" -- and both are different from "the API key is dead". Collapsing
+    # them is what made a credit-exhausted run look like a scoring failure.
+    assert outcome["status"] == "no_results"
 
 
 def test_second_run_is_served_from_cache_without_new_serper_calls():
@@ -595,10 +599,14 @@ def test_raw_serper_is_omitted_by_default_and_present_with_debug():
 
     # A distinct company: the same one would be an org-wide cache hit and
     # never re-query (which is the intended credit discipline, tested above).
-    cid2, lead2 = _company_with_lead(conn, name="Modern Storefront Two LLC", person="John Roe")
+    # Deliberately an unrelated name, not "Modern Storefront Two" -- that
+    # shares a leading brand with the company above, so sibling-brand local
+    # evidence would resolve it for free and there would be no query to
+    # inspect. Which is correct behaviour, and not what this test is about.
+    cid2, lead2 = _company_with_lead(conn, name="Ridgeline Fabrication LLC", person="John Roe")
     with mock.patch.object(enrich, "serper_search", side_effect=lambda q, c: _serper_result()):
         dd.run_company_domain_discovery(
-            conn, {}, company_id=cid2, company_name="Modern Storefront Two LLC", rep_lead_id=lead2,
+            conn, {}, company_id=cid2, company_name="Ridgeline Fabrication LLC", rep_lead_id=lead2,
             debug=True,
         )
     conn.commit()
@@ -1338,3 +1346,105 @@ def test_claim_writes_the_email_so_providers_never_see_the_lead():
 ])
 def test_credential_suffixes_do_not_break_the_name_match(name, email):
     assert dd.match_public_email_to_lead(name, email) is not None
+
+
+def _company_with_domain(conn, name, domain):
+    cid = om.ensure_company(conn, name=name, domain=domain)
+    conn.commit()
+    return cid
+
+
+def test_sibling_brand_resolves_a_longer_name_for_free():
+    """"Amedisys" and "Amedisys Home Health & Hospice" are one brand filed
+    twice. The duplicate-name index only matches names that collapse
+    identically, so the longer row was searched and paid for anyway."""
+    conn = om.get_conn()
+    _company_with_domain(conn, "Amedisys", "amedisys.com")
+    cid, lead_id = _company_with_lead(conn, name="Amedisys Home Health & Hospice")
+
+    calls = []
+    with mock.patch.object(enrich, "serper_search", side_effect=lambda q, c: calls.append(q) or {}):
+        outcome = dd.run_company_domain_discovery(
+            conn, {}, company_id=cid, company_name="Amedisys Home Health & Hospice",
+            rep_lead_id=lead_id,
+        )
+    conn.commit()
+
+    assert outcome["status"] == "resolved_from_db"
+    assert outcome["domain"] == "amedisys.com"
+    assert outcome["evidence"].startswith("sibling_brand")
+    assert calls == [], "a free resolution must not spend a Serper credit"
+    conn.close()
+
+
+def test_sibling_brand_refuses_a_shared_first_word():
+    """"Sterling Group" and "Sterling Partners" are different businesses. Both
+    would find a sibling holding sterling.com, and score_domain_match would
+    call it domain_is_name_prefix for both -- because it is, for the wrong
+    company. Neither name is a prefix of the other, so this must be refused."""
+    conn = om.get_conn()
+    _company_with_domain(conn, "Sterling Partners", "sterling.com")
+    cid = om.ensure_company(conn, name="Sterling Group")
+    conn.commit()
+
+    assert dd.domain_from_local_evidence(
+        conn, cid, "Sterling Group", name_index={}) is None
+    conn.close()
+
+
+def test_sibling_brand_refuses_a_person_shaped_company_name():
+    """The free path must not do what the paid path is forbidden to do: a
+    person-shaped company name matching a personal domain is the exact failure
+    mode find-domains already refuses to auto-attach for."""
+    conn = om.get_conn()
+    _company_with_domain(conn, "Rick Jensen Dentistry", "rickjensen.com")
+    cid = om.ensure_company(conn, name="Rick Jensen")
+    conn.commit()
+
+    assert dd.domain_from_local_evidence(conn, cid, "Rick Jensen", name_index={}) is None
+    conn.close()
+
+
+def test_person_shaped_company_never_auto_attaches_a_discovered_domain():
+    conn = om.get_conn()
+    cid, lead_id = _company_with_lead(conn, name="Rick Jensen")
+
+    with mock.patch.object(enrich, "serper_search", return_value={
+        "organic": [{"link": "https://drrickjensen.com/", "title": "Dr Rick Jensen",
+                     "snippet": "Rick Jensen"}],
+    }):
+        outcome = dd.run_company_domain_discovery(
+            conn, {}, company_id=cid, company_name="Rick Jensen", rep_lead_id=lead_id,
+        )
+    conn.commit()
+
+    assert outcome["attach"]["attached"] is False
+    assert outcome["attach"]["reason"] == "person_shaped_company_name"
+    conn.close()
+
+
+def test_an_errored_lookup_does_not_satisfy_the_freshness_cache():
+    """A dead API key says nothing about the company. Error observations used
+    to satisfy _recent_domain_lookup and lock 1,023 companies out of re-search
+    for the whole 30-day window."""
+    conn = om.get_conn()
+    cid, lead_id = _company_with_lead(conn)
+
+    with mock.patch.object(enrich, "serper_search",
+                           side_effect=ValueError("serper: all 3 key(s) failed")):
+        first = dd.run_company_domain_discovery(
+            conn, {}, company_id=cid, company_name="Modern Storefront LLC",
+            rep_lead_id=lead_id,
+        )
+    conn.commit()
+    assert first["status"] == "error"
+
+    # The very next run must actually search again, not report "cached".
+    with mock.patch.object(enrich, "serper_search", return_value=_serper_result(with_email=True)):
+        second = dd.run_company_domain_discovery(
+            conn, {}, company_id=cid, company_name="Modern Storefront LLC",
+            rep_lead_id=lead_id,
+        )
+    conn.commit()
+    assert second["status"] != "cached"
+    conn.close()

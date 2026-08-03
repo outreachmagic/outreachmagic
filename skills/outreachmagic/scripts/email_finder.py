@@ -18,6 +18,10 @@ batch-find options:
     --abandon-after N        stop calling a domain after N consecutive misses (default 0=off; trykitt/icypeas bill $0 for a miss, so this trades recall for wall-clock time, not cost)
     --skip-catchall-after N  stop calling a domain after N found results are ALL risky/catch-all (default 0=off; unlike a miss, a catch-all find IS billed -- find_credits_used keys on whether an email came back, not its verdict)
     --output-base PATH --output-csv PATH --no-save --skip-om --dry-run --yes
+    --retry-changed-signal  re-attempt leads whose prior not_found was searched
+                            without a signal they now have (e.g. a LinkedIn URL
+                            added since). Keeps the has-email check, so unlike
+                            --skip-om it does not re-bill enriched leads.
 
 MillionVerifier (bulk email verification):
     email_finder.py verify EMAIL
@@ -513,6 +517,9 @@ def _parse_batch_args(argv: list[str]) -> tuple[BatchOptions, str]:
         elif arg in ("--retry-errors",):
             opts.retry_errors = True
             i += 1
+        elif arg in ("--retry-changed-signal",):
+            opts.retry_changed_signal = True
+            i += 1
         elif not arg.startswith("-") and not path:
             path = arg
             i += 1
@@ -777,7 +784,33 @@ def _collect_verify_emails(
                 emails.append(em)
     else:
         return [], {"error": "provide --file or --workspace"}
-    emails = list(dict.fromkeys(emails))
+
+    # Canonicalize before submitting, and say how many needed it. A malformed
+    # address is not a verification question -- MillionVerifier answers
+    # `invalid` for "rhinke@example.com." because the string is wrong, not
+    # because the mailbox is dead, and charges a credit for the privilege.
+    # Seven such addresses were counted as dead here; five were live.
+    from normalize import canonicalize_email
+
+    repaired: dict[str, int] = {}
+    dropped: list[str] = []
+    canonical: list[str] = []
+    for raw in emails:
+        address, repairs = canonicalize_email(raw)
+        if not address:
+            dropped.append(raw)
+            continue
+        for name in repairs:
+            repaired[name] = repaired.get(name, 0) + 1
+        canonical.append(address)
+    emails = list(dict.fromkeys(canonical))
+    if repaired:
+        candidate_meta["normalized"] = sum(repaired.values())
+        candidate_meta["normalization_repairs"] = repaired
+    if dropped:
+        candidate_meta["dropped_unparseable"] = len(dropped)
+        candidate_meta["dropped_examples"] = dropped[:5]
+
     lead_ids = {
         int(lead["lead_id"])
         for lead in (candidate_meta.get("leads") or [])

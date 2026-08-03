@@ -16,6 +16,97 @@ _LINKEDIN_RE = re.compile(r"^https?://", re.I)
 _LINKEDIN_DOMAIN_RE = re.compile(r"^(?:https?://)?(?:www\.)?linkedin\.com/", re.I)
 
 
+def signal_fingerprint(
+    name: str = "", domain: str = "", linkedin: str = "",
+) -> str:
+    """A stable hash of the signal SET an email-finding attempt was made with.
+
+    The dedup question a batch actually needs to answer is not "have we tried
+    this lead?" but "have we tried this lead *with these signals*?". Searching
+    for someone by name and domain is a materially different query from
+    searching for them by name, domain and LinkedIn URL, and a `not_found` on
+    the first says nothing about the second.
+
+    `skip_reason_from_lookup` already made exactly this argument for `domain`
+    (an attempt recorded with no domain never really searched, so it must not
+    block a retry once a domain exists). This generalizes it: any change to the
+    signal set produces a different fingerprint, and only an unchanged
+    fingerprint blocks a retry.
+    """
+    parts = []
+    if name:
+        parts.append(f"name={' '.join(str(name).lower().split())}")
+    if domain:
+        parts.append(f"domain={str(domain).strip().lower().lstrip('@')}")
+    if linkedin:
+        parts.append(f"linkedin={normalize_linkedin(str(linkedin)).lower().rstrip('/')}")
+    if not parts:
+        return ""
+    return hashlib.sha256("|".join(sorted(parts)).encode()).hexdigest()[:16]
+
+
+def canonicalize_email(raw: Any) -> tuple[Optional[str], list[str]]:
+    """Canonical form of an email address, plus the repairs that got it there.
+
+    Returns (address, repairs). `address` is None when nothing salvageable is
+    left; `repairs` names each change made, so a caller can report "7 addresses
+    reformatted" instead of silently rewriting the operator's data.
+
+    This exists because `.strip().lower()` was the whole of email normalization
+    and it is not enough. Seven addresses reached MillionVerifier with a
+    trailing dot ("rhinke@example.com.") and came back `invalid` -- not because
+    the mailboxes were dead but because the *string* was malformed. Five of the
+    seven were live. A malformed address costs a verification credit and
+    returns a guaranteed wrong answer, so the repair has to happen before the
+    address is stored, not after it fails.
+    """
+    if raw is None:
+        return None, []
+    text = str(raw)
+    repairs: list[str] = []
+
+    stripped = text.strip()
+    if stripped != text:
+        repairs.append("whitespace")
+    text = stripped
+
+    # "Jane Doe <jane@acme.com>" -- mail clients and CSV exports both do this.
+    match = re.search(r"<([^>]+)>", text)
+    if match:
+        text = match.group(1).strip()
+        repairs.append("angle_brackets")
+
+    # Internal whitespace is never legal in the addresses we handle and is
+    # nearly always a copy-paste artifact.
+    if re.search(r"\s", text):
+        text = re.sub(r"\s+", "", text)
+        repairs.append("internal_whitespace")
+
+    lowered = text.lower()
+    if lowered != text:
+        repairs.append("case")
+    text = lowered
+
+    # Trailing punctuation picked up from prose -- the finder scrapes snippets,
+    # and a sentence-final address keeps the full stop.
+    trimmed = text.rstrip(".,;:")
+    if trimmed != text:
+        repairs.append("trailing_punctuation")
+    text = trimmed
+    text = text.lstrip(".")
+
+    if text.count("@") != 1:
+        return None, repairs
+    local, domain = text.split("@", 1)
+    domain = domain.strip(".")
+    if ".." in domain:
+        domain = re.sub(r"\.{2,}", ".", domain)
+        repairs.append("double_dot")
+    if not local or not validate_domain(domain):
+        return None, repairs
+    return f"{local}@{domain}", repairs
+
+
 def normalize_linkedin(url: str) -> str:
     u = (url or "").strip()
     if not u:

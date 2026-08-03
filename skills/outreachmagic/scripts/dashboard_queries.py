@@ -20,7 +20,7 @@ import time
 from collections import defaultdict
 from typing import Optional
 
-from constants import PIPELINE_STAGES, SCHEDULING_PLATFORMS_SQL_LIST
+from constants import COMPANY_DOMAIN_SQL, PIPELINE_STAGES, SCHEDULING_PLATFORMS_SQL_LIST
 from platform_registry import reply_event_sql_condition
 from read_queries import _since_clause
 from workspace_routing import DEFAULT_ORG_ID, get_org_routing_config
@@ -1833,42 +1833,106 @@ _QUALIFY_FINDING_SQL = (
 )
 
 
+_HAS_LINKEDIN_SQL = (
+    "((l.linkedin_url IS NOT NULL AND TRIM(l.linkedin_url) != '')"
+    " OR (l.linkedin_sales_nav_id IS NOT NULL AND TRIM(l.linkedin_sales_nav_id) != ''))"
+)
+_HAS_DOMAIN_SQL = (
+    f"(({COMPANY_DOMAIN_SQL.rsplit(' AS company_domain', 1)[0]}) IS NOT NULL"
+    f" AND TRIM(({COMPANY_DOMAIN_SQL.rsplit(' AS company_domain', 1)[0]})) != '')"
+)
+# Verified but not valid and not catch-all: invalid, bounced, disposable,
+# unknown. Grouped as one "risky" bucket rather than five tiles nobody reads.
+_RISKY_SQL = (
+    "(l.email IS NOT NULL AND TRIM(l.email) != ''"
+    " AND l.email_verification_status IS NOT NULL"
+    " AND LOWER(l.email_verification_status) != 'valid'"
+    f" AND LOWER(l.email_verification_status) NOT IN {_CATCH_ALL_STATUSES_SQL})"
+)
+
+
 def _contacts_stats_selects() -> str:
     """The count columns shared by the overall and per-tag stats rows.
     CASE-wrapped so a comparison against a NULL status column contributes 0, not
     NULL (which would make SUM return NULL when every row is unverified)."""
     return f"""
         COUNT(*) AS total,
+        SUM(CASE WHEN l.record_type = 'contact' THEN 1 ELSE 0 END) AS people,
+        SUM(CASE WHEN l.record_type = 'company_placeholder' THEN 1 ELSE 0 END) AS companies,
+        SUM(CASE WHEN l.record_type = 'public_email' THEN 1 ELSE 0 END) AS shared_mailboxes,
         SUM(CASE WHEN LOWER(l.email_verification_status) = 'valid' THEN 1 ELSE 0 END) AS valid_email,
         SUM(CASE WHEN LOWER(l.email_verification_status) IN {_CATCH_ALL_STATUSES_SQL} THEN 1 ELSE 0 END) AS catch_all_email,
+        SUM(CASE WHEN {_RISKY_SQL} THEN 1 ELSE 0 END) AS risky_email,
         SUM(CASE WHEN l.email IS NULL OR TRIM(l.email) = '' THEN 1 ELSE 0 END) AS no_email,
         SUM(CASE WHEN {_QUALIFY_FINDING_SQL} THEN 1 ELSE 0 END) AS qualify_finding,
-        SUM(CASE WHEN (l.linkedin_url IS NOT NULL AND TRIM(l.linkedin_url) != '')
-            OR (l.linkedin_sales_nav_id IS NOT NULL AND TRIM(l.linkedin_sales_nav_id) != '') THEN 1 ELSE 0 END) AS has_linkedin"""
+        SUM(CASE WHEN {_HAS_DOMAIN_SQL} THEN 1 ELSE 0 END) AS has_domain,
+        SUM(CASE WHEN {_HAS_LINKEDIN_SQL} THEN 1 ELSE 0 END) AS has_linkedin"""
 
 
-def contacts_stats(conn: sqlite3.Connection, workspace_id: str) -> dict:
+def contacts_stats(conn: sqlite3.Connection, workspace_id: str, **filters) -> dict:
     """Email/LinkedIn readiness breakdown for a workspace, overall and per tag.
 
-    Each group here is click-to-filter in the UI (the filter keys line up with
-    search_leads params: verify=valid|catch_all|none, qualify_finding, has_linkedin,
-    tag)."""
+    Built from `lead_filter_clause()` -- the same WHERE the contacts list and
+    the export use. It previously ran its own `WHERE wl.workspace_id = ?` with
+    no record_type predicate, while the list below it defaulted to
+    record_type='contact'. So the tiles counted 3,730 company placeholders and
+    30 shared mailboxes that the list did not, and clicking a tile returned a
+    different number than the tile showed. There is no second WHERE here now.
+
+    The record-type counts are the one exception: they are computed with
+    record_type forced to "all", because a tile whose job is to say how many
+    company placeholders exist cannot be filtered down to people first.
+
+    Each group is click-to-filter in the UI, and the filter keys line up with
+    search_leads params (verify, qualify_finding, has_linkedin, record_type,
+    tag).
+    """
+    filters = {k: v for k, v in filters.items() if k in LEAD_FILTER_KEYS}
+    where_sql, params = lead_filter_clause(workspace_id, **filters)
+    base = """FROM workspace_leads wl
+              JOIN leads l ON l.id = wl.lead_id
+              LEFT JOIN companies co ON co.id = l.company_id"""
     overall = conn.execute(
-        f"""SELECT {_contacts_stats_selects()}
-            FROM workspace_leads wl JOIN leads l ON l.id = wl.lead_id
-            WHERE wl.workspace_id = ?""",
-        (workspace_id,),
+        f"SELECT {_contacts_stats_selects()} {base} WHERE {where_sql}", params,
     ).fetchone()
+
+    # Record-type inventory, deliberately outside the record_type filter.
+    rt_filters = {**filters, "record_type": "all"}
+    rt_where, rt_params = lead_filter_clause(workspace_id, **rt_filters)
+    totals = conn.execute(
+        f"""SELECT COUNT(*) AS all_records,
+                   SUM(CASE WHEN l.record_type = 'contact' THEN 1 ELSE 0 END) AS people,
+                   SUM(CASE WHEN l.record_type = 'company_placeholder' THEN 1 ELSE 0 END) AS companies,
+                   SUM(CASE WHEN l.record_type = 'public_email' THEN 1 ELSE 0 END) AS shared_mailboxes
+              {base} WHERE {rt_where}""",
+        rt_params,
+    ).fetchone()
+    # Suppressed is counted with suppression itself switched off, or the tile
+    # meant to say how many are hidden would always read 0.
+    sup_where, sup_params = lead_filter_clause(
+        workspace_id, **{**rt_filters, "suppressed": "only"})
+    suppressed_total = conn.execute(
+        f"SELECT COUNT(*) AS n {base} WHERE {sup_where}", sup_params,
+    ).fetchone()["n"]
+
+    tag_where, tag_params = lead_filter_clause(workspace_id, **filters)
     by_tag = conn.execute(
         f"""SELECT t.tag AS tag, {_contacts_stats_selects()}
             FROM workspace_lead_tags t
             JOIN workspace_leads wl ON wl.workspace_id = t.workspace_id AND wl.lead_id = t.lead_id
             JOIN leads l ON l.id = wl.lead_id
-            WHERE t.workspace_id = ?
+            LEFT JOIN companies co ON co.id = l.company_id
+            WHERE t.workspace_id = ? AND {tag_where}
             GROUP BY t.tag ORDER BY total DESC""",
-        (workspace_id,),
+        [workspace_id, *tag_params],
     ).fetchall()
-    return {"overall": dict(overall) if overall else {}, "by_tag": [dict(r) for r in by_tag]}
+    return {
+        "overall": dict(overall) if overall else {},
+        "record_types": {**(dict(totals) if totals else {}),
+                         "suppressed": suppressed_total},
+        "filters": filters,
+        "by_tag": [dict(r) for r in by_tag],
+    }
 
 
 # Every filter the contacts list understands, in one place. Named so the export
@@ -1910,9 +1974,31 @@ def lead_message_block_sql(direction: str) -> str:
 
 LEAD_FILTER_KEYS = (
     "q", "status", "campaign_id", "missing", "since", "until", "tag",
+    "tags_any", "tags_all", "tags_none",
     "connected", "sender", "has_linkedin", "verify", "qualify_finding",
-    "record_type", "lead_ids",
+    "record_type", "lead_ids", "suppressed", "has_domain",
 )
+
+
+def _tag_list(value) -> list[str]:
+    """Normalize a tag filter argument to a list of canonical tags.
+
+    Accepts a bare string (the legacy scalar `tag`), a list, or None. Tags are
+    stored normalized, so the filter has to normalize too or "NACE" and " nace "
+    silently match nothing.
+    """
+    if value is None:
+        return []
+    from pipeline_utils import normalize_tag
+
+    raw = [value] if isinstance(value, str) else list(value)
+    out, seen = [], set()
+    for item in raw:
+        tag = normalize_tag(str(item or ""))
+        if tag and tag not in seen:
+            seen.add(tag)
+            out.append(tag)
+    return out
 
 # An explicit id list is capped for the same reason the "select all matching"
 # fetch is: a caller that hands over the world should get an error, not a query
@@ -1936,6 +2022,11 @@ def lead_filter_clause(
     qualify_finding: Optional[bool] = None,
     record_type: Optional[str] = None,
     lead_ids: Optional[list] = None,
+    tags_any: Optional[list] = None,
+    tags_all: Optional[list] = None,
+    tags_none: Optional[list] = None,
+    suppressed: Optional[str] = None,
+    has_domain: Optional[bool] = None,
 ) -> tuple[str, list]:
     """The shared WHERE for anything selecting workspace leads: (sql, params).
 
@@ -1973,11 +2064,45 @@ def lead_filter_clause(
         params.append(record_type)
     else:
         where.append("l.record_type = 'contact'")
-    if tag:
+    # Suppression, enforced here and nowhere else. Because the list, the stat
+    # counts, the CSV export and every bulk action all build their WHERE from
+    # this function, one clause covers all four -- and defaulting to "exclude"
+    # is the whole point: an operator who forgets the filter must get the safe
+    # answer. `suppressed="all"` is the deliberate opt-out, and the only caller
+    # that legitimately needs it is CRM/relay reconciliation, which has to see
+    # everything to detect drift.
+    if suppressed == "only":
+        where.append("EXISTS (SELECT 1 FROM workspace_lead_suppressions s"
+                     " WHERE s.workspace_id = wl.workspace_id AND s.lead_id = wl.lead_id)")
+    elif suppressed != "all":
+        where.append("NOT EXISTS (SELECT 1 FROM workspace_lead_suppressions s"
+                     " WHERE s.workspace_id = wl.workspace_id AND s.lead_id = wl.lead_id)")
+    # Tags: any / all / none, composable. `tag` is the legacy scalar and folds
+    # into tags_any -- it is still what the stats drill-through, the CLI and
+    # saved agent invocations pass, so it keeps working rather than becoming a
+    # breaking rename across the whole surface.
+    any_tags = _tag_list(tags_any) + _tag_list(tag)
+    all_tags = _tag_list(tags_all)
+    none_tags = _tag_list(tags_none)
+    if any_tags:
         where.append(
             "wl.lead_id IN (SELECT lead_id FROM workspace_lead_tags"
-            " WHERE workspace_id = ? AND tag = ?)")
-        params += [workspace_id, tag]
+            f" WHERE workspace_id = ? AND tag IN ({','.join('?' * len(any_tags))}))")
+        params += [workspace_id, *any_tags]
+    if all_tags:
+        # COUNT(DISTINCT) rather than one EXISTS per tag: a lead carrying the
+        # same tag twice cannot fake its way past the count, and the query
+        # stays one subquery wide however many tags are selected.
+        where.append(
+            "(SELECT COUNT(DISTINCT tag) FROM workspace_lead_tags"
+            f" WHERE workspace_id = ? AND lead_id = wl.lead_id"
+            f" AND tag IN ({','.join('?' * len(all_tags))})) = ?")
+        params += [workspace_id, *all_tags, len(all_tags)]
+    if none_tags:
+        where.append(
+            "wl.lead_id NOT IN (SELECT lead_id FROM workspace_lead_tags"
+            f" WHERE workspace_id = ? AND tag IN ({','.join('?' * len(none_tags))}))")
+        params += [workspace_id, *none_tags]
     if connected:
         conn_sql = ("wl.lead_id IN (SELECT lead_id FROM workspace_lead_linkedin_status"
                     " WHERE workspace_id = ? AND is_connected = 1")
@@ -1995,8 +2120,15 @@ def lead_filter_clause(
         where.append("LOWER(l.email_verification_status) = 'valid'")
     elif verify == "catch_all":
         where.append(f"LOWER(l.email_verification_status) IN {_CATCH_ALL_STATUSES_SQL}")
+    elif verify == "risky":
+        # Verified, and the verdict was neither valid nor catch-all: invalid,
+        # bounced, disposable, unknown. One bucket, because five separate tiles
+        # for the same decision ("don't send") is five tiles nobody reads.
+        where.append(_RISKY_SQL)
     elif verify == "none":
         where.append("(l.email IS NULL OR TRIM(l.email) = '')")
+    if has_domain:
+        where.append(_HAS_DOMAIN_SQL)
     if qualify_finding:
         where.append(_QUALIFY_FINDING_SQL)
     if q and q.strip():
@@ -2042,6 +2174,11 @@ def search_leads(
     verify: Optional[str] = None,
     qualify_finding: Optional[bool] = None,
     record_type: Optional[str] = None,
+    tags_any: Optional[list] = None,
+    tags_all: Optional[list] = None,
+    tags_none: Optional[list] = None,
+    suppressed: Optional[str] = None,
+    has_domain: Optional[bool] = None,
     limit: int = 50,
     offset: int = 0,
     ids_only: bool = False,
@@ -2057,7 +2194,8 @@ def search_leads(
         workspace_id, q=q, status=status, campaign_id=campaign_id, missing=missing,
         since=since, until=until, tag=tag, connected=connected, sender=sender,
         has_linkedin=has_linkedin, verify=verify, qualify_finding=qualify_finding,
-        record_type=record_type)
+        record_type=record_type, suppressed=suppressed, has_domain=has_domain,
+        tags_any=tags_any, tags_all=tags_all, tags_none=tags_none)
     order = _lead_order_by(sort, direction)
     # ids_only powers the "select all N matching" bulk action: same WHERE, but
     # just the ids (capped by `limit`) so the client can select every match

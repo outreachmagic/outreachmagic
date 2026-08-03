@@ -178,9 +178,11 @@ def enrich_calendly_campaign_fields(
 
 
 def normalize_email(email: Optional[str]) -> Optional[str]:
-    if not email or "@" not in str(email):
-        return None
-    return str(email).strip().lower()
+    """Canonical address, or None. Shared implementation in normalize.py."""
+    from normalize import canonicalize_email
+
+    address, _repairs = canonicalize_email(email)
+    return address
 
 
 def is_sales_nav_hash_slug(slug: str) -> bool:
@@ -585,6 +587,84 @@ def linkedin_url_field_conflict(
             "field left unchanged — consider dedup merge"
         ),
     }
+
+
+def set_lead_linkedin_url(
+    conn: sqlite3.Connection,
+    lead_id: int,
+    url: str,
+    *,
+    force: bool = False,
+    overwrite: bool = False,
+) -> dict:
+    """The one supported way to write `leads.linkedin_url`.
+
+    Two guards, both learned the expensive way:
+
+    1. **Record type.** A batch sweep that queried leads without
+       `record_type='contact'` wrote 663 company-page LinkedIn URLs onto
+       company-placeholder rows, and the whole ~900-query Serper sweep had to
+       be re-run. The dashboard is safe by default because
+       `lead_filter_clause` defaults to contacts; raw SQL has no such default,
+       so the guard belongs on the write.
+
+    2. **Uniqueness.** `idx_leads_linkedin_unique` is a global partial UNIQUE
+       index, so writing a URL another lead already owns raises. That is not an
+       error worth surfacing as one: it means the same person exists twice, and
+       the useful output is a merge candidate. 110 of 663 writes "failed" that
+       way in one run, and the duplicate pairs had to be re-discovered by hand.
+
+    Returns {"status": "written"|"skipped"|"conflict"|"unchanged", ...} and
+    never raises on either condition.
+    """
+    url = (url or "").strip()
+    if not url:
+        return {"status": "skipped", "reason": "empty_url", "lead_id": lead_id}
+
+    row = conn.execute(
+        "SELECT id, name, record_type, linkedin_url FROM leads WHERE id = ?", (lead_id,),
+    ).fetchone()
+    if not row:
+        return {"status": "skipped", "reason": "no_such_lead", "lead_id": lead_id}
+
+    if row["record_type"] != "contact" and not force:
+        return {
+            "status": "skipped",
+            "reason": "not_a_contact",
+            "lead_id": lead_id,
+            "record_type": row["record_type"],
+            "message": (f"lead {lead_id} is a {row['record_type']}, not a person; "
+                        "pass force=True only if you mean it"),
+        }
+
+    current = (row["linkedin_url"] or "").strip()
+    if current == url:
+        return {"status": "unchanged", "lead_id": lead_id, "linkedin_url": url}
+
+    conflict = linkedin_url_field_conflict(conn, lead_id, url)
+    if conflict:
+        owner = conn.execute(
+            "SELECT id, name FROM leads WHERE id = ?", (conflict["existing_lead_id"],),
+        ).fetchone()
+        same_person = bool(
+            owner and normalize_person_name(owner["name"])
+            and normalize_person_name(owner["name"]) == normalize_person_name(row["name"]))
+        return {
+            "status": "conflict",
+            "lead_id": lead_id,
+            "linkedin_url": url,
+            "existing_lead_id": conflict["existing_lead_id"],
+            "same_person": same_person,
+            "merge_candidate": same_person,
+            "message": conflict["message"],
+        }
+
+    if current and not overwrite and not should_replace_linkedin_url(current, url):
+        return {"status": "skipped", "reason": "existing_url_is_better",
+                "lead_id": lead_id, "linkedin_url": current}
+
+    conn.execute("UPDATE leads SET linkedin_url = ? WHERE id = ?", (url, lead_id))
+    return {"status": "written", "lead_id": lead_id, "linkedin_url": url}
 
 
 def promote_linkedin_url_from_identities(

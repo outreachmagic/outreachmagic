@@ -593,7 +593,8 @@ def delete_sender_domain(domain: str, confirm: bool = False) -> dict:
             "mailboxes_referencing": mailboxes}
 
 
-BULK_OPS = ("stage", "lead_status", "sentiment", "tag_add", "tag_remove", "email_finder")
+BULK_OPS = ("stage", "lead_status", "sentiment", "tag_add", "tag_remove",
+            "email_finder", "suppress", "unsuppress")
 
 
 def bulk_edit_contacts(
@@ -619,6 +620,67 @@ def bulk_edit_contacts(
         if status is None:
             raise ValueError("a sync is already running")
         return {"status": "started", "op": op, "job": status}
+
+    if op in ("suppress", "unsuppress"):
+        import suppression
+
+        conn = get_conn()
+        try:
+            ws = _resolve_ws_id(conn, workspace_slug)
+            if op == "unsuppress":
+                # Only lead_id pins are revocable from a row selection. A
+                # contact suppressed by their company's domain cannot be
+                # released one row at a time without silently punching a hole
+                # in a rule that is still in force -- that has to be an
+                # explicit decision about the rule, on the suppression card.
+                released, blocked = 0, []
+                for lid in ids:
+                    result = suppression.revoke_entry(
+                        conn, entry_type="lead_id", value=lid, workspace_id=ws)
+                    if result["status"] == "revoked":
+                        released += 1
+                    else:
+                        blocked.append(lid)
+                return {"status": "ok", "op": op, "released": released,
+                        "requested": len(ids),
+                        "not_pinned": len(blocked),
+                        "hint": ("Some of these are suppressed by a broader rule "
+                                 "(domain, company). Revoke the rule itself to "
+                                 "release them.") if blocked else None}
+
+            reason = (value or suppression.DEFAULT_REASON).strip()
+            # Suppress by the strongest identifier the lead actually carries:
+            # an email or LinkedIn URL survives a re-import, a lead_id does
+            # not. Falling back to lead_id keeps the action available for a
+            # contact with neither.
+            rows = conn.execute(
+                f"""SELECT id, email, linkedin_url FROM leads
+                     WHERE id IN ({",".join("?" * len(ids))})""", ids,
+            ).fetchall()
+            suppressed = 0
+            for row in rows:
+                if (row["email"] or "").strip():
+                    entry_type, val = "email", row["email"]
+                elif (row["linkedin_url"] or "").strip():
+                    entry_type, val = "linkedin_url", row["linkedin_url"]
+                else:
+                    entry_type, val = "lead_id", row["id"]
+                try:
+                    suppression.add_entry(
+                        conn, entry_type=entry_type, value=val, workspace_id=ws,
+                        reason=reason, source="ui")
+                    suppressed += 1
+                except suppression.SuppressionError:
+                    # A malformed stored value shouldn't abandon the rest of
+                    # the selection; pin it by id instead.
+                    suppression.add_entry(
+                        conn, entry_type="lead_id", value=row["id"],
+                        workspace_id=ws, reason=reason, source="ui")
+                    suppressed += 1
+            return {"status": "ok", "op": op, "suppressed": suppressed,
+                    "requested": len(ids), "reason": reason}
+        finally:
+            conn.close()
 
     if op in ("tag_add", "tag_remove"):
         import pipeline_tags

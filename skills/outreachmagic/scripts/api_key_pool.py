@@ -143,20 +143,171 @@ def record_key_usage(
     success: bool,
     error: str | None = None,
 ) -> None:
-    path = status_file_path()
-    data = load_key_status()
-    provider_data = data.setdefault(provider, {})
-    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    entry = {
-        "last_used": now,
-        "status": "ok" if success else "failed",
-        "last_error": None if success else (error or "unknown error"),
+    """Record one call's outcome for one slot. Never raises.
+
+    Written atomically (temp file + os.replace). This is a read-modify-write of
+    a single file holding EVERY provider's history, so a torn write is not a
+    lost update -- `load_key_status()` swallows the JSONDecodeError and returns
+    `{}`, and the next write then persists that empty dict as the new truth.
+    One interrupted write silently erases every provider's status, which is
+    exactly the state the dashboard was rendering as "not used yet" for a key
+    that had just been called a thousand times.
+
+    `last_ok` is preserved across a failure so the panel can still show when a
+    key last worked -- "failed now, last worked 3 days ago" and "failed now,
+    never worked" call for different actions.
+    """
+    try:
+        path = status_file_path()
+        data = load_key_status()
+        provider_data = data.setdefault(provider, {})
+        previous = provider_data.get(str(slot))
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        entry = {
+            "last_used": now,
+            "status": "ok" if success else "failed",
+            "last_error": None if success else (error or "unknown error"),
+        }
+        entry["last_ok"] = now if success else (
+            (previous or {}).get("last_ok") if isinstance(previous, dict) else None)
+        provider_data[str(slot)] = entry
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 -- bookkeeping must never break a real call
+        pass
+
+
+# ── Preflight: ask the provider what's left before spending the batch ────────
+#
+# call_with_key_pool() is reactive -- it discovers a dead slot by failing on it.
+# That is correct per-call and useless per-batch: a 1,452-company find-domains
+# run on 2026-08-03 burned through all three Serper slots and then wrote 1,023
+# error observations, one per company it could not search. Asking first costs
+# one cheap request per slot and turns that into a refusal at the door.
+#
+# provider -> (url_template, header_builder, list of response keys holding the
+# remaining balance). A provider absent here simply has no preflight; callers
+# treat "unknown" as "proceed", never as "block".
+_BALANCE_ENDPOINTS: dict[str, dict[str, Any]] = {
+    "serper": {
+        "url": "https://google.serper.dev/account",
+        "headers": lambda key: {"X-API-KEY": key},
+        "keys": ("balance", "credit", "credits", "creditsLeft"),
+    },
+    "millionverifier": {
+        "url": "https://api.millionverifier.com/api/v3/credits?api={key}",
+        "headers": lambda _key: {},
+        "keys": ("credits", "balance"),
+    },
+}
+
+
+def _slot_balance(provider: str, key: str) -> dict[str, Any]:
+    """Remaining balance for one key. Never raises: a preflight that fails must
+    not be able to stop work the real call might well have completed."""
+    spec = _BALANCE_ENDPOINTS.get(provider)
+    if not spec:
+        return {"supported": False, "remaining": None, "error": None}
+    import urllib.request
+
+    url = str(spec["url"]).replace("{key}", key)
+    req = urllib.request.Request(url, headers=spec["headers"](key))
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception as exc:  # noqa: BLE001 -- any failure is "unknown", not fatal
+        return {"supported": True, "remaining": None, "error": str(exc)[:200]}
+    if not isinstance(payload, dict):
+        return {"supported": True, "remaining": None, "error": "unexpected response shape"}
+    for name in spec["keys"]:
+        if isinstance(payload.get(name), (int, float)):
+            return {"supported": True, "remaining": float(payload[name]), "error": None}
+    return {"supported": True, "remaining": None, "error": "no balance field in response"}
+
+
+def preflight(provider: str, env_key: str, *, need: int = 0) -> dict[str, Any]:
+    """Live balance across every non-retired slot, before a batch commits.
+
+    `sufficient` is deliberately optimistic on missing information: it is False
+    only when we positively know the total is short. An unreachable balance
+    endpoint must not block a run that would have worked.
+    """
+    pool = api_key_pool(env_key)
+    if not pool:
+        # `total_remaining: None` (unknown), not 0. A missing key is not a
+        # credit shortfall, and callers gate on a *known* shortfall -- letting
+        # this read as "0 credits" would turn "no key configured" into a
+        # credit error, which is a worse message than the one the first real
+        # call already gives.
+        return {"provider": provider, "sufficient": True, "total_remaining": None,
+                "need": need, "by_slot": [], "error": f"{env_key} not set"}
+
+    by_slot: list[dict[str, Any]] = []
+    total = 0.0
+    known = False
+    for slot, key in enumerate(pool):
+        if _slot_is_retired(provider, slot):
+            by_slot.append({"slot": slot, "label": slot_label(slot), "retired": True,
+                            "remaining": None, "error": "retired this session"})
+            continue
+        info = _slot_balance(provider, key)
+        if info["remaining"] is not None:
+            total += info["remaining"]
+            known = True
+        by_slot.append({"slot": slot, "label": slot_label(slot), "retired": False,
+                        "remaining": info["remaining"], "error": info["error"]})
+
+    return {
+        "provider": provider,
+        "supported": any(s.get("remaining") is not None or s.get("error") for s in by_slot)
+                     and provider in _BALANCE_ENDPOINTS,
+        "by_slot": by_slot,
+        "total_remaining": int(total) if known else None,
+        "need": need,
+        "sufficient": True if not known else total >= need,
     }
-    if success:
-        entry["last_ok"] = now
-    provider_data[str(slot)] = entry
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def format_preflight(report: dict[str, Any]) -> str:
+    """One-screen slot table for a hard-fail message."""
+    lines = [f"{report['provider']}: "
+             + (f"{report['total_remaining']} credits across "
+                f"{len(report['by_slot'])} slot(s)"
+                if report.get("total_remaining") is not None else "balance unknown")
+             + (f" — need {report['need']}" if report.get("need") else "")]
+    for s in report.get("by_slot") or []:
+        remaining = "retired" if s.get("retired") else (
+            "unknown" if s.get("remaining") is None else f"{int(s['remaining'])}")
+        note = f"  ({s['error']})" if s.get("error") and not s.get("retired") else ""
+        lines.append(f"  {s['label']:<12} {remaining:>10}{note}")
+    return "\n".join(lines)
+
+
+def _ordered_slots(provider: str, pool: list[str]) -> list[tuple[int, str]]:
+    """Slots to try, best first.
+
+    Always starting at slot 0 means an exhausted primary costs every caller a
+    doomed request until three consecutive failures retire it -- and retirement
+    is per-process, so a fresh process pays again. The status file already
+    records which slot last worked; start there and wrap. Slot 0 still gets
+    tried, just not first, so a refilled primary is picked back up.
+    """
+    slots = list(enumerate(pool))
+    if len(slots) < 2:
+        return slots
+    entry = (load_key_status().get(provider) or {})
+    best, best_ok = 0, ""
+    for raw_slot, info in entry.items():
+        if not isinstance(info, dict) or info.get("status") != "ok":
+            continue
+        last_ok = str(info.get("last_ok") or "")
+        if last_ok > best_ok and str(raw_slot).isdigit() and int(raw_slot) < len(slots):
+            best, best_ok = int(raw_slot), last_ok
+    if not best_ok or best == 0:
+        return slots
+    return slots[best:] + slots[:best]
 
 
 def is_failover_http_status(code: int) -> bool:
@@ -202,7 +353,7 @@ def call_with_key_pool(
     if not pool:
         raise ValueError(f"{env_key} not set")
     last_err: BaseException | None = None
-    for slot, key in enumerate(pool):
+    for slot, key in _ordered_slots(provider, pool):
         if _slot_is_retired(provider, slot):
             continue
         try:
@@ -253,6 +404,19 @@ def call_with_key_pool(
                 raise
             log_failover(provider=provider, env_key=env_key, slot=slot, code="http")
             last_err = exc
+        except BaseException as exc:
+            # Anything else -- a KeyError from a missing config field, a socket
+            # timeout, a bug in the provider adapter -- used to propagate
+            # straight out of the loop WITHOUT recording anything, so the key
+            # panel reported "never used" for a key that had just been called
+            # and crashed. That is the most misleading of the three states it
+            # can show. Record, then re-raise unchanged: this is an honesty
+            # fix, not a new failover path, and a non-failover error must still
+            # reach the caller.
+            record_key_usage(
+                provider=provider, slot=slot, success=False,
+                error=f"{type(exc).__name__}: {str(exc)[:180]}")
+            raise
     raise ValueError(f"{provider}: all {len(pool)} key(s) for {env_key} failed") from last_err
 
 
@@ -292,10 +456,19 @@ def call_with_key_pool_results(
     if not pool:
         return {"status": "no_key", "error": f"{env_key} not set", "provider": provider}
     last: dict = {"status": "error", "error": "no result", "provider": provider}
-    for slot, key in enumerate(pool):
+    for slot, key in _ordered_slots(provider, pool):
         if _slot_is_retired(provider, slot):
             continue
-        result = fn(key)
+        try:
+            result = fn(key)
+        except BaseException as exc:
+            # Same honesty fix as call_with_key_pool: an adapter that raises
+            # instead of returning an error dict must not leave the slot
+            # looking untouched.
+            record_key_usage(
+                provider=provider, slot=slot, success=False,
+                error=f"{type(exc).__name__}: {str(exc)[:180]}")
+            raise
         if result_should_failover(result, provider=provider):
             error = str(result.get("error") or result.get("status") or "failover")
             record_key_usage(provider=provider, slot=slot, success=False, error=error)
@@ -346,6 +519,11 @@ def build_api_keys_report() -> dict[str, Any]:
                 slot_status = {}
             runtime_status = slot_status.get("status")
             if runtime_status not in ("ok", "failed"):
+                # "never_used" now means exactly that: a key is configured and
+                # nothing has called it. It used to also absorb "called and
+                # crashed" (the exception escaped before recording) and read
+                # identically to a healthy idle key -- which is why the portal
+                # showed Serper as "not used yet" after 1,023 calls.
                 runtime_status = "never_used"
             keys.append({
                 "slot": slot,
@@ -353,9 +531,13 @@ def build_api_keys_report() -> dict[str, Any]:
                 "prefix": prefix,
                 "suffix": suffix,
                 "status": runtime_status,
+                # Both dates travel. "failing now, last worked 3 days ago" and
+                # "failing now, never worked" are different problems, and the
+                # panel cannot tell them apart from `status` alone.
                 "last_used": slot_status.get("last_used"),
                 "last_ok": slot_status.get("last_ok"),
                 "last_error": slot_status.get("last_error"),
+                "configured": True,
             })
         providers.append({
             "provider": provider,
@@ -419,11 +601,18 @@ def format_api_keys_report_text(report: dict[str, Any]) -> str:
             last_used = key.get("last_used")
             last_error = key.get("last_error")
             fingerprint = f"{prefix}…{suffix}" if prefix or suffix else "····"
+            last_ok = key.get("last_ok")
             detail = status
             if status == "ok" and last_used:
                 detail = f"OK (last used {last_used})"
             elif status == "failed":
-                detail = f"FAILED (last error: {last_error or 'unknown'})"
+                # Say when it last worked, not only that it is broken now. That
+                # is the difference between "the key expired on Tuesday" and
+                # "this key has never worked", which need different responses.
+                worked = f", last worked {last_ok}" if last_ok else ", never worked"
+                detail = f"FAILED at {last_used}{worked} (last error: {last_error or 'unknown'})"
+            elif status == "never_used":
+                detail = "configured, not yet used"
             lines.append(f"  Slot {key.get('slot', 0)} ({label}): {fingerprint} — {detail}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

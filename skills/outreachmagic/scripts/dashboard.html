@@ -241,17 +241,44 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <div id="contacts-stats"></div>
     </div>
     <div class="card">
+      <h2>Suppression
+        <span class="sub">contacts excluded from lists, counts and exports for this workspace</span>
+      </h2>
+      <div class="controls">
+        <select id="sup-type"></select>
+        <input id="sup-value" placeholder="email, domain, or LinkedIn URL" style="width:280px">
+        <select id="sup-reason"></select>
+        <input id="sup-note" placeholder="note (optional)" style="width:180px">
+        <label title="Applies to every workspace, not just this one">
+          <input type="checkbox" id="sup-org-wide"> org-wide
+        </label>
+        <button class="small primary" id="sup-add">Suppress</button>
+        <span class="msg" id="sup-msg"></span>
+      </div>
+      <div id="sup-body"></div>
+    </div>
+    <div class="card">
       <h2>Contacts <span class="sub">search name / email / domain / LinkedIn / company / title</span></h2>
       <div class="controls">
         <input id="contacts-q" placeholder="Search…" style="width:280px">
         <select id="contacts-status">
           <option value="">Any stage</option>
         </select>
-        <select id="contacts-record-type" title="Placeholders and public mailboxes are not people; hidden unless asked for">
-          <option value="">People only</option>
-          <option value="company_placeholder">Company placeholders</option>
-          <option value="public_email">Public mailboxes</option>
-          <option value="all">People + placeholders + mailboxes</option>
+        <!-- One label per record type, used identically here, on the stat
+             tiles, in the table and in export headers. The DB values stay as
+             they are (they are in the sync contract and on 178k rows); only
+             the human labels change. "Company placeholder" named the
+             implementation, not the thing. -->
+        <select id="contacts-record-type" title="Record type — companies and shared mailboxes are not people, so they are hidden unless asked for">
+          <option value="">People</option>
+          <option value="company_placeholder">Companies</option>
+          <option value="public_email">Shared mailboxes</option>
+          <option value="all">All records</option>
+        </select>
+        <select id="contacts-suppressed" title="Suppressed contacts are excluded from lists, counts and exports by default">
+          <option value="">Hide suppressed</option>
+          <option value="only">Suppressed only</option>
+          <option value="all">Include suppressed</option>
         </select>
         <select id="contacts-missing">
           <option value="">All contacts</option>
@@ -272,6 +299,24 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <span class="spacer"></span>
         <button id="contacts-export-btn" class="small">Configure export…</button>
         <span id="contacts-count" class="stale"></span>
+      </div>
+      <!-- Tag chips. Click a chip to flip it between include and exclude; the
+           any/all switch governs the include chips only, since exclusions can
+           only ever mean "none of". The active-filter line spells the whole
+           expression out rather than saying "3 tags" — someone exporting
+           4,000 contacts needs to see exactly what they selected. -->
+      <div class="controls" id="contacts-tagbar" style="margin-top:6px;align-items:center">
+        <span class="stale" style="font-size:12px">Tags:</span>
+        <span id="tag-chips" style="display:flex;gap:5px;flex-wrap:wrap"></span>
+        <input id="tag-add-input" list="all-tags" placeholder="+ add tag…" style="width:170px">
+        <datalist id="all-tags"></datalist>
+        <label style="font-size:12px" title="Applies to included tags only">
+          <input type="radio" name="tagmode" value="any" checked> any
+        </label>
+        <label style="font-size:12px">
+          <input type="radio" name="tagmode" value="all"> all
+        </label>
+        <span id="tag-expression" class="stale" style="font-size:12px"></span>
       </div>
       <dialog id="merge-contacts" style="border:1px solid var(--grid);border-radius:10px;padding:0;max-width:720px;width:94vw">
         <div style="padding:14px 16px">
@@ -324,9 +369,12 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           <option value="tag_add">Add tag</option>
           <option value="tag_remove">Remove tag</option>
           <option value="email_finder">Run email finder</option>
+          <option value="suppress">Suppress (exclude from exports)</option>
+          <option value="unsuppress">Un-suppress</option>
         </select>
         <input id="bulk-value" placeholder="value" style="width:160px">
         <datalist id="bulk-tags"></datalist>
+        <datalist id="bulk-reasons"></datalist>
         <button class="small primary" id="bulk-apply">Apply</button>
         <button class="small" id="bulk-clear">Clear</button>
         <span class="msg" id="bulk-msg"></span>
@@ -1275,7 +1323,7 @@ function skeleton(...ids) {
 
 function loadTab() {
   ({ deliverability: loadDeliverability, pipeline: loadPipeline,
-     contacts: loadContacts,
+     contacts: () => { loadContacts(); loadSuppression(); fillTagOptions(); },
      companies: () => { loadCompaniesStats(); loadCompanies(); },
      quality: loadQuality,
      campaigns: loadCampaigns,
@@ -1744,9 +1792,72 @@ function contactsFilterParams() {
   if ($("contacts-connected").checked || sender) p.set("connected", "1");
   if (sender) p.set("sender", sender);
   if ($("contacts-record-type").value) p.set("record_type", $("contacts-record-type").value);
+  if ($("contacts-suppressed").value) p.set("suppressed", $("contacts-suppressed").value);
+  // Tag chips are repeated params, not comma-joined: a tag may contain a comma.
+  const include = tagChips.filter(c => !c.exclude).map(c => c.tag);
+  const exclude = tagChips.filter(c => c.exclude).map(c => c.tag);
+  const key = tagMode() === "all" ? "tags_all" : "tags_any";
+  include.forEach(t => p.append(key, t));
+  exclude.forEach(t => p.append("tags_none", t));
   for (const [k, v] of Object.entries(contactsFilters)) if (v != null && v !== "") p.set(k, v);
   return p;
 }
+
+/* ---------- tag chips: include / exclude, any / all ---------- */
+// [{tag, exclude}] — one row per selected tag. Kept as an array so the order
+// the operator added them is the order the expression reads back in.
+let tagChips = [];
+const tagMode = () => document.querySelector('input[name="tagmode"]:checked').value;
+
+function renderTagChips() {
+  $("tag-chips").innerHTML = tagChips.map((c, i) => `
+    <button class="small" data-i="${i}" title="Click to ${c.exclude ? "include" : "exclude"}"
+      style="${c.exclude ? "text-decoration:line-through;opacity:.65" : ""}">
+      ${c.exclude ? "⊘ " : ""}${esc(c.tag)} <span data-rm="${i}" style="opacity:.6">×</span>
+    </button>`).join("");
+  $("tag-chips").querySelectorAll("button").forEach(b => {
+    b.onclick = (ev) => {
+      const i = +b.dataset.i;
+      if (ev.target.dataset.rm != null) tagChips.splice(i, 1);
+      else tagChips[i].exclude = !tagChips[i].exclude;
+      renderTagChips();
+      contactsState.offset = 0;
+      loadContacts();
+      loadContactsStats();
+    };
+  });
+  const inc = tagChips.filter(c => !c.exclude).map(c => c.tag);
+  const exc = tagChips.filter(c => c.exclude).map(c => c.tag);
+  const parts = [];
+  if (inc.length) parts.push(inc.join(tagMode() === "all" ? " AND " : " OR "));
+  if (exc.length) parts.push(exc.map(t => "NOT " + t).join(" AND "));
+  $("tag-expression").textContent = parts.length ? parts.join(" AND ") : "";
+}
+
+function addTagChip(tag) {
+  const t = (tag || "").trim().toLowerCase();
+  if (!t || tagChips.some(c => c.tag === t)) return;
+  tagChips.push({ tag: t, exclude: false });
+  renderTagChips();
+  contactsState.offset = 0;
+  loadContacts();
+  loadContactsStats();
+}
+
+$("tag-add-input").onchange = () => {
+  addTagChip($("tag-add-input").value);
+  $("tag-add-input").value = "";
+};
+
+// Suggestions only — a tag not yet in the workspace is still a legal filter.
+async function fillTagOptions() {
+  const d = await get("/api/tags").catch(() => null);
+  if (!d || !d.tags) return;
+  $("all-tags").innerHTML = d.tags.map(t => `<option value="${esc(t.tag ?? t)}">`).join("");
+}
+document.querySelectorAll('input[name="tagmode"]').forEach(r => {
+  r.onchange = () => { renderTagChips(); contactsState.offset = 0; loadContacts(); loadContactsStats(); };
+});
 
 function contactsQuery() {
   const p = contactsFilterParams();
@@ -1941,11 +2052,16 @@ $("bulk-clear").onclick = () => { contactsSel.clear(); updateBulkBar(); loadCont
 $("bulk-apply").onclick = () => {
   const op = $("bulk-op").value;
   const value = $("bulk-value").value.trim();
-  if (op !== "email_finder" && !value) { toast("Enter a value"); return; }
+  // suppress takes an optional reason; unsuppress and email_finder take nothing.
+  const optionalValue = op === "email_finder" || op === "suppress" || op === "unsuppress";
+  if (!optionalValue && !value) { toast("Enter a value"); return; }
   if (!confirm(`Apply "${op}"${value ? ` = "${value}"` : ""} to ${contactsSel.size} contacts?`)) return;
   formResult("bulk-msg", post("/api/contacts/bulk",
     { lead_ids: [...contactsSel], op, value, workspace: state.workspace }),
-    () => { contactsSel.clear(); loadContacts(false); refreshSummary(); });
+    () => {
+      contactsSel.clear(); loadContacts(false); refreshSummary();
+      if (op === "suppress" || op === "unsuppress") loadSuppression();
+    });
 };
 
 // Existing workspace tags feed the add/remove-tag type-ahead; custom values
@@ -1965,18 +2081,32 @@ $("bulk-op").onchange = () => {
   const isTag = op === "tag_add" || op === "tag_remove";
   const inp = $("bulk-value");
   if (isTag) { inp.setAttribute("list", "bulk-tags"); inp.placeholder = "tag…"; }
-  else { inp.removeAttribute("list"); inp.placeholder = "value"; }
+  else if (op === "suppress") {
+    inp.setAttribute("list", "bulk-reasons");
+    inp.placeholder = "reason (default: manual)";
+    if (!$("bulk-reasons").innerHTML) {
+      get("/api/suppression").then(d => {
+        $("bulk-reasons").innerHTML = (d?.reasons || [])
+          .map(r => `<option value="${r}">`).join("");
+      }).catch(() => {});
+    }
+  } else { inp.removeAttribute("list"); inp.placeholder = "value"; }
 };
 
 function loadContactsStats() {
-  // Not range-filtered by getR — stats are a workspace-wide inventory.
-  return get("/api/contacts/stats").then(d => {
+  // Same filter set as the list. The stats query used to run its own WHERE
+  // with no record_type predicate while the list defaulted to people, so the
+  // tiles counted company placeholders and shared mailboxes the list did not
+  // — clicking a tile returned a different number than the tile showed.
+  return get("/api/contacts/stats?" + contactsFilterParams().toString()).then(d => {
     if (!d) return;
     const o = d.overall || {};
+    const rt = d.record_types || {};
     // Drill-in: clear any conflicting bucket keys, clear the range (so the table
     // matches the all-time stat), then apply the filter.
     const drill = (patch) => {
-      ["verify", "qualify_finding", "has_linkedin", "tag"].forEach(k => delete contactsFilters[k]);
+      ["verify", "qualify_finding", "has_linkedin", "has_domain", "tag",
+       "suppressed"].forEach(k => delete contactsFilters[k]);
       setRangeAll();
       setContactsFilter(patch);
     };
@@ -1995,17 +2125,36 @@ function loadContactsStats() {
         ${tcell(t, "qualify_finding", { tag: t.tag, qualify_finding: "1" })}
         ${tcell(t, "has_linkedin", { tag: t.tag, has_linkedin: "1" })}
       </tr>`).join("");
+    // Three rows, each answering one question: what kind of records are these,
+    // how much usable email do they have, how ready are they to enrich.
+    // Rows 2 and 3 are always "of the records selected in row 1", which is
+    // what makes the numbers trustworthy.
+    const rtCell = (label, value, patch) =>
+      `<div class="stat-cell" data-patch='${esc(JSON.stringify(patch))}'>
+         <div class="label">${label}</div><div class="value">${fmt(value || 0)}</div></div>`;
     $("contacts-stats").innerHTML = `
-      <div class="stale" style="margin-bottom:6px">Workspace totals (all time) · ${fmt(o.total)} leads — click any number to filter</div>
+      <div class="stale" style="margin-bottom:6px">Records</div>
       <div class="stat-grid">
-        ${cell("Valid email", o.valid_email, { verify: "valid" })}
+        ${rtCell("People", rt.people, { record_type: "" })}
+        ${rtCell("Companies", rt.companies, { record_type: "company_placeholder" })}
+        ${rtCell("Shared mailboxes", rt.shared_mailboxes, { record_type: "public_email" })}
+        ${rtCell("Suppressed", rt.suppressed, { suppressed: "only" })}
+      </div>
+      <div class="stale" style="margin:10px 0 6px">Email coverage · ${fmt(o.total)} shown — click any number to filter</div>
+      <div class="stat-grid">
+        ${cell("Valid", o.valid_email, { verify: "valid" })}
         ${cell("Catch-all", o.catch_all_email, { verify: "catch_all" })}
+        ${cell("Risky", o.risky_email, { verify: "risky" })}
         ${cell("No email", o.no_email, { verify: "none" })}
-        ${cell("Find-eligible", o.qualify_finding, { qualify_finding: "1" })}
+      </div>
+      <div class="stale" style="margin:10px 0 6px">Enrichment readiness</div>
+      <div class="stat-grid">
         ${cell("Has LinkedIn", o.has_linkedin, { has_linkedin: "1" })}
+        ${cell("Has domain", o.has_domain, { has_domain: "1" })}
+        ${cell("Find-eligible", o.qualify_finding, { qualify_finding: "1" })}
       </div>
       ${tags.length ? `<div style="margin-top:12px;overflow-x:auto"><table class="stat-table">
-        <thead><tr><th>Tag</th><th class="num">Leads</th><th class="num">Valid</th><th class="num">Catch-all</th>
+        <thead><tr><th>Tag</th><th class="num">Records</th><th class="num">Valid</th><th class="num">Catch-all</th>
           <th class="num">No email</th><th class="num">Find-elig.</th><th class="num">LinkedIn</th></tr></thead>
         <tbody>${tagRows}</tbody></table></div>` : ""}`;
     $("contacts-stats").querySelectorAll(".stat-cell").forEach(c => c.onclick = () => drill(JSON.parse(c.dataset.patch)));
@@ -2015,6 +2164,74 @@ function loadContactsStats() {
 }
 $("contacts-q").oninput = () => { clearTimeout(contactsTimer); contactsTimer = setTimeout(() => loadContacts(), 300); };
 $("contacts-status").onchange = $("contacts-missing").onchange = $("contacts-sort").onchange = $("contacts-connected").onchange = $("contacts-sender").onchange = $("contacts-record-type").onchange = () => loadContacts();
+// Changing the suppression view changes what the tiles mean too.
+$("contacts-suppressed").onchange = () => { loadContacts(); loadContactsStats(); };
+
+/* ---------- suppression ---------- */
+// Rules are authored against identifier VALUES, so they keep applying to
+// contacts imported later. That is the whole reason this is a list of rules
+// and not a flag on a lead row.
+function loadSuppression() {
+  return get("/api/suppression").then(d => {
+    if (!d) return;
+    if (!$("sup-type").options.length) {
+      const label = { email: "Email", email_domain: "Email domain",
+                      linkedin_url: "LinkedIn URL", company_domain: "Company domain",
+                      company_id: "Company id", lead_id: "Contact id",
+                      name_company: "Name + company" };
+      $("sup-type").innerHTML = (d.entry_types || [])
+        .map(t => `<option value="${t}">${label[t] || t}</option>`).join("");
+      $("sup-reason").innerHTML = (d.reasons || [])
+        .map(r => `<option value="${r}">${r.replace(/_/g, " ")}</option>`).join("");
+      $("sup-reason").value = "manual";
+    }
+    const s = d.stats || {};
+    const entries = d.entries || [];
+    const rows = entries.map(e => `<tr>
+        <td>${esc(e.entry_type)}</td>
+        <td class="clip" style="max-width:280px">${esc(e.value_normalized)}</td>
+        <td>${esc(String(e.reason).replace(/_/g, " "))}</td>
+        <td class="num">${fmt(e.matched_contacts)}</td>
+        <td>${e.workspace_id ? "workspace" : "org-wide"}</td>
+        <td class="clip" style="max-width:160px">${esc(e.note || "")}</td>
+        <td><button class="small" data-type="${esc(e.entry_type)}"
+              data-value="${esc(e.value_normalized)}"
+              data-org="${e.workspace_id ? "" : "1"}">Remove</button></td>
+      </tr>`).join("");
+    $("sup-body").innerHTML = `
+      <div class="stale" style="margin:6px 0">
+        ${fmt(s.suppressed_contacts || 0)} contacts currently suppressed
+        across ${fmt(entries.length)} rule(s).
+      </div>
+      ${entries.length ? `<div style="overflow-x:auto"><table class="stat-table">
+        <thead><tr><th>Type</th><th>Value</th><th>Reason</th><th class="num">Contacts</th>
+          <th>Scope</th><th>Note</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+        : `<div class="stale">No suppression rules yet.</div>`}`;
+    $("sup-body").querySelectorAll("button[data-type]").forEach(b => {
+      b.onclick = () => post("/api/suppression/remove", {
+        workspace: state.workspace, type: b.dataset.type,
+        value: b.dataset.value, org_wide: !!b.dataset.org,
+      }).then(() => { loadSuppression(); loadContacts(); loadContactsStats(); });
+    });
+  }).catch(() => {});
+}
+
+$("sup-add").onclick = () => {
+  const value = $("sup-value").value.trim();
+  if (!value) return;
+  $("sup-msg").textContent = "…";
+  post("/api/suppression/add", {
+    workspace: state.workspace, type: $("sup-type").value, value,
+    reason: $("sup-reason").value, note: $("sup-note").value.trim() || null,
+    org_wide: $("sup-org-wide").checked,
+  }).then(r => {
+    if (r && r.error) { $("sup-msg").textContent = r.error; return; }
+    $("sup-msg").textContent = `${fmt(r.contacts_suppressed)} contact(s) suppressed`;
+    $("sup-value").value = ""; $("sup-note").value = "";
+    loadSuppression(); loadContacts(); loadContactsStats();
+  }).catch(e => { $("sup-msg").textContent = String(e); });
+};
 $("contacts-prev").onclick = () => { contactsState.offset = Math.max(0, contactsState.offset - contactsState.limit); loadContacts(false); };
 $("contacts-next").onclick = () => { contactsState.offset += contactsState.limit; loadContacts(false); };
 

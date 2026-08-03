@@ -196,6 +196,13 @@ def build_outbox_triggers() -> list[str]:
         ),
         "sender_accounts": ("CAST(OLD.id AS TEXT)", "NULL"),
         "sender_domains": ("OLD.domain", "NULL"),
+        # Suppression entries are soft-deleted (`revoked_at`), so this fires
+        # only on a genuine hard delete -- a workspace being removed, or a
+        # cleanup. The id IS the wire key, so it doubles as entity_key.
+        "suppression_entries": (
+            "OLD.id",
+            "(SELECT slug FROM workspaces WHERE id = OLD.workspace_id)",
+        ),
     }
 
     out: list[str] = []
@@ -356,6 +363,19 @@ def _drop_stale_outbox_triggers(conn: sqlite3.Connection) -> None:
     ]
     for name in names:
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+
+
+def _ensure_new_schema_tables(conn: sqlite3.Connection) -> None:
+    """Replay schema.py so tables added since this database was created exist.
+
+    Every statement in SCHEMA_SQL is CREATE ... IF NOT EXISTS, so this is a
+    no-op for anything already present. Without it, adding a table to
+    schema.py works on a fresh install and fails on every existing one the
+    moment anything else references it -- which is exactly what happened when
+    suppression_entries joined SYNC_MAP and ensure_outbox tried to put a
+    trigger on a table the live database had never heard of.
+    """
+    conn.executescript(SCHEMA_SQL)
 
 
 def ensure_outbox(conn: sqlite3.Connection) -> None:
@@ -2572,6 +2592,14 @@ def migrate_db(conn=None):
     # that migration just produced -- and before ensure_outbox for the same
     # reason: the rewritten rows need to enqueue under the new trigger.
     _reconcile_stale_domain_discovered_tags(conn)
+
+    # Tables added to schema.py after a database was created do not exist on
+    # that database until something creates them, and build_outbox_triggers()
+    # installs a trigger for every table in SYNC_MAP -- so a new synced table
+    # makes ensure_outbox fail with "no such table" on every existing install.
+    # schema.py is entirely CREATE ... IF NOT EXISTS, so replaying it here is
+    # both safe and the cheapest way to keep the two in step.
+    _ensure_new_schema_tables(conn)
 
     # Must run after the uid columns above: the tombstone triggers read OLD.uid.
     ensure_outbox(conn)

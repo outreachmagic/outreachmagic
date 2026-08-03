@@ -135,9 +135,14 @@ def normalize_company_name(name: Optional[str]) -> str:
 
 
 def normalize_email(email: Optional[str]) -> Optional[str]:
-    if not email or "@" not in str(email):
-        return None
-    return str(email).strip().lower()
+    """Canonical address, or None. One implementation, in normalize.py --
+    there used to be two identical copies of `.strip().lower()` here and in
+    workspace_routing, and neither repaired the malformed addresses that were
+    reaching the verifier and coming back falsely invalid."""
+    from normalize import canonicalize_email
+
+    address, _repairs = canonicalize_email(email)
+    return address
 
 
 def normalize_event_sender(platform: str, sender: str) -> Optional[str]:

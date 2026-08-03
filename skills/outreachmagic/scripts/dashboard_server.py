@@ -305,24 +305,57 @@ def _bool_q(query, name):
     return str(v).lower() in ("1", "true", "yes") if v is not None else None
 
 
+def _list_q(query: dict, name: str):
+    """Repeated params (?tags_any=a&tags_any=b) or one comma-joined value.
+
+    Both forms occur: the fetch layer builds repeated params, hand-written
+    URLs and the CLI tend to comma-join.
+    """
+    values = query.get(name) or []
+    out = []
+    for value in values:
+        out.extend(part.strip() for part in str(value).split(",") if part.strip())
+    return out or None
+
+
+def _lead_filters_from(query: dict) -> dict:
+    """The contacts filter set, read once.
+
+    Every surface that means "the contacts you are currently looking at" —
+    the list, the id selection behind "select all N matching", the stat tiles
+    and the CSV export — parses its filters here. They used to parse them in
+    four places, which is how an export drifts from the list it claims to
+    mirror. The keys line up 1:1 with dashboard_queries.LEAD_FILTER_KEYS.
+    """
+    campaign_id = _q(query, "campaign_id")
+    return {
+        "q": _q(query, "q"), "status": _q(query, "status"),
+        "campaign_id": int(campaign_id) if campaign_id else None,
+        "missing": _q(query, "missing"),
+        "since": _q(query, "since"), "until": _q(query, "until"),
+        "tag": _q(query, "tag"),
+        "tags_any": _list_q(query, "tags_any"),
+        "tags_all": _list_q(query, "tags_all"),
+        "tags_none": _list_q(query, "tags_none"),
+        "connected": _bool_q(query, "connected"),
+        "sender": _q(query, "sender"),
+        "has_linkedin": _bool_q(query, "has_linkedin"),
+        "verify": _q(query, "verify"),
+        "qualify_finding": _bool_q(query, "qualify_finding"),
+        "has_domain": _bool_q(query, "has_domain"),
+        "record_type": _q(query, "record_type"),
+        # Absent means exclude. The safe answer is the one you get by default.
+        "suppressed": _q(query, "suppressed"),
+    }
+
+
 @_workspace_scoped
 def handle_contacts(conn, ws_id, match, query):
-    campaign_id = _q(query, "campaign_id")
     return dashboard_queries.search_leads(
         conn, ws_id,
-        q=_q(query, "q"), status=_q(query, "status"),
-        campaign_id=int(campaign_id) if campaign_id else None,
-        missing=_q(query, "missing"),
-        since=_q(query, "since"), until=_q(query, "until"),
+        **_lead_filters_from(query),
         sort=_q(query, "sort", "last_activity"),
         direction=_q(query, "dir"),
-        tag=_q(query, "tag"),
-        connected=_bool_q(query, "connected"),
-        sender=_q(query, "sender"),
-        has_linkedin=_bool_q(query, "has_linkedin"),
-        verify=_q(query, "verify"),
-        qualify_finding=_bool_q(query, "qualify_finding"),
-        record_type=_q(query, "record_type"),
         limit=_int_q(query, "limit", 50, lo=1, hi=200),
         offset=_int_q(query, "offset", 0, hi=10_000_000))
 
@@ -331,41 +364,13 @@ def handle_contacts(conn, ws_id, match, query):
 def handle_contacts_ids(conn, ws_id, match, query):
     # Every lead_id matching the current contacts filter, for "select all N
     # matching" across pages. Capped so a runaway filter can't return the world.
-    campaign_id = _q(query, "campaign_id")
     return dashboard_queries.search_leads(
         conn, ws_id,
-        q=_q(query, "q"), status=_q(query, "status"),
-        campaign_id=int(campaign_id) if campaign_id else None,
-        missing=_q(query, "missing"),
-        since=_q(query, "since"), until=_q(query, "until"),
-        tag=_q(query, "tag"),
-        connected=_bool_q(query, "connected"),
-        sender=_q(query, "sender"),
-        has_linkedin=_bool_q(query, "has_linkedin"),
-        verify=_q(query, "verify"),
-        qualify_finding=_bool_q(query, "qualify_finding"),
-        record_type=_q(query, "record_type"),
+        **_lead_filters_from(query),
         limit=_int_q(query, "limit", 5000, lo=1, hi=50000),
         ids_only=True)
 
 
-def _lead_filters_from(query: dict) -> dict:
-    """The contacts filter set as lead_export kwargs — read from the same query
-    keys the contacts list uses, so "export what's on screen" is literal."""
-    campaign_id = _q(query, "campaign_id")
-    return {
-        "q": _q(query, "q"), "status": _q(query, "status"),
-        "campaign_id": int(campaign_id) if campaign_id else None,
-        "missing": _q(query, "missing"),
-        "since": _q(query, "since"), "until": _q(query, "until"),
-        "tag": _q(query, "tag"),
-        "connected": _bool_q(query, "connected"),
-        "sender": _q(query, "sender"),
-        "has_linkedin": _bool_q(query, "has_linkedin"),
-        "verify": _q(query, "verify"),
-        "qualify_finding": _bool_q(query, "qualify_finding"),
-        "record_type": _q(query, "record_type"),
-    }
 
 
 @_workspace_scoped
@@ -415,7 +420,8 @@ def handle_contacts_export(match, query, body):
 
 @_workspace_scoped
 def handle_contacts_stats(conn, ws_id, match, query):
-    return dashboard_queries.contacts_stats(conn, ws_id)
+    # Same filters as the list, so a tile and the rows under it always agree.
+    return dashboard_queries.contacts_stats(conn, ws_id, **_lead_filters_from(query))
 
 
 @_workspace_scoped
@@ -440,6 +446,63 @@ def handle_contacts_bulk(match, query, body):
         value=body.get("value"),
         workspace_slug=body.get("workspace"),
         force=bool(body.get("force")))
+
+
+@_workspace_scoped
+def handle_suppression_list(conn, ws_id, match, query):
+    import suppression
+    return {
+        "entries": suppression.list_entries(
+            conn, workspace_id=ws_id,
+            entry_type=_q(query, "type"), reason=_q(query, "reason"),
+            include_revoked=bool(_bool_q(query, "include_revoked"))),
+        "stats": suppression.stats(conn, ws_id),
+        "entry_types": list(suppression.ENTRY_TYPES),
+        "reasons": list(suppression.REASONS),
+    }
+
+
+def handle_suppression_add(match, query, body):
+    import suppression
+    body = body or {}
+    conn = get_conn()
+    try:
+        # org_wide is opt-in and explicit. The default is workspace scope,
+        # because a rule that quietly reaches every client's list is not
+        # something anyone should be able to create by omission.
+        ws_id = (None if body.get("org_wide")
+                 else _resolve_workspace(conn, body.get("workspace"))["id"])
+        rows = body.get("entries")
+        if rows:
+            return 200, suppression.add_entries_bulk(
+                conn, rows, workspace_id=ws_id,
+                default_reason=body.get("reason") or suppression.DEFAULT_REASON,
+                source="ui")
+        return 200, suppression.add_entry(
+            conn, entry_type=body.get("type") or "", value=body.get("value"),
+            workspace_id=ws_id,
+            reason=body.get("reason") or suppression.DEFAULT_REASON,
+            note=body.get("note"), source="ui")
+    except suppression.SuppressionError as exc:
+        return 400, {"error": str(exc)}
+    finally:
+        conn.close()
+
+
+def handle_suppression_remove(match, query, body):
+    import suppression
+    body = body or {}
+    conn = get_conn()
+    try:
+        ws_id = (None if body.get("org_wide")
+                 else _resolve_workspace(conn, body.get("workspace"))["id"])
+        return 200, suppression.revoke_entry(
+            conn, entry_type=body.get("type") or "", value=body.get("value"),
+            workspace_id=ws_id)
+    except suppression.SuppressionError as exc:
+        return 400, {"error": str(exc)}
+    finally:
+        conn.close()
 
 
 @_workspace_scoped
@@ -876,6 +939,9 @@ ROUTES = [
     ("GET", re.compile(r"^/api/tags$"), handle_tags),
     ("GET", re.compile(r"^/api/linkedin/senders$"), handle_linkedin_senders),
     ("POST", re.compile(r"^/api/contacts/bulk$"), handle_contacts_bulk),
+    ("GET", re.compile(r"^/api/suppression$"), handle_suppression_list),
+    ("POST", re.compile(r"^/api/suppression/add$"), handle_suppression_add),
+    ("POST", re.compile(r"^/api/suppression/remove$"), handle_suppression_remove),
     ("GET", re.compile(r"^/api/data-quality$"), handle_data_quality),
     ("GET", re.compile(r"^/api/serper/review$"), handle_serper_review),
     ("GET", re.compile(r"^/api/leads/(\d+)/serper-candidates$"), handle_lead_serper_candidates),

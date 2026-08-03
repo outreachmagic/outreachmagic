@@ -273,10 +273,23 @@ def sync_agent_secrets_cli(
     return result
 
 
-def api_keys_cli(*, as_json: bool = False, push: bool = False) -> dict:
-    from api_key_pool import build_api_keys_report, format_api_keys_report_text, maybe_push_api_key_status_to_cloud
+def api_keys_cli(
+    *, as_json: bool = False, push: bool = False, check_credits: bool = False,
+) -> dict:
+    from api_key_pool import (
+        API_KEY_PROVIDERS, build_api_keys_report, format_api_keys_report_text,
+        format_preflight, maybe_push_api_key_status_to_cloud, preflight,
+    )
 
     report = build_api_keys_report()
+    if check_credits:
+        # Live balances, not the status file's record of what happened last
+        # time. "Slot 0 worked an hour ago" and "slot 0 has credits now" are
+        # different claims and only the second one predicts the next batch.
+        report["credits"] = [
+            preflight(spec["provider"], spec["env_key"])
+            for spec in API_KEY_PROVIDERS
+        ]
     if push:
         report["cloud"] = maybe_push_api_key_status_to_cloud(
             load_config_fn=load_config,
@@ -289,6 +302,9 @@ def api_keys_cli(*, as_json: bool = False, push: bool = False) -> dict:
         print(json.dumps(report, indent=2))
     else:
         print(format_api_keys_report_text(report), end="")
+        for pre in report.get("credits") or []:
+            if pre.get("total_remaining") is not None or pre.get("by_slot"):
+                print(format_preflight(pre), flush=True)
         cloud = report.get("cloud")
         if isinstance(cloud, dict) and cloud.get("api_key_status_reported") == "reported":
             print("Runtime status reported to dashboard.", flush=True)

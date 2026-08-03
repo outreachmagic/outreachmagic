@@ -58,7 +58,10 @@ def test_icypeas_attempted_not_stamped_when_skipped():
     )
     # icypeas was configured-off (no_key, attempted=False) -- must not appear
     # as a recorded provider attempt, same intent the old tags assertion had.
-    assert profile["_provider_attempts"] == [
+    # `metadata` carries the signal fingerprint and is not what this test is
+    # about; compare the identifying fields.
+    assert [{k: v for k, v in a.items() if k != "metadata"}
+            for a in profile["_provider_attempts"]] == [
         {"provider": "trykitt", "status": "not_found", "domain": "acme.com"},
     ]
 

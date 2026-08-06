@@ -548,6 +548,40 @@ def main():
         default="auto",
         help="CSV format preset (auto-detect Sales Nav / Vayne exports by default)",
     )
+    imp_p.add_argument(
+        "--test",
+        dest="is_test",
+        action="store_true",
+        help="Mark every imported row as test data: excluded from lists, counts, "
+             "exports and bulk actions by default, so it can never reach a campaign",
+    )
+    imp_p.add_argument(
+        "--company-conflict",
+        dest="company_conflict",
+        choices=("error", "last-wins", "skip"),
+        default="error",
+        help="Company personalization is one value per company, but a sheet is "
+             "per lead. What to do when one company arrives with several values "
+             "for the same field: error (default, write nothing), last-wins, skip",
+    )
+    imp_p.add_argument(
+        "--mode",
+        choices=("upsert", "personalization-only"),
+        default="upsert",
+        help="personalization-only: rows must match an existing lead, and ONLY "
+             "personalization is written — no lead is created, no profile column "
+             "is touched, and personalized_first_name never becomes the name",
+    )
+    imp_p.add_argument(
+        "--record-type",
+        dest="record_type",
+        choices=("contact", "company_placeholder"),
+        help="Force every row to this record type. Pass company_placeholder when "
+             "importing a directory of businesses (a manufacturer dealer list, a "
+             "Maps scrape): those rows are companies, not people, and the "
+             "name-shape heuristic misses dealership names carrying no corporate "
+             "token ('K L M of Riverton', 'Corwin Vance')",
+    )
 
     aef_p = sub.add_parser(
         "apply-email-find-results",
@@ -581,6 +615,12 @@ def main():
     tag_bulk_p = tag_sub.add_parser("bulk", help="Add/remove tags across multiple leads")
     tag_bulk_p.add_argument("--workspace", required=True)
     tag_bulk_p.add_argument("--lead-ids", help="Comma-separated lead IDs")
+    # Campaign-scale tagging is thousands of ids; ~13KB of argv works until it
+    # doesn't. Same --file affordance as every other bulk command.
+    tag_bulk_p.add_argument(
+        "--file",
+        help="Path to a file of lead IDs (one per line, or a JSON array), "
+             "or \"-\" for stdin. Alternative to --lead-ids")
     tag_bulk_p.add_argument(
         "--identity-type",
         choices=["linkedin_sales_nav_id", "email", "linkedin_url", "external_id"],
@@ -767,6 +807,16 @@ def main():
                           help="Exclude leads carrying any of these tags (repeatable)")
     export_p.add_argument("--suppressed", choices=("exclude", "only", "all"),
                           help="Suppressed contacts: exclude (default), only, or all")
+    export_p.add_argument("--test", dest="test", choices=("exclude", "only", "all"),
+                          help="Test-data leads: exclude (default), only, or all")
+    # Repeatable: "contacts where icp_segment = mercedes franchise" is the ask
+    # immediately after segmenting, and computing it in Python post-export is
+    # the step that turned two commands into a six-step script.
+    export_p.add_argument("--personalized", action="append", dest="personalized",
+                          metavar="FIELD=VALUE",
+                          help="Only contacts whose personalization FIELD equals "
+                               "VALUE (repeatable; resolves lead or company scope "
+                               "from the registry)")
 
     efc_p = sub.add_parser(
         "email-finding-candidates",
@@ -2014,7 +2064,9 @@ def main():
     pset.add_argument("--value", help="Field value (single mode)")
     pset.add_argument("--date", help="Optional ISO date for date-aware fields")
     pset.add_argument("--batch", action="store_true", help="Read JSON array from --json")
-    pset.add_argument("--json", dest="json_input", help="JSON array: [{lead_id, field, value, date?}, ...]")
+    pset.add_argument("--json", dest="json_input",
+                      help='JSON array: [{lead_id, field, value, date?}, ...] (or "-" for stdin)')
+    pset.add_argument("--file", help="Path to a .json file holding that array")
 
     pget = sub.add_parser("personalize-get", help="Read merged personalization for a lead")
     pget.add_argument("--lead-id", type=int, required=True)
@@ -2028,6 +2080,33 @@ def main():
 
     pstat = sub.add_parser("personalize-status", help="Lead personalization summary")
     pstat.add_argument("--json", action="store_true")
+
+    # What fields exist, which scope each belongs to, and what values are
+    # already in use. Call this BEFORE writing a personalization field: reusing
+    # a name is usually right, but only if you can see what it already means.
+    pfields = sub.add_parser(
+        "personalization-fields",
+        help="Registry of personalization fields: scope (lead/company), usage, values")
+    pfields.add_argument("--scope", choices=("lead", "company"),
+                         help="Only fields in this scope")
+    pfields.add_argument("--values", action="store_true",
+                         help="Include the distinct values each field holds")
+    pfields.add_argument("--json", action="store_true")
+
+    tl_p = sub.add_parser(
+        "test-leads",
+        help="Synthetic/test leads: list flagged ones, or review candidates")
+    tl_sub = tl_p.add_subparsers(dest="test_leads_action")
+    tl_list = tl_sub.add_parser("list", help="Leads currently flagged as test")
+    tl_list.add_argument("--json", action="store_true")
+    tl_sug = tl_sub.add_parser(
+        "suggest",
+        help="Leads that look synthetic but are NOT flagged — review before flagging")
+    tl_sug.add_argument("--limit", type=int, default=200)
+    tl_sug.add_argument("--json", action="store_true")
+    tl_set = tl_sub.add_parser("set", help="Flag or unflag leads as test data")
+    tl_set.add_argument("--lead-ids", required=True, help="Comma-separated lead IDs")
+    tl_set.add_argument("--unset", action="store_true", help="Clear the flag instead")
 
     # Serper research produces candidates, not answers. These two mirror the
     # personalize-pending / personalize-set --batch pair above, so an agent that
@@ -2088,7 +2167,8 @@ def main():
                       help="'None of these' — records the judgement, writes nothing")
     sapp.add_argument("--batch", action="store_true")
     sapp.add_argument("--json", dest="json_input",
-                      help="JSON: [{lead_id, field, value?, dismissed?}]")
+                      help='JSON: [{lead_id, field, value?, dismissed?}] (or "-" for stdin)')
+    sapp.add_argument("--file", help="Path to a .json file holding that array")
     sapp.add_argument("--dry-run", action="store_true")
 
     cpset = sub.add_parser(
@@ -2101,7 +2181,9 @@ def main():
     cpset.add_argument("--value")
     cpset.add_argument("--date", help="Optional ISO date")
     cpset.add_argument("--batch", action="store_true")
-    cpset.add_argument("--json", dest="json_input", help="JSON: [{company_id|domain|name, field, value, date?}]")
+    cpset.add_argument("--json", dest="json_input",
+                       help='JSON: [{company_id|domain|name, field, value, date?}] (or "-" for stdin)')
+    cpset.add_argument("--file", help="Path to a .json file holding that array")
 
     cpget = sub.add_parser("company-personalize-get", help="Read company personalization")
     cpget.add_argument("--company-id", type=int)
@@ -3174,6 +3256,8 @@ def main():
                     tags_all=getattr(args, "tags_all", None),
                     tags_none=getattr(args, "tags_none", None),
                     suppressed=getattr(args, "suppressed", None),
+                    test=getattr(args, "test", None),
+                    personalized=getattr(args, "personalized", None),
                 )
             except lead_export.LeadExportError as exc:
                 print(json.dumps({"error": str(exc)}))
@@ -3314,6 +3398,10 @@ def main():
             import_batch_id=getattr(args, "import_batch_id", None),
             import_format=getattr(args, "import_format", None),
             overwrite_source=getattr(args, "overwrite_source", False),
+            record_type=getattr(args, "record_type", None),
+            company_conflict=getattr(args, "company_conflict", "error"),
+            mode=getattr(args, "mode", "upsert"),
+            is_test=getattr(args, "is_test", False),
         )
         # import_profiles() already reports a sync_hint when leads are pending
         # (see pipeline.py) without ever auto-syncing — network push only runs
@@ -3417,10 +3505,21 @@ def main():
                     ws_id, identity_type, values, tags_list, remove=getattr(args, "remove", False),
                 )))
             else:
-                if not getattr(args, "lead_ids", None):
-                    print(json.dumps({"error": "--lead-ids or --identity-type/--identity-values required"}))
+                id_file = getattr(args, "file", None)
+                if getattr(args, "lead_ids", None) and id_file:
+                    print(json.dumps({"error": "use --lead-ids or --file, not both"}))
                     sys.exit(1)
-                lead_ids = [int(x.strip()) for x in args.lead_ids.split(",") if x.strip()]
+                if not getattr(args, "lead_ids", None) and not id_file:
+                    print(json.dumps({
+                        "error": "--lead-ids, --file, or --identity-type/--identity-values required"}))
+                    sys.exit(1)
+                try:
+                    lead_ids = (_pipeline.load_lead_ids_from_cli(file_path=id_file)
+                                if id_file
+                                else [int(x.strip()) for x in args.lead_ids.split(",") if x.strip()])
+                except (ValueError, OSError) as e:
+                    print(json.dumps({"error": str(e)}))
+                    sys.exit(1)
                 print(json.dumps(_pipeline.tag_bulk(ws_id, lead_ids, tags_list, remove=getattr(args, "remove", False))))
         else:
             print(json.dumps({"error": "tag subcommand required: add, remove, set, list, bulk, repair"}))
@@ -4851,7 +4950,14 @@ def main():
                 print(json.dumps(_pipeline.list_quarantine(status=status, limit=50), indent=2))
     elif args.command == "personalize-set":
         if args.batch:
-            items = json.loads(args.json_input or "[]")
+            try:
+                items = _pipeline.load_json_array_from_cli(
+                    json_input=getattr(args, "json_input", None),
+                    file_path=getattr(args, "file", None),
+                )
+            except (json.JSONDecodeError, ValueError) as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
             print(json.dumps(_pipeline.personalize_set_batch(items), indent=2))
         else:
             if not args.lead_id or not args.field or args.value is None:
@@ -4860,6 +4966,62 @@ def main():
             print(json.dumps(_pipeline.personalize_set(
                 args.lead_id, args.field, args.value, field_date=getattr(args, "date", None),
             ), indent=2))
+    elif args.command == "personalization-fields":
+        fields = _pipeline.list_registered_fields(
+            scope=getattr(args, "scope", None),
+            with_values=getattr(args, "values", False),
+        )
+        if getattr(args, "json", False):
+            print(json.dumps({"fields": fields, "count": len(fields)}, indent=2))
+        else:
+            if not fields:
+                print("No personalization fields registered yet.")
+            for f in fields:
+                line = (f"  {f['scope']:<8} {f['field_name']:<28} "
+                        f"{f['entities']:>7} entities  {f['distinct_values']:>4} values")
+                print(line)
+                for value, n in (f.get("top_values") or [])[:8]:
+                    print(f"           {str(value)[:44]:<46} {n}")
+    elif args.command == "test-leads":
+        action = getattr(args, "test_leads_action", None)
+        conn = _pipeline.get_conn()
+        try:
+            if action == "suggest":
+                import pipeline_lead_review as _plr
+
+                result = _plr.test_lead_candidates(conn, limit=args.limit)
+                if getattr(args, "json", False):
+                    print(json.dumps(result, indent=2))
+                else:
+                    print(f"{result['count']} candidate(s) — none are flagged yet.")
+                    for r in result["candidates"]:
+                        print(f"  {r['id']:>8}  {str(r['name'] or '')[:26]:28}"
+                              f"{str(r['company'] or '')[:24]:26}"
+                              f"{str(r['original_source'] or '-')[:32]:34}"
+                              f"{r['events']} event(s)")
+                    print()
+                    print(result["note"])
+            elif action == "set":
+                ids = [int(x.strip()) for x in args.lead_ids.split(",") if x.strip()]
+                value = 0 if getattr(args, "unset", False) else 1
+                cur = conn.executemany(
+                    "UPDATE leads SET is_test = ?, updated_at = datetime('now') WHERE id = ?",
+                    [(value, i) for i in ids])
+                conn.commit()
+                print(json.dumps({"status": "ok", "changed": cur.rowcount,
+                                  "is_test": value, "lead_ids": ids}))
+            else:
+                rows = [dict(r) for r in conn.execute(
+                    "SELECT id, name, email, company, original_source FROM leads"
+                    " WHERE is_test = 1 ORDER BY id").fetchall()]
+                if getattr(args, "json", False):
+                    print(json.dumps({"leads": rows, "count": len(rows)}, indent=2))
+                else:
+                    print(f"{len(rows)} lead(s) flagged as test data:")
+                    for r in rows:
+                        print(f"  {r['id']:>8}  {str(r['name'] or '')[:30]:32}{r['email'] or ''}")
+        finally:
+            conn.close()
     elif args.command == "personalize-get":
         result = _pipeline.personalize_get(args.lead_id, layer=getattr(args, "layer", "merged"))
         if getattr(args, "json", False):
@@ -4988,11 +5150,15 @@ def main():
         import serper_review
 
         if args.batch:
-            if not args.json_input:
-                print("--batch requires --json '[{lead_id, field, value?, dismissed?}]'")
+            try:
+                items = _pipeline.load_json_array_from_cli(
+                    json_input=getattr(args, "json_input", None),
+                    file_path=getattr(args, "file", None),
+                )
+            except (json.JSONDecodeError, ValueError) as e:
+                print(json.dumps({"error": str(e)}))
                 return 1
-            result = serper_review.apply_batch(
-                json.loads(args.json_input), dry_run=args.dry_run)
+            result = serper_review.apply_batch(items, dry_run=args.dry_run)
         else:
             if not args.lead_id or not args.field:
                 print("--lead-id and --field are required")
@@ -5014,7 +5180,14 @@ def main():
             print(f"Stale: {result['stale']}")
     elif args.command == "company-personalize-set":
         if args.batch:
-            items = json.loads(args.json_input or "[]")
+            try:
+                items = _pipeline.load_json_array_from_cli(
+                    json_input=getattr(args, "json_input", None),
+                    file_path=getattr(args, "file", None),
+                )
+            except (json.JSONDecodeError, ValueError) as e:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
             print(json.dumps(_pipeline.company_personalize_set_batch(items), indent=2))
         else:
             if not args.field or args.value is None:

@@ -1405,3 +1405,35 @@ def email_finder_candidates_linkedin_only(leads: list[dict]) -> list[dict]:
             "linkedin_url": f"https://{normalized}",
         })
     return out
+
+
+def test_lead_candidates(conn, *, limit: int = 200) -> dict:
+    """Leads that LOOK synthetic but are not flagged — for a human to confirm.
+
+    Deliberately a report and not an auto-flag. On the live database, nine of
+    the seventeen rows matching '%test%' are real people at a real dealership
+    imported under a source someone named `mfr-national-test-westbury-...`.
+    Flagging by source name would have hidden real contacts from every export,
+    and a lead wrongly marked test is invisible everywhere rather than merely
+    wrong. Structurally synthetic addresses (example.com and friends) are
+    flagged automatically at import; everything else comes here.
+    """
+    rows = [dict(r) for r in conn.execute(
+        """SELECT l.id, l.name, l.email, l.company, l.original_source,
+                  l.original_source_detail,
+                  (SELECT COUNT(*) FROM workspace_lead_events e
+                    WHERE e.lead_id = l.id) AS events
+             FROM leads l
+            WHERE COALESCE(l.is_test, 0) = 0
+              AND (LOWER(COALESCE(l.original_source, '')) LIKE '%test%'
+                OR LOWER(COALESCE(l.original_source_detail, '')) LIKE '%test%'
+                OR LOWER(COALESCE(l.company, '')) IN ('test co', 'test company'))
+            ORDER BY l.id LIMIT ?""",
+        (limit,)).fetchall()]
+    return {
+        "candidates": rows,
+        "count": len(rows),
+        "note": "Review before flagging. A real contact imported under a "
+                "test-named source is a naming problem, not a test lead — "
+                "flagging it hides them from every export.",
+    }

@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -336,7 +337,13 @@ def tag_bulk_by_identity(
 
 
 def load_json_array_from_cli(*, json_input: Optional[str] = None, file_path: Optional[str] = None) -> list:
-    """Load a JSON array for companion subprocesses (--json or --file)."""
+    """Load a JSON array for companion subprocesses (--json, --json -, --file).
+
+    Anything that can carry thousands of items must accept a file. A 117KB
+    payload on the command line is at the mercy of ARG_MAX, and passing a PATH
+    to --json fails as `JSONDecodeError: Expecting value` -- which reads like
+    bad data rather than the wrong flag.
+    """
     if file_path and json_input:
         raise ValueError("Use --file or --json, not both")
     if file_path:
@@ -345,12 +352,58 @@ def load_json_array_from_cli(*, json_input: Optional[str] = None, file_path: Opt
             raise ValueError(f"File not found: {path}")
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     elif json_input:
-        data = json.loads(json_input)
+        raw = json_input.strip()
+        if raw == "-":
+            raw = sys.stdin.read()
+        elif not raw.startswith(("[", "{")):
+            # Almost certainly a path handed to the wrong flag. Say so, rather
+            # than letting json.loads report a syntax error in a filename.
+            raise ValueError(
+                f"--json expects a JSON array, got {json_input[:60]!r}. "
+                "Use --file for a path, or --json - to read from stdin.")
+        data = json.loads(raw)
     else:
         raise ValueError("Provide --file or --json")
     if not isinstance(data, list):
         raise ValueError("JSON must be an array")
     return data
+
+
+def load_lead_ids_from_cli(*, file_path: str) -> list[int]:
+    """Lead ids from a file: one per line, or a JSON array. "-" reads stdin.
+
+    Both shapes occur -- a JSON array is what a previous command's output
+    already is, and one-id-per-line is what `cut`/`awk` produce -- so sniff
+    rather than making the caller convert.
+    """
+    if str(file_path).strip() == "-":
+        text = sys.stdin.read()
+    else:
+        path = resolve_project_path(file_path, kind="input")
+        if not path.is_file():
+            raise ValueError(f"File not found: {path}")
+        text = path.read_text(encoding="utf-8-sig")
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        data = json.loads(text)
+        if not isinstance(data, list):
+            raise ValueError("JSON must be an array of lead ids")
+        raw_items = data
+    else:
+        raw_items = [line for line in text.splitlines() if line.strip()]
+    out, bad = [], []
+    for item in raw_items:
+        try:
+            out.append(int(str(item).strip()))
+        except (TypeError, ValueError):
+            bad.append(str(item)[:40])
+    if bad:
+        raise ValueError(
+            f"{len(bad)} entr{'y' if len(bad) == 1 else 'ies'} are not lead ids: "
+            + ", ".join(bad[:5]))
+    if not out:
+        raise ValueError("no lead ids found in file")
+    return out
 
 
 def load_profile_rows_from_file(path: Path) -> list[dict]:

@@ -346,6 +346,7 @@ def _lead_filters_from(query: dict) -> dict:
         "record_type": _q(query, "record_type"),
         # Absent means exclude. The safe answer is the one you get by default.
         "suppressed": _q(query, "suppressed"),
+        "test": _q(query, "test"),
     }
 
 
@@ -392,6 +393,12 @@ def handle_contacts_export(match, query, body):
     a tick list is a literal answer to "which rows", and re-applying the filters
     on top of it would quietly drop rows whose filter state changed after they
     were ticked. Ids go in the body because 50k of them do not fit in a URL.
+
+    Runs as a background job (see SyncManager.start_export): a wide export is
+    minutes of work, and answering it on the request thread meant the browser
+    got silence and then, eventually, either a file or nothing. The column
+    choice is still validated synchronously, so a bad field name comes back as
+    a 400 the dialog can show rather than as a job that starts and then fails.
     """
     import lead_export
 
@@ -404,18 +411,26 @@ def handle_contacts_export(match, query, body):
             filters = {"lead_ids": _parse_lead_ids(lead_ids), "record_type": "all"}
         else:
             filters = _lead_filters_from(query)
+        preset = body.get("preset")
+        fields = body.get("fields") or None
         try:
-            return 200, lead_export.export_to_csv(
-                conn, ws["id"],
-                workspace_slug=ws.get("slug"),
-                preset=body.get("preset"),
-                fields=body.get("fields") or None,
-                limit=max(1, min(int(body.get("limit") or 50000), 200000)),
-                **filters)
+            lead_export.resolve_fields(
+                preset, fields, lead_export.personalization_fields(conn, ws["id"]))
         except lead_export.LeadExportError as exc:
             return 400, {"error": str(exc)}
+        slug = ws.get("slug")
     finally:
         conn.close()
+
+    status = dashboard_actions.sync_manager.start_export(
+        workspace_id=ws["id"], workspace_slug=slug,
+        preset=preset, fields=fields,
+        limit=max(1, min(int(body.get("limit") or 50000), 200000)),
+        filters=filters)
+    if status is None:
+        running = dashboard_actions.sync_manager.running_kind() or "another job"
+        return 409, {"error": f"{running} is already running — wait for it to finish"}
+    return 202, status
 
 
 @_workspace_scoped

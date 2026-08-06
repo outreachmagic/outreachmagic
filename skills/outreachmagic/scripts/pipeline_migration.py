@@ -10,6 +10,7 @@ import hashlib
 import json
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from typing import Optional
 
 import bounces
@@ -1110,6 +1111,140 @@ def _add_lead_record_type(conn: sqlite3.Connection) -> dict:
             file=sys.stderr,
         )
     return stats
+
+
+def _add_personalization_scope_registry(conn: sqlite3.Connection) -> dict:
+    """Declare which scope each personalization field belongs to.
+
+    Scope used to be inferred per write by looks_company_scoped() and then never
+    recorded, so nothing could answer "is this column the contact's or the
+    account's?" -- which made the export picker unreadable, kept 53k company
+    values out of the `full` preset, and let one sheet write eleven different
+    company_name values to eleven companies without a complaint.
+
+    Backfilled from what is already on disk. A name present in BOTH tables is a
+    genuine pre-existing collision that no rule can resolve, so it is recorded
+    against the table holding more of it and reported rather than guessed at
+    silently. On the live DB that is exactly one field -- `company_name`, with
+    101 lead rows against 53,255 company rows -- so the majority rule puts it
+    where all but a rounding error of the data already lives.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS personalization_fields (
+            field_name        TEXT PRIMARY KEY,
+            scope             TEXT NOT NULL CHECK (scope IN ('lead','company')),
+            label             TEXT,
+            description       TEXT,
+            first_seen_at     TEXT NOT NULL,
+            first_seen_source TEXT
+        )
+    """)
+    existing = {r["field_name"] for r in conn.execute(
+        "SELECT field_name FROM personalization_fields").fetchall()}
+    lead_counts = {r["field_name"]: r["n"] for r in conn.execute(
+        "SELECT field_name, COUNT(*) n FROM lead_personalization"
+        " WHERE field_name IS NOT NULL GROUP BY 1").fetchall()}
+    co_counts = {r["field_name"]: r["n"] for r in conn.execute(
+        "SELECT field_name, COUNT(*) n FROM company_personalization"
+        " WHERE field_name IS NOT NULL GROUP BY 1").fetchall()}
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    collisions, registered = [], 0
+    for name in sorted(set(lead_counts) | set(co_counts)):
+        if name in existing:
+            continue
+        in_lead, in_co = lead_counts.get(name, 0), co_counts.get(name, 0)
+        if in_lead and in_co:
+            scope = "company" if in_co >= in_lead else "lead"
+            collisions.append({
+                "field": name, "lead_rows": in_lead, "company_rows": in_co,
+                "registered_as": scope})
+        else:
+            scope = "company" if in_co else "lead"
+        conn.execute(
+            "INSERT OR IGNORE INTO personalization_fields"
+            " (field_name, scope, first_seen_at, first_seen_source)"
+            " VALUES (?, ?, ?, 'backfill')",
+            (name, scope, now))
+        registered += 1
+    if collisions:
+        for c in collisions:
+            print(
+                f"[outreachmagic] personalization field {c['field']!r} exists in BOTH "
+                f"scopes ({c['lead_rows']} lead rows, {c['company_rows']} company rows) "
+                f"— registered as {c['registered_as']}. The minority rows are still "
+                f"readable; move or rename them if they were meant to be separate.",
+                file=sys.stderr, flush=True)
+    return {"registered": registered, "collisions": collisions}
+
+
+def _add_company_category(conn: sqlite3.Connection) -> dict:
+    """`companies.category` — the account's classification, where queries need it.
+
+    A company's google_category ("mercedes-benz dealer", "used car dealer") was
+    stored as lead_personalization on its company_placeholder lead. Segmenting
+    contacts by it therefore meant leads -> companies -> placeholder lead ->
+    lead_personalization, a three-hop join, and any company whose placeholder
+    lacked the field simply had no category at all with nothing to say so.
+
+    The placeholder's personalization stays as the provenance record; this is
+    the queryable copy.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(companies)").fetchall()}
+    if "category" not in cols:
+        conn.execute("ALTER TABLE companies ADD COLUMN category TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_companies_category ON companies(category)"
+        " WHERE category IS NOT NULL")
+    # Backfill from each company's placeholder lead. MAX() picks one
+    # deterministically when a company somehow has two placeholders.
+    cur = conn.execute("""
+        UPDATE companies SET category = (
+            SELECT MAX(p.field_value) FROM lead_personalization p
+              JOIN leads l ON l.id = p.lead_id
+             WHERE l.company_id = companies.id
+               AND l.record_type = 'company_placeholder'
+               AND p.field_name = 'google_category'
+               AND TRIM(COALESCE(p.field_value, '')) != '')
+         WHERE category IS NULL
+           AND EXISTS (SELECT 1 FROM lead_personalization p
+                         JOIN leads l ON l.id = p.lead_id
+                        WHERE l.company_id = companies.id
+                          AND l.record_type = 'company_placeholder'
+                          AND p.field_name = 'google_category'
+                          AND TRIM(COALESCE(p.field_value, '')) != '')
+    """)
+    return {"backfilled": cur.rowcount or 0}
+
+
+def _add_lead_is_test(conn: sqlite3.Connection) -> dict:
+    """`leads.is_test` — synthetic rows, excluded from every default surface.
+
+    Test leads tagged like real ones inflate every count and can be emailed.
+    The flag follows the suppression pattern exactly: one column, one clause in
+    lead_filter_clause, and absent means excluded, so an operator who forgets
+    the filter gets the safe answer.
+
+    Backfill is deliberately narrow -- ONLY structurally synthetic addresses
+    (example.com / example.org / example.net, reserved by RFC 2606 for exactly
+    this). Source-name matching is NOT used: on the live DB, nine of the
+    seventeen rows matching '%test%' are real people at a real dealership
+    imported under a badly-named source, and flagging them would hide real
+    contacts from every export. `test-leads --suggest` reports those for a
+    human instead.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(leads)").fetchall()}
+    if "is_test" not in cols:
+        conn.execute("ALTER TABLE leads ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_leads_is_test ON leads(is_test) WHERE is_test = 1")
+    cur = conn.execute("""
+        UPDATE leads SET is_test = 1
+         WHERE is_test = 0
+           AND (LOWER(TRIM(COALESCE(email, ''))) LIKE '%@example.com'
+             OR LOWER(TRIM(COALESCE(email, ''))) LIKE '%@example.org'
+             OR LOWER(TRIM(COALESCE(email, ''))) LIKE '%@example.net')
+    """)
+    return {"flagged": cur.rowcount or 0}
 
 
 def _add_company_identity_purpose(conn: sqlite3.Connection) -> None:
@@ -2643,6 +2778,13 @@ def migrate_db(conn=None):
     _fold_shadow_source_personalization(conn)
     _add_lead_record_type(conn)
     _add_lead_fallback_email(conn)
+    # One batch, landed together: three additive columns/tables that are inert
+    # until the code that reads them ships. Migrations are the riskiest and
+    # least-repeatable part of a release, so an installed copy should survive
+    # one upgrade rather than three.
+    _add_personalization_scope_registry(conn)
+    _add_company_category(conn)
+    _add_lead_is_test(conn)
     _repair_provenance_transport_strings(conn)
     _install_provenance_transport_guard(conn)
     # Before the shape-guard triggers get a chance to reject an UPDATE that is

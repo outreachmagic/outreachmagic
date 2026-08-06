@@ -173,12 +173,22 @@ def _init_relay_sync_log() -> None:
 
 
 def _relay_log(msg: str) -> None:
-    """Stderr + optional log file, always flushed (safe for tail -f)."""
+    """Stderr + optional log file, always flushed (safe for tail -f).
+
+    The stderr write goes through progress.warn, which swallows BrokenPipeError.
+    A caller that keeps stdout and closes stderr -- the dashboard's pull worker
+    redirects stdout into the console log and leaves stderr alone -- otherwise
+    raises errno 32 on the first diagnostic, and SyncManager._run catches OSError
+    and files the whole (successful) pull as failed. A log line must never be
+    able to fail the thing it is logging about.
+    """
     global _SYNC_LOG_FILE
     if _SYNC_LOG_FILE is None and os.environ.get("OM_SYNC_LOG", "").strip():
         _init_relay_sync_log()
     line = f"[{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}] {msg}"
-    print(line, file=sys.stderr, flush=True)
+    from progress import warn as _warn
+
+    _warn(line)
     if _SYNC_LOG_FILE:
         try:
             with _SYNC_LOG_FILE.open("a", encoding="utf-8") as fh:

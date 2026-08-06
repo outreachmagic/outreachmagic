@@ -191,6 +191,7 @@ from constants import (
     SHARED_EMAIL_DOMAINS,
     is_non_company_name,
     looks_like_company_name,
+    is_company_directory_source,
     STAGE_EMOJI,
     require_professional_domain_clause,
     USAGE_WARNING_PERCENT,
@@ -3920,21 +3921,34 @@ def _import_phone_numbers(
     return written
 
 
-def detect_company_placeholder(profile: dict, extra: dict) -> bool:
+def detect_company_placeholder(
+    profile: dict, extra: dict, *, source: Optional[str] = None,
+) -> bool:
     """Is this import row a company stub rather than a person?
 
     The signature of a Google Maps / Apify business scrape imported with
     name = company_name: the name IS the company, and there is no personal
     identifier of any kind. Deliberately strict -- a real person who happens to
     share their company's name still has an email or a LinkedIn URL.
+
+    `source` names where the row came from. When that source is a directory of
+    businesses (a manufacturer's dealer locator), the structural test alone is
+    conclusive and the name-shape whitelist is skipped: it is a positive-signal
+    test, and a dealership named "K L M of Riverton" or "Corwin Vance" offers no
+    positive signal while being unambiguously a company. 30 of 773 rows in one
+    MBUSA import landed as `contact` for exactly this reason -- they then showed
+    up as people in the contacts list and burned email-finder credits, while
+    "K L M of Fairhaven, Inc." from the same import classified correctly.
     """
     name = str(profile.get("name") or "").strip().lower()
     company = str(profile.get("company") or "").strip().lower()
     if not name or not company or name != company:
         return False
-    # Require a positive business signal. A sole trader whose company is their
-    # own name matches name == company exactly like a scraped business does.
-    if not looks_like_company_name(name):
+    # Require a positive business signal -- unless the source already settled
+    # it. A sole trader whose company is their own name matches name == company
+    # exactly like a scraped business does, and only the whitelist tells them
+    # apart when the source is unknown.
+    if not is_company_directory_source(source) and not looks_like_company_name(name):
         return False
     for key in ("email", "linkedin", "linkedin_url", "title"):
         if str(profile.get(key) or "").strip():
@@ -4113,7 +4127,9 @@ def _extract_extra_import_fields(raw: dict) -> dict[str, str]:
             if text:
                 out[key] = text
     for key, val in raw.items():
-        if not key.startswith("personalized_"):
+        # `company_personalized_` as well as `personalized_`: an explicit
+        # company-scoped column has to survive extraction to be routed at all.
+        if not key.startswith(("personalized_", "company_personalized_")):
             continue
         text = str(val).strip() if val is not None else ""
         if text:
@@ -4569,6 +4585,199 @@ def apply_email_find_results(
     return summary
 
 
+def validate_import_rows(
+    rows: list[dict],
+    *,
+    mode: str = "upsert",
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict:
+    """What this import would do wrong, reported BEFORE anything is written.
+
+    Three things used to only be discoverable after the fact, from per-row
+    errors in the summary: lead ids that do not exist, values that would
+    overwrite a different existing value, and one company arriving with several
+    values for the same company-scoped field. All three are cheap to know up
+    front and expensive to undo.
+    """
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        unmatched, overwrites, co_values = [], [], {}
+        for i, raw in enumerate(rows):
+            row_no = i + 1
+            lead_id_hint = _lead_id_hint_from_raw(raw)
+            lead_id = None
+            if lead_id_hint:
+                found = conn.execute(
+                    "SELECT id FROM leads WHERE id = ?", (lead_id_hint,)).fetchone()
+                if not found:
+                    unmatched.append({"row": row_no, "lead_id": lead_id_hint})
+                    continue
+                lead_id = found["id"]
+            elif mode == "personalization-only":
+                profile = normalize_profile_row(raw)
+                extra = _extract_extra_import_fields(raw)
+                idents = build_import_identities(profile, extra)
+                lead_id = _resolve_existing_lead_for_personalization(
+                    None, idents, conn=conn)
+                if not lead_id:
+                    unmatched.append({"row": row_no, "email": profile.get("email")})
+                    continue
+            for key, value in (raw or {}).items():
+                if not str(value or "").strip():
+                    continue
+                if not str(key).startswith((LEAD_FIELD_PREFIX, COMPANY_FIELD_PREFIX)):
+                    continue
+                field, explicit = strip_field_prefix(key)
+                scope, _ = resolve_scope(field, explicit=explicit, conn=conn)
+                if scope == "company":
+                    cid = None
+                    if lead_id:
+                        crow = conn.execute(
+                            "SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
+                        cid = crow["company_id"] if crow else None
+                    co_values.setdefault((cid, field), {}).setdefault(
+                        str(value), []).append(row_no)
+                    if cid:
+                        cur = conn.execute(
+                            "SELECT field_value FROM company_personalization"
+                            " WHERE company_id = ? AND field_name = ?", (cid, field)).fetchone()
+                        if cur and cur["field_value"] != str(value):
+                            overwrites.append({
+                                "row": row_no, "scope": "company", "company_id": cid,
+                                "field": field, "old": cur["field_value"], "new": str(value)})
+                elif lead_id:
+                    cur = conn.execute(
+                        "SELECT field_value FROM lead_personalization"
+                        " WHERE lead_id = ? AND field_name = ?", (lead_id, field)).fetchone()
+                    if cur and cur["field_value"] != str(value):
+                        overwrites.append({
+                            "row": row_no, "scope": "lead", "lead_id": lead_id,
+                            "field": field, "old": cur["field_value"], "new": str(value)})
+        conflicts = [
+            {"company_id": cid, "field": field,
+             "values": [{"value": v, "rows": r[:5], "row_count": len(r)}
+                        for v, r in sorted(vals.items())]}
+            for (cid, field), vals in sorted(
+                co_values.items(), key=lambda kv: (kv[0][0] or 0, kv[0][1]))
+            if len(vals) > 1
+        ]
+        return {
+            "rows": len(rows),
+            "will_not_match": {"count": len(unmatched), "sample": unmatched[:20]},
+            "will_overwrite": {"count": len(overwrites), "sample": overwrites[:20]},
+            "company_conflicts": {"count": len(conflicts), "sample": conflicts[:20]},
+            # Only conflicts block: an unmatched row is skipped and reported, and
+            # an overwrite is usually the point of a personalization update.
+            "blocking": ["company_conflicts"] if conflicts else [],
+        }
+    finally:
+        if own:
+            conn.close()
+
+
+def _resolve_existing_lead_for_personalization(
+    lead_id_hint: Optional[int],
+    idents: list,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Optional[int]:
+    """The existing lead a personalization-only row refers to, or None.
+
+    Lookup only -- never creates. A row that matches nothing is reported as
+    unmatched, which is the whole point of the mode: fifteen bad lead ids in a
+    sheet should come back as a list, not as fifteen new leads.
+    """
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        if lead_id_hint:
+            row = conn.execute(
+                "SELECT id FROM leads WHERE id = ?", (lead_id_hint,)).fetchone()
+            return row["id"] if row else None
+        for ident in idents or []:
+            itype = ident.get("type") if isinstance(ident, dict) else None
+            ivalue = ident.get("value") if isinstance(ident, dict) else None
+            if not itype or not ivalue:
+                continue
+            row = conn.execute(
+                "SELECT lead_id FROM lead_identities"
+                " WHERE identity_type = ? AND identity_value = ? LIMIT 1",
+                (itype, ivalue)).fetchone()
+            if row:
+                return row["lead_id"]
+        return None
+    finally:
+        if own:
+            conn.close()
+
+
+def _collect_row_personalization(
+    lead_id: int,
+    extra: dict,
+    routing: dict,
+    co_pending: dict,
+    row_number: int,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+    summary: Optional[dict] = None,
+    dry_run: bool = False,
+) -> None:
+    """Route one row's personalization columns, writing lead scope immediately
+    and queueing company scope for the post-loop conflict check.
+
+    Shared by the upsert path and personalization-only mode so the two cannot
+    route the same column to different places.
+    """
+    lead_items, co_items = [], []
+    for key, val in extra.items():
+        if not val:
+            continue
+        # An explicit `company_personalized_` prefix declares company scope
+        # outright; anything else is resolved against the registry, and only
+        # falls back to the name-shape heuristic for a field nothing has claimed
+        # yet. Whichever way it went is recorded per column so the summary can
+        # say where each one landed -- an import that guesses and then says
+        # nothing is how a value ends up on the wrong record with no trace.
+        field, explicit = strip_field_prefix(key)
+        if not key.startswith((COMPANY_FIELD_PREFIX, LEAD_FIELD_PREFIX)):
+            if key in RESERVED_IMPORT_FIELDS:
+                continue
+            field = key
+        if not field:
+            continue
+        scope, decided_by = resolve_scope(field, explicit=explicit, conn=conn)
+        routing.setdefault(key, {"field": field, "scope": scope,
+                                 "decided_by": decided_by, "rows": 0})
+        routing[key]["rows"] += 1
+        item = {"field": field, "value": val}
+        if scope == "company":
+            co_items.append(item)
+        else:
+            lead_items.append({"lead_id": lead_id, **item})
+    if lead_items and not dry_run:
+        personalize_set_batch(lead_items, conn=conn)
+    if co_items:
+        # Deferred, not written here. Company personalization is one value per
+        # company while an import row is per lead, so the same company can
+        # arrive carrying different values for the same field -- and writing per
+        # row just means the last one silently wins. Collected now,
+        # conflict-checked once, written after the loop.
+        lid_conn = conn or get_conn()
+        cid_row = lid_conn.execute(
+            "SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        if lid_conn is not conn:
+            lid_conn.close()
+        if cid_row and cid_row["company_id"]:
+            for item in co_items:
+                co_pending.setdefault((cid_row["company_id"], item["field"]), []).append(
+                    {"value": item["value"], "row": row_number, "lead_id": lead_id})
+    if (lead_items or co_items) and summary is not None:
+        summary["personalized"] += 1
+
+
 def import_profiles(
     rows: list[dict],
     *,
@@ -4585,12 +4794,28 @@ def import_profiles(
     import_format: Optional[str] = None,
     overwrite_source: bool = False,
     record_type: Optional[str] = None,
+    company_conflict: str = "error",
+    mode: str = "upsert",
+    is_test: bool = False,
 ) -> dict:
     """Import many profile rows (CSV dicts or JSON objects). Tiered identity match keys.
 
     `record_type` forces every row to a type; leave it None to auto-detect
     company placeholders (see detect_company_placeholder).
+
+    `company_conflict` decides what happens when one company arrives with more
+    than one value for the same company-scoped personalization field:
+    "error" (default, write nothing), "last-wins", or "skip".
+
+    `mode="personalization-only"` is for a sheet of lead_id + personalized
+    columns: rows must match an existing lead, nothing is created, and no
+    profile column is written. Without it such a sheet is an upsert whose only
+    name source is the merge value -- which is how a personalization update
+    renamed people, "Brian Williams" -> "Brian".
     """
+    if mode not in ("upsert", "personalization-only"):
+        raise ValueError(f"unknown mode {mode!r}: use upsert or personalization-only")
+    personalization_only = mode == "personalization-only"
     rows, import_meta = preprocess_import_rows(rows, import_format=import_format)
     default_source = source if source is not None else "csv_import"
     if default_source == "csv_import" and import_meta.get("detected_format") == "sales_navigator":
@@ -4608,6 +4833,10 @@ def import_profiles(
         "weak_identity_count": 0,
         "import_key_only_count": 0,
         "skipped_no_identity": 0,
+        "company_personalized": 0,
+        # Always present, whether the run completes or validation aborts it --
+        # a caller checking for conflicts should not have to know which.
+        "company_personalization_conflicts": [],
         "identity_conflicts": [],
         "linkedin_url_conflicts": [],
         "errors": [],
@@ -4640,6 +4869,13 @@ def import_profiles(
             return summary
 
     sender_normalized = normalize_linkedin(sender_profile) if sender_profile else None
+
+    # Where each personalization column landed, and what decided it. Reported
+    # whether or not this is a dry run -- "which of these went to the company?"
+    # must be answerable after the fact, not only before.
+    routing: dict = {}
+    # (company_id, field) -> [{value, row, lead_id}], written after the loop.
+    co_pending: dict = {}
 
     if not workspace_id:
         skip_features = []
@@ -4696,6 +4932,27 @@ def import_profiles(
         # large DB no matter how few rows the CSV had.
         apply_bulk_pull_pragmas(shared_conn, disable_foreign_keys=False)
 
+    # Validation runs on every import, not only --dry-run. Knowing that fifteen
+    # lead ids do not exist is worth as much when you meant to write as when you
+    # meant to preview, and a company conflict is worth knowing BEFORE the write
+    # rather than as a per-row error afterwards. On the shared connection, so an
+    # import is still exactly one connection (see test_import_profiles_shared_conn).
+    summary["validation"] = validate_import_rows(rows, mode=mode, conn=shared_conn)
+    if summary["validation"]["blocking"] and not dry_run and company_conflict == "error":
+        summary["company_personalization_conflicts"] = (
+            summary["validation"]["company_conflicts"]["sample"])
+        summary["errors"].append({
+            "error": "import aborted by validation: "
+                     + ", ".join(summary["validation"]["blocking"])
+                     + ". See summary.validation for the offending rows. Re-run with "
+                       "--company-conflict last-wins or --company-conflict skip to "
+                       "proceed, or --dry-run to inspect without writing.",
+        })
+        if shared_conn is not None:
+            end_bulk_pull_session(shared_conn)
+            shared_conn.close()
+        return summary
+
     for i, raw in enumerate(rows):
         if shared_conn is not None and i and i % IMPORT_CHUNK_SIZE == 0:
             shared_conn.commit()
@@ -4706,19 +4963,26 @@ def import_profiles(
             )
         profile = normalize_profile_row(raw)
         extra = _extract_extra_import_fields(raw)
+        row_company_domain = normalize_company_domain(extra.get("company_domain"))
+        row_notes = extra.get("notes") or notes
+        lead_id_hint = _lead_id_hint_from_raw(raw)
         # A "Personalized First Name" column (Prosp LinkedIn-match exports carry
         # this) is a real name, not a mail-merge override -- when the row has no
         # other name source, this IS the lead's name and belongs in leads.name,
         # not stashed only in lead_personalization where nothing ever reads it
         # back into the profile. Pop it so the personalization loop below
         # doesn't ALSO write it as a first_name override once it's promoted.
-        if not profile.get("name"):
+        #
+        # NOT when the row names an existing lead. A sheet of lead_id +
+        # personalized columns is a personalization update, and promoting the
+        # merge value there renames the person: "Brian Williams" -> "Brian".
+        # The row already identified who this is; it is not also proposing a
+        # new name for them. See also --mode personalization-only, which makes
+        # this structurally impossible for a whole file.
+        if not profile.get("name") and not lead_id_hint and not personalization_only:
             pf_name = str(extra.pop("personalized_first_name", "") or "").strip()
             if pf_name:
                 profile["name"] = pf_name
-        row_company_domain = normalize_company_domain(extra.get("company_domain"))
-        row_notes = extra.get("notes") or notes
-        lead_id_hint = _lead_id_hint_from_raw(raw)
         idents = build_import_identities(
             profile, extra, import_batch=import_batch_id, company_domain=row_company_domain,
         )
@@ -4727,6 +4991,26 @@ def import_profiles(
             summary["errors"].append({"row": i + 1, "error": "no identity"})
             continue
         summary["processed"] += 1
+
+        if personalization_only:
+            # Resolve to an existing lead and go straight to the personalization
+            # block. Nothing on `leads` or `companies` is written, so a sheet of
+            # merge values cannot alter the people it is describing.
+            existing_id = _resolve_existing_lead_for_personalization(
+                lead_id_hint, idents, conn=shared_conn)
+            if not existing_id:
+                summary["unmatched"] = summary.get("unmatched", 0) + 1
+                summary["errors"].append({
+                    "row": i + 1, "lead_id": lead_id_hint,
+                    "email": profile.get("email"),
+                    "error": "no existing lead matched (personalization-only creates nothing)"})
+                continue
+            summary["matched"] += 1
+            lead_id = existing_id
+            _collect_row_personalization(
+                lead_id, extra, routing, co_pending, i + 1,
+                conn=shared_conn, summary=summary, dry_run=dry_run)
+            continue
 
         row_source, row_source_detail = csv_import_source_fields(
             extra,
@@ -4784,8 +5068,15 @@ def import_profiles(
             str(raw.get("record_type") or "").strip().lower()
             or record_type
             or (RECORD_TYPE_COMPANY_PLACEHOLDER
-                if detect_company_placeholder(profile, extra) else None)
+                if detect_company_placeholder(profile, extra, source=row_source)
+                else None)
         )
+        if is_test and not dry_run and result.get("id"):
+            # Marked at the door. A test row that reaches production tags is
+            # counted, exported and potentially emailed like any other.
+            (shared_conn or get_conn()).execute(
+                "UPDATE leads SET is_test = 1 WHERE id = ?", (result["id"],))
+            summary["test_flagged"] = summary.get("test_flagged", 0) + 1
         if row_record_type and row_record_type != RECORD_TYPE_CONTACT:
             summary["company_placeholders"] += 1
             if not dry_run and result.get("id"):
@@ -4840,43 +5131,46 @@ def import_profiles(
 
         _import_phone_numbers(lead_id, profile, extra, conn=shared_conn, summary=summary)
 
-        lead_items = []
-        co_items = []
-        for key, val in extra.items():
-            if not val:
-                continue
-            
-            field = None
-            if key.startswith("personalized_"):
-                field = key[len("personalized_"):]
-            elif key not in RESERVED_IMPORT_FIELDS:
-                field = key
-            
-            if not field:
-                continue
-
-            item = {"field": field, "value": val}
-            if is_company_personalization_field(field):
-                co_items.append(item)
-            else:
-                lead_items.append({"lead_id": lead_id, **item})
-        if lead_items:
-            personalize_set_batch(lead_items, conn=shared_conn)
-        if co_items:
-            lid_conn = shared_conn or get_conn()
-            cid_row = lid_conn.execute("SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
-            if lid_conn is not shared_conn:
-                lid_conn.close()
-            if cid_row and cid_row["company_id"]:
-                for item in co_items:
-                    company_personalize_set(
-                        item["field"], item["value"], company_id=cid_row["company_id"], conn=shared_conn,
-                    )
-        if lead_items or co_items:
-            summary["personalized"] += 1
+        _collect_row_personalization(
+            lead_id, extra, routing, co_pending, i + 1,
+            conn=shared_conn, summary=summary, dry_run=dry_run)
 
         if workspace_id:
             ws_pending.append((lead_id, extra))
+
+    # ── company personalization: conflict check, then write ──────────────────
+    co_conflicts = []
+    for (cid, field), entries in sorted(co_pending.items()):
+        distinct = {}
+        for e in entries:
+            distinct.setdefault(str(e["value"]), []).append(e["row"])
+        if len(distinct) > 1:
+            co_conflicts.append({
+                "company_id": cid, "field": field,
+                "values": [{"value": v, "rows": rows[:5], "row_count": len(rows)}
+                           for v, rows in sorted(distinct.items())],
+            })
+    summary["company_personalization_conflicts"] = co_conflicts
+    if co_conflicts and company_conflict == "error":
+        summary["errors"].append({
+            "error": f"{len(co_conflicts)} company/field pair(s) received more than one "
+                     "value. Nothing was written to company personalization. Re-run with "
+                     "--company-conflict last-wins to accept the final value per company, "
+                     "or --company-conflict skip to leave conflicted companies untouched.",
+        })
+    else:
+        for (cid, field), entries in sorted(co_pending.items()):
+            if company_conflict == "skip" and len({str(e["value"]) for e in entries}) > 1:
+                continue
+            if not dry_run:
+                company_personalize_set(
+                    field, entries[-1]["value"], company_id=cid, conn=shared_conn)
+            summary["company_personalized"] = summary.get("company_personalized", 0) + 1
+
+    summary["personalization_routing"] = routing
+    guessed = sorted(k for k, v in routing.items() if v["decided_by"] == "heuristic")
+    if guessed:
+        summary["personalization_routing_guessed"] = guessed
 
     if shared_conn is not None:
         end_bulk_pull_session(shared_conn)
@@ -5010,7 +5304,7 @@ from pipeline_tags import (
     get_workspace_summary, format_workspace_summary, update_lead_stage,
     log_event, get_lead_events, export_leads, get_pipeline, get_stats,
     get_campaign_stats, get_stage_counts, get_lead_by_email,
-    load_json_array_from_cli, load_profile_rows_from_file,
+    load_json_array_from_cli, load_lead_ids_from_cli, load_profile_rows_from_file,
     enrich_lead_rows, query_leads_for_export, get_copy_insights,
     get_segment_insights,
     # Re-exports for lazy-import callers (pipeline_migration, workspace routing):
@@ -5156,6 +5450,12 @@ from pipeline_personalize import (
     company_personalize_status,
     inspect_sync_company,
     is_company_personalization_field,
+    COMPANY_FIELD_PREFIX,
+    LEAD_FIELD_PREFIX,
+    list_registered_fields,
+    register_field,
+    resolve_scope,
+    strip_field_prefix,
     personalize_clear,
     personalize_get,
     personalize_pending,

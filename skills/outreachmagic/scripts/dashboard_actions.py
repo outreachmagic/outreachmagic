@@ -1026,6 +1026,23 @@ class SyncManager:
             "serper", self._run_serper,
             workspace_slug=workspace_slug, lead_ids=lead_ids, force=force, deep=deep)
 
+    def start_export(self, **kwargs) -> Optional[dict]:
+        """A contacts CSV, as a background job.
+
+        Inline on the request thread, a wide export went quiet for minutes and
+        then the browser had nothing to show: the toast had expired and the
+        dialog had already closed, so a slow export and a failed one looked
+        identical. As a job it reuses what pull and push already have -- the
+        single-flight lock, the status endpoint, and a console drawer that shows
+        rows written as they are written.
+        """
+        return self._start("export", self._run_export, **kwargs)
+
+    def running_kind(self) -> Optional[str]:
+        """Which job holds the lock right now, for a useful 409."""
+        with self._state_lock:
+            return self._state.get("kind") if self._state.get("state") == "running" else None
+
     def _start(self, kind: str, fn, **kwargs) -> Optional[dict]:
         """Returns the running status, or None when a sync is already running."""
         if not self._run_lock.acquire(blocking=False):
@@ -1086,13 +1103,58 @@ class SyncManager:
 
         log_path = os.environ.get("OM_SYNC_LOG", "").strip()
         if log_path:
-            from contextlib import redirect_stdout
+            from contextlib import redirect_stderr, redirect_stdout
 
-            with open(log_path, "a", encoding="utf-8") as fh, redirect_stdout(fh):
+            # stderr as well as stdout. The pull writes progress to both, and a
+            # dashboard launched by a harness that closed stderr made the first
+            # unredirected diagnostic raise BrokenPipeError -- which _run catches
+            # as OSError and reports as a failed pull, after the console log has
+            # already recorded a complete successful run.
+            with open(log_path, "a", encoding="utf-8") as fh, \
+                    redirect_stdout(fh), redirect_stderr(fh):
                 imported, skipped = _do()
         else:
             imported, skipped = _do()
         return {"imported": imported, "skipped": skipped}
+
+    def _run_export(
+        self,
+        workspace_id: str,
+        workspace_slug: Optional[str] = None,
+        preset: Optional[str] = None,
+        fields: Optional[list] = None,
+        limit: int = 50000,
+        filters: Optional[dict] = None,
+    ) -> dict:
+        import lead_export
+
+        conn = get_conn()
+        try:
+            cols = lead_export.resolve_fields(
+                preset, fields,
+                lead_export.personalization_fields(conn, workspace_id))
+            self._log(f"export: {len(cols)} columns, limit {limit}")
+            result = lead_export.export_to_csv(
+                conn, workspace_id,
+                workspace_slug=workspace_slug,
+                preset=preset, fields=fields, limit=limit,
+                progress=lambda n: self._log(f"export: {n} rows written…"),
+                **(filters or {}))
+        finally:
+            conn.close()
+        self._log(f"export: {result['count']} rows → {result['file']}")
+        if result.get("truncated"):
+            self._log(
+                f"export: ⚠ capped at {result['limit']} rows — narrow the filters "
+                "or raise the limit to get the rest")
+        supp = result.get("suppressed_excluded")
+        if supp:
+            n = supp.get("count")
+            self._log(
+                f"export: {n if n is not None else supp.get('at_least', 0)}"
+                f"{'' if n is not None else '+'} suppressed contact(s) matched the "
+                "filters and were excluded")
+        return result
 
     @staticmethod
     def _run_push(workspace_slug: Optional[str] = None) -> dict:

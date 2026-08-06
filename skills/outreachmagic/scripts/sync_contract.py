@@ -187,6 +187,10 @@ NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
         "last_contact_at": "not itself transmitted; written as a side effect when a workspace snapshot's activity block (last_contacted_at) is applied via apply_activity_sync_payload",
         "next_action": "local planning field; no sync payload builder reads it",
         "fallback_email_lead_id": "local FK; travels as `fallback_email_uid` (the target lead's uid) because local row ids are never addressable from the relay side -- see lead_sync.build_lead_core_payload",
+        "is_test": "local-only. A test lead is one this install should never send to "
+                   "or count; pushing that judgement org-wide would hide the row for "
+                   "every other consumer of the relay, and un-hiding it would need a "
+                   "second sync surface. Deliberately not on the wire",
     },
     "lead_identities": {
         "id": "local autoincrement surrogate; not addressable from the relay side",
@@ -255,6 +259,9 @@ NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
     "companies": {
         "id": "local surrogate; `uid` is the wire key, not this row id",
         "headcount_numeric": "derived numeric parse of headcount, recomputed locally rather than shipped",
+        "category": "local denormalized copy of the placeholder lead's google_category "
+                    "personalization, which already rides the wire as personalization; "
+                    "shipping it again would give the relay two sources for one fact",
         "hq_city": "collected for enrichment but not read by build_company_sync_payload today",
         "hq_state": "collected for enrichment but not read by build_company_sync_payload today",
         "hq_country": "collected for enrichment but not read by build_company_sync_payload today",

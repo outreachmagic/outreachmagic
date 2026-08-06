@@ -317,6 +317,102 @@ deliberately conservative: a sole trader whose company is their own name looks
 identical to a scraped business, and misclassifying a real person hides them
 from outreach. **Pass the flag when you know the list is companies.**
 
+That whitelist misses plenty of real dealerships — `K L M of Riverton`,
+`Corwin Vance`, `Brennt of Ashgrove` carry no business token at all, and 30 rows
+of one 773-row manufacturer import landed as fake people because of it. Two
+things now cover that:
+
+- **Known directory sources skip the whitelist.** When `--source` is a
+  manufacturer locator or a Maps scrape (`mercedes-benz-official`, anything
+  ending `-official`, `google_maps` — see `COMPANY_DIRECTORY_SOURCES`), a row
+  whose name IS its company with no email/title/LinkedIn is a company, whatever
+  the name looks like.
+- **Email finding refuses them anyway.** A `contact` row whose name equals its
+  company and that has no email, title or LinkedIn is excluded from finder
+  targeting, so a missed classification costs no credits.
+
+## Personalization scope: contact or company?
+
+A personalization field belongs to **exactly one scope**. Lead-scoped values are
+per person; company-scoped values are shared by every contact at that company.
+Writing to the wrong one is silent, so say which you mean:
+
+| You want | Column name / command |
+|---|---|
+| Per-contact value | `personalized_<field>` · `personalize-set` |
+| Per-company value | `company_personalized_<field>` · `company-personalize-set` |
+
+**Before reusing a field name, look at what it already holds:**
+
+```bash
+python3 scripts/pipeline.py personalization-fields --values
+#   lead     icp_segment    2857 entities   9 values
+#            mercedes franchise    971
+#            independent dealer    673
+#            office_owners         275     ← another campaign's values
+```
+
+The first write to a scope claims the name; a later write to the other scope is
+rejected rather than quietly landing in a second table. Fields that predate the
+registry were backfilled from what was on disk.
+
+`import-profiles` reports where every column went, in
+`summary.personalization_routing`. Anything listed under
+`personalization_routing_guessed` was routed by the old name-shape heuristic
+because nothing had claimed it — worth a look before you trust it.
+
+**Company personalization is one value per company, but a sheet is per lead.**
+If the same company arrives with several values for one field, the import
+aborts and names them rather than letting the last row win:
+
+```bash
+pipeline.py import-profiles --file segments.csv --company-conflict last-wins
+```
+
+## Updating personalization on existing leads
+
+A sheet of `lead_id` + personalized columns is a personalization update, not an
+import. Say so, or the merge value becomes the person's name — this is how
+"Brian Williams" once became "Brian":
+
+```bash
+python3 scripts/pipeline.py import-profiles --file segments.csv \
+  --mode personalization-only --workspace W
+```
+
+Rows must match an existing lead. Nothing is created, no profile column is
+touched, and unmatched rows come back as a list instead of becoming new leads.
+Validation runs first on every import (not just `--dry-run`) and reports rows
+that won't match, values that would be overwritten, and company conflicts.
+
+## Bulk input: always `--file`
+
+Every command that takes a batch accepts `--file` (and `--json -` for stdin).
+Passing a *path* to `--json` used to fail as `JSONDecodeError: Expecting value`,
+which reads like bad data rather than the wrong flag:
+
+```bash
+pipeline.py personalize-set --batch --file segments.json
+pipeline.py company-personalize-set --batch --file companies.json
+pipeline.py tag bulk --workspace W --tags campaign-x --file lead_ids.txt
+```
+
+## Test data
+
+Mark synthetic rows at the door so they can never reach a campaign:
+
+```bash
+pipeline.py import-profiles --file fixtures.csv --test --workspace W
+pipeline.py test-leads suggest    # real-looking leads that may be test data
+pipeline.py test-leads set --lead-ids 1,2,3
+```
+
+Test leads are excluded from lists, counts, exports and bulk actions by default
+(`--test all` to include, `--test only` to see just them) — the same discipline
+as suppression. Note that `test-leads suggest` is a **report**: a real contact
+imported under a test-named source is a naming problem, not a test lead, and
+flagging it would hide them from every export.
+
 ## Contact sourcing (`find-contacts`)
 
 Turns companies with no people into companies with people: the staff page is

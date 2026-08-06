@@ -1224,6 +1224,10 @@ function resetWorkspaceScopedState() {
   contactsState.offset = 0; contactsState.sortKey = null;
   contactsSel.clear();
   for (const k of Object.keys(contactsFilters)) delete contactsFilters[k];
+  // Tags are workspace-scoped; carrying chips across a switch filters the new
+  // workspace by tags it may not have, which reads as an empty workspace.
+  tagChips.length = 0;
+  if ($("tag-chips")) renderTagFilterBar();
   companiesState.offset = 0;
   companiesState.sortKey = null;
   for (const k of Object.keys(companiesFilters)) delete companiesFilters[k];
@@ -1408,7 +1412,7 @@ function leadColumns() {
         + (r.superseded_at ? ' <span class="flag warn" title="Superseded by real contacts at this company; kept for audit">superseded</span>' : "") },
     { key: "company", label: "Company", render: renderCompanyCell },
     { key: "title", label: "Title", render: r => esc(r.title ?? "") },
-    { key: "email", label: "Email", render: r => r.email ? esc(r.email) : '<span class="flag warn">no email</span>' },
+    { key: "email", label: "Email", render: r => r.email ? copyableCell(r.email) : '<span class="flag warn">no email</span>' },
     linkedinColumn(),
     // The sequencer's reply label ("Interested", "Out of office"), not the
     // legacy stage machine. It is what you actually work the list by.
@@ -1417,6 +1421,14 @@ function leadColumns() {
     { key: "tags", label: "Tags", maxw: 190, render: renderTagChips },
     { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
   ];
+}
+
+// Click-to-copy cell. Any value whose whole point is being pasted somewhere
+// else — an address, a URL, a domain — renders through this, so copying works
+// the same way in every column instead of only on LinkedIn.
+function copyableCell(value) {
+  const v = String(value ?? "").trim();
+  return v ? `<span class="copyable" data-copy="${esc(v)}" title="click to copy">${esc(v)}</span>` : "";
 }
 
 // The LinkedIn cell, shared by every table that shows an email — the URL as
@@ -1432,7 +1444,7 @@ function leadColumns() {
 function linkedinColumn() {
   return { key: "linkedin", label: "LinkedIn", maxw: 260, render: r => {
     const u = leadLiUrl(r);
-    return u ? `<span class="copyable" data-copy="${esc(u)}" title="click to copy">${esc(u)}</span>` : "";
+    return copyableCell(u);
   } };
 }
 
@@ -1809,7 +1821,7 @@ function contactsFilterParams() {
 let tagChips = [];
 const tagMode = () => document.querySelector('input[name="tagmode"]:checked').value;
 
-function renderTagChips() {
+function renderTagFilterBar() {
   $("tag-chips").innerHTML = tagChips.map((c, i) => `
     <button class="small" data-i="${i}" title="Click to ${c.exclude ? "include" : "exclude"}"
       style="${c.exclude ? "text-decoration:line-through;opacity:.65" : ""}">
@@ -1820,7 +1832,7 @@ function renderTagChips() {
       const i = +b.dataset.i;
       if (ev.target.dataset.rm != null) tagChips.splice(i, 1);
       else tagChips[i].exclude = !tagChips[i].exclude;
-      renderTagChips();
+      renderTagFilterBar();
       contactsState.offset = 0;
       loadContacts();
       loadContactsStats();
@@ -1838,7 +1850,7 @@ function addTagChip(tag) {
   const t = (tag || "").trim().toLowerCase();
   if (!t || tagChips.some(c => c.tag === t)) return;
   tagChips.push({ tag: t, exclude: false });
-  renderTagChips();
+  renderTagFilterBar();
   contactsState.offset = 0;
   loadContacts();
   loadContactsStats();
@@ -1856,7 +1868,7 @@ async function fillTagOptions() {
   $("all-tags").innerHTML = d.tags.map(t => `<option value="${esc(t.tag ?? t)}">`).join("");
 }
 document.querySelectorAll('input[name="tagmode"]').forEach(r => {
-  r.onchange = () => { renderTagChips(); contactsState.offset = 0; loadContacts(); loadContactsStats(); };
+  r.onchange = () => { renderTagFilterBar(); contactsState.offset = 0; loadContacts(); loadContactsStats(); };
 });
 
 function contactsQuery() {
@@ -1892,14 +1904,23 @@ async function openExportPanel() {
     if (!exportFieldOptions) return;
     $("export-preset").innerHTML = Object.keys(exportFieldOptions.presets)
       .map(p => `<option value="${esc(p)}"${p === "sequencer-upload" ? " selected" : ""}>${esc(p)}</option>`).join("");
-    // Every column the picker can offer, in the order the panes group them.
-    const all = [
-      ...exportFieldOptions.base,
-      ...exportFieldOptions.messages,
-      ...exportFieldOptions.personalization,
+    // Grouped, because a flat list cannot answer the question people actually
+    // have here: is this column the CONTACT's personalization or the COMPANY's?
+    // They are separate tables with separate scopes — a company value is shared
+    // by every contact at that company — and picking the wrong one is silent.
+    // The server names the groups; if it's an older payload, fall back to the
+    // flat keys so the picker still works.
+    const groups = exportFieldOptions.groups || [
+      { key: "base", label: "Contact", fields: exportFieldOptions.base || [] },
+      { key: "messages", label: "Messages", fields: exportFieldOptions.messages || [] },
+      { key: "personalization_lead", label: "Contact personalization",
+        fields: exportFieldOptions.personalization || [] },
     ];
-    $("export-fields").innerHTML = all.map(f =>
-      `<option value="${esc(f)}">${esc(f)}</option>`).join("");
+    $("export-fields").innerHTML = groups
+      .filter(g => (g.fields || []).length)
+      .map(g => `<optgroup label="${esc(g.label)}">`
+        + g.fields.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join("")
+        + `</optgroup>`).join("");
   }
   applyExportPreset();
 }
@@ -1919,12 +1940,16 @@ async function runExport() {
   p.set("workspace", state.workspace);
   const body = { fields };
   if (contactsSel.size) body.lead_ids = [...contactsSel];
-  toast("Exporting…");
   try {
-    const d = await api("/api/contacts/export?" + p.toString(),
+    // A job, not a request: the console drawer shows rows as they are written
+    // and the completion line carries the path. A wide export is minutes of
+    // work, and the old inline call went silent for all of them.
+    const s = await api("/api/contacts/export?" + p.toString(),
       { method: "POST", body: JSON.stringify(body) });
-    toast(`Wrote ${fmt(d.count)} row${d.count === 1 ? "" : "s"} to ${d.file}`
-      + (d.truncated ? ` (capped at ${fmt(d.limit)})` : ""));
+    state.logOffset = s.log_offset || 0;
+    openConsole(true);
+    updateSyncPill(s);
+    toast("Export started — see the console.");
   } catch (e) {
     toast(e.message);
   }
@@ -1964,6 +1989,18 @@ function renderActiveFilters() {
   });
 }
 function setContactsFilter(patch) {
+  // Tags have ONE home: the chip bar. A `tag` in a patch — from a stats-table
+  // drill-through or a chip in the lead panel — becomes a chip like any other,
+  // rather than a second, scalar tag filter rendered somewhere else and cleared
+  // separately. Two tag mechanisms that both worked and never agreed is what
+  // made "the same tag behaves differently depending where you added it" true.
+  if (patch.tag != null && patch.tag !== "") {
+    const { tag, ...rest } = patch;
+    state.tab !== "contacts" && switchTab("contacts");
+    addTagChip(tag);
+    if (!Object.keys(rest).length) return;
+    patch = rest;
+  }
   Object.assign(contactsFilters, patch);
   // mutually-exclusive verify/qualify: clearing empties
   for (const k of Object.keys(patch)) if (patch[k] == null) delete contactsFilters[k];
@@ -2175,12 +2212,22 @@ function loadSuppression() {
   return get("/api/suppression").then(d => {
     if (!d) return;
     if (!$("sup-type").options.length) {
-      const label = { email: "Email", email_domain: "Email domain",
-                      linkedin_url: "LinkedIn URL", company_domain: "Company domain",
+      const label = { email: "Email", email_domain: "Domain (email only)",
+                      linkedin_url: "LinkedIn URL", company_domain: "Domain",
                       company_id: "Company id", lead_id: "Contact id",
                       name_company: "Name + company" };
+      // One domain option, not two. `company_domain` already matches on the
+      // company's domain OR the contact's email domain, so it is a superset of
+      // `email_domain` — offering both made "which one blocks acme.com?" a
+      // question with a wrong answer available. The narrow type stays in the
+      // enum so existing rules keep working and keep rendering their real name.
+      const OFFER = new Set(["email", "company_domain", "linkedin_url",
+                             "company_id", "lead_id", "name_company"]);
       $("sup-type").innerHTML = (d.entry_types || [])
-        .map(t => `<option value="${t}">${label[t] || t}</option>`).join("");
+        .filter(t => OFFER.has(t))
+        .map(t => `<option value="${t}"${t === "company_domain"
+          ? ' title="Matches the company\'s domain or the contact\'s email domain"' : ""}>`
+          + `${label[t] || t}</option>`).join("");
       $("sup-reason").innerHTML = (d.reasons || [])
         .map(r => `<option value="${r}">${r.replace(/_/g, " ")}</option>`).join("");
       $("sup-reason").value = "manual";
@@ -2188,7 +2235,7 @@ function loadSuppression() {
     const s = d.stats || {};
     const entries = d.entries || [];
     const rows = entries.map(e => `<tr>
-        <td>${esc(e.entry_type)}</td>
+        <td>${esc({ email_domain: "domain (email only)", company_domain: "domain" }[e.entry_type] || e.entry_type)}</td>
         <td class="clip" style="max-width:280px">${esc(e.value_normalized)}</td>
         <td>${esc(String(e.reason).replace(/_/g, " "))}</td>
         <td class="num">${fmt(e.matched_contacts)}</td>
@@ -2666,7 +2713,21 @@ function compactEventLine(ev) {
     <span>${dt(ev.created_at)} UTC</span>
     ${ev.campaign_name ? `<span>· ${esc(ev.campaign_name)}</span>` : ""}
     ${ev.sender ? `<span>· ${esc(ev.sender)}</span>` : ""}
-  </div>${ev.subject ? `<div class="tl-preview"><b>${esc(ev.subject)}</b></div>` : ""}${ev.body_preview ? `<div class="tl-preview">${esc(ev.body_preview)}</div>` : ""}</div>`;
+  </div>${ev.subject ? `<div class="tl-preview"><b>${esc(ev.subject)}</b></div>` : ""}${eventBodyBlock(ev)}</div>`;
+}
+
+// One message body, two states — collapsed shows the preview, expanded REPLACES
+// it with the full text in the same element. The old shape stacked preview,
+// then a button, then the full body underneath it, so an expanded message read
+// as the first two lines twice followed by everything. Shared by the lead
+// timeline and the company activity timeline so they cannot drift.
+function eventBodyBlock(ev) {
+  const preview = String(ev.body_preview ?? "").trim();
+  if (!preview && !ev.has_body) return "";
+  if (!ev.has_body) return `<div class="tl-preview">${esc(preview)}</div>`;
+  return `<div class="tl-preview" data-body-for="${ev.id}">${esc(preview)}</div>
+    <button class="small linklike" style="margin-top:4px;font-size:12px"
+      onclick="toggleHistoryBody(this, ${ev.id})">Show full message</button>`;
 }
 
 // Merging is irreversible, so the dialog shows the resulting record before
@@ -3539,7 +3600,7 @@ async function loadReplies() {
     { key: "lead_name", label: "Name", render: r => esc(r.lead_name || "—") },
     { key: "company", label: "Company", render: renderCompanyCell },
     { key: "title", label: "Title", render: r => esc(r.title ?? "") },
-    { key: "email", label: "Email", render: r => r.email ? esc(r.email) : '<span class="flag warn">no email</span>' },
+    { key: "email", label: "Email", render: r => r.email ? copyableCell(r.email) : '<span class="flag warn">no email</span>' },
     linkedinColumn(),
     { key: "sentiment", label: "Sentiment", render: r => renderSentimentFlag(r.sentiment) },
     { key: "status_label", label: "Lead status", render: r => esc(r.status_label || "—") },
@@ -3966,8 +4027,7 @@ async function openLead(leadId) {
       </div>
       ${fromTo}
       ${ev.subject ? `<div class="tl-preview"><b>${esc(ev.subject)}</b></div>` : ""}
-      ${ev.body_preview ? `<div class="tl-preview">${esc(ev.body_preview)}</div>` : ""}
-      ${ev.has_body ? `<button class="small" style="margin-top:5px" onclick="toggleHistoryBody(this, ${ev.id})">Show full message</button>` : ""}
+      ${eventBodyBlock(ev)}
     </div>`; }).join("") : '<div class="empty">No events for this lead yet.</div>';
   renderLeadEnrich(lead);
   renderCompanyLink(lead);
@@ -4060,7 +4120,10 @@ function renderLeadTags(lead) {
   // Two ways in, because they answer different questions. The select shows what
   // tags exist without having to guess a first letter (a datalist alone only
   // suggests once you start typing); the input still takes anything new.
-  api("/api/tags").then(d => {
+  // get(), not api(): /api/tags is workspace-scoped and rejects a request with
+  // no ?workspace=. api() doesn't append it, so this used to throw into the
+  // .catch below and leave the select showing only its placeholder.
+  get("/api/tags").then(d => {
     const all = (d?.tags || []).map(t => t.tag ?? t);
     const dl = $("lead-tag-list");
     if (dl) dl.innerHTML = all.map(t => `<option value="${esc(t)}">`).join("");

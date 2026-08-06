@@ -50,12 +50,180 @@ def looks_company_scoped(field_name: str) -> bool:
     used to reject anything failing this test, which made perfectly ordinary
     company facts (`phone_google_maps`, `gm_rating`, `hours`) unstorable: the
     caller had already said "company scope" by calling the company function.
+
+    Now the LAST resort, not the first: resolve_scope() consults an explicit
+    prefix and then the registry before falling back here.
     """
     return field_name == "company_name" or field_name.startswith("company_")
 
 
 # Back-compat alias: pipeline.py imports this name for its import-routing loop.
 is_company_personalization_field = looks_company_scoped
+
+
+# ── Scope registry ───────────────────────────────────────────────────────────
+#
+# A personalization field belongs to exactly ONE scope. Lead-scoped values are
+# per person; company-scoped values are shared by every contact at that company.
+# Until this registry existed, scope was decided by looks_company_scoped() and
+# then never reported, so nothing downstream could answer the only question
+# anyone actually has here -- "will this column land on the contact or the
+# account?". That single gap is why the export picker was unreadable, why the
+# `full` preset silently omitted 53k company values, and why the same company
+# could take eleven different `company_name` values from one sheet without a
+# word of complaint.
+#
+# First write to a scope claims the name. After that the registry is
+# authoritative and a contradicting write is an error, not a silent reroute.
+
+COMPANY_FIELD_PREFIX = "company_personalized_"
+LEAD_FIELD_PREFIX = "personalized_"
+
+
+def strip_field_prefix(column: str) -> tuple[str, Optional[str]]:
+    """Split an import/export column into (field_name, explicit_scope|None).
+
+    `company_personalized_icp_tier` -> ("icp_tier", "company")
+    `personalized_first_name`       -> ("first_name", None)   [lead by position,
+                                        but not an explicit claim -- a legacy
+                                        name like personalized_company_name has
+                                        always meant the company's]
+    """
+    text = str(column or "").strip().lower()
+    if text.startswith(COMPANY_FIELD_PREFIX):
+        return text[len(COMPANY_FIELD_PREFIX):], "company"
+    if text.startswith(LEAD_FIELD_PREFIX):
+        return text[len(LEAD_FIELD_PREFIX):], None
+    return text, None
+
+
+def _registry_scope(conn: sqlite3.Connection, field_name: str) -> Optional[str]:
+    try:
+        row = conn.execute(
+            "SELECT scope FROM personalization_fields WHERE field_name = ?",
+            (field_name,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None          # pre-migration database
+    return row["scope"] if row else None
+
+
+def resolve_scope(
+    field_name: str,
+    *,
+    explicit: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> tuple[str, str]:
+    """Which table this field belongs in, and what decided it.
+
+    Returns (scope, source) where source is one of "explicit", "registry",
+    "heuristic". The source matters as much as the scope: an import summary
+    reporting "heuristic" is telling the operator that nothing authoritative
+    knew, and that a wrong guess is now on disk.
+    """
+    if explicit in ("lead", "company"):
+        return explicit, "explicit"
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        registered = _registry_scope(conn, field_name)
+    finally:
+        if own:
+            conn.close()
+    if registered:
+        return registered, "registry"
+    return ("company" if looks_company_scoped(field_name) else "lead"), "heuristic"
+
+
+def register_field(
+    field_name: str,
+    scope: str,
+    *,
+    source: str = "cli",
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict:
+    """Claim a field name for a scope. Idempotent; conflicting claims raise."""
+    if scope not in ("lead", "company"):
+        raise ValueError(f"scope must be 'lead' or 'company', got {scope!r}")
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        existing = _registry_scope(conn, field_name)
+        if existing and existing != scope:
+            raise ValueError(
+                f"{field_name!r} is already registered as a {existing.upper()} "
+                f"personalization field. A field belongs to one scope. Either "
+                f"write it to {existing} scope, or use a different name "
+                f"(e.g. {COMPANY_FIELD_PREFIX if scope == 'company' else ''}"
+                f"{field_name}_{scope}).")
+        if existing:
+            return {"status": "already", "field": field_name, "scope": scope}
+        conn.execute(
+            """INSERT OR IGNORE INTO personalization_fields
+                   (field_name, scope, first_seen_at, first_seen_source)
+               VALUES (?, ?, ?, ?)""",
+            (field_name, scope, datetime.now(timezone.utc).isoformat(timespec="seconds"), source),
+        )
+        if own:
+            conn.commit()
+        return {"status": "registered", "field": field_name, "scope": scope}
+    except sqlite3.OperationalError:
+        return {"status": "skipped", "field": field_name, "scope": scope}
+    finally:
+        if own:
+            conn.close()
+
+
+def list_registered_fields(
+    *,
+    scope: Optional[str] = None,
+    with_values: bool = False,
+    value_limit: int = 12,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict]:
+    """The registry, plus how much each field is actually used.
+
+    `with_values` adds the distinct values in use. That is the check that stops
+    the next campaign from either clobbering another campaign's values or
+    minting `icp_segment_2` because nobody could see that `icp_segment` was
+    already the convention.
+    """
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        where, params = "", []
+        if scope in ("lead", "company"):
+            where, params = " WHERE scope = ?", [scope]
+        try:
+            rows = [dict(r) for r in conn.execute(
+                f"SELECT field_name, scope, first_seen_at, first_seen_source"
+                f" FROM personalization_fields{where} ORDER BY scope, field_name",
+                params).fetchall()]
+        except sqlite3.OperationalError:
+            return []
+        for row in rows:
+            table = ("company_personalization" if row["scope"] == "company"
+                     else "lead_personalization")
+            id_col = "company_id" if row["scope"] == "company" else "lead_id"
+            stat = conn.execute(
+                f"SELECT COUNT(DISTINCT {id_col}) n, COUNT(DISTINCT field_value) v"
+                f"  FROM {table} WHERE field_name = ?", (row["field_name"],)).fetchone()
+            row["entities"] = stat["n"] if stat else 0
+            row["distinct_values"] = stat["v"] if stat else 0
+            if with_values:
+                row["top_values"] = [
+                    [r["field_value"], r["n"]] for r in conn.execute(
+                        f"SELECT field_value, COUNT(*) n FROM {table}"
+                        f" WHERE field_name = ? AND field_value IS NOT NULL"
+                        f" GROUP BY 1 ORDER BY 2 DESC LIMIT ?",
+                        (row["field_name"], value_limit)).fetchall()]
+        return rows
+    finally:
+        if own:
+            conn.close()
 
 
 def validate_personalization_field(field_name: str, *, scope: str) -> str:
@@ -242,8 +410,6 @@ def personalize_set(
     field_date: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
-    if looks_company_scoped(field_name):
-        return {"status": "error", "error": f"{field_name} is company-scoped — use company-personalize-set"}
     try:
         field_name = validate_personalization_field(field_name, scope="lead")
     except ValueError as exc:
@@ -251,6 +417,19 @@ def personalize_set(
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
+    # The registry, not the name shape, decides where a field belongs. A field
+    # already claimed by company scope is refused here rather than written to a
+    # second home under the same name; an unclaimed one falls back to the old
+    # `company_*` heuristic so nothing that worked before starts failing.
+    scope, decided_by = resolve_scope(field_name, conn=conn)
+    if scope == "company":
+        if own_conn:
+            conn.close()
+        hint = ("is registered as company-scoped" if decided_by == "registry"
+                else "looks company-scoped")
+        return {"status": "error",
+                "error": f"{field_name} {hint} — use company-personalize-set"}
+    register_field(field_name, "lead", source="cli", conn=conn)
     conn.execute("""
         INSERT INTO lead_personalization (lead_id, field_name, field_value, field_date, source_hash)
         VALUES (?, ?, ?, ?, ?)
@@ -278,9 +457,6 @@ def personalize_set_batch(items: list[dict], *, conn: Optional[sqlite3.Connectio
         fval = item.get("value")
         if not lid or not fname or fval is None:
             err_list.append({"item": item, "error": "missing lead_id, field, or value"})
-            continue
-        if looks_company_scoped(fname):
-            err_list.append({"item": item, "error": f"{fname} is company-scoped"})
             continue
         result = personalize_set(lid, fname, str(fval), field_date=item.get("date"), conn=conn)
         if result.get("status") == "error":
@@ -315,6 +491,15 @@ def company_personalize_set(
         if own_conn:
             conn.close()
         return {"status": "error", "error": "company not found"}
+    scope, decided_by = resolve_scope(field_name, conn=conn)
+    if scope == "lead" and decided_by == "registry":
+        if own_conn:
+            conn.close()
+        return {"status": "error",
+                "error": f"{field_name} is registered as a LEAD personalization field. "
+                         "A field belongs to one scope — use personalize-set, or "
+                         "choose a different name for the company value."}
+    register_field(field_name, "company", source="cli", conn=conn)
     conn.execute("""
         INSERT INTO company_personalization (company_id, field_name, field_value, field_date, source_hash)
         VALUES (?, ?, ?, ?, ?)

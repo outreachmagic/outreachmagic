@@ -125,6 +125,12 @@ COMPANY_NAME_TOKENS = frozenset({
     "works", "supply", "supplies", "equipment", "rental", "rentals", "leasing",
     "brothers", "bros", "sons", "family", "management", "mobility", "imports",
     "used", "pre-owned", "wholesale", "outlet", "superstore", "mart",
+    # Dealership words that carry no corporate token of their own. Every one of
+    # these was a real misclassification: "Vale Court Motorcars Brentford" missed
+    # because `motorcars` is not `motors`, "Rennick Autohaus" and "The
+    # Automaster" because the words were simply absent.
+    "motorcars", "autohaus", "automaster", "autowerks", "autoworks",
+    "motorsport", "motorsports", "carstore", "carcompany", "coachwerks",
     # Marques that appear as the whole dealership name
     "hyundai", "ford", "toyota", "honda", "kia", "nissan", "chevrolet", "chevy",
     "bmw", "audi", "mazda", "subaru", "jeep", "dodge", "ram", "gmc", "buick",
@@ -144,8 +150,44 @@ def looks_like_company_name(value: str | None) -> bool:
         return False
     if "&" in text or any(ch.isdigit() for ch in text):
         return True
-    tokens = {t.strip(".,'\"()") for t in text.replace("/", " ").replace("-", " ").split()}
+    # Split on punctuation as well as whitespace. "Rensfield Autowerks,Inc"
+    # tokenized to `autowerks,inc` -- one token matching nothing -- so a name
+    # that literally contains "Inc" failed the test for want of a space.
+    for sep in ("/", "-", ",", ".", "(", ")"):
+        text = text.replace(sep, " ")
+    tokens = {t.strip("'\"") for t in text.split()}
     return bool(tokens & COMPANY_NAME_TOKENS)
+
+
+# Sources that are, by definition, directories of businesses rather than
+# people: a manufacturer's official dealer locator, a Maps scrape. Rows from
+# these are companies whatever their name looks like, so the name-shape
+# whitelist above is not consulted for them -- it is a positive-signal test,
+# and "K L M of Riverton" or "Corwin Vance" carries no positive signal at all
+# while being 100% a dealership.
+#
+# The whitelist stays strict for scraped and unknown sources. It exists to
+# protect sole traders whose company is their own name ("Marisol Okonkwo"),
+# three of whom were misclassified by an earlier version that had no such
+# requirement, and nothing here changes what happens to those rows.
+COMPANY_DIRECTORY_SOURCES = frozenset({
+    "mercedes-benz-official",
+    "mbusa",
+    "google_maps",
+    "apify_google_maps",
+    "dealer-directory",
+})
+
+
+def is_company_directory_source(source: str | None) -> bool:
+    """Is this import source a directory of businesses?"""
+    text = str(source or "").strip().lower()
+    if not text:
+        return False
+    if text in COMPANY_DIRECTORY_SOURCES:
+        return True
+    # A manufacturer locator names itself "<brand>-official" by convention.
+    return text.endswith("-official") or text.endswith("-dealer-directory")
 
 # Personal inboxes — skip domain-wide company sync (would touch unrelated leads)
 SHARED_EMAIL_DOMAINS = frozenset({

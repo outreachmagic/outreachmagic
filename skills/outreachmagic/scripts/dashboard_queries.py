@@ -1828,6 +1828,16 @@ _QUALIFY_FINDING_SQL = (
     # A company placeholder's "name" is the company. Searching for an email for
     # it burns finder credits looking for a person who does not exist.
     " AND l.record_type = 'contact'"
+    # Belt and braces: the same structural test detect_company_placeholder uses,
+    # applied to rows that are still labelled `contact`. Classification is a
+    # judgement made once at import and it will keep missing cases -- 30 MBUSA
+    # dealership stubs slipped through as contacts and TryKitt was spent on
+    # them. A row whose name IS its company, with no email, no title and no
+    # LinkedIn, is not a person to look up whatever its record_type says.
+    " AND NOT (LOWER(TRIM(COALESCE(l.name, ''))) = LOWER(TRIM(COALESCE(l.company, '')))"
+    "          AND (l.title IS NULL OR TRIM(l.title) = '')"
+    "          AND (l.linkedin_url IS NULL OR TRIM(l.linkedin_url) = '')"
+    "          AND (l.linkedin_sales_nav_id IS NULL OR TRIM(l.linkedin_sales_nav_id) = ''))"
     " AND NOT EXISTS (SELECT 1 FROM lead_provider_attempts a"
     "                 WHERE a.lead_id = l.id AND a.provider IN ('trykitt', 'icypeas'))"
 )
@@ -1972,11 +1982,33 @@ def lead_message_block_sql(direction: str) -> str:
     )
 
 
+def _parse_personalized_filters(raw) -> list[tuple[str, str]]:
+    """`["icp_segment=mercedes franchise"]` or `[("icp_segment", "...")]` -> pairs.
+
+    Values may contain "="; only the first one separates field from value.
+    """
+    out: list[tuple[str, str]] = []
+    for item in (raw or []):
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            field, value = item
+        else:
+            text = str(item or "")
+            if "=" not in text:
+                raise ValueError(
+                    f"--personalized expects FIELD=VALUE, got {text!r}")
+            field, value = text.split("=", 1)
+        field = str(field).strip().lower()
+        if not field:
+            raise ValueError("--personalized needs a field name before '='")
+        out.append((field, str(value).strip()))
+    return out
+
+
 LEAD_FILTER_KEYS = (
     "q", "status", "campaign_id", "missing", "since", "until", "tag",
     "tags_any", "tags_all", "tags_none",
     "connected", "sender", "has_linkedin", "verify", "qualify_finding",
-    "record_type", "lead_ids", "suppressed", "has_domain",
+    "record_type", "lead_ids", "suppressed", "has_domain", "test", "personalized",
 )
 
 
@@ -2027,6 +2059,8 @@ def lead_filter_clause(
     tags_none: Optional[list] = None,
     suppressed: Optional[str] = None,
     has_domain: Optional[bool] = None,
+    test: Optional[str] = None,
+    personalized: Optional[list] = None,
 ) -> tuple[str, list]:
     """The shared WHERE for anything selecting workspace leads: (sql, params).
 
@@ -2071,6 +2105,32 @@ def lead_filter_clause(
     # answer. `suppressed="all"` is the deliberate opt-out, and the only caller
     # that legitimately needs it is CRM/relay reconciliation, which has to see
     # everything to detect drift.
+    # Test rows, same discipline as suppression: absent means exclude, so an
+    # operator who forgets the filter gets the safe answer. Synthetic leads
+    # tagged like real ones inflate every count and can be emailed.
+    # Personalization as a first-class filter, so "give me segment X as its own
+    # file" is a WHERE rather than a post-export pass in Python. Lead and
+    # company scope are both reachable; the registry says which table a field
+    # lives in, so the caller names the field, not the table.
+    for field_name, wanted in _parse_personalized_filters(personalized):
+        from pipeline_personalize import resolve_scope
+
+        scope, _decided = resolve_scope(field_name)
+        if scope == "company":
+            where.append(
+                "EXISTS (SELECT 1 FROM company_personalization cp"
+                "         WHERE cp.company_id = l.company_id"
+                "           AND cp.field_name = ? AND cp.field_value = ?)")
+        else:
+            where.append(
+                "EXISTS (SELECT 1 FROM lead_personalization lp"
+                "         WHERE lp.lead_id = l.id"
+                "           AND lp.field_name = ? AND lp.field_value = ?)")
+        params += [field_name, wanted]
+    if test == "only":
+        where.append("l.is_test = 1")
+    elif test != "all":
+        where.append("COALESCE(l.is_test, 0) = 0")
     if suppressed == "only":
         where.append("EXISTS (SELECT 1 FROM workspace_lead_suppressions s"
                      " WHERE s.workspace_id = wl.workspace_id AND s.lead_id = wl.lead_id)")
@@ -2179,6 +2239,8 @@ def search_leads(
     tags_none: Optional[list] = None,
     suppressed: Optional[str] = None,
     has_domain: Optional[bool] = None,
+    test: Optional[str] = None,
+    personalized: Optional[list] = None,
     limit: int = 50,
     offset: int = 0,
     ids_only: bool = False,
@@ -2195,6 +2257,7 @@ def search_leads(
         since=since, until=until, tag=tag, connected=connected, sender=sender,
         has_linkedin=has_linkedin, verify=verify, qualify_finding=qualify_finding,
         record_type=record_type, suppressed=suppressed, has_domain=has_domain,
+        test=test, personalized=personalized,
         tags_any=tags_any, tags_all=tags_all, tags_none=tags_none)
     order = _lead_order_by(sort, direction)
     # ids_only powers the "select all N matching" bulk action: same WHERE, but

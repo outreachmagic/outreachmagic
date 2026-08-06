@@ -94,17 +94,37 @@ class LeadExportTests(unittest.TestCase):
         self.assertEqual(rows[0]["email"], "jane@acme.com")
         self.assertEqual(rows[0]["personalized_first_name"], "Janey")
 
-    def test_first_and_last_name_split_out_of_the_stored_name(self):
-        self._lead(name="Jane Doe", email="jane@acme.com", company="Acme Corp")
-        _result, rows = self._csv(preset="sequencer-upload")
-        self.assertEqual(rows[0]["first_name"], "Jane")
-        self.assertEqual(rows[0]["last_name"], "Doe")
+    # -- names are never split ---------------------------------------------
+    #
+    # first_name / last_name used to be a SQL split of leads.name on the first
+    # space. There is no such column, and the split silently mangled every name
+    # that isn't exactly two words: "Mary Anne Okonkwo" exported a last name of
+    # "Anne Okonkwo", a mononym exported an empty one, and a company
+    # placeholder was shredded into a fake person. A wrong first name in a mail
+    # merge is worse than an absent one, so both columns are gone.
 
-    def test_a_one_word_name_does_not_lose_the_first_name(self):
-        self._lead(name="Cher", email="cher@acme.com", company="Acme Corp")
+    def test_the_stored_name_ships_whole(self):
+        self._lead(name="Mary Anne Okonkwo", email="mary@acme.com", company="Acme Corp")
         _result, rows = self._csv(preset="sequencer-upload")
-        self.assertEqual(rows[0]["first_name"], "Cher")
-        self.assertEqual(rows[0]["last_name"], "")
+        self.assertEqual(rows[0]["name"], "Mary Anne Okonkwo")
+        self.assertNotIn("first_name", rows[0])
+        self.assertNotIn("last_name", rows[0])
+
+    def test_asking_for_a_split_name_column_says_what_to_use_instead(self):
+        self._lead(name="Cher", email="cher@acme.com", company="Acme Corp")
+        for retired in ("first_name", "last_name"):
+            with self.assertRaises(lead_export.LeadExportError) as caught:
+                self._csv(fields=["email", retired])
+            self.assertIn("personalized_first_name" if retired == "first_name" else "`name`",
+                          str(caught.exception))
+
+    def test_a_curated_merge_value_is_still_exportable(self):
+        # personalized_first_name is a real stored value, not a derived one --
+        # removing the split does not touch it.
+        lead_id = self._lead(name="Cher", email="cher@acme.com", company="Acme Corp")
+        om.personalize_set(lead_id, "first_name", "Cher")
+        _result, rows = self._csv(preset="sequencer-upload")
+        self.assertEqual(rows[0]["personalized_first_name"], "Cher")
 
     # -- an explicit selection --------------------------------------------
     #

@@ -816,10 +816,16 @@ def prune_never_sent_senders(*, apply: bool = False) -> dict:
     domain on the Deliverability page as somewhere we send from. The write path
     is fixed; this clears what it already wrote.
 
-    Reports by default and only deletes under `apply`, because a mailbox that is
-    merely NEW also has no outbound yet -- a freshly bought domain warming up
-    looks identical to this on the last_outbound_at column alone, so the list
-    wants a human's eye before it is acted on.
+    Scoped to accounts whose WHOLE DOMAIN has never sent. A never-sent mailbox on
+    a domain we actively send from is a different thing entirely -- a spare, or
+    one provisioned and still warming -- and deleting it would remove real
+    sending infrastructure. On the live database that distinction was 167 of
+    233: only 66 of the never-sent accounts sat on domains nothing had ever sent
+    from, and those are the prospect addresses that leaked in via inbound
+    events. The other 167 were genuinely ours.
+
+    Reports by default and only deletes under `apply`, because even a whole
+    never-sent domain can be one bought last week and not yet warmed.
     """
     conn = get_conn()
     try:
@@ -831,6 +837,11 @@ def prune_never_sent_senders(*, apply: bool = False) -> dict:
                       SELECT 1 FROM events e
                        WHERE lower(e.sender) = lower(sa.email)
                          AND lower(COALESCE(e.direction, '')) = 'outbound')
+                  -- Nothing on this domain has ever sent, by any mailbox.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sender_accounts peer
+                       WHERE peer.email_domain = sa.email_domain
+                         AND peer.last_outbound_at IS NOT NULL)
              ORDER BY sa.email""",
         ).fetchall()
         account_ids = [int(r["id"]) for r in accounts]

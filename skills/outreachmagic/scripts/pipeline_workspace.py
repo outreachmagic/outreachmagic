@@ -776,8 +776,10 @@ def sync_all(
         _push_pending_lead_workspace_outbox_deletes,
         _push_pending_merge_deletes,
         _push_pending_quarantine_resolutions,
+        _push_pending_lead_link_updates,
         _push_pending_sender_account_updates,
         _push_pending_sender_domain_updates,
+        _push_pending_suppression_updates,
     )
 
     _init_relay_sync_log()
@@ -1001,11 +1003,29 @@ def sync_all(
         if sd_pushed > 0:
             parts.append(f"Pushed {sd_pushed} sender domain update{'s' if sd_pushed != 1 else ''} to relay.")
 
+        lead_link_push = _push_pending_lead_link_updates(agent_key)
+        ll_pushed = int(lead_link_push.get("pushed", 0) or 0)
+        results["lead_link_updates_pushed"] = ll_pushed
+        if lead_link_push.get("error"):
+            results["lead_link_updates_error"] = lead_link_push["error"]
+        if ll_pushed > 0:
+            parts.append(f"Pushed {ll_pushed} contact link{'s' if ll_pushed != 1 else ''} to relay.")
+
+        suppression_push = _push_pending_suppression_updates(agent_key)
+        sup_pushed = int(suppression_push.get("pushed", 0) or 0)
+        results["suppression_updates_pushed"] = sup_pushed
+        if suppression_push.get("error"):
+            results["suppression_updates_error"] = suppression_push["error"]
+        if sup_pushed > 0:
+            parts.append(f"Pushed {sup_pushed} suppression rule{'s' if sup_pushed != 1 else ''} to relay.")
+
         if (
             lead_push.get("error") is None
             and company_push.get("error") is None
             and sender_account_push.get("error") is None
             and sender_domain_push.get("error") is None
+            and lead_link_push.get("error") is None
+            and suppression_push.get("error") is None
         ):
             set_last_sync(datetime.now(timezone.utc).isoformat())
 
@@ -1647,6 +1667,8 @@ _SNAPSHOT_DELETE_ACTIONS = {
     "lead_workspace": "lead_workspace_delete",
     "company": "company_core_delete",
     "sender_domain": "sender_domain_delete",
+    "lead_link": "lead_link_delete",
+    "suppression": "suppression_delete",
 }
 
 
@@ -1663,6 +1685,11 @@ def _delete_wire_entity_key(entity_type: str, raw_key: str) -> str:
         # sender_domain_entity_key also strips stray quotes (the dead
         # meetpopcam.com" / popcam.net" tombstones), so a bad key still resolves.
         return sender_domain_entity_key(raw_key)
+    # Links and suppression rules are keyed by their own id, like sender_domain
+    # and unlike leads/companies -- they have no uid.
+    if entity_type in ("lead_link", "suppression"):
+        prefix = f"{entity_type}:"
+        return raw_key if raw_key.startswith(prefix) else f"{prefix}{raw_key}"
     return raw_key if raw_key.startswith("uid:") else f"uid:{raw_key}"
 
 
@@ -2308,6 +2335,50 @@ def _push_pending_sender_domain_updates(
         stream_key="sender_domain",
         entity_key_fn=lambda conn, domain: sender_domain_entity_key(domain),
         payload_fn=build_sender_domain_sync_payload,
+        sample_limit=sample_limit,
+        dry_run=dry_run,
+    )
+
+
+def _push_pending_lead_link_updates(
+    agent_key: str,
+    *,
+    sample_limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Conversation links. Org-wide, keyed by the link's own id."""
+    from lead_links import build_lead_link_sync_payload
+
+    return _push_outbox_entity(
+        agent_key,
+        entity_type="lead_link",
+        action="lead_link_update",
+        stream_key="lead_link",
+        entity_key_fn=lambda conn, link_id: f"lead_link:{link_id}",
+        payload_fn=build_lead_link_sync_payload,
+        sample_limit=sample_limit,
+        dry_run=dry_run,
+    )
+
+
+def _push_pending_suppression_updates(
+    agent_key: str,
+    *,
+    sample_limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Authored suppression rules. The derived per-workspace index is NOT sent --
+    it is rebuilt locally by suppression.reconcile(), and shipping a
+    materialized index would mean two sources of truth for one fact."""
+    from suppression import build_suppression_sync_payload
+
+    return _push_outbox_entity(
+        agent_key,
+        entity_type="suppression",
+        action="suppression_update",
+        stream_key="suppression",
+        entity_key_fn=lambda conn, entry_id: f"suppression:{entry_id}",
+        payload_fn=build_suppression_sync_payload,
         sample_limit=sample_limit,
         dry_run=dry_run,
     )

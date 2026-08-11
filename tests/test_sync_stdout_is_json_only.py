@@ -59,6 +59,8 @@ def test_sync_all_syncing_announcement_never_lands_on_stdout(monkeypatch, capsys
         "_push_pending_quarantine_resolutions",
         "_push_pending_sender_account_updates",
         "_push_pending_sender_domain_updates",
+        "_push_pending_lead_link_updates",
+        "_push_pending_suppression_updates",
     ):
         monkeypatch.setattr(om, fn_name, _noop_push)
 

@@ -2084,23 +2084,12 @@ _OUTBOX_RECORD_SQL = {
 }
 
 # Entity types the relay has no snapshot action for, so their outbox rows can
-# never drain. The relay's allowlist is lead_core / lead_workspace / company /
-# sender_account / sender_domain; `suppression` is queued by the outbox triggers
-# (sync_contract.SYNC_MAP) but has no push handler on either side yet. Saying so
-# in the panel is the point: without it, a row sitting at attempts=0 since the
-# day it was written looks like a stuck push rather than a missing endpoint.
-UNPUSHABLE_ENTITY_TYPES = {
-    "lead_link": (
-        "The relay has no lead-link endpoint yet, so these rows stay queued. "
-        "Conversation grouping is fully functional locally -- the counts on "
-        "this machine are already correct; only cross-machine sync is pending."
-    ),
-    "suppression": (
-        "The relay has no suppression endpoint yet, so these rows stay queued. "
-        "They are not lost and not failing -- nothing drains them. Local "
-        "suppression is fully functional; only cross-machine sync is pending."
-    ),
-}
+# never drain. Empty as of the relay gaining lead_link and suppression endpoints
+# (wbhk-worker migration 0015) -- kept, with its test, because the previous gap
+# was invisible: suppression rows sat at attempts=0 from 2026-08-03 and read as
+# a stuck push rather than a missing endpoint. Anything added to SYNC_MAP before
+# the relay can receive it belongs here until it can.
+UNPUSHABLE_ENTITY_TYPES: dict[str, str] = {}
 
 
 def _resolve_outbox_entity(

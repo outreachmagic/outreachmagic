@@ -231,9 +231,25 @@ class LeadLinkTests(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertEqual(payload["kind"], "forwarded_to")
 
-    def test_links_are_declared_unpushable_until_the_relay_has_an_endpoint(self):
-        """Honest about the gap rather than looking like a stuck queue."""
-        self.assertIn("lead_link", dq.UNPUSHABLE_ENTITY_TYPES)
+    def test_links_can_push_and_can_tombstone(self):
+        """The relay gained a lead_link endpoint (wbhk-worker migration 0015).
+
+        A link that exists on one machine only makes that machine disagree with
+        every other about how many positive replies there were -- which is the
+        whole thing the link is for, so it has to travel.
+        """
+        from pipeline_workspace import _SNAPSHOT_DELETE_ACTIONS, _delete_wire_entity_key
+
+        self.assertNotIn("lead_link", dq.UNPUSHABLE_ENTITY_TYPES)
+        self.assertEqual(_SNAPSHOT_DELETE_ACTIONS["lead_link"], "lead_link_delete")
+        # Keyed by its own id, like sender_domain and unlike leads: no uid.
+        self.assertEqual(
+            _delete_wire_entity_key("lead_link", "lnk_abc"), "lead_link:lnk_abc")
+
+    def test_an_unpushable_entity_would_still_be_declared(self):
+        """The declaration is empty, not deleted: the next entity added to
+        SYNC_MAP before the relay can receive it needs somewhere to say so."""
+        self.assertEqual(dq.UNPUSHABLE_ENTITY_TYPES, {})
 
 
 if __name__ == "__main__":

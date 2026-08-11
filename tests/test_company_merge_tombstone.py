@@ -213,6 +213,8 @@ def test_sync_all_calls_company_merge_delete_push(monkeypatch, capsys):
         "_push_pending_quarantine_resolutions",
         "_push_pending_sender_account_updates",
         "_push_pending_sender_domain_updates",
+        "_push_pending_lead_link_updates",
+        "_push_pending_suppression_updates",
     ):
         monkeypatch.setattr(om, fn_name, _noop_push)
     monkeypatch.setattr(om, "_push_pending_company_merge_deletes", _tracking_company_merge_push)

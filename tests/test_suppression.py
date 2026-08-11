@@ -261,12 +261,14 @@ def test_the_sync_panel_can_describe_a_queued_suppression_rule():
     conn.close()
 
 
-def test_a_suppression_rule_is_reported_as_unpushable_not_broken():
-    """No relay endpoint exists for suppression, so the panel must say that.
+def test_a_suppression_rule_can_now_push():
+    """The relay gained a suppression endpoint (wbhk-worker migration 0015).
 
-    Otherwise a row sitting at attempts=0 since the day it was written reads as
-    a stuck or failing push, and the next person goes looking for a bug in the
-    push loop instead of a missing endpoint.
+    Before that these rows sat at attempts=0 from 2026-08-03 -- not failing,
+    simply undeliverable -- and the Sync panel had to say so to stop them
+    reading as a stuck push. Now they drain, and the declaration is empty.
     """
-    assert "suppression" in dq.UNPUSHABLE_ENTITY_TYPES
-    assert "no suppression endpoint" in dq.UNPUSHABLE_ENTITY_TYPES["suppression"]
+    from pipeline_workspace import _SNAPSHOT_DELETE_ACTIONS
+
+    assert "suppression" not in dq.UNPUSHABLE_ENTITY_TYPES
+    assert _SNAPSHOT_DELETE_ACTIONS["suppression"] == "suppression_delete"

@@ -465,6 +465,25 @@ def test_an_outbound_send_still_creates_its_mailbox():
         conn.close()
 
 
+def test_prune_spares_a_never_sent_mailbox_on_a_domain_we_do_send_from():
+    """A spare or still-warming mailbox is not prospect leakage.
+
+    On the live database this was 167 of 233 never-sent accounts -- deleting
+    them would have removed real sending infrastructure. Only a domain where
+    NOTHING has ever sent is the leaked-prospect case.
+    """
+    from pipeline_sender_accounts import prune_never_sent_senders
+
+    _mailbox("active@acmemail.com")                      # this domain sends
+    _mailbox("spare@acmemail.com", has_sent=False)       # ...so the spare stays
+    _mailbox("prof@isenberg.umass.test", has_sent=False)  # nothing here ever sent
+
+    report = prune_never_sent_senders()
+    assert "prof@isenberg.umass.test" in report["account_emails"]
+    assert "spare@acmemail.com" not in report["account_emails"]
+    assert report["accounts"] == 1
+
+
 def test_prune_reports_before_it_deletes():
     from pipeline_sender_accounts import prune_never_sent_senders
 

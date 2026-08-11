@@ -186,11 +186,8 @@ def build_lead_link_sync_payload(conn: sqlite3.Connection, link_id: str) -> dict
     Keyed by both leads' uids rather than their local row ids: ids are per
     machine, uids are the identity the relay already stores for a lead.
 
-    NOTE: the relay has no lead_link endpoint yet (its snapshot allowlist is
-    lead_core / lead_workspace / company / sender_account / sender_domain), so
-    nothing drains these rows. Everything on this side is wired -- outbox
-    triggers, entity type, payload -- so the day the endpoint exists no local
-    change is needed. See UNPUSHABLE_ENTITY_TYPES in reporting_queries.
+    Pushed as the `lead_link_update` snapshot action (wbhk-worker relay-db.js;
+    table created by migration 0015). Org-wide, keyed `lead_link:<id>`.
     """
     row = conn.execute(
         """SELECT k.id, k.kind, k.note, k.created_at, k.created_by,

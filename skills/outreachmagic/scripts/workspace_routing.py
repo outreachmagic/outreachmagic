@@ -2267,10 +2267,34 @@ def repair_linkedin_identities(
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
+        detail = conn.execute(
+            """SELECT id, name, company, record_type, original_source
+                 FROM leads WHERE id IN (?, ?) ORDER BY id""", pair).fetchall()
+        types = [(r["record_type"] or "contact") for r in detail]
+        names = [(r["name"] or "").strip() for r in detail]
+        # Three different problems wearing one shape, and only the first is a
+        # merge. Classified here because merging the other two destroys data:
+        #   same_person      -- two records, one person. Merge.
+        #   name_mismatch    -- two DIFFERENT people sharing one profile URL,
+        #                       which is impossible: one record has someone
+        #                       else's URL attached (bad contact sourcing).
+        #                       Strip the wrong URL; do not merge.
+        #   placeholder_url  -- a company placeholder carrying a person's
+        #                       profile URL (Google Maps scrapes). Strip it.
+        if any(t != "contact" for t in types):
+            kind = "placeholder_url"
+        elif names[0].lower() == names[1].lower():
+            kind = "same_person"
+        else:
+            kind = "name_mismatch"
         duplicates.append({
+            "kind": kind,
             "linkedin_url": item["to"],
             "lead_ids": list(pair),
-            "names": [item.get("name"), owner["name"]],
+            "names": names,
+            "companies": [r["company"] for r in detail],
+            "record_types": types,
+            "sources": [r["original_source"] for r in detail],
         })
 
     normalized_apply = [n for n in normalized_rows if n["lead_id"] not in colliding]
@@ -2298,5 +2322,9 @@ def repair_linkedin_identities(
         # constraint on leads.linkedin_url.
         "blocked_by_duplicate": len(colliding),
         "duplicates_found": len(duplicates),
+        "duplicates_by_kind": {
+            k: sum(1 for d in duplicates if d["kind"] == k)
+            for k in ("same_person", "name_mismatch", "placeholder_url")
+        },
         "duplicates": duplicates,
     }

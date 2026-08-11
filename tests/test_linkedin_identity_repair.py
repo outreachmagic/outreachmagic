@@ -186,5 +186,50 @@ class RepairTests(unittest.TestCase):
         self.assertNotIn("linkedin_identity_gap", rules)
 
 
+class DuplicateClassificationTests(RepairTests):
+    """Sharing a profile URL means three different things, and only one is a merge.
+
+    On the live database 193 pairs shared a URL: 129 were one person twice, 41
+    were two DIFFERENT people (Andrew Howk / Andrew Jensen, Rick Fette / Joe
+    Fette) where one record had someone else's profile attached, and 23 were a
+    Google-Maps company placeholder carrying a person's URL. Merging the last
+    two categories would have fused unrelated records.
+    """
+
+    def _pair(self, name_a, name_b, *, type_b="contact"):
+        a = self._raw_lead(name_a, CANONICAL, with_identity=True)
+        b = self.conn.execute(
+            "INSERT INTO leads (name, linkedin_url, record_type, uid) VALUES (?,?,?,?)",
+            (name_b, "https://www.linkedin.com/in/markzgoodman", type_b,
+             f"uid_{name_b.lower().replace(' ', '')}")).lastrowid
+        self.conn.commit()
+        return a, b
+
+    def test_same_name_is_classified_as_one_person(self):
+        self._pair("Mark Goodman", "Mark Goodman")
+        report = repair_linkedin_identities(self.conn)
+        self.assertEqual(report["duplicates"][0]["kind"], "same_person")
+        self.assertEqual(report["duplicates_by_kind"]["same_person"], 1)
+
+    def test_different_names_are_flagged_as_a_wrong_url_not_a_duplicate(self):
+        self._pair("Andrew Howk", "Andrew Jensen")
+        report = repair_linkedin_identities(self.conn)
+        self.assertEqual(report["duplicates"][0]["kind"], "name_mismatch")
+        self.assertEqual(report["duplicates_by_kind"]["same_person"], 0)
+
+    def test_a_company_placeholder_holding_a_person_url_is_its_own_case(self):
+        self._pair("Keith Kramer", "Chevrolet at Harry Brown",
+                   type_b="company_placeholder")
+        report = repair_linkedin_identities(self.conn)
+        self.assertEqual(report["duplicates"][0]["kind"], "placeholder_url")
+
+    def test_no_pair_is_ever_merged_by_the_repair(self):
+        """The repair reports; merging is always a separate, deliberate act."""
+        self._pair("Andrew Howk", "Andrew Jensen")
+        repair_linkedin_identities(self.conn, apply=True)
+        n = self.conn.execute("SELECT COUNT(*) c FROM leads").fetchone()["c"]
+        self.assertEqual(n, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

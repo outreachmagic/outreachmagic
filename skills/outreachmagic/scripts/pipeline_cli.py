@@ -4646,12 +4646,31 @@ def main():
             verb = "Backfilled" if result["applied"] else "Would backfill"
             print(f"  {verb} {result['identities_backfilled']} missing identity row(s)")
             if result["duplicates_found"]:
-                print(f"\n  {result['duplicates_found']} duplicate pair(s) revealed "
-                      "— same profile URL, two records:")
-                for d in result["duplicates"][:20]:
-                    a, b = d["lead_ids"]
-                    print(f"    #{a} / #{b}  {d['linkedin_url']}  ({d['names'][0]})")
-                print("\n  Merge them with: pipeline.py merge-leads --keep A --merge B")
+                by_kind = result["duplicates_by_kind"]
+                print(f"\n  {result['duplicates_found']} pair(s) share a profile URL. "
+                      "They are NOT all duplicates:")
+                labels = {
+                    "same_person": ("one person, two records — merge these",
+                                    "pipeline.py merge-leads --keep A --merge B"),
+                    "name_mismatch": ("DIFFERENT people sharing one URL — one record "
+                                      "has someone else's profile attached (bad contact "
+                                      "sourcing). Do NOT merge; clear the wrong URL",
+                                      "review each pair before acting"),
+                    "placeholder_url": ("a company placeholder carrying a person's "
+                                        "profile URL (Google Maps scrape) — clear it "
+                                        "off the placeholder",
+                                        "review each pair before acting"),
+                }
+                for kind, (why, how) in labels.items():
+                    n = by_kind.get(kind, 0)
+                    if not n:
+                        continue
+                    print(f"\n  [{kind}] {n} pair(s) — {why}")
+                    print(f"    {how}")
+                    for d in [x for x in result["duplicates"] if x["kind"] == kind][:8]:
+                        a, b = d["lead_ids"]
+                        na, nb = (d["names"] + ["", ""])[:2]
+                        print(f"      #{a} {na[:24]:<26} / #{b} {nb[:24]:<26} {d['linkedin_url']}")
             if not result["applied"]:
                 print("\nRe-run with --apply to write.")
         return

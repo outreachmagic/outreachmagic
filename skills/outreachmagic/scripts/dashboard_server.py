@@ -30,13 +30,26 @@ if __package__ is None and str(Path(__file__).parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).parent))
 
 import dashboard_actions
-import dashboard_queries
+import reporting_queries
 from db_conn import database_has_schema, format_database_recovery_message, get_conn
 from workspace_routing import IdentityConflict, resolve_workspace_identity
 
 DEFAULT_PORT = 8765
 MAX_BODY_BYTES = 64 * 1024
+# Routes whose body is legitimately a list of ids rather than a handful of
+# fields. "Select all 8,000 matching" then Export sends every id, which is ~64
+# KiB of JSON on its own -- the shared cap rejected it, and reporting_queries'
+# MAX_EXPLICIT_LEAD_IDS (50,000) was unreachable through a 64 KiB body. Raised
+# per route rather than globally so an oversized body on any *other* endpoint is
+# still refused early.
+ROUTE_BODY_LIMITS = {
+    "/api/contacts/export": 4 * 1024 * 1024,
+    "/api/contacts/bulk": 4 * 1024 * 1024,
+    "/api/leads/delete": 4 * 1024 * 1024,
+}
 CSRF_HEADER = "X-OM-Dashboard"
+# Above this, discarding the body costs more than dropping the connection.
+_MAX_DRAIN_BYTES = 8 * 1024 * 1024
 
 _HTML_PATH = Path(__file__).parent / "dashboard.html"
 
@@ -80,24 +93,28 @@ def _workspace_scoped(fn):
 def handle_workspaces(match, query, body):
     conn = get_conn()
     try:
-        return 200, dashboard_queries.list_workspaces(conn)
+        return 200, reporting_queries.list_workspaces(conn)
     finally:
         conn.close()
 
 
 @_workspace_scoped
 def handle_summary(conn, ws_id, match, query):
-    return dashboard_queries.summary(
+    return reporting_queries.summary(
         conn, ws_id, since=_q(query, "since", "30d"), until=_q(query, "until"))
 
 
 @_workspace_scoped
 def handle_deliverability(conn, ws_id, match, query):
     since, until = _q(query, "since", "30d"), _q(query, "until")
-    series = dashboard_queries.bounce_series(conn, ws_id, since=since, until=until)
+    series = reporting_queries.bounce_series(conn, ws_id, since=since, until=until)
     # Mailbox / domain reply%/bounce% are live from events, scoped to the range.
-    mailboxes = dashboard_queries.mailbox_health(conn, ws_id, since=since, until=until)
-    domains = dashboard_queries.domain_health(conn, ws_id, since=since, until=until)
+    mailboxes = reporting_queries.mailbox_health(conn, ws_id, since=since, until=until)
+    # Default on: a domain nothing has ever sent from is not a sending domain.
+    exclude_never_sent = _bool_q(query, "exclude_never_sent")
+    domains = reporting_queries.domain_health(
+        conn, ws_id, since=since, until=until,
+        exclude_never_sent=True if exclude_never_sent is None else exclude_never_sent)
     return {
         "since": series["since"],
         "series": series["series"],
@@ -105,7 +122,53 @@ def handle_deliverability(conn, ws_id, match, query):
         "domains": domains["domains"],
         "flagged_mailboxes": mailboxes["flagged"],
         "flagged_domains": domains["flagged"],
+        "never_sent_hidden": domains.get("never_sent_hidden", 0),
     }
+
+
+@_workspace_scoped
+def handle_bounces(conn, ws_id, match, query):
+    """Bounce explorer. Range comes from the page's date picker; bounce_events
+    is never pruned, so 'all' really means the whole stored history."""
+    group_by = _q(query, "group_by", "signature")
+    return reporting_queries.bounce_explorer(
+        conn, ws_id,
+        since=_q(query, "since", "30d"), until=_q(query, "until"),
+        domain=_q(query, "domain"), mailbox=_q(query, "mailbox"),
+        campaign_id=_q(query, "campaign_id"),
+        bounce_type=_q(query, "bounce_type"),
+        group_by=None if group_by == "none" else group_by,
+        limit=_int_q(query, "limit", 200), offset=_int_q(query, "offset", 0, hi=1000000),
+    )
+
+
+# Not workspace-scoped: a bounce, a mailbox trend and the provider/reseller
+# vocabulary are all properties of your own sending infrastructure, which is
+# shared across workspaces.
+def handle_bounce_detail(match, query, body=None):
+    conn = get_conn()
+    try:
+        return 200, reporting_queries.bounce_detail(conn, match.group(1))
+    finally:
+        conn.close()
+
+
+def handle_bounce_trend(match, query, body=None):
+    conn = get_conn()
+    try:
+        return 200, reporting_queries.bounce_trend(
+            conn, mailbox=_q(query, "mailbox"), domain=_q(query, "domain"),
+            days=_int_q(query, "days", 14, hi=90))
+    finally:
+        conn.close()
+
+
+def handle_deliverability_vocab(match, query, body=None):
+    conn = get_conn()
+    try:
+        return 200, reporting_queries.deliverability_vocab(conn)
+    finally:
+        conn.close()
 
 
 @_workspace_scoped
@@ -113,12 +176,12 @@ def handle_domain_detail(conn, ws_id, match, query):
     domain = _q(query, "domain")
     if not domain:
         raise ValueError("domain query parameter is required")
-    return dashboard_queries.domain_detail(conn, ws_id, domain)
+    return reporting_queries.domain_detail(conn, ws_id, domain)
 
 
 @_workspace_scoped
 def handle_companies(conn, ws_id, match, query):
-    return dashboard_queries.search_companies(
+    return reporting_queries.search_companies(
         conn, ws_id, q=_q(query, "q"),
         sort=_q(query, "sort", "leads"),
         direction=_q(query, "dir"),
@@ -132,17 +195,17 @@ def handle_companies(conn, ws_id, match, query):
 
 @_workspace_scoped
 def handle_companies_stats(conn, ws_id, match, query):
-    return dashboard_queries.companies_stats(conn, ws_id)
+    return reporting_queries.companies_stats(conn, ws_id)
 
 
 @_workspace_scoped
 def handle_company_detail(conn, ws_id, match, query):
-    return dashboard_queries.company_detail(conn, ws_id, int(match.group(1)))
+    return reporting_queries.company_detail(conn, ws_id, int(match.group(1)))
 
 
 @_workspace_scoped
 def handle_company_contact_activity(conn, ws_id, match, query):
-    return dashboard_queries.company_contact_activity(
+    return reporting_queries.company_contact_activity(
         conn, ws_id, int(match.group(1)),
         limit=_int_q(query, "limit", 200, lo=1, hi=500))
 
@@ -153,7 +216,7 @@ def handle_company_search(match, query, body):
         return 200, {"companies": []}
     conn = get_conn()
     try:
-        return 200, dashboard_queries.company_search_for_link(
+        return 200, reporting_queries.company_search_for_link(
             conn, q, limit=_int_q(query, "limit", 10, lo=1, hi=50))
     finally:
         conn.close()
@@ -191,7 +254,7 @@ def handle_company_domains(match, query, body):
     conn = get_conn()
     try:
         company_id = int(match.group(1))
-        detail = dashboard_queries.company_detail(
+        detail = reporting_queries.company_detail(
             conn, _resolve_workspace(conn, _q(query, "workspace"))["id"], company_id)
         return 200, {"company_id": company_id, "domains": detail["domains"]}
     finally:
@@ -212,6 +275,44 @@ def handle_edit_domain(match, query, body):
     body = body or {}
     domain = body.pop("domain", None)
     return 200, dashboard_actions.edit_sender_domain(domain, body)
+
+
+def handle_domains_bulk_check(match, query, body):
+    """Registration and/or DNSBL checks over a selection of domains.
+
+    A background job, not a request: each DNSBL lookup is a DNS round trip
+    against a rate-limited resolver, so forty domains is minutes of waiting.
+    Answering that on the request thread would hold a connection open long
+    enough to exhaust the browser's pool -- the same failure the oversized
+    export body used to cause.
+    """
+    body = body or {}
+    domains = [str(d).strip() for d in (body.get("domains") or []) if str(d).strip()]
+    if not domains:
+        return 400, {"error": "domains is required"}
+    checks = body.get("checks") or ["registration", "blacklist"]
+    unknown = sorted(set(checks) - {"registration", "blacklist"})
+    if unknown:
+        return 400, {"error": f"unknown check(s): {', '.join(unknown)}"}
+    status = dashboard_actions.sync_manager.start_domain_check(
+        domains=domains, checks=checks,
+        tier=body.get("tier") or "all", refresh=bool(body.get("refresh")))
+    if status is None:
+        running = dashboard_actions.sync_manager.running_kind() or "another job"
+        return 409, {"error": f"{running} is already running — wait for it to finish"}
+    return 202, status
+
+
+def handle_domain_blacklist_check(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.run_domain_blacklist_check(
+        body.get("domain"), body.get("tier") or "all")
+
+
+def handle_domain_registration(match, query, body):
+    body = body or {}
+    return 200, dashboard_actions.fetch_domain_registration(
+        body.get("domain"), bool(body.get("refresh")))
 
 
 def handle_delete_company(match, query, body):
@@ -249,7 +350,7 @@ def handle_resolve_merges_bulk(match, query, body):
 
 @_workspace_scoped
 def handle_pipeline(conn, ws_id, match, query):
-    return dashboard_queries.pipeline_counts(
+    return reporting_queries.pipeline_counts(
         conn, ws_id, since=_q(query, "since"), until=_q(query, "until"))
 
 
@@ -258,7 +359,7 @@ def handle_pipeline_leads(conn, ws_id, match, query):
     status = _q(query, "status")
     if not status:
         raise ValueError("status query parameter is required")
-    return dashboard_queries.pipeline_leads(
+    return reporting_queries.pipeline_leads(
         conn, ws_id, status,
         limit=_int_q(query, "limit", 50, lo=1),
         offset=_int_q(query, "offset", 0, hi=1_000_000),
@@ -268,7 +369,7 @@ def handle_pipeline_leads(conn, ws_id, match, query):
 @_workspace_scoped
 def handle_attributes(conn, ws_id, match, query):
     campaign_id = _q(query, "campaign_id")
-    return dashboard_queries.attribute_performance(
+    return reporting_queries.attribute_performance(
         conn, ws_id,
         field=_q(query, "field", "industry"),
         min_sample=_int_q(query, "min_sample", 20, lo=1, hi=10_000),
@@ -277,17 +378,19 @@ def handle_attributes(conn, ws_id, match, query):
 
 @_workspace_scoped
 def handle_campaigns(conn, ws_id, match, query):
-    return dashboard_queries.campaign_audit(
-        conn, ws_id, since=_q(query, "since"), until=_q(query, "until"))
+    return reporting_queries.campaign_audit(
+        conn, ws_id, since=_q(query, "since"), until=_q(query, "until"),
+        include_scheduling=_bool_q(query, "include_scheduling"))
 
 
 @_workspace_scoped
 def handle_campaign_daily(conn, ws_id, match, query):
     campaign_id = _q(query, "campaign_id")
-    return dashboard_queries.campaign_daily(
+    return reporting_queries.campaign_daily(
         conn, ws_id,
         campaign_id=int(campaign_id) if campaign_id else None,
-        since=_q(query, "since", "30d"), until=_q(query, "until"))
+        since=_q(query, "since", "30d"), until=_q(query, "until"),
+        include_scheduling=_bool_q(query, "include_scheduling"))
 
 
 @_workspace_scoped
@@ -295,7 +398,7 @@ def handle_campaign_detail(conn, ws_id, match, query):
     campaign_id = _q(query, "campaign_id")
     if not campaign_id:
         raise ValueError("campaign_id query parameter is required")
-    return dashboard_queries.campaign_detail(
+    return reporting_queries.campaign_detail(
         conn, ws_id, int(campaign_id),
         since=_q(query, "since"), until=_q(query, "until"))
 
@@ -325,7 +428,7 @@ def _lead_filters_from(query: dict) -> dict:
     the list, the id selection behind "select all N matching", the stat tiles
     and the CSV export — parses its filters here. They used to parse them in
     four places, which is how an export drifts from the list it claims to
-    mirror. The keys line up 1:1 with dashboard_queries.LEAD_FILTER_KEYS.
+    mirror. The keys line up 1:1 with reporting_queries.LEAD_FILTER_KEYS.
     """
     campaign_id = _q(query, "campaign_id")
     return {
@@ -352,7 +455,7 @@ def _lead_filters_from(query: dict) -> dict:
 
 @_workspace_scoped
 def handle_contacts(conn, ws_id, match, query):
-    return dashboard_queries.search_leads(
+    return reporting_queries.search_leads(
         conn, ws_id,
         **_lead_filters_from(query),
         sort=_q(query, "sort", "last_activity"),
@@ -365,7 +468,7 @@ def handle_contacts(conn, ws_id, match, query):
 def handle_contacts_ids(conn, ws_id, match, query):
     # Every lead_id matching the current contacts filter, for "select all N
     # matching" across pages. Capped so a runaway filter can't return the world.
-    return dashboard_queries.search_leads(
+    return reporting_queries.search_leads(
         conn, ws_id,
         **_lead_filters_from(query),
         limit=_int_q(query, "limit", 5000, lo=1, hi=50000),
@@ -436,7 +539,7 @@ def handle_contacts_export(match, query, body):
 @_workspace_scoped
 def handle_contacts_stats(conn, ws_id, match, query):
     # Same filters as the list, so a tile and the rows under it always agree.
-    return dashboard_queries.contacts_stats(conn, ws_id, **_lead_filters_from(query))
+    return reporting_queries.contacts_stats(conn, ws_id, **_lead_filters_from(query))
 
 
 @_workspace_scoped
@@ -522,7 +625,7 @@ def handle_suppression_remove(match, query, body):
 
 @_workspace_scoped
 def handle_data_quality(conn, ws_id, match, query):
-    return dashboard_queries.data_quality(
+    return reporting_queries.data_quality(
         conn, ws_id, since=_q(query, "since"), until=_q(query, "until"))
 
 
@@ -537,7 +640,7 @@ def _parse_lead_ids(raw) -> list:
 
 @_workspace_scoped
 def handle_enrich_targets(conn, ws_id, match, query):
-    return dashboard_queries.enrichment_targets(
+    return reporting_queries.enrichment_targets(
         conn, ws_id, _parse_lead_ids(_q(query, "lead_ids")))
 
 
@@ -601,7 +704,7 @@ def handle_campaign_leads(conn, ws_id, match, query):
     campaign_id = _q(query, "campaign_id")
     if not campaign_id:
         raise ValueError("campaign_id query parameter is required")
-    return dashboard_queries.campaign_leads(
+    return reporting_queries.campaign_leads(
         conn, ws_id, int(campaign_id),
         q=_q(query, "q"), since=_q(query, "since"), until=_q(query, "until"),
         sort=_q(query, "sort", "last_activity"),
@@ -615,7 +718,7 @@ def handle_campaign_subjects(conn, ws_id, match, query):
     campaign_id = _q(query, "campaign_id")
     if not campaign_id:
         raise ValueError("campaign_id query parameter is required")
-    return dashboard_queries.campaign_subjects(
+    return reporting_queries.campaign_subjects(
         conn, ws_id, int(campaign_id), limit=_int_q(query, "limit", 10, lo=1, hi=100))
 
 
@@ -623,17 +726,18 @@ def handle_campaign_subjects(conn, ws_id, match, query):
 def handle_campaign_replies(conn, ws_id, match, query):
     # campaign_id is optional here: omitted = all campaigns for the range.
     campaign_id = _q(query, "campaign_id")
-    return dashboard_queries.campaign_replies(
+    return reporting_queries.campaign_replies(
         conn, ws_id,
         campaign_id=int(campaign_id) if campaign_id else None,
         since=_q(query, "since"), until=_q(query, "until"),
         limit=_int_q(query, "limit", 200, lo=1, hi=500),
-        sentiment=_q(query, "sentiment"), status_label=_q(query, "status_label"))
+        sentiment=_q(query, "sentiment"), status_label=_q(query, "status_label"),
+        reply_kind=_q(query, "reply_kind"))
 
 
 @_workspace_scoped
 def handle_activity(conn, ws_id, match, query):
-    return dashboard_queries.activity_feed(
+    return reporting_queries.activity_feed(
         conn, ws_id,
         limit=_int_q(query, "limit", 50, lo=1, hi=200),
         before=_q(query, "before"),
@@ -643,13 +747,13 @@ def handle_activity(conn, ws_id, match, query):
 
 @_workspace_scoped
 def handle_activity_types(conn, ws_id, match, query):
-    return dashboard_queries.activity_event_types(
+    return reporting_queries.activity_event_types(
         conn, ws_id, since=_q(query, "since"), until=_q(query, "until"))
 
 
 @_workspace_scoped
 def handle_lead_history(conn, ws_id, match, query):
-    return dashboard_queries.lead_history(
+    return reporting_queries.lead_history(
         conn, int(match.group(1)), workspace_id=ws_id,
         limit=_int_q(query, "limit", 200, lo=1, hi=500))
 
@@ -657,7 +761,7 @@ def handle_lead_history(conn, ws_id, match, query):
 def handle_event_body(match, query, body):
     conn = get_conn()
     try:
-        return 200, dashboard_queries.event_body(conn, int(match.group(1)))
+        return 200, reporting_queries.event_body(conn, int(match.group(1)))
     finally:
         conn.close()
 
@@ -688,7 +792,7 @@ def handle_company_phone_action(match, query, body):
 def handle_lead_custom_fields(match, query, body):
     conn = get_conn()
     try:
-        return 200, dashboard_queries.lead_custom_fields(conn, int(match.group(1)))
+        return 200, reporting_queries.lead_custom_fields(conn, int(match.group(1)))
     finally:
         conn.close()
 
@@ -696,7 +800,7 @@ def handle_lead_custom_fields(match, query, body):
 def handle_lead_provider_runs(match, query, body):
     conn = get_conn()
     try:
-        return 200, dashboard_queries.lead_provider_runs(conn, int(match.group(1)))
+        return 200, reporting_queries.lead_provider_runs(conn, int(match.group(1)))
     finally:
         conn.close()
 
@@ -707,6 +811,40 @@ def handle_lead_identity(match, query, body):
         int(match.group(1)),
         name=body.get("name"), title=body.get("title"),
         linkedin=body.get("linkedin"))
+
+
+def handle_leads_link(match, query, body):
+    """Record that one contact forwarded us to another.
+
+    Not a merge: both records stay whole. Only the COUNT collapses -- reporting
+    resolves each lead to its conversation root and counts distinct roots.
+    """
+    import lead_links
+
+    body = body or {}
+    from_lead = body.get("from_lead_id")
+    to_lead = body.get("to_lead_id")
+    if not from_lead or not to_lead:
+        return 400, {"error": "from_lead_id and to_lead_id are required"}
+    conn = get_conn()
+    try:
+        return 200, lead_links.link_leads(
+            conn, int(from_lead), int(to_lead),
+            kind=body.get("kind") or "forwarded_to", note=body.get("note"))
+    except lead_links.LeadLinkError as exc:
+        return 400, {"error": str(exc)}
+    finally:
+        conn.close()
+
+
+def handle_lead_conversation(match, query, body=None):
+    import lead_links
+
+    conn = get_conn()
+    try:
+        return 200, lead_links.conversation(conn, int(match.group(1)))
+    finally:
+        conn.close()
 
 
 def handle_leads_merge_preview(match, query, body):
@@ -838,13 +976,13 @@ def handle_lead_email_action(match, query, body):
 
 @_workspace_scoped
 def handle_crm(conn, ws_id, match, query):
-    return dashboard_queries.crm_overview(conn, ws_id)
+    return reporting_queries.crm_overview(conn, ws_id)
 
 
 def handle_outbox(match, query, body):
     conn = get_conn()
     try:
-        return 200, dashboard_queries.sync_outbox(
+        return 200, reporting_queries.sync_outbox(
             conn,
             workspace_slug=_q(query, "workspace"),
             limit=_int_q(query, "limit", 100, lo=1, hi=500),
@@ -861,7 +999,7 @@ def handle_outbox_detail(match, query, body):
         raise ValueError("entity_type and entity_id query parameters are required")
     conn = get_conn()
     try:
-        return 200, dashboard_queries.outbox_item_detail(
+        return 200, reporting_queries.outbox_item_detail(
             conn, entity_type, entity_id, op=_q(query, "op"))
     finally:
         conn.close()
@@ -937,6 +1075,10 @@ ROUTES = [
     ("GET", re.compile(r"^/api/workspaces$"), handle_workspaces),
     ("GET", re.compile(r"^/api/summary$"), handle_summary),
     ("GET", re.compile(r"^/api/deliverability$"), handle_deliverability),
+    ("GET", re.compile(r"^/api/deliverability/vocab$"), handle_deliverability_vocab),
+    ("GET", re.compile(r"^/api/bounces$"), handle_bounces),
+    ("GET", re.compile(r"^/api/bounces/([\w:.-]+)$"), handle_bounce_detail),
+    ("GET", re.compile(r"^/api/bounce-trend$"), handle_bounce_trend),
     ("GET", re.compile(r"^/api/pipeline$"), handle_pipeline),
     ("GET", re.compile(r"^/api/pipeline/leads$"), handle_pipeline_leads),
     ("GET", re.compile(r"^/api/attributes$"), handle_attributes),
@@ -994,6 +1136,8 @@ ROUTES = [
     ("POST", re.compile(r"^/api/leads/(\d+)/enrich$"), handle_enrich),
     ("POST", re.compile(r"^/api/leads/(\d+)/identity$"), handle_lead_identity),
     ("POST", re.compile(r"^/api/serper/apply$"), handle_serper_apply),
+    ("POST", re.compile(r"^/api/leads/link$"), handle_leads_link),
+    ("GET", re.compile(r"^/api/leads/(\d+)/conversation$"), handle_lead_conversation),
     ("POST", re.compile(r"^/api/leads/merge/preview$"), handle_leads_merge_preview),
     ("POST", re.compile(r"^/api/leads/merge$"), handle_leads_merge),
     ("POST", re.compile(r"^/api/leads/delete$"), handle_delete_leads),
@@ -1016,6 +1160,9 @@ ROUTES = [
     ("POST", re.compile(r"^/api/companies/(\d+)/domains$"), handle_set_company_domain),
     ("POST", re.compile(r"^/api/senders/edit$"), handle_edit_sender),
     ("POST", re.compile(r"^/api/domains/edit$"), handle_edit_domain),
+    ("POST", re.compile(r"^/api/domains/bulk-check$"), handle_domains_bulk_check),
+    ("POST", re.compile(r"^/api/domains/blacklist-check$"), handle_domain_blacklist_check),
+    ("POST", re.compile(r"^/api/domains/registration$"), handle_domain_registration),
     # Danger-zone deletes. Each files a relay tombstone via the BEFORE DELETE
     # outbox trigger, so they remove the row upstream too -- all require
     # confirm:true in the body.
@@ -1097,15 +1244,46 @@ class DashboardHandler(BaseHTTPRequestHandler):
         status, payload = dispatch("GET", url.path, parse_qs(url.query), None)
         self._send_json(status, payload)
 
+    def _drain_body(self, length: Optional[int] = None) -> None:
+        """Read and discard the request body before answering early.
+
+        Answering a POST without consuming its body desynchronizes a keep-alive
+        connection: the unread bytes are parsed as the *next* request line, so
+        every subsequent request on that socket hangs or 400s. The browser keeps
+        the poisoned connection in its pool and the whole dashboard appears
+        frozen until a reload -- which is exactly what a rejected 8,000-id
+        export selection did. Draining is bounded: a body too large to discard
+        cheaply closes the connection instead.
+        """
+        if length is None:
+            length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return
+        if length > _MAX_DRAIN_BYTES:
+            self.close_connection = True
+            return
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                self.close_connection = True
+                return
+            remaining -= len(chunk)
+
     def do_POST(self):
         if not self._host_allowed():
+            self._drain_body()
             self._send_json(403, {"error": "host not allowed"})
             return
         if self.headers.get(CSRF_HEADER) != "1":
+            self._drain_body()
             self._send_json(403, {"error": f"missing {CSRF_HEADER} header"})
             return
+        url = urlsplit(self.path)
         length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY_BYTES:
+        limit = ROUTE_BODY_LIMITS.get(url.path, MAX_BODY_BYTES)
+        if length > limit:
+            self._drain_body(length)
             self._send_json(413, {"error": "request body too large"})
             return
         raw = self.rfile.read(length) if length else b""
@@ -1114,7 +1292,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send_json(400, {"error": "invalid JSON body"})
             return
-        url = urlsplit(self.path)
         status, payload = dispatch("POST", url.path, parse_qs(url.query), body)
         self._send_json(status, payload)
 

@@ -18,7 +18,7 @@ Two tables (see schema.py):
 - `workspace_lead_suppressions` -- materialized matches. Derived, never synced,
   rebuildable by `reconcile()`.
 
-Enforcement lives in exactly one place: `dashboard_queries.lead_filter_clause()`
+Enforcement lives in exactly one place: `reporting_queries.lead_filter_clause()`
 gained a `suppressed` key defaulting to "exclude", so the contacts list, its
 counts, the CSV export and every bulk action all inherit it from one WHERE.
 """
@@ -392,6 +392,51 @@ def check(
         "suppressed_leads": lead_rows,
     }
 
+
+def build_suppression_sync_payload(conn: sqlite3.Connection, entry_id: str) -> dict:
+    """The wire form of one authored suppression rule.
+
+    Mirrors the other entity builders: only the fields that carry meaning
+    travel, and derived state does not. `workspace_lead_suppressions` is
+    deliberately absent -- it is rebuilt locally by reconcile() from these
+    rules, and shipping a materialized index would mean two sources of truth
+    for one fact (see the SYNC_MAP comment in sync_contract.py).
+
+    NOTE: the relay has no suppression action today (its snapshot allowlist is
+    lead_core / lead_workspace / company / sender_account / sender_domain), so
+    nothing drains these rows yet. The builder exists so the Sync panel can show
+    what a rule WOULD send, and so the wire shape is settled before the relay
+    grows the endpoint -- not because a push path exists.
+    """
+    row = conn.execute(
+        """SELECT e.id, e.scope, e.entry_type, e.value_raw, e.value_normalized,
+                  e.reason, e.note, e.source, e.created_at, e.created_by,
+                  e.expires_at, e.revoked_at, w.slug AS workspace_slug
+             FROM suppression_entries e
+             LEFT JOIN workspaces w ON w.id = e.workspace_id
+            WHERE e.id = ?""",
+        (entry_id,),
+    ).fetchone()
+    if not row:
+        return {}
+    payload: dict = {
+        "entry_type": row["entry_type"],
+        "value": row["value_normalized"],
+        "scope": row["scope"],
+        "reason": row["reason"],
+    }
+    # Org-wide entries carry no workspace; workspace-scoped ones travel by slug,
+    # because the local workspace id is not meaningful on the other side.
+    if row["scope"] != "org" and row["workspace_slug"]:
+        payload["workspace"] = row["workspace_slug"]
+    for wire, column in (
+        ("value_raw", "value_raw"), ("note", "note"), ("source", "source"),
+        ("created_at", "created_at"), ("created_by", "created_by"),
+        ("expires_at", "expires_at"), ("revoked_at", "revoked_at"),
+    ):
+        if row[column]:
+            payload[wire] = row[column]
+    return payload
 
 def reconcile(
     conn: sqlite3.Connection,

@@ -3,7 +3,7 @@
 
 "Export whatever is on screen right now, all N of it" is only true if the
 export and the contacts list build the same WHERE. So lead_export calls
-dashboard_queries.lead_filter_clause() rather than growing its own filters --
+reporting_queries.lead_filter_clause() rather than growing its own filters --
 which is exactly what pipeline_tags.export_leads had become, and why folding it
 into a shim was part of this.
 """
@@ -23,7 +23,7 @@ from om_paths import set_data_root_override  # noqa: E402
 
 set_data_root_override(Path(_tmp))
 
-import dashboard_queries as dq  # noqa: E402
+import reporting_queries as dq  # noqa: E402
 import lead_export  # noqa: E402
 import pipeline as om  # noqa: E402
 

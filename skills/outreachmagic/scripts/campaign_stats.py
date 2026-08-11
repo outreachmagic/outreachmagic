@@ -588,3 +588,166 @@ def build_campaign_stats_payload(
         "title": f"{workspace.title()} Campaign Stats - {since or '14d'}",
         "sheets": sheets,
     }
+
+
+# ---------------------------------------------------------------------------
+# Reply kinds and the deliverability rollup
+#
+# "What happened after we sent?" is the single most common question asked of a
+# live campaign, and until now it took a three-table join with non-obvious keys
+# to answer. It also needs one definition of "a real reply" -- a bounce and an
+# out-of-office both set a lead's sentiment, so a Replies list built on
+# sentiment alone shows all three and implies they are the same thing. That
+# definition lives here, once, and both the CLI preset and the dashboard read
+# it. Two implementations is how the numbers start disagreeing.
+# ---------------------------------------------------------------------------
+
+#: The reply kinds, in the order a human reads them.
+REPLY_KINDS = ("human", "auto_reply", "bounce", "status_only")
+
+REPLY_KIND_LABELS = {
+    "human": "reply",
+    "auto_reply": "auto-reply",
+    "bounce": "bounced",
+    "status_only": "status only",
+}
+
+#: SQL that is true for an auto-reply/OOO event.
+AUTO_REPLY_SQL = "CAST(json_extract({alias}.metadata_json, '$.is_auto_reply') AS INTEGER) = 1"
+
+
+def reply_kind_case_sql(event_alias: str = "e", sentiment_col: Optional[str] = None) -> str:
+    """CASE expression returning a reply_kind for a joined reply event.
+
+    `sentiment_col` (e.g. wl.current_status_sentiment) lets a row with no reply
+    event still be classified from the sentiment that produced it -- that is
+    what separates `bounce` and `status_only` from "no data".
+    """
+    auto = AUTO_REPLY_SQL.format(alias=event_alias)
+    sentiment = sentiment_col or "NULL"
+    return f"""CASE
+        WHEN {event_alias}.id IS NOT NULL AND {auto} THEN 'auto_reply'
+        WHEN LOWER(COALESCE({sentiment}, '')) IN ('autoreply', 'auto_reply') THEN 'auto_reply'
+        WHEN LOWER(COALESCE({sentiment}, '')) IN ('invalid', 'bounced', 'bounce') THEN 'bounce'
+        WHEN {event_alias}.id IS NOT NULL THEN 'human'
+        ELSE 'status_only'
+    END"""
+
+
+def classify_reply_kind(
+    *,
+    has_reply_event: bool,
+    is_auto_reply: bool = False,
+    has_bounce: bool = False,
+    sentiment: Optional[str] = None,
+    event_type: Optional[str] = None,
+) -> str:
+    """Python twin of reply_kind_case_sql, for rows already in memory.
+
+    A bounce wins over a plain inbound event: a bounce notification IS an
+    inbound message, and calling it a reply is the exact confusion this fixes.
+    """
+    import bounces
+
+    if event_type and bounces.is_bounce_event_type(event_type):
+        return "bounce"
+    if has_bounce:
+        return "bounce"
+    if is_auto_reply:
+        return "auto_reply"
+    normalized = (sentiment or "").strip().lower()
+    if normalized in ("autoreply", "auto_reply"):
+        return "auto_reply"
+    if has_reply_event:
+        return "human"
+    if normalized in ("invalid", "bounced", "bounce"):
+        return "bounce"
+    return "status_only"
+
+
+def build_deliverability_payload(
+    conn: sqlite3.Connection,
+    *,
+    workspace: str,
+    since: Optional[str] = None,
+) -> dict:
+    """Sent / bounced / replied / auto-replied for a workspace, per campaign.
+
+    This is the query an agent reaches for first and used to have to assemble by
+    hand: events reach their workspace through campaigns (campaigns.workspace_id
+    is a real column), while leads reach theirs through workspace_leads. Getting
+    that wrong is the difference between "0 sends" and the truth.
+    """
+    row = conn.execute(
+        "SELECT id, slug FROM workspaces WHERE id = ? OR slug = ? OR name = ?"
+        " ORDER BY (id = ?) DESC LIMIT 1",
+        (workspace, workspace, workspace, workspace),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown workspace: {workspace}")
+    workspace_id, slug = row[0], row[1]
+
+    bare, qualified = build_since_expr(since)
+    reply_cond = reply_event_sql_condition()
+    auto = AUTO_REPLY_SQL.format(alias="e")
+
+    rows = conn.execute(
+        f"""
+        WITH camp AS (SELECT id, name FROM campaigns WHERE workspace_id = ?)
+        SELECT c.id AS campaign_id, c.name AS campaign_name,
+               SUM(CASE WHEN LOWER(COALESCE(e.direction, '')) = 'outbound'
+                         OR LOWER(e.event_type) IN ('email_sent', 'linkedin_message_sent')
+                        THEN 1 ELSE 0 END) AS sent,
+               SUM(CASE WHEN {reply_cond} AND NOT ({auto}) THEN 1 ELSE 0 END) AS replies,
+               SUM(CASE WHEN {reply_cond} AND {auto} THEN 1 ELSE 0 END) AS auto_replies,
+               MIN(e.created_at) AS first_event_at,
+               MAX(e.created_at) AS last_event_at
+        FROM camp c
+        LEFT JOIN events e ON e.campaign_id = c.id AND {qualified}
+        GROUP BY c.id, c.name
+        ORDER BY sent DESC, c.name
+        """,
+        (workspace_id,),
+    ).fetchall()
+
+    bounce_rows = conn.execute(
+        f"""SELECT campaign_id, COUNT(*) AS bounces FROM bounce_events
+            WHERE workspace_id = ? AND {bare.replace('created_at', 'last_seen_at')}
+            GROUP BY campaign_id""",
+        (workspace_id,),
+    ).fetchall()
+    bounces_by_campaign = {r[0]: r[1] for r in bounce_rows}
+
+    campaigns = []
+    totals = {"sent": 0, "replies": 0, "auto_replies": 0, "bounces": 0}
+    for r in rows:
+        sent = int(r["sent"] or 0)
+        bounced = int(bounces_by_campaign.get(r["campaign_id"], 0))
+        item = {
+            "campaign_id": r["campaign_id"],
+            "campaign": strip_workspace_prefix(r["campaign_name"] or "", slug),
+            "sent": sent,
+            "replies": int(r["replies"] or 0),
+            "auto_replies": int(r["auto_replies"] or 0),
+            "bounces": bounced,
+            "reply_rate": (int(r["replies"] or 0) / sent) if sent else None,
+            "bounce_rate": (bounced / sent) if sent else None,
+            "first_event_at": r["first_event_at"],
+            "last_event_at": r["last_event_at"],
+        }
+        for key in totals:
+            totals[key] += item[key if key != "bounces" else "bounces"]
+        campaigns.append(item)
+
+    totals["reply_rate"] = (totals["replies"] / totals["sent"]) if totals["sent"] else None
+    totals["bounce_rate"] = (totals["bounces"] / totals["sent"]) if totals["sent"] else None
+    return {
+        "preset": "deliverability",
+        "workspace": slug,
+        "workspace_id": workspace_id,
+        # State the window back, so "0" can never be read as "0 ever" when it
+        # actually means "0 today".
+        "since": since or "all",
+        "totals": totals,
+        "campaigns": campaigns,
+    }

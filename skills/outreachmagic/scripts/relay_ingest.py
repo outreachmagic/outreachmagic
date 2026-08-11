@@ -19,6 +19,7 @@ from constants import (
     PLUSVIBE_PLATFORMS,
     PLUSVIBE_REPLY_EVENTS,
     PLUSVIBE_SENT_EVENTS,
+    SCHEDULING_PLATFORMS,
 )
 from db_conn import get_conn
 from progress import warn
@@ -298,6 +299,60 @@ def build_calendly_meeting_note(raw: dict, envelope_event_type: str = "") -> str
         lines.append("Rescheduled: yes")
 
     return "\n".join(lines)
+
+
+class _SchedulingFallbackRouting:
+    """Minimal stand-in for a routing result, carrying only what ingest reads.
+
+    A booking webhook resolved through its lead rather than through a campaign
+    rule still has to satisfy the same `routing.workspace_id` read below.
+    Constructing a real routing record would imply a rule exists.
+    """
+
+    __slots__ = ("workspace_id",)
+
+    def __init__(self, workspace_id: str) -> None:
+        self.workspace_id = workspace_id
+
+
+def _scheduling_workspace_from_lead(
+    conn, identity: dict, payload: dict, platform: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """Workspace for a booking webhook whose calendar slot has no routing rule.
+
+    Routing is campaign-name based, and a booking tool's "campaign" is its event
+    type ("30 Minute Meeting"). Nobody writes a routing rule per calendar slot,
+    so every Calendly booking quarantined -- which meant the meeting never
+    landed, the lead kept the sequencer's last label ("interested") instead of
+    advancing to meeting_booked, and the booking showed up nowhere.
+
+    The person is already in a workspace: an outbound campaign put them there.
+    So resolve through the LEAD rather than the campaign.
+
+    Returns (workspace_id, ambiguity_reason). A lead in several workspaces is
+    genuinely ambiguous -- picking one would silently mislabel a lead in the
+    other -- so it stays quarantined with a reason that names the problem.
+    """
+    from workspace_routing import collect_identities_from_event, find_lead_by_identity
+
+    identities = collect_identities_from_event(identity, payload, platform)
+    lead_id = None
+    for itype, value in identities:
+        lead_id = find_lead_by_identity(conn, DEFAULT_ORG_ID, itype, value)
+        if lead_id:
+            break
+    if not lead_id:
+        return None, None  # unknown person; the normal quarantine reason applies
+
+    rows = conn.execute(
+        "SELECT workspace_id FROM workspace_leads WHERE lead_id = ?", (lead_id,)
+    ).fetchall()
+    workspace_ids = sorted({r["workspace_id"] for r in rows if r["workspace_id"]})
+    if len(workspace_ids) == 1:
+        return workspace_ids[0], None
+    if len(workspace_ids) > 1:
+        return None, f"scheduling_lead_in_{len(workspace_ids)}_workspaces"
+    return None, None
 
 
 def relay_target_stage(
@@ -994,6 +1049,26 @@ def ingest_relay_event(
             routing_config=routing_config,
             routing_cache=routing_cache,
         )
+        if not routing and platform in SCHEDULING_PLATFORMS:
+            # A calendar slot has no routing rule and never will. Fall back to
+            # the workspace the person is already in.
+            fallback_ws, ambiguous = _scheduling_workspace_from_lead(
+                conn, identity, payload, platform)
+            if fallback_ws:
+                routing = _SchedulingFallbackRouting(fallback_ws)
+            elif ambiguous:
+                om.quarantine_event(
+                    conn,
+                    DEFAULT_ORG_ID,
+                    campaign_ctx,
+                    reason=ambiguous,
+                    payload=event,
+                    external_event_id=str(event.get("relay_id") or ""),
+                )
+                if own_conn:
+                    conn.commit()
+                    conn.close()
+                return None
         if not routing:
             om.quarantine_event(
                 conn,

@@ -890,6 +890,95 @@ def set_company_domain_purpose(company_id: int, domain: str, purpose: str) -> di
         conn.close()
 
 
+def add_company_domain(
+    company_id: int, domain: str, purpose: Optional[str] = None,
+) -> dict:
+    """pipeline.py company add-domain: attach another domain to a company.
+
+    Company merges have always been able to leave a company holding two domains
+    (the loser's identity rows move across), but there was no way to say "they
+    also own this one" directly -- so a second domain you knew about could only
+    be recorded by faking a merge or editing the database.
+
+    Global domain uniqueness is deliberate and stays: if the domain already
+    belongs to a different company, that is a merge decision, not an insert, so
+    this returns the conflict with the owning company rather than silently
+    doing nothing.
+    """
+    from constants import COMPANY_DOMAIN_PURPOSES
+
+    domain_norm = normalize_company_domain(domain)
+    if not domain_norm:
+        return {"status": "error", "error": f"invalid domain: {domain}"}
+    p = (purpose or "").strip().lower() or None
+    if p and p not in COMPANY_DOMAIN_PURPOSES:
+        return {"status": "error",
+                "error": f"purpose must be one of {', '.join(COMPANY_DOMAIN_PURPOSES)}"}
+    conn = get_conn()
+    try:
+        company = conn.execute(
+            "SELECT id, name FROM companies WHERE id = ?", (company_id,)).fetchone()
+        if not company:
+            return {"status": "error", "error": f"company not found: {company_id}"}
+        owner = conn.execute(
+            """SELECT ci.company_id, c.name FROM company_identities ci
+                 JOIN companies c ON c.id = ci.company_id
+                WHERE ci.identity_type = 'domain'
+                  AND ci.identity_value_normalized = ?
+                  AND ci.company_id != ?""",
+            (domain_norm, company_id),
+        ).fetchone()
+        if owner:
+            return {
+                "status": "conflict",
+                "error": f"{domain_norm} already belongs to company "
+                         f"{owner['company_id']} ({owner['name']})",
+                "domain": domain_norm,
+                "owner_company_id": owner["company_id"],
+                "owner_company_name": owner["name"],
+                "hint": "merge the two companies instead: "
+                        "pipeline.py company merge --keep-id A --merge-id B",
+            }
+        existing = conn.execute(
+            """SELECT id FROM company_identities
+                WHERE company_id = ? AND identity_type = 'domain'
+                  AND identity_value_normalized = ?""",
+            (company_id, domain_norm),
+        ).fetchone()
+        if existing:
+            if p:
+                conn.execute(
+                    "UPDATE company_identities SET purpose = ? WHERE id = ?", (p, existing["id"]))
+                conn.commit()
+            return {"status": "ok", "already_present": True, "company_id": company_id,
+                    "domain": domain_norm, "purpose": p}
+        conn.execute(
+            """INSERT INTO company_identities
+                   (org_id, company_id, identity_type, identity_value_normalized,
+                    purpose, source)
+               VALUES (?, ?, 'domain', ?, ?, 'manual')""",
+            (DEFAULT_ORG_ID, company_id, domain_norm, p),
+        )
+        if not company_id_has_canonical_domain(conn, company_id):
+            # A company with identities but no companies.domain reads as
+            # "missing domain" everywhere and blocks email finding.
+            conn.execute(
+                "UPDATE companies SET domain = ?, updated_at = datetime('now') WHERE id = ?",
+                (domain_norm, company_id),
+            )
+        conn.commit()
+        return {"status": "ok", "company_id": company_id,
+                "domain": domain_norm, "purpose": p}
+    finally:
+        conn.close()
+
+
+def company_id_has_canonical_domain(conn, company_id: int) -> bool:
+    row = conn.execute(
+        "SELECT domain FROM companies WHERE id = ?", (company_id,)).fetchone()
+    return bool(row and (row["domain"] or "").strip())
+
+
 def detach_company_domain(company_id: int, domain: str) -> dict:
     """pipeline.py company detach-domain: this domain is not theirs.
 
@@ -2632,7 +2721,7 @@ def merge_companies(
             conn.execute(
                 """INSERT OR IGNORE INTO company_identities
                        (org_id, company_id, identity_type, identity_value_normalized, source)
-                   VALUES (?, ?, 'domain', ?, 'legacy_companies_column')""",
+                   VALUES (?, ?, 'domain', ?, 'merged_company_record')""",
                 (DEFAULT_ORG_ID, keep_id, other_domain_norm),
             )
 
@@ -3042,6 +3131,25 @@ def resolve_lead(
                 identities.append(("email", email_norm))
             identities.extend(li_parsed)
 
+    # The column and the identity are written together or not at all.
+    #
+    # `leads.linkedin_url` is set from li_public below, but the identity comes
+    # from `identities` -- and a caller that passes `identities` explicitly
+    # (the Prosp enrichment path does, with email + sales-nav id) could set the
+    # column while never registering the identity. Such a lead is then
+    # unmatchable by LinkedIn forever: tier-3 matching has nothing to compare,
+    # so the next import of the same person creates a second record. That is
+    # how two Mark Goodmans existed with the same profile URL, and how 193
+    # leads (166 of them from Prosp) ended up in that state.
+    #
+    # Appending here rather than at each call site is deliberate: this is the
+    # one function that writes the column, so it is the one place that can
+    # guarantee the invariant against a call site that has not been written yet.
+    if li_public and not any(
+            t == "linkedin_url" and v == li_public for t, v in (identities or [])):
+        identities = list(identities or [])
+        identities.append(("linkedin_url", li_public))
+
     if not identities and force_lead_id is None:
         return {"status": "error", "error": "no identity: need email, linkedin, external_id, or name+company"}
 
@@ -3165,18 +3273,38 @@ def resolve_lead(
         match_method = find_match_method_for_lead(conn, DEFAULT_ORG_ID, lead_id, identities)
 
     if dry_run:
+        conf = match_confidence_for_type(match_method or identities[0][0])
+        # The whole point of a dry run: which columns would actually change.
+        # This used to return only status/id/match_method, so answering "did
+        # they have a LinkedIn before?" meant querying the database by hand.
+        would_fill: list[str] = []
+        if not created and lead_id is not None:
+            existing = conn.execute(
+                "SELECT name, email, title, industry, company, headcount FROM leads"
+                " WHERE id = ?", (lead_id,)).fetchone()
+            would_fill = _preview_enrich_fields(
+                existing, enrich_name if enrich_name is not None else name,
+                title, industry, company, headcount, overwrite)
+            would_fill += [f for f in identity_fill_fields(
+                conn, int(lead_id), email_norm, li_public, overwrite=overwrite)
+                if f not in would_fill]
         if own_conn:
             conn.close()
-        conf = match_confidence_for_type(match_method or identities[0][0])
         base = {
             "email": email_norm, "linkedin": li_public, "dry_run": True,
             "match_method": match_method or (identities[0][0] if identities else None),
             "match_confidence": conf if not created else None,
+            "would_fill": would_fill,
+            # Same shape the real run reports, so a caller can read one field.
+            "filled": would_fill,
         }
         if created:
             return {"status": "created", "id": None, **base}
         return {"status": "matched", "id": lead_id, **base}
 
+    # Fills recorded on the matched path below. Empty for a created row:
+    # its email and LinkedIn are the record, not a fill of an existing one.
+    identity_filled: list[str] = []
     domain_explicit = normalize_company_domain(company_domain)
     domain_from_email = email_domain(email_norm)
     effective_domain = domain_explicit or domain_from_email
@@ -3222,6 +3350,10 @@ def resolve_lead(
         if own_conn:
             conn.commit()
     else:
+        # Computed before the UPDATE, while the columns still show their old
+        # state -- afterwards there is no way to tell a fill from a no-op.
+        identity_filled[:] = identity_fill_fields(
+            conn, int(lead_id), email_norm, li_public, overwrite=overwrite)
         sets, params = [], []
         if email_norm:
             sets.extend(["email = COALESCE(email, ?)", "email_domain = COALESCE(email_domain, ?)"])
@@ -3327,6 +3459,9 @@ def resolve_lead(
             company=company, headcount=headcount, overwrite=overwrite,
             conn=conn,
         )
+        # enrich_lead knows nothing about email/linkedin_url; they are filled by
+        # the UPDATE above. Both belong in one list or the summary undercounts.
+        filled = filled + [f for f in identity_filled if f not in filled]
         if email_norm:
             ensure_lead_domain(lead_id, email_norm, conn=conn, commit=False)
         link_lead_company(conn, lead_id, company=company, email=email_norm,
@@ -3642,6 +3777,38 @@ def enrich_lead(
     if own_conn:
         conn.close()
     return filled
+
+
+def identity_fill_fields(
+    conn, lead_id: int, email_norm: Optional[str], li_public: Optional[str],
+    *, overwrite: bool = False,
+) -> list[str]:
+    """Which of email / linkedin_url an import would newly FILL on this lead.
+
+    Pure: reads, never writes. The matched-lead UPDATE fills these with
+    COALESCE(col, ?), so "would fill" means the column is empty now and the row
+    brings a value -- exactly the question a dry run is asked ("they had no
+    LinkedIn before, will they after?").
+
+    Reported on the real path too. `filled` used to come only from enrich_lead,
+    which covers name/title/industry/company/headcount and nothing else, so the
+    two fields people actually import for were invisible in the summary: an
+    import that backfilled 296 LinkedIn URLs said nothing about any of them.
+    """
+    if not email_norm and not li_public:
+        return []
+    row = conn.execute(
+        "SELECT email, linkedin_url FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    if not row:
+        return []
+    fills = []
+    if email_norm and (overwrite or not (row["email"] or "").strip()):
+        fills.append("email")
+    if li_public:
+        current = row["linkedin_url"]
+        if overwrite or not (current or "").strip() or should_replace_linkedin_url(current, li_public):
+            fills.append("linkedin_url")
+    return fills
 
 
 def _preview_enrich_fields(row, name, title, industry, company, headcount, overwrite) -> list[str]:
@@ -4309,6 +4476,10 @@ def apply_email_find_results(
         "created": 0,
         "matched": 0,
         "enriched": 0,
+        # {column: rows filled}. Present on dry runs too, where it answers the
+        # question the dry run exists for: which contacts gain an email or a
+        # LinkedIn URL from this file?
+        "enriched_by_field": {},
         "personalized": 0,
         "tagged": 0,
         "recorded": 0,
@@ -4585,6 +4756,37 @@ def apply_email_find_results(
     return summary
 
 
+def _company_bucket_key(raw: dict) -> str:
+    """A stable key for the company a row is about, before it exists in the DB.
+
+    Company-scoped personalization must be checked per company, and a company
+    that has not been created yet has no id to group by. Prefer the domain (what
+    companies are actually deduped on), fall back to the normalized name, and
+    last of all to a per-row key -- a row naming no company at all cannot
+    conflict with anything, so it gets a bucket of its own rather than sharing
+    one "unknown" bucket with every other such row.
+    """
+    from pipeline_utils import normalize_company_domain
+
+    for key in ("company_domain", "domain", "company website", "company_website"):
+        for candidate, value in (raw or {}).items():
+            if str(candidate).strip().lower() != key:
+                continue
+            text = str(value or "").strip()
+            if text:
+                normalized = normalize_company_domain(text)
+                if normalized:
+                    return f"domain:{normalized}"
+    for key in ("company", "organization", "company_name", "company name"):
+        for candidate, value in (raw or {}).items():
+            if str(candidate).strip().lower() != key:
+                continue
+            text = str(value or "").strip()
+            if text:
+                return f"name:{text.casefold()}"
+    return f"row:{id(raw)}"
+
+
 def validate_import_rows(
     rows: list[dict],
     *,
@@ -4637,7 +4839,16 @@ def validate_import_rows(
                         crow = conn.execute(
                             "SELECT company_id FROM leads WHERE id = ?", (lead_id,)).fetchone()
                         cid = crow["company_id"] if crow else None
-                    co_values.setdefault((cid, field), {}).setdefault(
+                    # Bucket by the company the row is ABOUT, not by its resolved
+                    # id. Every company that does not exist yet resolves to
+                    # company_id = None, so keying on the id put all of them in
+                    # one bucket: a 1,551-row import of 1,000+ new companies
+                    # reported a single "conflict" holding 1,000+ distinct
+                    # values, and blocked. Two rows naming the same new company
+                    # with different values are still a real conflict; a
+                    # thousand different companies never were.
+                    bucket = cid if cid is not None else _company_bucket_key(raw)
+                    co_values.setdefault((bucket, field), {}).setdefault(
                         str(value), []).append(row_no)
                     if cid:
                         cur = conn.execute(
@@ -4656,11 +4867,13 @@ def validate_import_rows(
                             "row": row_no, "scope": "lead", "lead_id": lead_id,
                             "field": field, "old": cur["field_value"], "new": str(value)})
         conflicts = [
-            {"company_id": cid, "field": field,
+            {"company_id": bucket if isinstance(bucket, int) else None,
+             "company": None if isinstance(bucket, int) else bucket,
+             "field": field,
              "values": [{"value": v, "rows": r[:5], "row_count": len(r)}
                         for v, r in sorted(vals.items())]}
-            for (cid, field), vals in sorted(
-                co_values.items(), key=lambda kv: (kv[0][0] or 0, kv[0][1]))
+            for (bucket, field), vals in sorted(
+                co_values.items(), key=lambda kv: (str(kv[0][0]), kv[0][1]))
             if len(vals) > 1
         ]
         return {
@@ -4778,6 +4991,60 @@ def _collect_row_personalization(
         summary["personalized"] += 1
 
 
+# Identity types built from attributes rather than from a real identifier. A
+# collision on one of these means "looks like the same person", not "is provably
+# the same person" -- which is why it warrants review rather than a silent merge.
+_COMPOSITE_IDENTITY_TYPES = frozenset({
+    "name_company_domain_title", "name_company_domain", "name_company",
+})
+
+
+def find_duplicate_leads_by_name_company(
+    conn, lead_ids: Optional[list] = None, source: Optional[str] = None,
+    *, limit: int = 50,
+) -> list[dict]:
+    """Leads sharing a name AND a company -- the same person, imported twice.
+
+    The identity tiers treat two rows as different people when each carries a
+    different strong identity, so one person listed twice with two LinkedIn
+    profile URLs (and no email on either) creates two leads. The composite
+    identity notices, but only as a passive `identity_conflicts` note after the
+    fact, and pairs differing on title or domain are not flagged at all.
+
+    Scoped to the ids an import just touched, or to a source. Unscoped it would
+    report every historical duplicate in the database, which is a different
+    (and much longer) question than "what did this import just do".
+    """
+    where, params = [], []
+    if lead_ids:
+        where.append(f"l.id IN ({','.join('?' * len(lead_ids))})")
+        params += [int(i) for i in lead_ids]
+    if source:
+        where.append("l.original_source = ?")
+        params.append(source)
+    if not where:
+        return []
+    rows = conn.execute(
+        f"""SELECT lower(TRIM(l.name)) AS name_key,
+                   lower(TRIM(COALESCE(l.company, ''))) AS company_key,
+                   COUNT(*) AS n, GROUP_CONCAT(l.id) AS ids,
+                   MIN(l.name) AS name, MIN(l.company) AS company
+              FROM leads l
+             WHERE {' AND '.join(where)}
+               AND l.name IS NOT NULL AND TRIM(l.name) != ''
+          GROUP BY name_key, company_key
+            HAVING n > 1
+          ORDER BY n DESC, name_key
+             LIMIT ?""",
+        (*params, int(limit)),
+    ).fetchall()
+    return [
+        {"name": r["name"], "company": r["company"], "count": r["n"],
+         "lead_ids": [int(x) for x in str(r["ids"]).split(",")]}
+        for r in rows
+    ]
+
+
 def import_profiles(
     rows: list[dict],
     *,
@@ -4797,6 +5064,7 @@ def import_profiles(
     company_conflict: str = "error",
     mode: str = "upsert",
     is_test: bool = False,
+    on_identity_conflict: str = "review",
 ) -> dict:
     """Import many profile rows (CSV dicts or JSON objects). Tiered identity match keys.
 
@@ -4807,6 +5075,17 @@ def import_profiles(
     than one value for the same company-scoped personalization field:
     "error" (default, write nothing), "last-wins", or "skip".
 
+    `on_identity_conflict` decides what happens when a row's composite identity
+    (name + company + domain + title) already belongs to another lead, which is
+    what a list containing the same person twice under two different LinkedIn
+    URLs looks like:
+      "review" (default) -- create the row, but report the collision with both
+          records so it can be merged deliberately;
+      "merge" -- merge into the existing lead;
+      "create" -- the old behaviour, no elevation.
+    Creating remains the default because two people can legitimately share a
+    name, a title and an employer, and merging is not reversible.
+
     `mode="personalization-only"` is for a sheet of lead_id + personalized
     columns: rows must match an existing lead, nothing is created, and no
     profile column is written. Without it such a sheet is an upsert whose only
@@ -4815,6 +5094,10 @@ def import_profiles(
     """
     if mode not in ("upsert", "personalization-only"):
         raise ValueError(f"unknown mode {mode!r}: use upsert or personalization-only")
+    if on_identity_conflict not in ("review", "merge", "create"):
+        raise ValueError(
+            f"unknown on_identity_conflict {on_identity_conflict!r}: "
+            "use review, merge, or create")
     personalization_only = mode == "personalization-only"
     rows, import_meta = preprocess_import_rows(rows, import_format=import_format)
     default_source = source if source is not None else "csv_import"
@@ -4825,6 +5108,10 @@ def import_profiles(
         "created": 0,
         "matched": 0,
         "enriched": 0,
+        # {column: rows filled}. Present on dry runs too, where it answers the
+        # question the dry run exists for: which contacts gain an email or a
+        # LinkedIn URL from this file?
+        "enriched_by_field": {},
         "personalized": 0,
         "tagged": 0,
         "company_placeholders": 0,
@@ -4838,6 +5125,10 @@ def import_profiles(
         # a caller checking for conflicts should not have to know which.
         "company_personalization_conflicts": [],
         "identity_conflicts": [],
+        # The subset that looks like a duplicate person rather than a note: a
+        # composite identity that already belongs to someone else, on a row we
+        # just created. These are the ones worth a human's attention.
+        "identity_review": [],
         "linkedin_url_conflicts": [],
         "errors": [],
         "results": [],
@@ -5087,13 +5378,45 @@ def import_profiles(
             summary["matched"] += 1
         if result.get("filled"):
             summary["enriched"] += 1
+            # "334 enriched" says nothing about WHAT was enriched. The breakdown
+            # is free -- every row already reports its own fill list -- and it
+            # is the number anyone actually asks for afterwards.
+            for field in result["filled"]:
+                summary["enriched_by_field"][field] = (
+                    summary["enriched_by_field"].get(field, 0) + 1)
         conf = result.get("match_confidence")
         if conf in ("medium", "low"):
             summary["weak_identity_count"] += 1
         if result.get("match_method") == "import_key":
             summary["import_key_only_count"] += 1
         for ic in result.get("identity_conflicts") or []:
-            summary["identity_conflicts"].append({"row": i + 1, **ic})
+            entry = {"row": i + 1, **ic}
+            # A composite collision on a row we just CREATED is the duplicate
+            # shape: same person, second profile URL. Left alone it is a note in
+            # a list nobody reads, which is how nine of these shipped as real
+            # duplicates and were found later by hand-written SQL.
+            composite = ic.get("identity_type") in _COMPOSITE_IDENTITY_TYPES
+            other_id = ic.get("existing_lead_id")
+            if (composite and other_id and result["status"] == "created"
+                    and result.get("id") and int(other_id) != int(result["id"])):
+                entry["duplicate_of"] = int(other_id)
+                entry["created_lead_id"] = int(result["id"])
+                if on_identity_conflict == "merge" and not dry_run:
+                    try:
+                        merge_leads(int(other_id), int(result["id"]),
+                                    reason="import_identity_conflict",
+                                    conn=shared_conn)
+                        entry["resolution"] = "merged"
+                        summary["created"] -= 1
+                        summary["matched"] += 1
+                        result["id"] = int(other_id)
+                        result["status"] = "matched"
+                    except (sqlite3.Error, ValueError) as exc:
+                        entry["resolution"] = f"merge_failed: {exc}"
+                elif on_identity_conflict == "review":
+                    entry["resolution"] = "review"
+                    summary["identity_review"].append(entry)
+            summary["identity_conflicts"].append(entry)
         for lc in result.get("linkedin_url_conflicts") or []:
             summary["linkedin_url_conflicts"].append({
                 "row": i + 1,
@@ -5171,6 +5494,23 @@ def import_profiles(
     guessed = sorted(k for k, v in routing.items() if v["decided_by"] == "heuristic")
     if guessed:
         summary["personalization_routing_guessed"] = guessed
+
+    # Same-person duplicates this run may have created. Reported rather than
+    # merged: two rows that agree on name and company are usually one person,
+    # but "usually" is not a licence to destroy a record automatically. The
+    # pairs come back with their ids so `merge-leads` can finish the job.
+    #
+    # On the shared connection, before it closes: it is the connection that
+    # wrote the rows, so it sees them without waiting for a commit, and the
+    # import keeps its one-connection invariant (test_import_profiles_shared_conn).
+    touched = [r["id"] for r in summary["results"]
+               if isinstance(r, dict) and r.get("id")]
+    if touched and not dry_run and shared_conn is not None:
+        try:
+            summary["duplicate_candidates"] = find_duplicate_leads_by_name_company(
+                shared_conn, lead_ids=touched)
+        except sqlite3.Error:
+            summary["duplicate_candidates"] = []
 
     if shared_conn is not None:
         end_bulk_pull_session(shared_conn)
@@ -5495,5 +5835,35 @@ from pipeline_sender_accounts import (
 from pipeline_cli import _cmd_crm_sync, _cmd_sheets_campaign_stats, main
 
 
+def _run_cli() -> None:
+    """Run the CLI, translating a schema-behind crash into an instruction.
+
+    "no such column: dedupe_hash" is technically accurate and completely
+    unhelpful: it means the scripts were updated past the database, and the fix
+    is a migration, not a bug report. Catching it here covers every command
+    rather than sprinkling guards through the ingest path.
+    """
+    import sqlite3
+    import re as _re
+
+    try:
+        main()
+    except sqlite3.OperationalError as exc:
+        message = str(exc)
+        match = _re.search(r"no such (column|table):?\s*(\S+)", message)
+        if not match:
+            raise
+        print(
+            f"Database schema is behind these scripts (missing {match.group(1)} "
+            f"{match.group(2)}).\n"
+            "The scripts were updated past the database. Migrations run "
+            "automatically, so this means the two are from different versions: "
+            "run `pipeline.py update` to match them, then retry. If it persists, "
+            "`pipeline.py refresh --yes` rebuilds the database from the relay.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    _run_cli()

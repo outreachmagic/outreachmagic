@@ -60,6 +60,126 @@ python3 scripts/pipeline.py apply-email-find-results \
 
 Updates email, workspace tags, and provider verification in one pass. Requires `--workspace`. Run `sync` after when pending snapshots reported.
 
+## Deliverability
+
+The Deliverability page's data, as commands. Field names match the dashboard's
+JSON exactly, so a screenshot and a `--json` payload describe the same row.
+
+```bash
+# Domain roster: sends for the range, reply/bounce rates, provider, reseller,
+# registration date + age, DNSBL verdict
+pipeline.py deliverability domains --workspace acme --since 30d --sort sends --json
+
+# Mailbox roster: its own provider, the domain's reseller, rates, trend flag
+pipeline.py deliverability mailboxes --workspace acme --domain acmemail.com --flagged --json
+
+# Every blacklist we asked, what it answered, and when
+pipeline.py deliverability blacklist --domain acmemail.com --json
+
+# Bounces over the full stored history, grouped by the failure reported
+pipeline.py deliverability bounces --workspace acme --since all --group-by signature --json
+pipeline.py deliverability bounce-detail --id <bounce_id> --json
+
+# What "trending down" was computed from
+pipeline.py deliverability trend --mailbox jane@acmemail.com --days 14 --json
+
+# Provider / reseller values already in use
+pipeline.py deliverability vocab --json
+```
+
+**`check_failed` is not a listing.** Spamhaus answers `127.255.255.x` and URIBL
+answers `127.0.0.1` to queries they refuse to serve (rate limit, or a public
+resolver). Those are recorded as failed checks, and reported as "could not
+check" — never as blacklisted.
+
+### Provider vs reseller
+
+Two different facts, and they used to share one column:
+
+- **provider** — the mail platform that actually sends (Google Workspace,
+  Microsoft 365, an SMTP relay)
+- **reseller** — the vendor you bought the domain or mailboxes from
+
+`sender_domains.provider` and `.reseller` are both user-owned and survive a
+pull. `sender_accounts.provider` is reported by your sequencer, so a value it
+sends later wins.
+
+```bash
+pipeline.py sender-domains set --domain acmemail.com \
+  --provider google_workspace --reseller cheapinboxes
+```
+
+### Domain age
+
+```bash
+pipeline.py sender-domains registration                 # fill in anything unchecked
+pipeline.py sender-domains registration --domain acmemail.com --refresh
+pipeline.py sender-domains list                         # shows "registered YYYY-MM-DD (Nd)"
+```
+
+Dates come from RDAP, are cached forever (a registration date cannot change),
+and a registry that redacts the date leaves it blank rather than failing.
+
+### Checking a selection of domains
+
+Both checks take one domain, a comma-separated list, or nothing (= all):
+
+```bash
+pipeline.py sender-domains registration --domains a.com,b.com,c.com
+pipeline.py sender-domains blacklist-check --domains a.com,b.com --tier all
+```
+
+In the dashboard, tick domains on the Deliverability page and use **Check
+selected** — it runs as a background job, because a DNSBL sweep over forty
+domains is minutes of DNS round trips against deliberately rate-limited lists.
+
+### Domains you never actually sent from
+
+A reply used to create a "sender account" from the *other* party's address, so
+domains like `isenberg.umass.edu` ended up listed as your sending
+infrastructure. Accounts are now only created from outbound events. To clear
+what was already written:
+
+```bash
+pipeline.py sender-domains prune-never-sent           # reports only
+pipeline.py sender-domains prune-never-sent --apply   # deletes
+```
+
+It reports by default because a brand-new domain warming up also has no
+outbound yet, and looks identical on that column alone. The Deliverability page
+hides never-sent domains by default (untick **Exclude never sent from** to see
+them).
+
+## Replies, split by kind
+
+```bash
+pipeline.py campaign-replies --workspace acme --kind all --json
+pipeline.py campaign-replies --workspace acme --kind human
+pipeline.py campaign-replies --workspace acme --kind auto_reply,bounce
+```
+
+| Kind | Meaning |
+|------|---------|
+| `human` | a person replied |
+| `auto_reply` | out-of-office or other automatic response |
+| `bounce` | the message could not be delivered |
+| `status_only` | a sentiment with no inbound message behind it |
+
+`kind_counts` is computed **before** `--kind` narrows the list, so the totals are
+the same whichever kind you asked for.
+
+## Company domains
+
+```bash
+pipeline.py company domains --company-id 42 --json
+pipeline.py company add-domain --company-id 42 --domain acme.io --purpose branch
+pipeline.py company detach-domain --company-id 42 --domain not-theirs.com
+```
+
+`add-domain` returns `status: conflict` (exit 1) when the domain already belongs
+to another company — that is a merge decision, so it names the owner rather than
+failing silently.
+
 ## Phone numbers
 
 Numbers live in the `phone_numbers` table, not in personalization — personalization
@@ -140,6 +260,51 @@ pipeline.py verify-pending --limit 50 --json
 pipeline.py merge-leads --keep 12 --merge 34
 pipeline.py merge-leads --email j@acme.com --linkedin linkedin.com/in/janedoe
 ```
+
+### Same person imported twice under two LinkedIn URLs
+
+A lead whose `linkedin_url` column was written without a matching identity row
+is unmatchable by LinkedIn, so the next import of that person creates a second
+record. That is what put two Mark Goodmans in the database.
+
+```bash
+pipeline.py repair-linkedin            # report only
+pipeline.py repair-linkedin --apply    # normalize URLs + backfill identities
+```
+
+It normalizes stored URLs to the canonical `linkedin.com/in/<slug>` and
+registers the missing identities. Pairs that already collide are **reported, not
+merged** — `leads.linkedin_url` is UNIQUE (which is precisely why the
+`https://www.` variants were able to coexist), so a colliding row is listed for
+`merge-leads` rather than written. `db-health` flags the condition as
+`linkedin_identity_gap`.
+
+### Two people, one conversation — link, don't merge
+
+A contact replies positively and forwards you to a colleague, who also replies.
+That is one opportunity and **two real people**. Merging is wrong — both have
+their own address, title and history — but counting two positives is also wrong.
+
+```bash
+# Alice was contacted first and forwarded us to Bob
+pipeline.py link-contacts add --from 12 --to 34 --note "forwarded to facilities"
+pipeline.py link-contacts show --lead-id 34      # everyone in the conversation
+pipeline.py link-contacts list
+pipeline.py link-contacts remove --from 12 --to 34
+```
+
+Both records stay whole. Only the **count** changes: reporting resolves each
+lead to its conversation *root* and counts distinct roots, so the thread counts
+once and is credited to the campaign that reached the root. Chains collapse to
+their origin (A→B→C counts once, under A's campaign). Forwards may cross
+companies — the introductions worth most usually do. Self-links and cycles are
+refused; a conversation has one origin.
+
+In the dashboard: tick two rows in Campaigns → Replies and use **Link as one
+conversation** (next to Merge contacts).
+
+Leads in no conversation are unaffected, so this changes nothing until you
+record a link.
 
 ### The three things called "domain"
 

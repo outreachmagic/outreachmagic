@@ -112,3 +112,38 @@ def test_entity_id_expr_columns_are_not_synced():
         synced = sync_contract.SYNCED_COLUMNS.get(table, frozenset())
         bad = referenced & synced
         assert not bad, f"{table}: entity_id column(s) {sorted(bad)} must not be classified SYNCED"
+
+
+def test_every_entity_type_resolves_in_the_outbox_panel():
+    """The Sync panel must be able to describe every entity the outbox queues.
+
+    `suppression` was a first-class entity everywhere that mattered -- it had an
+    outbox trigger, an owner table and a SYNC_MAP entry -- but _resolve_outbox_
+    entity had no branch for it, so clicking one in the Sync tab returned
+    "Could not build payload: unknown entity_type: suppression". Nothing tied
+    the two lists together, so the gap was invisible until someone clicked.
+    """
+    import reporting_queries
+
+    missing = [et for et in sync_contract.ENTITY_TYPES
+               if et not in reporting_queries._OUTBOX_RECORD_SQL]
+    assert missing == [], (
+        f"entity type(s) with no outbox-panel record SQL: {missing}. Every "
+        "member of ENTITY_TYPES can appear in the outbox, so every member needs "
+        "a record query and a payload branch in _resolve_outbox_entity.")
+
+
+def test_unpushable_entity_types_are_declared_not_silently_stuck():
+    """An entity with no relay endpoint must say so, not look like a failed push.
+
+    The relay's snapshot allowlist has no suppression action, so those outbox
+    rows sit at attempts=0 forever. That is a missing endpoint, not a stuck
+    queue, and the panel has to tell them apart.
+    """
+    import reporting_queries
+
+    unknown = set(reporting_queries.UNPUSHABLE_ENTITY_TYPES) - set(sync_contract.ENTITY_TYPES)
+    assert unknown == set(), f"UNPUSHABLE_ENTITY_TYPES names non-entities: {unknown}"
+    for entity_type, reason in reporting_queries.UNPUSHABLE_ENTITY_TYPES.items():
+        assert reason and len(reason) > 40, (
+            f"{entity_type} needs a reason explaining why nothing drains it")

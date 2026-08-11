@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """HTTP-level tests for dashboard_server: routing, hardening, end-to-end writes."""
 
+import http.client
 import json
 import sys
 import tempfile
@@ -522,3 +523,65 @@ def test_edit_sender_and_domain(base_url):
     finally:
         conn.close()
     assert d["reseller"] == "ResellerX" and d["notes"] == "batch 9"
+
+
+# --- deliverability routes (regression: handler arity) ---------------------
+
+def test_undecorated_get_handlers_take_the_dispatch_signature():
+    """Every route handler is called handler(match, query, body).
+
+    The three deliverability routes that are not workspace-scoped skip the
+    decorator that would have adapted the call, so their arity is only checked
+    by actually dispatching to them — which is what this does.
+    """
+    import inspect
+
+    import dashboard_server as ds
+
+    for path in ("/api/deliverability/vocab", "/api/bounce-trend", "/api/bounces/x"):
+        handler = next(h for method, pattern, h in ds.ROUTES
+                       if method == "GET" and pattern.match(path))
+        params = inspect.signature(handler).parameters
+        assert len(params) >= 3, f"{handler.__name__} must accept (match, query, body)"
+
+
+def test_oversized_body_leaves_the_keep_alive_connection_usable(base_url):
+    """A rejected POST must still consume its body.
+
+    Answering without reading the body desynchronizes the connection: the unread
+    bytes get parsed as the next request line, so every later request on that
+    socket hangs or 400s. The browser keeps the poisoned socket in its pool, so
+    one rejected "select all 8,000 matching" export froze the entire dashboard
+    until a reload. This drives it over a *real* keep-alive connection, because
+    urllib opens a fresh one per request and cannot see the bug.
+    """
+    host, port = base_url.rsplit("/", 1)[-1].split(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=10)
+    try:
+        oversized = json.dumps({"blob": "x" * (dashboard_server.MAX_BODY_BYTES + 4096)})
+        conn.request("POST", "/api/leads/merge", body=oversized,
+                     headers={**CSRF, "Content-Type": "application/json"})
+        resp = conn.getresponse()
+        assert resp.status == 413
+        resp.read()
+
+        # Same socket, next request. Before the drain fix this hung until the
+        # timeout or came back as a parse error.
+        conn.request("GET", "/api/workspaces")
+        resp = conn.getresponse()
+        assert resp.status == 200, "connection desynced after the 413"
+        assert json.loads(resp.read())["routing_mode"] == "multi"
+    finally:
+        conn.close()
+
+
+def test_export_route_accepts_a_large_id_selection(base_url):
+    """The per-route cap exists so a big tick-list can actually be exported."""
+    lead_id = _add_lead()
+    # Comfortably past the shared 64 KiB cap, well inside the export route's.
+    ids = [lead_id] + list(range(900000, 910000))
+    status, payload = _request(
+        base_url, "/api/contacts/export?workspace=alpha", method="POST",
+        body={"fields": ["name", "email"], "lead_ids": ids}, headers=CSRF)
+    assert status == 202, payload
+    assert len(json.dumps({"lead_ids": ids})) > dashboard_server.MAX_BODY_BYTES

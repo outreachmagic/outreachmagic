@@ -23,6 +23,7 @@ ENTITY_TYPES = (
     "lead_core",
     "lead_workspace",
     "company",
+    "lead_link",
     "sender_account",
     "sender_domain",
     "suppression",
@@ -35,6 +36,7 @@ OWNER_TABLES = {
     "leads": "lead_core",
     "workspace_leads": "lead_workspace",
     "companies": "company",
+    "lead_links": "lead_link",
     "sender_accounts": "sender_account",
     "sender_domains": "sender_domain",
     "suppression_entries": "suppression",
@@ -64,6 +66,12 @@ SYNC_MAP = {
     "companies":                     ("company", "{row}.id"),
     "company_personalization":       ("company", "{row}.company_id"),
     "company_identities":            ("company", "{row}.company_id"),
+    # --- lead_link -------------------------------------------------------
+    # One conversation spanning two people (a forward). Synced because a link
+    # that exists only on the machine it was made on would make that machine's
+    # positive counts disagree with everyone else's -- which is the whole thing
+    # the link is for.
+    "lead_links":                    ("lead_link", "{row}.id"),
     # --- sender ----------------------------------------------------------
     # sender_domains is keyed by the domain itself, not a surrogate id.
     "sender_accounts":               ("sender_account", "{row}.id"),
@@ -118,6 +126,8 @@ SYNCED_COLUMNS: dict[str, frozenset[str]] = {
         "uid",  # transmitted as the entity_key (uid:<uid>), not a payload field
     }),
     "lead_identities": frozenset({"identity_type", "identity_value_normalized"}),
+    # from/to travel as the leads' uids, not their local row ids.
+    "lead_links": frozenset({"kind", "note", "created_at", "created_by"}),
     "lead_personalization": frozenset({"field_name", "field_value", "field_date", "processed_at"}),
     "lead_emails": frozenset(),
     "lead_provider_observations": frozenset({
@@ -165,11 +175,20 @@ SYNCED_COLUMNS: dict[str, frozenset[str]] = {
     }),
     "sender_domains": frozenset({
         "domain",  # transmitted as the entity_key (sender_domain:<domain>)
-        "reseller", "domain_cost", "currency", "notes", "sending_ip", "dnsbl_status", "is_active",
+        # provider (the platform that sends) is user-owned like reseller (who you
+        # bought from) -- nothing upstream reports either, so both travel.
+        "reseller", "provider", "domain_cost", "currency", "notes", "sending_ip",
+        "dnsbl_status", "is_active",
     }),
 }
 
 NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
+    "lead_links": {
+        "id": "local surrogate; the wire key is the SYNC_MAP entity_id, and the pair is identified by the two leads' uids",
+        "org_id": "scope is implied by the agent key the push authenticates with",
+        "from_lead_id": "local row id; travels as leads.uid (from_uid)",
+        "to_lead_id": "local row id; travels as leads.uid (to_uid)",
+    },
     "leads": {
         "id": "local autoincrement surrogate; `uid` is the wire key, not this row id",
         "company_id": "local FK; the company travels as its own uid-keyed snapshot",
@@ -297,6 +316,11 @@ NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
                    "company panel; not part of the relay snapshot",
         "company_id": "local FK linking a domain to its owning company for the UI; "
                       "local surrogate id, meaningless off this install, not synced",
+        "registration_date": "public registry fact (RDAP), re-derivable anywhere from the "
+                             "domain itself -- cached locally rather than shipped",
+        "registration_checked_at": "local cache stamp for the RDAP lookup above",
+        "registration_source": "how the registration date was obtained (rdap/manual); "
+                               "local provenance for the cache",
     },
 }
 

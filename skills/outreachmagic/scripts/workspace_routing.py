@@ -663,8 +663,16 @@ def set_lead_linkedin_url(
         return {"status": "skipped", "reason": "existing_url_is_better",
                 "lead_id": lead_id, "linkedin_url": current}
 
-    conn.execute("UPDATE leads SET linkedin_url = ? WHERE id = ?", (url, lead_id))
-    return {"status": "written", "lead_id": lead_id, "linkedin_url": url}
+    # Store the canonical form, not what was typed. 1,664 rows carried
+    # "https://www.linkedin.com/in/x" against 104,468 bare
+    # "linkedin.com/in/x", so the column disagreed with itself and with the
+    # identity table -- which is what made the same person look like two.
+    canonical = normalize_linkedin(url) or url
+    conn.execute("UPDATE leads SET linkedin_url = ? WHERE id = ?", (canonical, lead_id))
+    # ...and register the identity in the same breath. A column without its
+    # identity row is a lead nothing can ever match by LinkedIn again.
+    upsert_all_identities(conn, DEFAULT_ORG_ID, lead_id, [("linkedin_url", canonical)])
+    return {"status": "written", "lead_id": lead_id, "linkedin_url": canonical}
 
 
 def promote_linkedin_url_from_identities(
@@ -2166,3 +2174,129 @@ def reconcile_workspace_routing(
         "moves": moves,
     }
 
+
+
+def repair_linkedin_identities(
+    conn: sqlite3.Connection,
+    *,
+    org_id: str = DEFAULT_ORG_ID,
+    apply: bool = False,
+    limit: Optional[int] = None,
+) -> dict:
+    """Repair `leads.linkedin_url` rows that drifted from their identity row.
+
+    Two defects, one repair pass, because fixing either alone leaves duplicates
+    undetectable:
+
+      * **un-normalized column values** -- 1,664 rows stored
+        "https://www.linkedin.com/in/x" while 104,468 stored the canonical bare
+        "linkedin.com/in/x". The column disagreed with itself and with
+        lead_identities, so the same person read as two different URLs.
+      * **missing identity rows** -- 193 leads had a linkedin_url on the row and
+        no `linkedin_url` identity, so nothing could ever match them by
+        LinkedIn. This is the actual duplicate mechanism: no two leads share a
+        LinkedIn identity value (the unique constraint holds), so a duplicate
+        can only exist where one side never registered.
+
+    Reports by default; `apply=True` writes. Returns the duplicate pairs the
+    backfill exposes so they can be merged deliberately -- merging is not done
+    here, because two people can share a profile URL only by error, but which
+    record survives is a judgement call.
+    """
+    rows = conn.execute(
+        """SELECT l.id, l.name, l.linkedin_url,
+                  (SELECT i.identity_value_normalized FROM lead_identities i
+                    WHERE i.lead_id = l.id AND i.identity_type = 'linkedin_url'
+                    LIMIT 1) AS identity_value
+             FROM leads l
+            WHERE l.linkedin_url IS NOT NULL AND TRIM(l.linkedin_url) != ''
+         ORDER BY l.id""",
+    ).fetchall()
+
+    normalized_rows: list[dict] = []
+    backfilled: list[dict] = []
+    for row in rows:
+        stored = (row["linkedin_url"] or "").strip()
+        canonical = normalize_linkedin(stored)
+        if canonical and canonical != stored:
+            normalized_rows.append(
+                {"lead_id": row["id"], "from": stored, "to": canonical})
+        if row["identity_value"] is None and (canonical or stored):
+            backfilled.append(
+                {"lead_id": row["id"], "name": row["name"],
+                 "linkedin_url": canonical or stored})
+        if limit and len(normalized_rows) + len(backfilled) >= limit:
+            break
+
+    # Which rows collide with a lead that already holds the canonical URL --
+    # i.e. the duplicates this repair reveals.
+    #
+    # `leads.linkedin_url` is UNIQUE, which is precisely why the un-normalized
+    # values were able to exist: "https://www.linkedin.com/in/x" and
+    # "linkedin.com/in/x" are different strings, so the constraint never fired
+    # and the same person was stored twice. Normalizing such a row would now
+    # collide, so it is reported for merging rather than written.
+    duplicates: list[dict] = []
+    colliding: set = set()
+
+    def _owner(url: str, lead_id: int):
+        return conn.execute(
+            """SELECT l.id, l.name FROM leads l
+                WHERE l.linkedin_url = ? AND l.id != ?
+                LIMIT 1""",
+            (url, lead_id),
+        ).fetchone() or conn.execute(
+            """SELECT l.id, l.name FROM lead_identities i
+                 JOIN leads l ON l.id = i.lead_id
+                WHERE i.identity_type = 'linkedin_url'
+                  AND i.identity_value_normalized = ?
+                  AND i.lead_id != ?
+                LIMIT 1""",
+            (url, lead_id),
+        ).fetchone()
+
+    seen_pairs: set = set()
+    for item in normalized_rows + [
+            {"lead_id": b["lead_id"], "to": b["linkedin_url"], "name": b.get("name")}
+            for b in backfilled]:
+        owner = _owner(item["to"], item["lead_id"])
+        if not owner:
+            continue
+        colliding.add(item["lead_id"])
+        pair = tuple(sorted([item["lead_id"], int(owner["id"])]))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        duplicates.append({
+            "linkedin_url": item["to"],
+            "lead_ids": list(pair),
+            "names": [item.get("name"), owner["name"]],
+        })
+
+    normalized_apply = [n for n in normalized_rows if n["lead_id"] not in colliding]
+    backfill_apply = [b for b in backfilled if b["lead_id"] not in colliding]
+
+    if apply:
+        for item in normalized_apply:
+            conn.execute(
+                "UPDATE leads SET linkedin_url = ?, updated_at = datetime('now')"
+                " WHERE id = ?", (item["to"], item["lead_id"]))
+        for item in backfill_apply:
+            upsert_all_identities(
+                conn, org_id, item["lead_id"],
+                [("linkedin_url", item["linkedin_url"])], source="repair")
+        conn.commit()
+
+    return {
+        "applied": bool(apply),
+        "scanned": len(rows),
+        "normalized": len(normalized_apply),
+        "normalized_sample": normalized_apply[:20],
+        "identities_backfilled": len(backfill_apply),
+        "backfill_sample": backfill_apply[:20],
+        # Blocked until the pair is merged: writing either would hit the UNIQUE
+        # constraint on leads.linkedin_url.
+        "blocked_by_duplicate": len(colliding),
+        "duplicates_found": len(duplicates),
+        "duplicates": duplicates,
+    }

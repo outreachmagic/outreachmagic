@@ -148,3 +148,95 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(fn):
             fn()
     print("ok")
+
+
+# --- refusal codes: a DNS answer is not automatically a listing -------------
+
+def test_uribl_refused_code_is_not_a_listing():
+    """127.0.0.1 on URIBL means 'query refused', not 'listed'.
+
+    Bit 0x1 is not used for domain classification, so URIBL returns it to every
+    query it declines to serve. Reading it as a listing flagged every domain on
+    a rate-limited resolver.
+    """
+    assert bm.classify_addresses("multi.uribl.com", ["127.0.0.1"]) == ("check_failed", "refused")
+
+
+def test_uribl_real_listing_still_reports_listed():
+    assert bm.classify_addresses("multi.uribl.com", ["127.0.0.2"]) == ("listed", None)
+    assert bm.classify_addresses("multi.uribl.com", ["127.0.0.14"]) == ("listed", None)
+
+
+def test_spamhaus_blocked_range_is_a_failed_check():
+    status, error = bm.classify_addresses("dbl.spamhaus.org", ["127.255.255.254"])
+    assert status == "check_failed"
+    assert error in ("refused", "blocked_range")
+
+
+def test_unknown_list_keeps_any_answer_means_listed():
+    assert bm.classify_addresses("bl.example.org", ["127.0.0.1"]) == ("listed", None)
+
+
+def test_no_answer_is_clean():
+    assert bm.classify_addresses("multi.uribl.com", []) == ("clean", None)
+
+
+def test_lookup_retries_a_refused_answer_then_accepts_a_real_one():
+    """A refusal is transient; the stored verdict must not be the first blip."""
+    calls = []
+
+    def fake_once(query, host, timeout):
+        calls.append(query)
+        if len(calls) == 1:
+            return ("check_failed", ["127.0.0.1"], "refused")
+        return ("clean", [], None)
+
+    with patch.object(bm, "_lookup_once", side_effect=fake_once), \
+            patch.object(bm.time, "sleep", lambda *_: None):
+        status, _addrs, _err = bm._lookup("example.com.multi.uribl.com", 1.0, "multi.uribl.com")
+    assert status == "clean"
+    assert len(calls) == 2
+
+
+def test_a_refused_scan_never_reports_the_domain_as_listed():
+    """The end-to-end shape from the bug report: every list refuses, no listing."""
+    with patch.object(bm, "_lookup", return_value=("check_failed", ["127.0.0.1"], "refused")):
+        block = bm.scan_domain("widgetco-mail.com", None, bm.select_tiers("all"))
+    assert block["all_clean"] is True
+    assert block["summary"]["listed"] == 0
+    assert block["summary"]["errors"] > 0
+
+
+# --- partial scans must not erase the other tier ---------------------------
+
+def test_partial_tier_scan_keeps_the_other_tiers_results():
+    prior = {
+        "checked_at": "2026-08-01T00:00:00+00:00",
+        "all_clean": True,
+        "summary": {"clean": 2, "listed": 0, "errors": 0},
+        "tiers_scanned": ["tier1", "tier2"],
+        "results": [
+            {"name": "Spamhaus_DBL", "status": "clean", "addresses": []},
+            {"name": "URIBL", "status": "clean", "addresses": []},
+        ],
+    }
+    current = {
+        "checked_at": "2026-08-07T00:00:00+00:00",
+        "all_clean": True,
+        "summary": {"clean": 1, "listed": 0, "errors": 0},
+        "tiers_scanned": ["tier1"],
+        "partial": True,
+        "results": [{"name": "Spamhaus_DBL", "status": "clean", "addresses": []}],
+    }
+    merged = bm.merge_scan_blocks(prior, current)
+    names = {r["name"] for r in merged["results"]}
+    assert names == {"Spamhaus_DBL", "URIBL"}
+    assert merged["tiers_scanned"] == ["tier1", "tier2"]
+
+
+def test_scan_domain_marks_a_single_tier_run_partial():
+    with patch.object(bm, "_lookup", return_value=("clean", [], None)):
+        block = bm.scan_domain(
+            "widgetco-mail.com", None, bm.select_tiers("tier1"), tier_label="tier1")
+    assert block["partial"] is True
+    assert block["tiers_scanned"] == ["tier1"]

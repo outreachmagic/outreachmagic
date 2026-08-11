@@ -735,6 +735,21 @@ def personalize_clear(
     return {"status": "ok", "deleted": count}
 
 
+def _compact(fields: dict) -> dict:
+    """Drop null-valued keys from one nested payload object.
+
+    Safe here and ONLY here because domain_identities / public_emails are whole
+    array replacements -- the relay stores what it is given verbatim, so an
+    absent key and a null key mean the same thing to the reader. Do not apply
+    this to a payload the relay MERGES: there, absent means "leave alone" and
+    null means "clear", and collapsing the two makes a cleared field
+    unclearable. Most of these rows carry role/label/purpose/verified_mx as all
+    nulls, so this is the bulk of the wire size for a company with several
+    domains.
+    """
+    return {k: v for k, v in fields.items() if v is not None}
+
+
 def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dict:
     row = conn.execute(
         "SELECT name, domain, industry, headcount FROM companies WHERE id = ?", (company_id,),
@@ -795,13 +810,13 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
     # index needs plain strings and already works correctly.
     if identity_rows:
         payload["domain_identities"] = [
-            {
+            _compact({
                 "domain": r["identity_value_normalized"],
                 "role": r["role"],
                 "label": r["label"],
                 "purpose": r["purpose"],
                 "verified_mx": r["verified_mx"],
-            }
+            })
             for r in identity_rows
         ]
     # Public emails discovered for the brand (domain_discovery.py writes these
@@ -816,12 +831,12 @@ def build_company_sync_payload(conn: sqlite3.Connection, company_id: int) -> dic
     ).fetchall()
     if public_email_rows:
         payload["public_emails"] = [
-            {
+            _compact({
                 "email": r["identity_value_normalized"],
                 "role": r["role"],
                 "label": r["label"],
                 "verified_mx": r["verified_mx"],
-            }
+            })
             for r in public_email_rows
         ]
     pers = _company_personalization_dict(conn, company_id)

@@ -29,7 +29,7 @@ from om_paths import set_data_root_override  # noqa: E402
 
 set_data_root_override(Path(_tmp))
 
-import dashboard_queries as dq  # noqa: E402
+import reporting_queries as dq  # noqa: E402
 import pipeline as om  # noqa: E402
 import public_emails as pe  # noqa: E402
 from constants import RECORD_TYPE_PUBLIC_EMAIL  # noqa: E402

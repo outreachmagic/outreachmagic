@@ -721,6 +721,7 @@ def set_sender_domain_cost(
     currency: Optional[str] = None, notes: Optional[str] = None,
     sending_ip: Optional[str] = None, purpose: Optional[str] = None,
     company_id: Optional[int] = None, is_active: Optional[int] = None,
+    provider: Optional[str] = None,
 ) -> dict:
     """Set/update the flat cost, reseller, notes, purpose, and/or owning company
     for a domain.
@@ -775,12 +776,15 @@ def set_sender_domain_cost(
             if is_active is not None:
                 sets.append("is_active = ?")
                 params.append(int(is_active))
+            if provider is not None:
+                sets.append("provider = ?")
+                params.append(provider)
             conn.execute(f"UPDATE sender_domains SET {', '.join(sets)} WHERE domain = ?", params + [domain])
         else:
             conn.execute(
-                "INSERT INTO sender_domains (domain, reseller, domain_cost, currency, notes, sending_ip, purpose, company_id, is_active) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (domain, reseller, domain_cost, currency or "USD", notes, sending_ip,
+                "INSERT INTO sender_domains (domain, reseller, provider, domain_cost, currency, notes, sending_ip, purpose, company_id, is_active) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (domain, reseller, provider, domain_cost, currency or "USD", notes, sending_ip,
                  purpose or "sending", company_id, 1 if is_active is None else int(is_active)),
             )
         conn.commit()
@@ -795,7 +799,7 @@ def set_sender_domain_cost(
 # are not the same thing. sender_domains is YOUR cold-email sending
 # infrastructure; a prospect's domains live in company_identities, which is what
 # email finding walks and dedup matches on. The company pane now shows only the
-# latter (see dashboard_queries.company_detail).
+# latter (see reporting_queries.company_detail).
 #
 # sender_domains.company_id / .purpose stay as columns -- no production row ever
 # used the link (every one is company_id IS NULL), so there is nothing to
@@ -803,24 +807,98 @@ def set_sender_domain_cost(
 # surfaced as a company's domains anywhere.
 
 
-def get_sender_domains_for_scan(domain: Optional[str] = None) -> list[dict]:
-    """Return {domain, sending_ip, dnsbl_status} for one or all registered domains.
+def prune_never_sent_senders(*, apply: bool = False) -> dict:
+    """Remove sender accounts that have never sent, and domains left with none.
+
+    These are not mailboxes we own. `log_event` used to bootstrap a sender
+    account from any event carrying a sender, inbound included, so a reply from
+    someone at isenberg.umass.edu created a "sender account" there and put the
+    domain on the Deliverability page as somewhere we send from. The write path
+    is fixed; this clears what it already wrote.
+
+    Reports by default and only deletes under `apply`, because a mailbox that is
+    merely NEW also has no outbound yet -- a freshly bought domain warming up
+    looks identical to this on the last_outbound_at column alone, so the list
+    wants a human's eye before it is acted on.
+    """
+    conn = get_conn()
+    try:
+        accounts = conn.execute(
+            """SELECT sa.id, sa.email, sa.email_domain
+                 FROM sender_accounts sa
+                WHERE sa.last_outbound_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM events e
+                       WHERE lower(e.sender) = lower(sa.email)
+                         AND lower(COALESCE(e.direction, '')) = 'outbound')
+             ORDER BY sa.email""",
+        ).fetchall()
+        account_ids = [int(r["id"]) for r in accounts]
+        candidate_domains = sorted({r["email_domain"] for r in accounts if r["email_domain"]})
+
+        # A domain only goes if EVERY mailbox on it is being removed.
+        doomed_domains = []
+        for domain in candidate_domains:
+            remaining = conn.execute(
+                "SELECT COUNT(*) AS n FROM sender_accounts"
+                " WHERE email_domain = ? AND id NOT IN (%s)"
+                % (",".join("?" * len(account_ids)) or "-1"),
+                (domain, *account_ids),
+            ).fetchone()["n"]
+            if not remaining:
+                doomed_domains.append(domain)
+
+        if apply and account_ids:
+            conn.execute(
+                f"DELETE FROM sender_accounts WHERE id IN ({','.join('?' * len(account_ids))})",
+                account_ids)
+            if doomed_domains:
+                conn.execute(
+                    "DELETE FROM sender_domains WHERE domain IN (%s)"
+                    % ",".join("?" * len(doomed_domains)),
+                    doomed_domains)
+            conn.commit()
+        return {
+            "applied": bool(apply),
+            "accounts": len(account_ids),
+            "account_emails": [r["email"] for r in accounts][:50],
+            "domains": len(doomed_domains),
+            "domain_names": doomed_domains,
+        }
+    finally:
+        conn.close()
+
+
+def get_sender_domains_for_scan(domain=None) -> list[dict]:
+    """Return {domain, sending_ip, dnsbl_status} for the domains to scan.
+
+    `domain` accepts a single domain, a list of them, or None for "every active
+    registered domain". The list form is what makes a bulk check from the
+    dashboard possible without either scanning one at a time or scanning
+    everything: checking eight selected domains is a different request from
+    checking all four hundred.
 
     Covers the union of domains in sender_domains and domains only known via
     sender_accounts (same pattern as sender_domains_report), so a domain with
     mailboxes but no cost row is still scannable.
     """
+    if isinstance(domain, (list, tuple, set)):
+        targets = [normalize_domain(d) for d in domain if str(d or "").strip()]
+        targets = [t for t in targets if t]
+    else:
+        targets = [normalize_domain(domain)] if domain else []
     conn = get_conn()
     try:
-        if domain:
-            target = normalize_domain(domain)
+        if targets:
+            placeholders = ",".join("?" * len(targets))
             rows = conn.execute(
-                """SELECT d.domain AS domain, sd.sending_ip AS sending_ip, sd.dnsbl_status AS dnsbl_status
-                   FROM (
-                       SELECT ? AS domain
-                   ) d
-                   LEFT JOIN sender_domains sd ON sd.domain = d.domain""",
-                (target,),
+                f"""SELECT d.domain AS domain, sd.sending_ip AS sending_ip,
+                           sd.dnsbl_status AS dnsbl_status
+                    FROM (SELECT value AS domain FROM (
+                            SELECT ? AS value{"".join(" UNION ALL SELECT ?" for _ in targets[1:])}
+                          )) d
+                    LEFT JOIN sender_domains sd ON sd.domain = d.domain""",
+                targets,
             ).fetchall()
         else:
             # Decommissioned domains (sender_domains.is_active = 0) and domains
@@ -844,15 +922,36 @@ def get_sender_domains_for_scan(domain: Optional[str] = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def update_sender_domain_blacklist_status(domain: str, dnsbl_block: dict) -> dict:
-    """Write only the dnsbl_status column for a domain (own column, no read-merge with notes)."""
+def update_sender_domain_blacklist_status(
+    domain: str, dnsbl_block: dict, *, merge: bool = True
+) -> dict:
+    """Write only the dnsbl_status column for a domain (own column, no read-merge with notes).
+
+    `merge` folds the scan into whatever is already stored, so a partial run
+    (`--tier tier1`) cannot erase the other tier's results -- the old blind
+    write made a tier-1 scan look like the domain had never been checked
+    against tier 2.
+    """
     domain = normalize_domain(domain)
     if not domain:
         return {"status": "error", "error": "domain is required"}
-    payload = json.dumps(dnsbl_block)
     conn = get_conn()
     try:
         conn.execute("INSERT OR IGNORE INTO sender_domains (domain) VALUES (?)", (domain,))
+        block = dnsbl_block
+        if merge:
+            row = conn.execute(
+                "SELECT dnsbl_status FROM sender_domains WHERE domain = ?", (domain,)
+            ).fetchone()
+            prior = None
+            if row and row["dnsbl_status"]:
+                try:
+                    prior = json.loads(row["dnsbl_status"])
+                except (ValueError, TypeError):
+                    prior = None
+            if isinstance(prior, dict):
+                block = blacklist_monitor.merge_scan_blocks(prior, dnsbl_block)
+        payload = json.dumps(block)
         # (domain already quote-stripped above via normalize_domain)
         conn.execute(
             "UPDATE sender_domains SET dnsbl_status = ?, updated_at = datetime('now') WHERE domain = ?",
@@ -864,8 +963,10 @@ def update_sender_domain_blacklist_status(domain: str, dnsbl_block: dict) -> dic
     return {"status": "ok", "domain": domain}
 
 
-def run_blacklist_check(domain: Optional[str] = None, tier: str = "all") -> dict:
-    """Scan one or all registered domains against DNSBLs, persist results, flag newly-listed.
+def run_blacklist_check(domain=None, tier: str = "all") -> dict:
+    """Scan domains against DNSBLs, persist results, flag newly-listed.
+
+    `domain` is one domain, a list of domains, or None for every active one.
 
     Reads each domain's prior dnsbl_status before overwriting so a clean->listed
     (all_clean true->false) transition can be reported as newly-listed.
@@ -877,26 +978,43 @@ def run_blacklist_check(domain: Optional[str] = None, tier: str = "all") -> dict
     any_listed = False
     for d in domains:
         prior_all_clean = None
+        prior_checked = False
         raw_prior = d.get("dnsbl_status")
         if raw_prior:
             try:
-                prior_all_clean = json.loads(raw_prior).get("all_clean")
+                prior = json.loads(raw_prior)
+                prior_all_clean = prior.get("all_clean")
+                # A prior run that only ever errored is not evidence of "clean",
+                # so it cannot be the "before" half of a clean->listed flip.
+                prior_checked = bool(
+                    (prior.get("summary") or {}).get("clean")
+                    or (prior.get("summary") or {}).get("listed")
+                )
             except (ValueError, TypeError):
                 prior_all_clean = None
-        block = blacklist_monitor.scan_domain(d["domain"], d.get("sending_ip"), tiers)
+        block = blacklist_monitor.scan_domain(
+            d["domain"], d.get("sending_ip"), tiers, tier_label=tier)
         update_sender_domain_blacklist_status(d["domain"], block)
-        if not block["all_clean"]:
+        listed_now = block["summary"]["listed"] > 0
+        if listed_now:
             any_listed = True
             # Only a genuine clean->listed flip is "newly listed"; a first-ever
-            # scan or a still-listed domain is not a transition.
-            if prior_all_clean is True:
+            # scan, a still-listed domain, or a domain whose only prior evidence
+            # was a failed check is not a transition. Crucially this reads the
+            # LISTED count, not all_clean -- a refused query must never page you.
+            if prior_all_clean is True and prior_checked:
                 newly_listed.append(d["domain"])
         results.append(
             {
                 "domain": d["domain"],
                 "sending_ip": d.get("sending_ip"),
                 "all_clean": block["all_clean"],
+                "listed": listed_now,
                 "summary": block["summary"],
+                "results": block["results"],
+                "checked_at": block["checked_at"],
+                "partial": block.get("partial", False),
+                "tiers_scanned": block.get("tiers_scanned") or [],
             }
         )
     return {
@@ -925,9 +1043,19 @@ def blacklist_status_report(domain: Optional[str] = None, stale_hours: Optional[
                 block = None
         if not block:
             unchecked += 1
-            items.append({"domain": d["domain"], "state": "unchecked", "checked_at": None})
+            items.append({
+                "domain": d["domain"], "state": "unchecked", "checked_at": None,
+                "partial": False, "tiers_scanned": [], "checks_failed": 0,
+                "listed_on": [], "results": [],
+            })
             continue
-        all_clean = block.get("all_clean")
+        results = block.get("results") or []
+        listed_rows = [r for r in results if r.get("status") == "listed"]
+        failed_rows = [r for r in results if r.get("status") == "check_failed"]
+        # A domain is listed only when a list actually said so. A scan that
+        # could not be run leaves the domain in whatever state it was, and says
+        # so via `checks_failed` -- it is not evidence of a listing.
+        all_clean = not listed_rows if results else block.get("all_clean")
         checked_at = block.get("checked_at")
         is_stale = False
         if stale_hours and checked_at:
@@ -953,6 +1081,13 @@ def blacklist_status_report(domain: Optional[str] = None, stale_hours: Optional[
                 "checked_at": checked_at,
                 "stale": is_stale,
                 "summary": block.get("summary"),
+                "partial": block.get("partial", False),
+                "tiers_scanned": block.get("tiers_scanned") or [],
+                "checks_failed": len(failed_rows),
+                "listed_on": [r.get("name") for r in listed_rows],
+                # The whole per-list report travels with the row: every surface
+                # that shows a verdict can now show the evidence behind it.
+                "results": results,
             }
         )
     return {
@@ -962,7 +1097,13 @@ def blacklist_status_report(domain: Optional[str] = None, stale_hours: Optional[
     }
 
 
-_SENDER_DOMAIN_SYNC_COLUMNS = ("reseller", "domain_cost", "currency", "notes", "sending_ip", "dnsbl_status", "is_active")
+_SENDER_DOMAIN_SYNC_COLUMNS = (
+    # All user-owned: what you paid, who you bought from, what platform sends,
+    # and the DNSBL verdict. They survive a pull because nothing upstream owns
+    # them -- unlike sender_accounts.provider, which the sequencer reports.
+    "reseller", "provider", "domain_cost", "currency", "notes", "sending_ip",
+    "dnsbl_status", "is_active",
+)
 
 
 def sender_domain_entity_key(domain: str) -> str:
@@ -1023,6 +1164,32 @@ def apply_agent_sender_domain_sync_payload(domain: str, payload: dict, *, conn=N
         conn.close()
 
 
+def domain_age_days(registration_date: Optional[str]) -> Optional[int]:
+    """Whole days since a domain was registered, or None when unknown.
+
+    Domain age is a first-order deliverability signal -- a brand-new domain
+    sending at volume lands in spam far more often than an aged one -- but it
+    is a fact to read, not an alarm to raise, so nothing here thresholds it.
+    """
+    if not registration_date:
+        return None
+    text = str(registration_date).strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            parsed = datetime.strptime(text[:len(datetime.now().strftime(fmt))], fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0, (datetime.now(timezone.utc) - parsed).days)
+
+
 def sender_domains_report() -> list[dict]:
     """Per-domain sender count (live, never stored) alongside hand-entered cost/reseller/notes.
 
@@ -1042,6 +1209,9 @@ def sender_domains_report() -> list[dict]:
             SELECT
                 d.domain AS domain,
                 sd.reseller AS reseller,
+                sd.provider AS provider,
+                sd.registration_date AS registration_date,
+                sd.registration_checked_at AS registration_checked_at,
                 sd.domain_cost AS domain_cost,
                 COALESCE(sd.currency, 'USD') AS currency,
                 sd.notes AS notes,
@@ -1056,6 +1226,8 @@ def sender_domains_report() -> list[dict]:
     results = []
     for row in rows:
         item = dict(row)
+        # Age is computed, never stored: a stored age is wrong the next day.
+        item["domain_age_days"] = domain_age_days(item.get("registration_date"))
         item["cost_per_account"] = (
             round(item["domain_cost"] / item["sender_count"], 4)
             if item["domain_cost"] is not None and item["sender_count"]

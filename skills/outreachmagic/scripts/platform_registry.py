@@ -711,6 +711,18 @@ def is_reply_event(event_type: str, direction: str = "", channel: str = "") -> b
     return False
 
 
+def reply_event_types_sql_list() -> str:
+    """Every event_type that reply_event_sql_condition() can possibly match.
+
+    A superset, used as a cheap pre-filter on workspace_lead_events.event_type
+    (which is indexed) before joining `events` for the direction test. Lossless:
+    every branch of the condition requires event_type to be in this union, so
+    filtering on it first can only remove rows the condition would reject.
+    """
+    types = set(reply_vendor_types()) | set(reply_local_types()) | {"email"}
+    return ", ".join(f"'{t}'" for t in sorted(types))
+
+
 def reply_event_sql_condition() -> str:
     """SQL WHERE fragment matching reply events (legacy + normalized)."""
     vendor = ", ".join(f"'{v}'" for v in sorted(reply_vendor_types()))

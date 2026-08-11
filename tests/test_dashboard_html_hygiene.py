@@ -14,7 +14,15 @@ bug ship silently. Both have already happened:
     so the lead panel's tag dropdown threw into a `.catch(() => {})` and sat
     empty forever.
 
-Neither is visible in review. Both are trivial to detect.
+  * A <dialog> parented inside a hidden `#tab-*` section. showModal() on a
+    dialog in a `display:none` subtree renders nothing but still enters the
+    modal state: the top layer engages and the rest of the document goes inert.
+    The page becomes unclickable with no dialog visible, and only a reload
+    clears it. The merge dialog lived inside #tab-contacts, so merging from
+    Campaigns -- or from the company pane with Companies active -- froze the
+    whole page.
+
+None of these is visible in review. All are trivial to detect.
 """
 
 from __future__ import annotations
@@ -69,6 +77,39 @@ class DashboardHtmlHygieneTests(unittest.TestCase):
         self.assertIn("render: renderTagChips", self.source)
         self.assertIn("function renderTagChips(r) {", self.source)
         self.assertIn("function renderTagFilterBar() {", self.source)
+
+    def test_dialogs_are_not_inside_tab_sections(self):
+        """A <dialog> must be a sibling of the tab sections, never a child.
+
+        showModal() on a dialog inside a `hidden` section engages the top layer
+        and inerts the document while rendering nothing -- an unclickable page
+        with no visible dialog, recoverable only by reloading. Merge is opened
+        from Campaigns and from the company pane; both run with #tab-contacts
+        hidden, so both were dead.
+        """
+        # Walk the markup tracking section depth, and flag any <dialog> opened
+        # while inside a tab section.
+        offenders = []
+        depth, section_line = 0, None
+        for match in re.finditer(
+                r"<section id=\"tab-[\w-]+\"|</section>|<dialog\b[^>]*id=\"([\w-]+)\"",
+                self.source):
+            text = match.group(0)
+            line = self.source.count("\n", 0, match.start()) + 1
+            if text.startswith("<section"):
+                depth += 1
+                section_line = line
+            elif text == "</section>":
+                depth = max(0, depth - 1)
+            elif depth > 0:
+                offenders.append(f"#{match.group(1)} (line {line}, inside the "
+                                 f"section opened at line {section_line})")
+        self.assertEqual(
+            offenders, [],
+            "<dialog> element(s) parented inside a #tab-* section: "
+            f"{offenders}. A dialog in a hidden section still enters the modal "
+            "state on showModal() but renders nothing, which freezes the page. "
+            "Move it out to be a sibling of the sections.")
 
 
 if __name__ == "__main__":

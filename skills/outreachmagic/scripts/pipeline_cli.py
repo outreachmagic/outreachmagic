@@ -19,6 +19,7 @@ import db_health
 import lead_actions
 import pipeline_dedup
 import pipeline_lead_review
+import deliverability_cli
 import query_cli
 import review_cloud
 from constants import COMPANY_DOMAIN_PURPOSES, PHONE_LABELS, PHONE_SOURCES
@@ -344,6 +345,42 @@ def _cmd_crm_sync(args) -> None:
         sys.exit(result.returncode)
 
 
+def _apply_workspace_default(args) -> None:
+    """Fall back to $OM_WORKSPACE when --workspace was not passed.
+
+    Most sessions work one workspace at a time, and passing the flag on every
+    call is both noise and a chance to get it wrong. The variable is namespaced
+    (OM_WORKSPACE, not WORKSPACE) because a bare WORKSPACE in the environment
+    belongs to no one, and the resolved value is echoed to stderr so an
+    inherited workspace is never invisible.
+    """
+    import os
+
+    if not hasattr(args, "workspace") or getattr(args, "workspace", None):
+        return
+    inherited = (os.environ.get("OM_WORKSPACE") or "").strip()
+    if not inherited:
+        return
+    args.workspace = inherited
+    if not getattr(args, "quiet", False) and not os.environ.get("OM_QUIET"):
+        print(f"Using workspace {inherited} (from OM_WORKSPACE).", file=sys.stderr)
+
+
+def _domain_selection(args):
+    """One domain, several, or all — whichever the caller asked for.
+
+    --domains wins over --domain when both are given: a list is the more
+    specific request, and silently honouring only one of two supplied flags is
+    worse than picking the narrower one.
+    """
+    raw = getattr(args, "domains", None)
+    if raw:
+        picked = [d.strip() for d in str(raw).split(",") if d.strip()]
+        if picked:
+            return picked
+    return getattr(args, "domain", None)
+
+
 def main():
     import pipeline as _pipeline
 
@@ -565,6 +602,17 @@ def main():
              "for the same field: error (default, write nothing), last-wins, skip",
     )
     imp_p.add_argument(
+        "--on-identity-conflict",
+        dest="on_identity_conflict",
+        choices=("review", "merge", "create"),
+        default="review",
+        help="A row whose name+company+domain+title already belongs to another "
+             "lead is usually the same person listed twice (two LinkedIn URLs, "
+             "no email). review (default): create it, but report both records "
+             "under identity_review; merge: fold it into the existing lead; "
+             "create: no elevation",
+    )
+    imp_p.add_argument(
         "--mode",
         choices=("upsert", "personalization-only"),
         default="upsert",
@@ -742,6 +790,16 @@ def main():
     bounce_p.add_argument("--bounce-type", dest="bounce_type", choices=("hard", "soft", "unknown"))
     bounce_p.add_argument("--sender", help="Filter by sending mailbox")
     bounce_p.add_argument("--since", help="Last seen on/after date (YYYY-MM-DD or today)")
+    bounce_p.add_argument("--until", help="Last seen on/before date (YYYY-MM-DD)")
+    bounce_p.add_argument("--workspace", help="Workspace slug (or set OM_WORKSPACE)")
+    bounce_p.add_argument("--domain", help="Only bounces from mailboxes on this sending domain")
+    bounce_p.add_argument("--campaign-id", dest="campaign_id", type=int)
+    bounce_p.add_argument(
+        "--group-by", dest="group_by",
+        choices=("signature", "type", "mailbox", "domain", "campaign"),
+        help="Group the results — 'signature' collapses the same failure into one row",
+    )
+    bounce_p.add_argument("--offset", type=int, default=0)
     bounce_p.add_argument("--limit", type=int, default=100)
     bounce_p.add_argument("--json", action="store_true")
 
@@ -1361,6 +1419,8 @@ def main():
                        help="Platform id to disconnect")
     dp_p.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
 
+    deliverability_cli.register_deliverability_parser(sub)
+    deliverability_cli.register_campaign_replies_parser(sub)
     query_cli.register_query_parser(sub)
     query_cli.register_sql_parser(sub)
     query_cli.register_schema_parser(sub)
@@ -1447,6 +1507,20 @@ def main():
     company_domain_purpose_p.add_argument("--domain", required=True)
     company_domain_purpose_p.add_argument(
         "--purpose", required=True, choices=list(COMPANY_DOMAIN_PURPOSES))
+
+    company_add_domain_p = company_sub.add_parser(
+        "add-domain",
+        help="They also own this domain — attach it to the company "
+             "(a company can hold several)",
+    )
+    company_add_domain_p.add_argument("--company-id", type=int, required=True)
+    company_add_domain_p.add_argument("--domain", required=True)
+    company_add_domain_p.add_argument("--purpose", choices=list(COMPANY_DOMAIN_PURPOSES))
+
+    company_list_domains_p = company_sub.add_parser(
+        "domains", help="List the domains a company is known by, with provenance")
+    company_list_domains_p.add_argument("--company-id", type=int, required=True)
+    company_list_domains_p.add_argument("--json", action="store_true")
 
     company_detach_p = company_sub.add_parser(
         "detach-domain", help="This domain is not theirs — remove it from the company")
@@ -1714,6 +1788,49 @@ def main():
     merge_p.add_argument("--email", help="Keep lead matched by email (with --linkedin)")
     merge_p.add_argument("--linkedin", help="Merge lead matched by LinkedIn into email lead")
 
+    lir_p = sub.add_parser(
+        "repair-linkedin",
+        help="Normalize stored LinkedIn URLs and backfill missing identity rows "
+             "(the cause of same-person duplicates)",
+    )
+    lir_p.add_argument(
+        "--apply", action="store_true",
+        help="Write the repairs. Without this the command only reports.")
+    lir_p.add_argument("--limit", type=int)
+    lir_p.add_argument("--json", action="store_true")
+
+    link_p = sub.add_parser(
+        "link-contacts",
+        help="Record that one contact forwarded us to another — one conversation, "
+             "two people, counted once",
+    )
+    link_sub = link_p.add_subparsers(dest="link_action")
+    link_add = link_sub.add_parser(
+        "add",
+        help="Link --from (who replied first) to --to (who they forwarded us to). "
+             "Neither record is modified or destroyed.",
+    )
+    link_add.add_argument("--from", dest="from_lead", type=int, required=True,
+                          help="Lead who introduced us")
+    link_add.add_argument("--to", dest="to_lead", type=int, required=True,
+                          help="Lead they forwarded us to")
+    link_add.add_argument("--kind", choices=("forwarded_to", "same_person"),
+                          default="forwarded_to")
+    link_add.add_argument("--note")
+    link_add.add_argument("--json", action="store_true")
+    link_rm = link_sub.add_parser("remove", help="Remove a link")
+    link_rm.add_argument("--from", dest="from_lead", type=int, required=True)
+    link_rm.add_argument("--to", dest="to_lead", type=int, required=True)
+    link_rm.add_argument("--kind")
+    link_rm.add_argument("--json", action="store_true")
+    link_show = link_sub.add_parser(
+        "show", help="Everyone in a contact's conversation, and how they joined it")
+    link_show.add_argument("--lead-id", dest="lead_id", type=int, required=True)
+    link_show.add_argument("--json", action="store_true")
+    link_ls = link_sub.add_parser("list", help="Recent links")
+    link_ls.add_argument("--limit", type=int, default=50)
+    link_ls.add_argument("--json", action="store_true")
+
     mr_p = sub.add_parser(
         "merge-review",
         help="Review proposed lead merges (email-find conflicts, identity conflicts) before executing",
@@ -1791,6 +1908,11 @@ def main():
     )
     sd_set_p.add_argument("--domain", required=True, help="e.g. acmemail.com")
     sd_set_p.add_argument("--reseller", help="Vendor who resells/manages mailboxes on this domain")
+    sd_set_p.add_argument(
+        "--provider",
+        help="Mail platform that actually sends (google_workspace / microsoft_365 / "
+             "smtp_relay) -- NOT the reseller. `deliverability vocab` lists what is in use",
+    )
     sd_set_p.add_argument("--cost", type=float, help="Flat total cost for every mailbox on this domain")
     sd_set_p.add_argument("--currency", help="Default: USD")
     sd_set_p.add_argument("--notes", help='Freeform note, e.g. "blacklisted in Azure" -- overwrites any previous note')
@@ -1798,11 +1920,38 @@ def main():
     sd_set_p.add_argument(
         "--is-active", dest="is_active", type=int, choices=(0, 1),
         help="1 == live, 0 == dropped from the provider (skipped by DNSBL/routing)")
+    sd_reg_p = sd_sub.add_parser(
+        "registration",
+        help="Fetch and cache domain registration dates via RDAP (domain age)",
+    )
+    sd_reg_p.add_argument("--domain", help="One domain (default: every registered domain)")
+    sd_reg_p.add_argument(
+        "--refresh", action="store_true",
+        help="Re-fetch domains already checked (a registration date never changes, "
+             "so this is only for correcting a bad read)")
+    sd_reg_p.add_argument(
+        "--domains",
+        help="Comma-separated list of domains to look up (default: all)")
+    sd_reg_p.add_argument("--limit", type=int, help="Stop after this many lookups")
+    sd_reg_p.add_argument("--json", action="store_true")
+    sd_prune_p = sd_sub.add_parser(
+        "prune-never-sent",
+        help="Remove sender accounts that have never sent anything, and any "
+             "sending domains left with none",
+    )
+    sd_prune_p.add_argument(
+        "--apply", action="store_true",
+        help="Actually delete. Without this the command only reports.")
+    sd_prune_p.add_argument("--json", action="store_true")
     sd_blcheck_p = sd_sub.add_parser(
         "blacklist-check",
         help="Scan sender domains against DNSBLs; exits 1 if any domain is listed",
     )
     sd_blcheck_p.add_argument("--domain", help="Check one domain (default: all registered)")
+    sd_blcheck_p.add_argument(
+        "--domains",
+        help="Comma-separated list of domains to check — the middle ground "
+             "between one domain and every domain")
     sd_blcheck_p.add_argument("--tier", choices=("tier1", "tier2", "all"), default="all")
     sd_blcheck_p.add_argument("--json", action="store_true")
     sd_blstatus_p = sd_sub.add_parser(
@@ -2277,6 +2426,7 @@ def main():
     junk_p.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
+    _apply_workspace_default(args)
 
     if args.command == "export" and getattr(args, "format", None) == "sheets":
         _remap_to_lead_review_export(args)
@@ -3143,6 +3293,10 @@ def main():
         query_cli.cmd_query(args)
     elif args.command == "schema":
         query_cli.cmd_schema(args)
+    elif args.command == "deliverability":
+        deliverability_cli.cmd_deliverability(args)
+    elif args.command == "campaign-replies":
+        deliverability_cli.cmd_campaign_replies(args)
     elif args.command == "tag-summary":
         query_cli.cmd_tag_summary(args)
     elif args.command == "sheets" and getattr(args, "sheets_command", None) == "campaign-stats":
@@ -3402,6 +3556,7 @@ def main():
             company_conflict=getattr(args, "company_conflict", "error"),
             mode=getattr(args, "mode", "upsert"),
             is_test=getattr(args, "is_test", False),
+            on_identity_conflict=getattr(args, "on_identity_conflict", "review"),
         )
         # import_profiles() already reports a sync_hint when leads are pending
         # (see pipeline.py) without ever auto-syncing — network push only runs
@@ -3640,6 +3795,43 @@ def main():
             ),
             indent=2,
         ))
+    elif args.command == "bounce-list" and (
+            getattr(args, "workspace", None) or getattr(args, "domain", None)
+            or getattr(args, "campaign_id", None) or getattr(args, "until", None)
+            or getattr(args, "group_by", None)):
+        # The richer filters route through the shared explorer query, so the CLI
+        # and the dashboard's bounce view are answering from the same code.
+        import reporting_queries as _rq
+
+        conn = _pipeline.get_conn()
+        try:
+            workspace_id = None
+            if getattr(args, "workspace", None):
+                row = conn.execute(
+                    "SELECT id FROM workspaces WHERE id = ? OR slug = ? OR name = ?"
+                    " ORDER BY (id = ?) DESC LIMIT 1",
+                    (args.workspace, args.workspace, args.workspace, args.workspace),
+                ).fetchone()
+                if row is None:
+                    print(f"Unknown workspace: {args.workspace}", file=sys.stderr)
+                    sys.exit(1)
+                workspace_id = row[0]
+            payload = _rq.bounce_explorer(
+                conn, workspace_id,
+                since=getattr(args, "since", None), until=getattr(args, "until", None),
+                domain=getattr(args, "domain", None), mailbox=getattr(args, "sender", None),
+                campaign_id=getattr(args, "campaign_id", None),
+                bounce_type=getattr(args, "bounce_type", None),
+                group_by=getattr(args, "group_by", None),
+                limit=args.limit, offset=getattr(args, "offset", 0))
+        finally:
+            conn.close()
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"{payload['total']} bounces ({payload['total_occurrences']} occurrences)")
+            for group in payload["groups"]:
+                print(f"  {group['bounces']:>6}  {group['key']}")
     elif args.command == "bounce-list":
         rows = _pipeline.list_bounce_events(
             platform=getattr(args, "platform", None),
@@ -4435,6 +4627,77 @@ def main():
         finally:
             conn.close()
         print(json.dumps(result, indent=2))
+    elif args.command == "repair-linkedin":
+        from workspace_routing import repair_linkedin_identities
+
+        conn = _pipeline.get_conn()
+        try:
+            result = repair_linkedin_identities(
+                conn, apply=getattr(args, "apply", False),
+                limit=getattr(args, "limit", None))
+        finally:
+            conn.close()
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            verb = "Normalized" if result["applied"] else "Would normalize"
+            print(f"Scanned {result['scanned']} lead(s) with a LinkedIn URL.")
+            print(f"  {verb} {result['normalized']} URL(s) to linkedin.com/in/<slug>")
+            verb = "Backfilled" if result["applied"] else "Would backfill"
+            print(f"  {verb} {result['identities_backfilled']} missing identity row(s)")
+            if result["duplicates_found"]:
+                print(f"\n  {result['duplicates_found']} duplicate pair(s) revealed "
+                      "— same profile URL, two records:")
+                for d in result["duplicates"][:20]:
+                    a, b = d["lead_ids"]
+                    print(f"    #{a} / #{b}  {d['linkedin_url']}  ({d['names'][0]})")
+                print("\n  Merge them with: pipeline.py merge-leads --keep A --merge B")
+            if not result["applied"]:
+                print("\nRe-run with --apply to write.")
+        return
+
+    elif args.command == "link-contacts":
+        import lead_links
+
+        action = getattr(args, "link_action", None)
+        if not action:
+            print(json.dumps({"error": "link-contacts subcommand required: add, remove, show, list"}))
+            sys.exit(1)
+        conn = _pipeline.get_conn()
+        try:
+            if action == "add":
+                result = lead_links.link_leads(
+                    conn, args.from_lead, args.to_lead,
+                    kind=args.kind, note=getattr(args, "note", None))
+            elif action == "remove":
+                result = lead_links.unlink_leads(
+                    conn, args.from_lead, args.to_lead, kind=getattr(args, "kind", None))
+            elif action == "show":
+                result = lead_links.conversation(conn, args.lead_id)
+            else:
+                result = lead_links.list_links(conn, limit=args.limit)
+        except lead_links.LeadLinkError as exc:
+            print(json.dumps({"error": str(exc)}))
+            sys.exit(1)
+        finally:
+            conn.close()
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        elif action == "show":
+            print(f"Conversation root: #{result['root_id']} — {result['size']} contact(s)")
+            for m in result["members"]:
+                mark = "*" if m["lead_id"] == result["root_id"] else " "
+                print(f" {mark} #{m['lead_id']} {m['name'] or '—'}"
+                      + (f" <{m['email']}>" if m["email"] else ""))
+        elif action == "list":
+            for link in result["links"]:
+                print(f"  #{link['from_lead_id']} {link['from_name']} → "
+                      f"#{link['to_lead_id']} {link['to_name']} ({link['kind']})")
+            print(f"{result['count']} link(s)")
+        else:
+            print(json.dumps(result, indent=2))
+        return
+
     elif args.command == "merge-leads":
         if args.keep and args.merge:
             result = _pipeline.merge_leads(args.keep, args.merge, reason="manual_cli")
@@ -4498,6 +4761,36 @@ def main():
         elif args.company_command == "domain-purpose":
             print(json.dumps(_pipeline.set_company_domain_purpose(
                 args.company_id, args.domain, args.purpose), indent=2))
+        elif args.company_command == "add-domain":
+            result = _pipeline.add_company_domain(
+                args.company_id, args.domain, getattr(args, "purpose", None))
+            print(json.dumps(result, indent=2))
+            if result.get("status") == "conflict":
+                sys.exit(1)
+        elif args.company_command == "domains":
+            conn = _pipeline.get_conn()
+            try:
+                rows = [dict(r) for r in conn.execute(
+                    """SELECT identity_value_normalized AS domain, purpose, role, label,
+                              source, is_verified, verified_mx
+                         FROM company_identities
+                        WHERE company_id = ? AND identity_type = 'domain'
+                        ORDER BY (purpose = 'primary') DESC, identity_value_normalized""",
+                    (args.company_id,)).fetchall()]
+                canonical = conn.execute(
+                    "SELECT domain FROM companies WHERE id = ?", (args.company_id,)).fetchone()
+            finally:
+                conn.close()
+            payload = {"company_id": args.company_id,
+                       "canonical_domain": canonical["domain"] if canonical else None,
+                       "domains": rows}
+            if getattr(args, "json", False):
+                print(json.dumps(payload, indent=2))
+            else:
+                print(f"company {args.company_id} — canonical: {payload['canonical_domain'] or '—'}")
+                for r in rows:
+                    print(f"  {r['domain']}  purpose={r['purpose'] or '—'}  "
+                          f"source={r['source'] or '—'}")
         elif args.company_command == "detach-domain":
             print(json.dumps(
                 _pipeline.detach_company_domain(args.company_id, args.domain), indent=2))
@@ -4613,18 +4906,58 @@ def main():
                     cost = f"${d['domain_cost']:.2f}" if d["domain_cost"] is not None else "—"
                     per = f"${d['cost_per_account']:.2f}/account" if d["cost_per_account"] is not None else ""
                     note = f" — note: {d['notes']}" if d.get("notes") else ""
+                    # Registration date and age ride along: "how old is this
+                    # sending domain" is one of the first questions asked of a
+                    # campaign that is getting no replies.
+                    age = (f", registered {d['registration_date']} ({d['domain_age_days']}d)"
+                           if d.get("registration_date") else "")
                     print(f"  {d['domain']} — {d['sender_count']} sender(s), "
-                          f"reseller={d.get('reseller') or '—'}, cost={cost} {per}{note}")
+                          f"provider={d.get('provider') or '—'}, "
+                          f"reseller={d.get('reseller') or '—'}, cost={cost} {per}{age}{note}")
         elif sd_action == "set":
             print(json.dumps(_pipeline.set_sender_domain_cost(
                 args.domain, reseller=getattr(args, "reseller", None),
                 domain_cost=getattr(args, "cost", None), currency=getattr(args, "currency", None),
                 notes=getattr(args, "notes", None), sending_ip=getattr(args, "ip", None),
                 is_active=getattr(args, "is_active", None),
+                provider=getattr(args, "provider", None),
             ), indent=2))
+        elif sd_action == "registration":
+            import domain_registration
+
+            result = domain_registration.refresh_registration(
+                _domain_selection(args),
+                refresh=getattr(args, "refresh", False),
+                limit=getattr(args, "limit", None),
+            )
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2))
+            else:
+                print(f"Checked {result['checked']} domain(s), "
+                      f"{result['dates_found']} date(s) found, "
+                      f"{result['skipped_cached']} already cached.")
+                for r in result["results"]:
+                    print(f"  {r['domain']} — {r['status']}"
+                          + (f" {r['registration_date']}" if r.get("registration_date") else "")
+                          + (f" ({r['error']})" if r.get("error") else ""))
+        elif sd_action == "prune-never-sent":
+            import pipeline_sender_accounts as _sa
+
+            result = _sa.prune_never_sent_senders(apply=getattr(args, "apply", False))
+            if getattr(args, "json", False):
+                print(json.dumps(result, indent=2))
+            else:
+                verb = "Deleted" if result["applied"] else "Would delete"
+                print(f"{verb} {result['accounts']} sender account(s) that never sent"
+                      f" and {result['domains']} domain(s) left with none.")
+                for d in result["domain_names"][:20]:
+                    print(f"  {d}")
+                if not result["applied"]:
+                    print("Re-run with --apply to delete.")
+            return
         elif sd_action == "blacklist-check":
             result = _pipeline.run_blacklist_check(
-                domain=getattr(args, "domain", None), tier=getattr(args, "tier", "all"),
+                domain=_domain_selection(args), tier=getattr(args, "tier", "all"),
             )
             if result.get("newly_listed"):
                 print(
@@ -4657,8 +4990,16 @@ def main():
                     f"unchecked={c['unchecked']}, stale={c['stale']}"
                 )
                 for d in result["domains"]:
-                    print(f"  {d['domain']} — {d['state']}"
-                          + (" (stale)" if d.get("stale") else ""))
+                    # The per-list evidence, not just the verdict: a refused
+                    # query is reported as a failed check, never as a listing.
+                    failed = (f", {d['checks_failed']} check(s) could not run"
+                              if d.get("checks_failed") else "")
+                    listed_on = (f" — listed on {', '.join(d['listed_on'])}"
+                                 if d.get("listed_on") else "")
+                    print(f"  {d['domain']} — {d['state']}{listed_on}"
+                          + (" (stale)" if d.get("stale") else "")
+                          + (" (partial scan)" if d.get("partial") else "")
+                          + failed)
         elif sd_action == "cost":
             months = getattr(args, "months", None)
             if getattr(args, "workspace", None):
@@ -5088,7 +5429,7 @@ def main():
             return 1
         print(json.dumps(result, indent=2))
     elif args.command == "lead-campaign":
-        import dashboard_queries
+        import reporting_queries
         from db_conn import get_conn as _get_conn
 
         conn = _get_conn()
@@ -5101,7 +5442,7 @@ def main():
                     print(f"Unknown workspace: {args.workspace}")
                     return 1
                 ws_id = ws["id"]
-            result = dashboard_queries.lead_campaign(conn, args.lead_id, ws_id)
+            result = reporting_queries.lead_campaign(conn, args.lead_id, ws_id)
         finally:
             conn.close()
         if getattr(args, "json", False):

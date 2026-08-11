@@ -30,7 +30,7 @@ def register_query_parser(sub) -> None:
     q.add_argument(
         "preset",
         nargs="?",
-        choices=("engagement", "replies", "interested", "campaign-stats"),
+        choices=("engagement", "replies", "interested", "campaign-stats", "deliverability"),
         help="Blessed analytics preset (preferred)",
     )
     q.add_argument("--workspace", help="Workspace slug; campaign names use '<slug> | …'")
@@ -57,8 +57,11 @@ def register_query_parser(sub) -> None:
         help='JSON array of SQL bind parameters (example: ["acme"])',
     )
     q.add_argument("--file", help="Read SQL from a file (outreachmagic/imports/ or absolute path)")
-    q.add_argument("--limit", type=int, default=read_queries.DEFAULT_ROW_LIMIT)
+    q.add_argument("--limit", type=int, default=read_queries.DEFAULT_ROW_LIMIT,
+                   help="Row cap for --sql/--file (0 = no cap)")
     q.add_argument("--json", action="store_true", help="JSON output for agents")
+    q.add_argument("--quiet", action="store_true",
+                   help="Suppress the stderr freshness line (machine consumers)")
     q.set_defaults(command="query")
 
 
@@ -70,17 +73,30 @@ def register_sql_parser(sub) -> None:
         "--params",
         help='JSON array of SQL bind parameters (example: ["acme"])',
     )
-    p.add_argument("--limit", type=int, default=read_queries.DEFAULT_ROW_LIMIT)
+    p.add_argument("--limit", type=int, default=read_queries.DEFAULT_ROW_LIMIT,
+                   help="Row cap (0 = no cap)")
+    p.add_argument(
+        "--workspace",
+        help="Scope helper CTEs to a workspace: ws_leads, ws_campaigns, ws_events, "
+             "ws_sender_accounts, ws_workspace (leads have no workspace_id column)",
+    )
     p.add_argument("--json", action="store_true", help="JSON output for agents")
+    p.add_argument("--quiet", action="store_true",
+                   help="Suppress the stderr freshness line (machine consumers)")
     p.set_defaults(
-        command="query", preset=None, workspace=None, campaign_prefix=None,
+        command="query", preset=None, campaign_prefix=None,
         since=None, direction="inbound", event_types=None, file=None,
     )
 
 
 def register_schema_parser(sub) -> None:
-    s = sub.add_parser("schema", help="List tables, or dump one table's columns (discovery/debugging)")
+    s = sub.add_parser("schema", help="List tables, dump one table's columns, or show the join graph")
     s.add_argument("table", nargs="?", help="Table name; omit to list all tables")
+    s.add_argument(
+        "--relations",
+        action="store_true",
+        help="Foreign-key graph and how each entity is scoped to a workspace",
+    )
     s.add_argument("--json", action="store_true", help="JSON output for agents")
     s.set_defaults(command="schema")
 
@@ -88,7 +104,12 @@ def register_schema_parser(sub) -> None:
 def cmd_schema(args) -> None:
     try:
         table = getattr(args, "table", None)
-        result = read_queries.table_schema(table) if table else read_queries.list_tables()
+        if getattr(args, "relations", False):
+            result = read_queries.table_relations([table] if table else None)
+        elif table:
+            result = read_queries.table_schema(table)
+        else:
+            result = read_queries.list_tables()
     except ValueError as exc:
         if getattr(args, "json", False):
             print(json.dumps({"error": str(exc)}))
@@ -102,16 +123,31 @@ def cmd_schema(args) -> None:
         return
 
     print(f"db_path: {result['db_path']}")
-    if "tables" in result:
+    if "relations" in result:
+        print("\nworkspace scoping:")
+        for entity, how in result["workspace_scoping"].items():
+            print(f"  {entity}: {how}")
+        print("\nforeign keys:")
+        for rel in result["relations"]:
+            print(f"  {rel['from_table']}.{rel['from_column']} -> "
+                  f"{rel['to_table']}.{rel['to_column']}")
+    elif "tables" in result:
+        purposes = result.get("purposes") or {}
         for t in result["tables"]:
-            print(f"  {t}")
+            print(f"  {t:<32} {purposes.get(t, '')}")
     else:
         print(f"table: {result['table']}")
+        if result.get("purpose"):
+            print(f"  ({result['purpose']})")
+        if result.get("workspace_scoping"):
+            print(f"  workspace scoping: {result['workspace_scoping']}")
         for col in result["columns"]:
             pk = " PK" if col["pk"] else ""
             nn = " NOT NULL" if col["notnull"] else ""
             default = f" DEFAULT {col['default']}" if col["default"] is not None else ""
             print(f"  {col['name']}  {col['type']}{nn}{default}{pk}")
+        for fk in result.get("foreign_keys") or []:
+            print(f"  FK {fk['column']} -> {fk['references']}")
 
 
 def register_tag_summary_parser(sub) -> None:
@@ -142,6 +178,17 @@ def cmd_tag_summary(args) -> None:
         print(json.dumps(attach_freshness(result, last_pull=last_pull), indent=2))
     else:
         print(read_queries.format_tag_summary(result))
+
+
+def _quiet(args) -> bool:
+    """Freshness goes to stderr (never stdout) — this silences it entirely.
+
+    The JSON body carries the same freshness fields, so a machine consumer
+    loses nothing by turning the line off.
+    """
+    import os
+
+    return bool(getattr(args, "quiet", False) or os.environ.get("OM_QUIET"))
 
 
 def _parse_params(raw: Optional[str]) -> list[Any]:
@@ -199,12 +246,28 @@ def cmd_query(args) -> None:
             finally:
                 conn.close()
             result = {"preset": "campaign-stats", "data": raw}
+        elif args.preset == "deliverability":
+            if not getattr(args, "workspace", None):
+                raise ValueError("--workspace required for deliverability")
+            from db_conn import get_conn as _get_conn
+            from campaign_stats import build_deliverability_payload
+
+            conn = _get_conn()
+            try:
+                result = build_deliverability_payload(
+                    conn,
+                    workspace=args.workspace,
+                    since=getattr(args, "since", None),
+                )
+            finally:
+                conn.close()
         elif getattr(args, "sql", None):
             params = _parse_params(getattr(args, "params", None))
             result = read_queries.run_readonly_sql(
                 args.sql,
                 params=params,
                 limit=getattr(args, "limit", read_queries.DEFAULT_ROW_LIMIT),
+                workspace=getattr(args, "workspace", None),
             )
         elif getattr(args, "file", None):
             path = resolve_project_path(args.file, kind="input")
@@ -214,11 +277,13 @@ def cmd_query(args) -> None:
                 sql,
                 params=params,
                 limit=getattr(args, "limit", read_queries.DEFAULT_ROW_LIMIT),
+                workspace=getattr(args, "workspace", None),
             )
             result["file"] = str(path)
         else:
             print(
-                "Usage: pipeline.py query <engagement|replies|interested|campaign-stats> --workspace <slug> --since 48h\n"
+                "Usage: pipeline.py query <engagement|replies|interested|campaign-stats|deliverability>"
+                " --workspace <slug> --since 48h\n"
                 "   or: pipeline.py query --sql 'SELECT ...' [--params '[...]'] --json",
                 file=sys.stderr,
             )
@@ -233,7 +298,16 @@ def cmd_query(args) -> None:
         return
 
     last_pull = _pipeline.get_last_pull() if _pipeline else None
-    print_freshness_stderr(last_pull)
+    if not _quiet(args):
+        print_freshness_stderr(last_pull)
+    if isinstance(result, dict) and result.get("truncated"):
+        # Silent truncation at the row cap is the second-most common cause of a
+        # confidently wrong answer, after reading a stale pull.
+        print(
+            f"WARNING: hit the {result.get('limit')}-row limit — "
+            "re-run with --limit 0 for all rows.",
+            file=sys.stderr,
+        )
     if getattr(args, "json", False):
         print(json.dumps(attach_freshness(result, last_pull=last_pull), indent=2))
     else:

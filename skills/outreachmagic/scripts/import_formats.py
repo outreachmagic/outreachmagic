@@ -15,6 +15,53 @@ SALES_NAV_SIGNATURE_HEADERS = frozenset({
     "member linkedin id",
 })
 
+AI_ARK_SIGNATURE_HEADERS = frozenset({
+    "ai ark people id",
+    "email business",
+    "company employee count",
+    "company website",
+    "business status",
+    "company industry",
+    "organization",
+})
+
+# Per-format header aliases, consulted BEFORE the global table when the format
+# is known. Kept separate because HEADER_ALIASES is global: putting
+# "company website" -> company_domain there would change how every generic CSV
+# is read, to fix one vendor's export. A format-scoped table lets a vendor spell
+# a column however it likes without that spelling leaking into everyone else's
+# imports.
+FORMAT_HEADER_ALIASES: dict[str, dict[str, str]] = {
+    "ai_ark": {
+        "full name": "name",
+        "first name": "first_name",
+        "last name": "last_name",
+        "title": "title",
+        "organization": "company",
+        "company name": "company",
+        "email business": "email",
+        "linkedin": "linkedin",
+        # The dedup key. Mapping it to external_id puts re-pulls of the same
+        # source on identity tier 1, so a second AI Ark export of the same
+        # people matches instead of duplicating.
+        "ai ark people id": "external_id",
+        "company website": "company_domain",
+        # Band form ("501-1000"), which is what headcount stores. The numeric
+        # "Company Size" column is deliberately NOT mapped: it looks like the
+        # better value and is the wrong shape.
+        "company employee count": "headcount",
+        "company industry": "industry",
+        "city": "location_city",
+        "state": "location_state",
+        "country": "location_country",
+        "company city": "hq_city",
+        "company state": "hq_state",
+        "company country": "hq_country",
+        "seniority": "_note_seniority",
+        "department": "_note_department",
+    },
+}
+
 # Lowercase trimmed header → canonical column name used before PROFILE_ALIASES
 HEADER_ALIASES: dict[str, str] = {
     "first name": "first_name",
@@ -102,6 +149,12 @@ def parse_comma_location(value: str) -> tuple[Optional[str], Optional[str], Opti
 def detect_import_format(headers: set[str]) -> tuple[str, str]:
     """Return (format_id, confidence)."""
     normalized = {normalize_header_key(h) for h in headers if h}
+    # AI Ark first: its exports also carry "first name"/"last name", which would
+    # otherwise fall through to the Sales Nav medium-confidence guess below and
+    # lose the People ID -> external_id mapping that makes re-pulls dedupe.
+    ai_ark_hits = sum(1 for sig in AI_ARK_SIGNATURE_HEADERS if sig in normalized)
+    if "ai ark people id" in normalized or ai_ark_hits >= 4:
+        return "ai_ark", "high" if ai_ark_hits >= 4 else "medium"
     hits = sum(1 for sig in SALES_NAV_SIGNATURE_HEADERS if sig in normalized)
     if hits >= 3:
         return "sales_navigator", "high" if hits >= 5 else "medium"
@@ -146,14 +199,28 @@ def normalize_import_row(raw: dict[str, Any], *, import_format: Optional[str] = 
     """Map export headers (Sales Nav, Vayne, etc.) to canonical import columns."""
     row: dict[str, Any] = {}
     notes_parts: list[str] = []
+    # Small key=value facts (seniority, department) that are worth keeping but
+    # do not deserve a column. Collected separately from notes_parts so they
+    # join as one compact line rather than a paragraph each.
+    note_facts: list[str] = []
 
     for key, val in raw.items():
         if not key or val is None:
             continue
         nk = normalize_header_key(str(key))
-        target = HEADER_ALIASES.get(nk)
+        # Format-scoped aliases win over the global table; see FORMAT_HEADER_ALIASES.
+        target = FORMAT_HEADER_ALIASES.get(import_format or "", {}).get(nk)
+        if target is None:
+            target = HEADER_ALIASES.get(nk)
         if target is None:
             target = nk.replace(" ", "_")
+        if target.startswith("_note_"):
+            # Folded into notes rather than given a column of their own -- they
+            # are useful context, not fields anything queries.
+            text = str(val).strip()
+            if text:
+                note_facts.append(f"{target[len('_note_'):]}={text}")
+            continue
         if target.startswith("_"):
             if target == "_member_linkedin_id" and str(val).strip():
                 urn = str(val).strip()
@@ -194,6 +261,8 @@ def normalize_import_row(raw: dict[str, Any], *, import_format: Optional[str] = 
         row["name"] = f"{first} {last}".strip() if last else first
     company = str(row.get("company") or nk_map.get("company") or "").strip()
 
+    if note_facts:
+        notes_parts.append("; ".join(note_facts))
     if notes_parts:
         existing = str(row.get("notes") or "").strip()
         combined = "\n\n".join(notes_parts)

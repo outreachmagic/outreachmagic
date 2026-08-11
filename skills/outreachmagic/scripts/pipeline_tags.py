@@ -626,12 +626,23 @@ def log_event(lead_id, event_type, direction="outbound", channel="email",
     if sender:
         from pipeline_sender_accounts import (
             ensure_sender_account,
+            find_sender_account_id_by_email,
             link_sender_account_to_workspace,
             touch_sender_account_activity,
         )
 
         sa_channel = "linkedin" if channel == "linkedin" else "email"
-        sender_account_id = ensure_sender_account(conn, sender, channel=sa_channel)
+        # Create a sender account only from OUTBOUND events. `sender` is meant to
+        # be our own mailbox whichever way the message went, but several ingest
+        # paths put the other party's address there on an inbound event -- which
+        # is how isenberg.umass.edu became one of "our" sending domains, and why
+        # 237 of 779 sender accounts had never sent anything. An inbound event
+        # still touches an EXISTING account (that is real reply activity for a
+        # mailbox we own); it just cannot conjure one.
+        if str(direction or "").lower() == "outbound":
+            sender_account_id = ensure_sender_account(conn, sender, channel=sa_channel)
+        else:
+            sender_account_id = find_sender_account_id_by_email(conn, sender)
         if sender_account_id:
             touch_sender_account_activity(
                 conn, sender_account_id, direction=direction, event_at=created,

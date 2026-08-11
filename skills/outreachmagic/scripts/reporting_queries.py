@@ -21,7 +21,7 @@ from collections import defaultdict
 from typing import Optional
 
 from constants import COMPANY_DOMAIN_SQL, PIPELINE_STAGES, SCHEDULING_PLATFORMS_SQL_LIST
-from platform_registry import reply_event_sql_condition
+from platform_registry import reply_event_sql_condition, reply_event_types_sql_list
 from read_queries import _since_clause
 from workspace_routing import DEFAULT_ORG_ID, get_org_routing_config
 
@@ -242,9 +242,16 @@ def mailbox_health(
                   sa.first_name, sa.last_name, sa.provider, sa.is_active,
                   sa.warmup_status, sa.spf_status, sa.dkim_status, sa.dmarc_status,
                   sa.overall_health_score, sa.bounce_rate, sa.daily_limit,
-                  sa.last_outbound_at, sa.last_inbound_at
+                  sa.last_outbound_at, sa.last_inbound_at,
+                  -- Reseller and provider are properties of the DOMAIN, not of
+                  -- the mailbox, but "who did I buy this from" is a question you
+                  -- ask while looking at a mailbox. Carried down rather than
+                  -- making the reader cross-reference two tables.
+                  sd.reseller AS domain_reseller,
+                  sd.provider AS domain_provider
            FROM sender_accounts sa
            JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
+           LEFT JOIN sender_domains sd ON sd.domain = sa.email_domain
            WHERE wsa.workspace_id = ?
            ORDER BY sa.email""",
         (workspace_id,),
@@ -328,10 +335,56 @@ def _parse_dnsbl_status(raw: Optional[str]) -> tuple[bool, str, Optional[str]]:
     return text.lower() not in ("clean", "ok", "not_listed", "unlisted"), text, None
 
 
+def _domain_age_days(registration_date):
+    """Whole days since registration, computed on read (a stored age goes stale)."""
+    from pipeline_sender_accounts import domain_age_days
+
+    return domain_age_days(registration_date)
+
+
+def _dnsbl_detail(raw):
+    """The full per-list report from sender_domains.dnsbl_status.
+
+    _parse_dnsbl_status answers "listed?"; this answers "on what, checked when,
+    and which checks could not be run" -- the evidence behind the verdict, which
+    every surface showing the verdict needs and none of them had.
+    """
+    text = (raw or "").strip()
+    if not text.startswith("{"):
+        return {"results": [], "partial": False, "tiers_scanned": [],
+                "checks_failed": 0, "listed_on": []}
+    try:
+        report = json.loads(text)
+    except json.JSONDecodeError:
+        return {"results": [], "partial": False, "tiers_scanned": [],
+                "checks_failed": 0, "listed_on": []}
+    results = report.get("results") or []
+    return {
+        "results": results,
+        "partial": bool(report.get("partial")),
+        "tiers_scanned": report.get("tiers_scanned") or [],
+        # A check that could not run is NOT a listing. Keeping the count visible
+        # is what stops a rate-limited scan reading as a blacklisting.
+        "checks_failed": sum(1 for r in results if r.get("status") == "check_failed"),
+        "listed_on": [r.get("name") for r in results if r.get("status") == "listed"],
+    }
+
+
 def domain_health(
     conn: sqlite3.Connection, workspace_id: str,
     since: Optional[str] = None, until: Optional[str] = None,
+    exclude_never_sent: bool = True,
 ) -> dict:
+    """Sending domains for the workspace, with live reply/bounce rates.
+
+    `exclude_never_sent` drops domains no mailbox has ever sent from. Those are
+    not sending domains at all -- they arrived because inbound events used to
+    bootstrap a sender account from the *other* party's address, so a reply from
+    isenberg.umass.edu made it look like somewhere we send from. The write path
+    no longer does that (see log_event), but existing rows persist until
+    `sender-domains prune-never-sent` clears them, and they should not be
+    padding the page or the blacklist sweep in the meantime.
+    """
     # Domains come from the workspace's own mailboxes; sender_domains is a
     # LEFT JOIN because it only holds domains someone registered there
     # (reseller/pricing/DNSBL) — a workspace's sending domains must show up
@@ -346,7 +399,8 @@ def domain_health(
                   MAX(sa.last_outbound_at) AS last_outbound_at,
                   sd.domain IS NOT NULL AS registered,
                   COALESCE(sd.is_active, 1) AS domain_active,
-                  sd.dnsbl_status, sd.sending_ip, sd.reseller,
+                  sd.dnsbl_status, sd.sending_ip, sd.reseller, sd.provider,
+                  sd.registration_date, sd.registration_checked_at,
                   sd.domain_cost, sd.currency
            FROM sender_accounts sa
            JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
@@ -379,7 +433,12 @@ def domain_health(
 
     domains = []
     for r in rows:
+        # Never sent from, by any mailbox, ever -- not a date-range statement.
+        never_sent = not r["last_outbound_at"]
+        if never_sent and exclude_never_sent:
+            continue
         listed, summary, checked_at = _parse_dnsbl_status(r["dnsbl_status"])
+        detail = _dnsbl_detail(r["dnsbl_status"])
         if not r["registered"]:
             summary = "not monitored"
         agg = per_domain.get(r["domain"], {"sends": 0, "replies": 0, "bounces": 0})
@@ -397,20 +456,40 @@ def domain_health(
             "reply_rate": (agg["replies"] / sends) if sends else None,
             "bounce_rate": (agg["bounces"] / sends) if sends else None,
             "last_outbound_at": r["last_outbound_at"],
+            "never_sent": never_sent,
             "registered": bool(r["registered"]),
             "is_active": bool(r["domain_active"]),
             "sending_ip": r["sending_ip"],
             "reseller": r["reseller"],
-            "provider": r["reseller"],
+            # This used to be `r["reseller"]` under a column headed "Provider",
+            # so a domain bought through a reseller reported the reseller as the
+            # platform that sends its mail. They are different facts: provider =
+            # Google Workspace / Microsoft 365 / an SMTP relay; reseller = who
+            # you bought from.
+            "provider": r["provider"],
+            "registration_date": r["registration_date"],
+            "registration_checked_at": r["registration_checked_at"],
+            "domain_age_days": _domain_age_days(r["registration_date"]),
             "domain_cost": r["domain_cost"],
             "currency": r["currency"],
             "listed": listed,
             "dnsbl_summary": summary,
             "dnsbl_checked_at": checked_at,
+            # The per-list report travels with the row. Collapsing it to a
+            # verdict here is what forced a second round trip to answer "listed
+            # on what, and when did we last actually manage to check?".
+            "dnsbl_results": detail.get("results") or [],
+            "dnsbl_partial": detail.get("partial", False),
+            "dnsbl_tiers_scanned": detail.get("tiers_scanned") or [],
+            "dnsbl_checks_failed": detail.get("checks_failed", 0),
+            "dnsbl_listed_on": detail.get("listed_on") or [],
         })
     return {
         "domains": domains,
         "flagged": [d["domain"] for d in domains if d["listed"]],
+        "exclude_never_sent": exclude_never_sent,
+        "never_sent_hidden": sum(1 for r in rows if not r["last_outbound_at"])
+                             if exclude_never_sent else 0,
     }
 
 
@@ -566,19 +645,183 @@ def attribute_performance(
     return {"field": field, "min_sample": min_sample, "campaign_id": campaign_id, "rows": out}
 
 
+# A campaign whose every event came from a booking tool is a calendar, not
+# outbound. Calendly publishes the booked event TYPE ("30 Minute Meeting",
+# "Popcam Rental Onboarding") with each webhook and ingest stores that as the
+# campaign, so those slots showed up in the Campaigns table beside real
+# sequences -- and the same lead appeared twice, once under the campaign that
+# actually reached them and once under the calendar slot they picked.
+#
+# ALL rather than ANY: a genuine outbound campaign that somehow collected one
+# scheduling event must not be reclassified as a calendar. (Confirmed against
+# the live database: no campaign mixes the two, so the two rules agree today --
+# "all" is the one that stays correct if that ever stops being true.)
+_SCHEDULING_CAMPAIGN_IDS_SQL = f"""
+    SELECT e.campaign_id
+      FROM events e
+     WHERE e.campaign_id IS NOT NULL
+  GROUP BY e.campaign_id
+    HAVING SUM(CASE WHEN LOWER(COALESCE(json_extract(e.metadata_json, '$.platform'), ''))
+                         IN ({SCHEDULING_PLATFORMS_SQL_LIST}) THEN 0 ELSE 1 END) = 0
+"""
+
+
+def scheduling_campaign_ids(conn: sqlite3.Connection) -> set:
+    """Campaign ids that are booking-tool event types, not outbound campaigns."""
+    return {r["campaign_id"] for r in conn.execute(_SCHEDULING_CAMPAIGN_IDS_SQL).fetchall()}
+
+
+def _scheduling_filter(include_scheduling: bool, column: str = "campaign_id") -> str:
+    """SQL fragment excluding scheduling campaigns, or '' when they're wanted."""
+    if include_scheduling:
+        return ""
+    return f" AND {column} NOT IN ({_SCHEDULING_CAMPAIGN_IDS_SQL})"
+
+
+# The synthetic row that catches meetings we could not trace to a campaign.
+# Without it, "exclude scheduling tools" would silently drop meetings entirely,
+# which trades a double count for a missing one.
+UNATTRIBUTED_SCHEDULING_ID = -1
+UNATTRIBUTED_SCHEDULING_NAME = "Unattributed (scheduling)"
+
+
+def _meetings_by_campaign(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str], until: Optional[str],
+) -> tuple[dict, int]:
+    """{campaign_id: meetings} attributed to the campaign that EARNED the meeting.
+
+    A booking webhook carries the calendar slot as its campaign, so counting
+    meetings off `events.campaign_id` credits "30 Minute Meeting" instead of the
+    sequence that put the meeting there. Every meeting is therefore resolved
+    through the same last-known-campaign chain the replies table and the company
+    pane use -- the lead's most recent campaign-bearing non-scheduling event,
+    else a colleague's at the same company.
+
+    Returns (per-campaign counts, unattributed count). Meetings that resolve to
+    nothing are counted separately rather than dropped: an untraceable meeting
+    still happened.
+    """
+    range_sql, range_params = _range_clause(since, until, "wle.event_at")
+    rows = conn.execute(
+        f"""SELECT DISTINCT wle.lead_id AS lead_id, l.company_id AS company_id
+              FROM workspace_lead_events wle
+              JOIN events e ON e.id = wle.event_id
+              JOIN leads l ON l.id = wle.lead_id
+             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}""",
+        (workspace_id, *range_params),
+    ).fetchall()
+    if not rows:
+        return {}, 0
+    resolved = resolve_last_known_campaigns(conn, workspace_id, [dict(r) for r in rows])
+    counts: dict = defaultdict(int)
+    unattributed = 0
+    for row in rows:
+        campaign_id = resolved.get(int(row["lead_id"]), _EMPTY_CAMPAIGN)["campaign_id"]
+        if campaign_id is None:
+            unattributed += 1
+        else:
+            counts[campaign_id] += 1
+    return dict(counts), unattributed
+
+
+def _sentiment_by_campaign(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str], until: Optional[str],
+) -> tuple[dict, dict]:
+    """{campaign_id: {sentiment: n}} counting each lead exactly ONCE.
+
+    A lead can sit in several campaigns, so summing per-campaign sentiment over
+    campaign_leads double-counts: the workspace total and the column totals stop
+    agreeing, and a positive reply inflates every campaign the lead ever touched.
+    Each lead is credited to its last known campaign only -- the same attribution
+    the Meetings column and the Contacts list use, so all three tell one story.
+
+    Returns (per-campaign counts, unattributed counts).
+    """
+    range_sql, range_params = _range_clause(since, until, "wl.current_sentiment_since")
+    rows = conn.execute(
+        f"""SELECT wl.lead_id AS lead_id, l.company_id AS company_id,
+                   lower(wl.current_status_sentiment) AS sentiment
+              FROM workspace_leads wl
+              JOIN leads l ON l.id = wl.lead_id
+             WHERE wl.workspace_id = ?
+               AND wl.current_status_sentiment IS NOT NULL
+               AND wl.current_sentiment_since IS NOT NULL{range_sql}""",
+        (workspace_id, *range_params),
+    ).fetchall()
+    if not rows:
+        return {}, {}
+    from lead_links import CONVERSATION_ROOT_SQL
+
+    roots = {int(r["lead_id"]): int(r["root_id"]) for r in
+             conn.execute(CONVERSATION_ROOT_SQL).fetchall()}
+    # Resolve the ROOTS too, not just the leads that carry a sentiment. A
+    # colleague who was forwarded in may be the only one with a positive, while
+    # the campaign that started the thread reached the root -- so the root has
+    # to be in the set being attributed, or the credit falls back to whoever
+    # happened to reply.
+    to_resolve = {int(r["lead_id"]): dict(r) for r in rows}
+    for lead_id in list(to_resolve):
+        root = roots.get(lead_id, lead_id)
+        if root not in to_resolve:
+            root_row = conn.execute(
+                "SELECT id AS lead_id, company_id FROM leads WHERE id = ?", (root,)
+            ).fetchone()
+            if root_row:
+                to_resolve[root] = dict(root_row)
+    resolved = resolve_last_known_campaigns(
+        conn, workspace_id, list(to_resolve.values()))
+    # One conversation, one count. Without this, a positive reply and the
+    # colleague they forwarded us to both land in the same campaign's Positive
+    # column -- two rows for one opportunity, which is the thing the link exists
+    # to stop. Leads in no conversation are their own root.
+    per_campaign: dict = defaultdict(lambda: defaultdict(set))
+    unattributed: dict = defaultdict(set)
+    for row in rows:
+        sentiment = row["sentiment"]
+        if sentiment not in SENTIMENT_KEYS:
+            continue
+        lead_id = int(row["lead_id"])
+        # The whole conversation is credited to the campaign that reached its
+        # ROOT -- the outbound that started the thread, not the one that
+        # happened to touch whoever was forwarded in later.
+        root = roots.get(lead_id, lead_id)
+        campaign_id = resolved.get(root, resolved.get(lead_id, _EMPTY_CAMPAIGN))["campaign_id"]
+        if campaign_id is None:
+            unattributed[sentiment].add(root)
+        else:
+            per_campaign[campaign_id][sentiment].add(root)
+    return ({cid: {k: len(v) for k, v in sents.items()}
+             for cid, sents in per_campaign.items()},
+            {k: len(v) for k, v in unattributed.items()})
+
+
 def campaign_audit(
     conn: sqlite3.Connection,
     workspace_id: str,
     since: Optional[str] = None,
     until: Optional[str] = None,
+    include_scheduling: bool = False,
 ) -> dict:
+    """Per-campaign activity, in the same columns as the daily-activity matrix.
+
+    `include_scheduling` brings booking-tool event types back into the list. Off
+    by default: a Calendly slot is a calendar, not a campaign you can judge.
+    """
     cte, since_params = _ws_events(since, until)
+    # The same column expressions the daily matrix uses, grouped by campaign
+    # instead of by day -- one definition, so "DMs sent" cannot mean one thing
+    # per day and another per campaign.
     metric_rows = conn.execute(
         cte + f"""
         SELECT campaign_id,
-               SUM(event_type = 'email_sent') AS sent,
+               {_daily_columns_sql(exclude=("meetings",))},
+               -- Bookings that landed on THIS calendar slot, straight from the
+               -- event stream. Only ever shown for scheduling rows, which are
+               -- opt-in -- so it cannot double-count the attributed figure.
+               SUM(event_type = 'meeting_booked') AS meetings_on_calendar,
                SUM({reply_event_sql_condition()}) AS replies,
-               SUM(event_type = 'meeting_booked') AS meetings,
                SUM(event_type IN {BOUNCE_EVENT_TYPES_SQL}) AS bounces
         FROM ws_events
         WHERE campaign_id IS NOT NULL
@@ -586,6 +829,8 @@ def campaign_audit(
         (workspace_id, *since_params),
     ).fetchall()
     metrics = {r["campaign_id"]: r for r in metric_rows}
+
+    scheduling_ids = scheduling_campaign_ids(conn)
 
     # Campaigns assigned to the workspace, plus any that actually produced
     # events here (assignment is nullable and routing rules are name-based).
@@ -598,34 +843,21 @@ def campaign_audit(
         (workspace_id,),
     ).fetchall()
 
-    # Positives are counted once per lead on current_sentiment_since (current
-    # state), scoped to the same date range as sent/replies/bounces -- the same
-    # definition the daily matrix and Replies list use, so the three agree.
-    pos_range, pos_params = _range_clause(since, until, "wl.current_sentiment_since")
-    positive_rows = conn.execute(
-        f"""SELECT cl.campaign_id, COUNT(DISTINCT cl.lead_id) AS positive
-            FROM workspace_leads wl
-            JOIN campaign_leads cl ON cl.lead_id = wl.lead_id
-            WHERE wl.workspace_id = ?
-              AND lower(wl.current_status_sentiment) = 'positive'
-              AND wl.current_sentiment_since IS NOT NULL{pos_range}
-            GROUP BY cl.campaign_id""",
-        (workspace_id, *pos_params),
-    ).fetchall()
-    positives = {r["campaign_id"]: r["positive"] for r in positive_rows}
+    meetings_by_campaign, meetings_unattributed = _meetings_by_campaign(
+        conn, workspace_id, since, until)
+    sentiment_by_campaign, sentiment_unattributed = _sentiment_by_campaign(
+        conn, workspace_id, since, until)
 
-    out = []
-    for c in campaigns:
-        m = metrics.get(c["id"])
-        sent = (m["sent"] if m else 0) or 0
+    def _row(campaign_id, name, sent, m, meetings, sentiments):
+        """One table row. `meetings` is the attributed count for a real campaign
+        and the raw on-calendar count for a scheduling row -- a calendar's own
+        question is "what got booked here", which is not the same question."""
         replies = (m["replies"] if m else 0) or 0
         bounces = (m["bounces"] if m else 0) or 0
-        meetings = (m["meetings"] if m else 0) or 0
-        positive = positives.get(c["id"], 0)
-        out.append({
-            "id": c["id"],
-            "name": c["name"],
-            "status": c["status"],
+        positive = sentiments.get("positive", 0)
+        row = {
+            "id": campaign_id,
+            "name": name,
             "sent": sent,
             "replies": replies,
             "reply_rate": round(replies / sent, 4) if sent else None,
@@ -634,13 +866,52 @@ def campaign_audit(
             "meetings": meetings,
             "bounces": bounces,
             "bounce_rate": round(bounces / sent, 4) if sent else None,
-        })
-    # Hide campaigns with zero activity in the selected range — an all-zero row
+        }
+        for key in DAILY_EVENT_KEYS:
+            if key == "meetings":
+                continue
+            row[key] = (m[key] if m else 0) or 0
+        for key in SENTIMENT_KEYS:
+            row[key] = sentiments.get(key, 0)
+        return row
+
+    out = []
+    for c in campaigns:
+        is_scheduling = c["id"] in scheduling_ids
+        if is_scheduling and not include_scheduling:
+            continue
+        m = metrics.get(c["id"])
+        meetings = (((m["meetings_on_calendar"] if m else 0) or 0) if is_scheduling
+                    else meetings_by_campaign.get(c["id"], 0))
+        row = _row(
+            c["id"], c["name"], (m["email_sent"] if m else 0) or 0, m, meetings,
+            sentiment_by_campaign.get(c["id"], {}),
+        )
+        row["is_scheduling"] = is_scheduling
+        out.append(row)
+
+    # Meetings and sentiment that resolved to no campaign at all. Surfaced as one
+    # synthetic row so excluding scheduling tools never silently loses a booking.
+    if meetings_unattributed or sentiment_unattributed:
+        row = _row(UNATTRIBUTED_SCHEDULING_ID, UNATTRIBUTED_SCHEDULING_NAME,
+                   0, None, meetings_unattributed, sentiment_unattributed)
+        row["is_scheduling"] = True
+        row["is_unattributed"] = True
+        out.append(row)
+
+    # Hide campaigns with zero activity in the selected range -- an all-zero row
     # is just noise (the campaign exists but did nothing in this window).
-    out = [c for c in out
-           if c["sent"] or c["replies"] or c["bounces"] or c["meetings"] or c["positive"]]
-    out.sort(key=lambda c: c["sent"], reverse=True)
-    return {"since": since, "campaigns": out}
+    activity_keys = ("sent", "replies", "bounces", "meetings", *SENTIMENT_KEYS,
+                     *(k for k in DAILY_EVENT_KEYS if k != "meetings"))
+    out = [c for c in out if any(c.get(k) for k in activity_keys)]
+    out.sort(key=lambda c: (c.get("is_unattributed", False), -c["sent"], -c["meetings"]))
+    return {
+        "since": since,
+        "campaigns": out,
+        "include_scheduling": include_scheduling,
+        "scheduling_excluded": sum(1 for c in campaigns if c["id"] in scheduling_ids),
+        "columns": list(DAILY_COLUMN_KEYS),
+    }
 
 
 _SUBJECT_PREFIX = re.compile(r"^\s*((re|fwd?|aw)\s*:\s*)+", re.IGNORECASE)
@@ -896,6 +1167,7 @@ def campaign_replies(
     limit: int = 200,
     sentiment: Optional[str] = None,
     status_label: Optional[str] = None,
+    reply_kind: Optional[str] = None,
 ) -> dict:
     """One row per lead that currently carries a sentiment, anchored on the day
     it entered that sentiment (current_sentiment_since) — NOT one row per reply
@@ -911,30 +1183,89 @@ def campaign_replies(
     that happen to be positive. Both come back in one round trip; a separate
     facets endpoint would race the list against its own filter options.
 
+    Each row also carries a `reply_kind` (human / auto_reply / bounce /
+    status_only). A bounce and an out-of-office both set a lead's sentiment, so
+    a list built on sentiment alone shows all three under a heading that says
+    "Replies" -- which reads as "we got four real replies" when we got none.
+    The classification is campaign_stats.classify_reply_kind, shared with the
+    CLI preset so the two can never drift.
+
     The campaign column is `last_known_campaign_sql`, not the latest reply's
     own campaign_id: a lead whose sentiment came from a bounce has no campaign
     on that event, and showing "—" for it was wrong rather than unknown.
     """
     reply_cond = reply_event_sql_condition()
-    # Range applies to the sentiment anchor so this list reconciles with the
-    # daily sentiment columns rather than the raw reply timestamps.
-    range_sql, range_params = _range_clause(since, until, "wl.current_sentiment_since")
-    base_params: list = [workspace_id, *range_params]
+    # When the lead's most recent inbound reply happened. Needed because not
+    # every channel reports a sentiment: email sequencers ship a status label
+    # with each reply and that is what sets current_status_sentiment, but Prosp
+    # sends none -- all 715 inbound LinkedIn events carried lead_status_raw
+    # NULL. Anchoring this list on sentiment alone therefore hid an entire
+    # channel: 92 leads had a LinkedIn DM reply and only 12 appeared here.
+    # Materialized ONCE as a CTE, not as a correlated subquery. Written inline
+    # it ran per candidate row and per reference (range clause, WHERE, SELECT),
+    # taking this query from 0.4s to 4.1s on a 126k-event workspace. As a CTE it
+    # is one indexed pass over workspace_lead_events.
+    last_reply_cte = f"""WITH last_reply AS (
+        SELECT wle_r.lead_id AS lead_id, MAX(wle_r.event_at) AS reply_at
+          FROM workspace_lead_events wle_r
+          JOIN events e_r ON e_r.id = wle_r.event_id
+         WHERE wle_r.workspace_id = ?
+           -- Indexed pre-filter (idx_ws_events_type) before the join to
+           -- `events`: without it every workspace event is joined just to read
+           -- its direction. Lossless -- see reply_event_types_sql_list().
+           AND wle_r.event_type IN ({reply_event_types_sql_list()})
+           AND {reply_cond.replace('event_type', 'e_r.event_type').replace('direction', 'e_r.direction')}
+      GROUP BY wle_r.lead_id
+    )"""
+    last_reply_join = " LEFT JOIN last_reply lrx ON lrx.lead_id = wl.lead_id"
+    # A lead is on this list from the day it entered its current sentiment, or
+    # -- lacking one -- the day it last replied. Sentiment still wins where it
+    # exists, so nothing that used to reconcile with the daily sentiment
+    # columns stops reconciling.
+    anchor_sql = "COALESCE(wl.current_sentiment_since, lrx.reply_at)"
+
+    # The date filter is applied to each branch on its OWN column rather than
+    # once to the COALESCE. A range predicate over COALESCE(a, b) is not
+    # sargable -- SQLite cannot use the index on either column and falls back to
+    # scanning every workspace_lead, which cost 0.4s -> 5.8s on a 126k-event
+    # workspace. Split, each branch keeps its index and the two are equivalent:
+    # a lead with a sentiment is filtered on the sentiment anchor, one without
+    # on its reply time, which is exactly what the COALESCE selected anyway.
+    sent_range, sent_params = _range_clause(since, until, "wl.current_sentiment_since")
+    reply_range, reply_params = _range_clause(since, until, "lrx.reply_at")
+
+    # The CTE is scoped to the range too: a lead whose last reply falls outside
+    # it can only qualify through the sentiment branch, which does not read this.
+    cte_range, cte_params = _range_clause(since, until, "wle_r.event_at")
+    last_reply_cte = last_reply_cte.replace(
+        "      GROUP BY wle_r.lead_id",
+        cte_range + "\n      GROUP BY wle_r.lead_id")
+
+    # The CTE takes the workspace and its range first, then the outer query's.
+    base_params: list = [workspace_id, *cte_params, workspace_id,
+                         *sent_params, *reply_params]
     camp = ""
     if campaign_id is not None:
         camp = (" AND wl.lead_id IN (SELECT lead_id FROM campaign_leads"
                 " WHERE campaign_id = ?)")
         base_params.append(int(campaign_id))
 
+    # Either a materialized sentiment, or a real inbound reply with no verdict
+    # attached yet. The second kind renders with sentiment "–" rather than being
+    # assigned one: inventing "positive" for every LinkedIn DM would corrupt
+    # every positive count on the Campaigns page.
     base_where = f"""wl.workspace_id = ?
-          AND wl.current_status_sentiment IS NOT NULL
-          AND wl.current_sentiment_since IS NOT NULL{range_sql}{camp}"""
+          AND ((wl.current_status_sentiment IS NOT NULL
+                AND wl.current_sentiment_since IS NOT NULL{sent_range})
+               OR (wl.current_status_sentiment IS NULL
+                   AND lrx.reply_at IS NOT NULL{reply_range})){camp}"""
 
     facets = {
         key: [
             dict(r) for r in conn.execute(
-                f"""SELECT {col} AS value, COUNT(*) AS n
-                      FROM workspace_leads wl
+                f"""{last_reply_cte}
+                    SELECT {col} AS value, COUNT(*) AS n
+                      FROM workspace_leads wl{last_reply_join}
                      WHERE {base_where} AND {col} IS NOT NULL AND TRIM({col}) != ''
                      GROUP BY {col} ORDER BY n DESC, {col}""",
                 base_params,
@@ -954,13 +1285,26 @@ def campaign_replies(
     if status_label:
         narrow += " AND LOWER(wl.current_status_label) = LOWER(?)"
         params.append(status_label)
-    params.append(limit)
-    rows = conn.execute(
-        f"""
+    # reply_kind is computed in SQL so the filter runs BEFORE the row cap.
+    # Classifying the fetched page instead meant asking for human replies on a
+    # page that happened to hold five bounces returned nothing at all.
+    from campaign_stats import reply_kind_case_sql
+
+    kind_sql = reply_kind_case_sql("lr", "wl.current_status_sentiment")
+    kind_filter = ""
+    kind_params: list = []
+    if reply_kind and reply_kind != "all":
+        wanted = [k.strip() for k in str(reply_kind).split(",") if k.strip()]
+        if wanted:
+            kind_filter = (" AND reply_kind IN (%s)"
+                           % ", ".join("?" for _ in wanted))
+            kind_params = wanted
+
+    inner = f"""
         SELECT wl.lead_id AS lead_id,
                wl.current_status_sentiment AS sentiment,
                wl.current_status_label AS status_label,
-               wl.current_sentiment_since AS event_at,
+               {anchor_sql} AS event_at,
                wl.last_activity_at AS last_activity_at,
                l.name AS lead_name, l.company_id AS company_id,
                l.company AS company, l.title AS title, l.email AS email,
@@ -968,9 +1312,15 @@ def campaign_replies(
                (SELECT GROUP_CONCAT(t.tag, ',') FROM workspace_lead_tags t
                 WHERE t.workspace_id = wl.workspace_id AND t.lead_id = wl.lead_id) AS tags,
                lr.id AS event_id, lr.subject AS subject,
+               lr.event_type AS reply_event_type,
+               CAST(json_extract(lr.metadata_json, '$.is_auto_reply') AS INTEGER)
+                   AS is_auto_reply,
+               EXISTS(SELECT 1 FROM bounce_events be WHERE be.lead_id = wl.lead_id)
+                   AS has_bounce,
+               {kind_sql} AS reply_kind,
                (lr.id IS NOT NULL AND json_extract(lr.metadata_json, '$.body') IS NOT NULL)
                    AS has_body
-        FROM workspace_leads wl
+        FROM workspace_leads wl{last_reply_join}
         JOIN leads l ON l.id = wl.lead_id
         LEFT JOIN events lr ON lr.id = (
             SELECT wle2.event_id
@@ -979,19 +1329,41 @@ def campaign_replies(
               AND wle2.lead_id = wl.lead_id
               AND {reply_cond.replace('event_type', 'e2.event_type').replace('direction', 'e2.direction')}
             ORDER BY wle2.event_at DESC, wle2.id DESC LIMIT 1)
-        WHERE {base_where}{narrow}
-        ORDER BY wl.current_sentiment_since DESC
-        LIMIT ?""",
-        params,
+        WHERE {base_where}{narrow}"""
+
+    # Counted over the whole selection, never the page: the split is the point,
+    # so it has to stay true whichever kind is being shown.
+    kind_counts = {
+        r["reply_kind"]: r["n"] for r in conn.execute(
+            f"{last_reply_cte} SELECT reply_kind, COUNT(*) AS n FROM ({inner})"
+            " GROUP BY reply_kind",
+            params,
+        ).fetchall()
+    }
+
+    rows = conn.execute(
+        f"""{last_reply_cte}
+            SELECT * FROM ({inner})
+             WHERE 1=1{kind_filter}
+             ORDER BY event_at DESC
+             LIMIT ?""",
+        [*params, *kind_params, limit],
     ).fetchall()
     # Attribution is resolved for the whole page at once, after the list is
     # known -- doing it inline per row is what made this query take minutes.
     out = attach_last_known_campaigns(conn, workspace_id, [dict(r) for r in rows])
+
+    facets["reply_kind"] = [
+        {"value": k, "n": kind_counts[k]}
+        for k in sorted(kind_counts, key=lambda k: -kind_counts[k])
+    ]
     return {
         "campaign_id": campaign_id,
         "sentiment": sentiment,
         "status_label": status_label,
+        "reply_kind": reply_kind,
         "facets": facets,
+        "kind_counts": kind_counts,
         "replies": out,
     }
 
@@ -1092,17 +1464,37 @@ def activity_feed(
 # from the event stream here -- they're materialized from
 # workspace_leads.current_sentiment_since so each lead counts exactly once, on
 # the day it entered its *current* sentiment run (see _sentiment_by_day).
-_DAILY_COLUMNS_SQL = f"""
-    SUM(event_type = 'email_sent') AS email_sent,
-    SUM(direction = 'inbound' AND channel = 'email'
-        AND {reply_event_sql_condition()}) AS email_received,
-    SUM(event_type = 'linkedin_message' AND direction = 'outbound') AS dm_sent,
-    SUM((event_type = 'linkedin_message' AND direction = 'inbound')
-        OR event_type = 'linkedin_dm_reply') AS dm_received,
-    SUM(event_type IN ('linkedin_connect_sent', 'linkedin_connect')) AS connects_sent,
-    SUM(event_type = 'linkedin_connection_accepted') AS connects_accepted,
-    SUM(event_type = 'meeting_booked') AS meetings
-"""
+# One expression per column, so the daily matrix and the per-campaign table are
+# built from the same definitions with different GROUP BYs. Assembled rather
+# than hand-written twice: "DMs received" must not mean one thing per day and
+# another per campaign.
+_DAILY_COLUMN_EXPRESSIONS = {
+    "email_sent": "SUM(event_type = 'email_sent')",
+    "email_received": (
+        "SUM(direction = 'inbound' AND channel = 'email'"
+        f" AND {reply_event_sql_condition()})"),
+    "dm_sent": "SUM(event_type = 'linkedin_message' AND direction = 'outbound')",
+    "dm_received": ("SUM((event_type = 'linkedin_message' AND direction = 'inbound')"
+                    " OR event_type = 'linkedin_dm_reply')"),
+    "connects_sent": "SUM(event_type IN ('linkedin_connect_sent', 'linkedin_connect'))",
+    "connects_accepted": "SUM(event_type = 'linkedin_connection_accepted')",
+    "meetings": "SUM(event_type = 'meeting_booked')",
+}
+
+
+def _daily_columns_sql(*, exclude: tuple = ()) -> str:
+    """The daily column expressions as a SELECT list.
+
+    campaign_audit excludes `meetings`: counting them off events.campaign_id
+    credits the calendar slot rather than the campaign that earned the booking,
+    so it resolves them through last-known-campaign instead (_meetings_by_campaign).
+    """
+    return ",\n    ".join(
+        f"{expr} AS {name}"
+        for name, expr in _DAILY_COLUMN_EXPRESSIONS.items() if name not in exclude)
+
+
+_DAILY_COLUMNS_SQL = "\n    " + _daily_columns_sql() + "\n"
 
 # Sentiment is the single reply-classification axis (stage is a manual
 # sales-outcome overlay now, not a reporting axis). These four are what the
@@ -1136,13 +1528,24 @@ def _sentiment_count_in_range(
     since: Optional[str], until: Optional[str],
 ) -> int:
     """Leads whose CURRENT sentiment is `sentiment` and whose run started in the
-    range -- counted once each."""
-    range_sql, params = _range_clause(since, until, "current_sentiment_since")
+    range -- counted once per CONVERSATION.
+
+    Two people in one thread (someone replied, then forwarded us to a colleague
+    who also replied) are one opportunity, not two positives. Leads that are in
+    no conversation are their own root, so this equals a plain COUNT(DISTINCT
+    lead_id) until somebody records a link -- the join is safe to apply
+    unconditionally. See lead_links.py.
+    """
+    from lead_links import CONVERSATION_ROOT_SQL
+
+    range_sql, params = _range_clause(since, until, "wl.current_sentiment_since")
     return conn.execute(
-        f"""SELECT COUNT(*) AS n FROM workspace_leads
-            WHERE workspace_id = ?
-              AND lower(current_status_sentiment) = lower(?)
-              AND current_sentiment_since IS NOT NULL{range_sql}""",
+        f"""SELECT COUNT(DISTINCT COALESCE(cr.root_id, wl.lead_id)) AS n
+              FROM workspace_leads wl
+              LEFT JOIN ({CONVERSATION_ROOT_SQL}) cr ON cr.lead_id = wl.lead_id
+             WHERE wl.workspace_id = ?
+               AND lower(wl.current_status_sentiment) = lower(?)
+               AND wl.current_sentiment_since IS NOT NULL{range_sql}""",
         (workspace_id, sentiment, *params),
     ).fetchone()["n"]
 
@@ -1202,14 +1605,24 @@ def campaign_daily(
     campaign_id: Optional[int] = None,
     since: str = "30d",
     until: Optional[str] = None,
+    include_scheduling: bool = False,
 ) -> dict:
-    """Per-day event-type matrix for the workspace, optionally one campaign."""
+    """Per-day event-type matrix for the workspace, optionally one campaign.
+
+    Booking-tool event types are excluded by default, matching campaign_audit --
+    a meeting counted here under "30 Minute Meeting" is the same double count
+    the Campaigns table had. Selecting a scheduling campaign explicitly still
+    shows it; the exclusion is about the unfiltered view.
+    """
     range_sql, range_params = _range_clause(since, until, "wle.event_at")
     campaign_sql = ""
     params: list = [workspace_id, *range_params]
     if campaign_id is not None:
         campaign_sql = " AND e.campaign_id = ?"
         params.append(int(campaign_id))
+    elif not include_scheduling:
+        campaign_sql = (" AND (e.campaign_id IS NULL OR e.campaign_id NOT IN"
+                        f" ({_SCHEDULING_CAMPAIGN_IDS_SQL}))")
     # Own CTE (not ws_events) because the matrix also needs metadata_json,
     # and bare event_type/direction must be unambiguous for the SUM exprs.
     rows = conn.execute(
@@ -1312,6 +1725,9 @@ def lead_history(
         """SELECT l.id, l.name, l.company, l.company_id, l.title, l.email,
                   l.email_domain, l.last_contact_at,
                   l.linkedin_url, l.linkedin_sales_nav_id,
+                  l.email_verification_status, l.email_verified_at,
+                  l.original_source, l.original_source_detail, l.original_source_at,
+                  l.latest_source, l.latest_source_detail, l.latest_source_at,
                   -- Per-workspace status is authoritative; fall back to the lead's
                   -- own stage when the panel is opened without a workspace.
                   COALESCE(wl.status, l.stage) AS stage,
@@ -1651,6 +2067,39 @@ _OUTBOX_RECORD_SQL = {
                           FROM sender_accounts WHERE id = ?""", "int"),
     "sender_domain": ("""SELECT domain, reseller, domain_cost, currency,
                                 sending_ip, notes FROM sender_domains WHERE domain = ?""", "str"),
+    "lead_link": ("""SELECT k.id, k.kind, k.note, k.created_at,
+                            k.from_lead_id, k.to_lead_id,
+                            lf.name AS from_name, lt.name AS to_name
+                       FROM lead_links k
+                       JOIN leads lf ON lf.id = k.from_lead_id
+                       JOIN leads lt ON lt.id = k.to_lead_id
+                      WHERE k.id = ?""", "str"),
+    "suppression": ("""SELECT e.id, e.scope, e.entry_type, e.value_raw,
+                              e.value_normalized, e.reason, e.note, e.source,
+                              e.created_at, e.expires_at, e.revoked_at,
+                              w.slug AS workspace_slug
+                         FROM suppression_entries e
+                         LEFT JOIN workspaces w ON w.id = e.workspace_id
+                        WHERE e.id = ?""", "str"),
+}
+
+# Entity types the relay has no snapshot action for, so their outbox rows can
+# never drain. The relay's allowlist is lead_core / lead_workspace / company /
+# sender_account / sender_domain; `suppression` is queued by the outbox triggers
+# (sync_contract.SYNC_MAP) but has no push handler on either side yet. Saying so
+# in the panel is the point: without it, a row sitting at attempts=0 since the
+# day it was written looks like a stuck push rather than a missing endpoint.
+UNPUSHABLE_ENTITY_TYPES = {
+    "lead_link": (
+        "The relay has no lead-link endpoint yet, so these rows stay queued. "
+        "Conversation grouping is fully functional locally -- the counts on "
+        "this machine are already correct; only cross-machine sync is pending."
+    ),
+    "suppression": (
+        "The relay has no suppression endpoint yet, so these rows stay queued. "
+        "They are not lost and not failing -- nothing drains them. Local "
+        "suppression is fully functional; only cross-machine sync is pending."
+    ),
 }
 
 
@@ -1711,6 +2160,12 @@ def _resolve_outbox_entity(
         elif entity_type == "sender_domain":
             import pipeline_sender_accounts
             payload = pipeline_sender_accounts.build_sender_domain_sync_payload(conn, entity_id)
+        elif entity_type == "suppression":
+            import suppression
+            payload = suppression.build_suppression_sync_payload(conn, entity_id)
+        elif entity_type == "lead_link":
+            import lead_links
+            payload = lead_links.build_lead_link_sync_payload(conn, entity_id)
     except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
         error = f"{type(exc).__name__}: {exc}"
     return (dict(record) if record else None), (payload or {}), error
@@ -1751,6 +2206,9 @@ def outbox_item_detail(
         "record_exists": record is not None,
         "payload": payload,
         "payload_error": error,
+        # Not an error: the payload is correct, there is just nowhere to send it.
+        "pushable": entity_type not in UNPUSHABLE_ENTITY_TYPES,
+        "unpushable_reason": UNPUSHABLE_ENTITY_TYPES.get(entity_type),
     }
 
 
@@ -1814,7 +2272,20 @@ def _lead_columns() -> str:
              wl.contact_priority,
              wl.last_activity_at, wl.email_sent_count, wl.total_replies_count,
              (SELECT GROUP_CONCAT(t.tag, ',') FROM workspace_lead_tags t
-              WHERE t.workspace_id = wl.workspace_id AND t.lead_id = wl.lead_id) AS tags"""
+              WHERE t.workspace_id = wl.workspace_id AND t.lead_id = wl.lead_id) AS tags,
+             -- Last inbound message, for the Contacts list's "Last reply"
+             -- column. Scoped through workspace_lead_events so it means the
+             -- same thing the rest of the row does: activity in THIS workspace.
+             (SELECT wr.event_at FROM workspace_lead_events wr
+               JOIN events er ON er.id = wr.event_id
+              WHERE wr.workspace_id = wl.workspace_id AND wr.lead_id = wl.lead_id
+                AND lower(COALESCE(er.direction, '')) = 'inbound'
+              ORDER BY wr.event_at DESC, wr.id DESC LIMIT 1) AS last_reply_at,
+             (SELECT er.subject FROM workspace_lead_events wr
+               JOIN events er ON er.id = wr.event_id
+              WHERE wr.workspace_id = wl.workspace_id AND wr.lead_id = wl.lead_id
+                AND lower(COALESCE(er.direction, '')) = 'inbound'
+              ORDER BY wr.event_at DESC, wr.id DESC LIMIT 1) AS last_reply_subject"""
 
 
 # Provider "catch-all"/accept-all verification statuses, however the provider
@@ -2283,9 +2754,14 @@ def search_leads(
             ORDER BY {order} LIMIT ? OFFSET ?""",
         (*params, limit, offset),
     ).fetchall()
+    # One page (<= 200 rows), so this costs what the company pane already pays.
+    # Resolved here rather than in SQL because the fallback chain -- most recent
+    # campaign-bearing event, else a colleague's at the same company -- is the
+    # same one the Campaigns page uses, and a second implementation would drift.
+    leads = attach_last_known_campaigns(conn, workspace_id, [dict(r) for r in rows])
     return {
         "total": total, "limit": limit, "offset": offset,
-        "q": q, "sort": sort, "leads": [dict(r) for r in rows],
+        "q": q, "sort": sort, "leads": leads,
     }
 
 
@@ -2904,3 +3380,368 @@ def enrichment_targets(
             "already_ran": bool(domains) and not fresh,
         })
     return {"targets": targets}
+
+
+# ---------------------------------------------------------------------------
+# Bounce explorer
+#
+# bounce_events is never pruned -- it is full history -- so the only thing
+# deciding how far back you look is the caller's date range.
+#
+# Grouping is what makes hundreds of rows navigable: on a real corpus, 184
+# bounces carrying a diagnostic message collapse to ~40 distinct failures, and
+# 94% of bounces carry no message at all (the sequencer never sent one), which
+# is itself worth seeing as one row rather than three thousand.
+# ---------------------------------------------------------------------------
+
+_SIG_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_SIG_IP = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+_SIG_URL = re.compile(r"https?://\S+")
+#: Anchored on real TLDs so diagnostic tokens that merely look like hostnames
+#: (TRANSPORT.RULES.RejectMessage, RESOLVER.RST.SenderNotAuthenticated) survive
+#: -- those tokens ARE the failure, and blanking them merged unrelated causes.
+_SIG_HOST = re.compile(
+    r"\b(?:[a-z0-9-]+\.)+(?:com|net|org|edu|gov|mil|int|io|co|us|uk|de|fr|ca|au|nl|es|it|"
+    r"jp|cn|in|br|mx|ru|ch|se|no|dk|fi|pl|be|at|nz|ie|za|info|biz|me|tv|cc|ai|app|dev|"
+    r"xyz|online|site|email|cloud)\b"
+)
+_SIG_NUM = re.compile(r"\b\d{2,}\b")
+_SIG_ESC = re.compile(r"^\s*(\d\.\d{1,3}\.\d{1,3})\b")
+
+#: 60 characters. Measured against a live corpus: 40 chars merged distinct
+#: failures, 80 split single failures into a dozen rows (timestamps and ids
+#: leaking past the normalizer), and 60 sat on the plateau between them while
+#: still reading as a label.
+BOUNCE_SIGNATURE_CHARS = 60
+
+
+def bounce_signature(message: Optional[str], chars: int = BOUNCE_SIGNATURE_CHARS) -> str:
+    """A stable grouping key for a bounce diagnostic.
+
+    The enhanced status code (5.7.193 and friends) is kept as a prefix because
+    it is the real classifier -- smtp_code is null on ~98% of rows, so the code
+    embedded in the message text is often the only one there is.
+    """
+    text = (message or "").strip().lower()
+    if not text:
+        return ""
+    prefix = ""
+    match = _SIG_ESC.match(text)
+    if match:
+        prefix = match.group(1) + " "
+        text = text[match.end():]
+    text = _SIG_URL.sub(" ", text)
+    text = _SIG_EMAIL.sub(" <email> ", text)
+    text = _SIG_IP.sub(" <ip> ", text)
+    text = _SIG_HOST.sub(" <host> ", text)
+    text = _SIG_NUM.sub(" <n> ", text)
+    text = re.sub(r"[^a-z0-9<>\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return (prefix + text)[:chars].strip()
+
+
+def _bounce_filters(
+    workspace_id: Optional[str], since, until, domain, mailbox, campaign_id, bounce_type,
+) -> tuple[str, list]:
+    where = ["1=1"]
+    params: list = []
+    if workspace_id:
+        # Older rows predate the workspace_id column; a workspace filter that
+        # silently hid them would under-report history that is genuinely theirs.
+        where.append("(b.workspace_id = ? OR b.workspace_id IS NULL)")
+        params.append(workspace_id)
+    range_sql, range_params = _range_clause(since, until, "b.last_seen_at")
+    if range_sql:
+        where.append(range_sql.replace(" AND ", "", 1) if range_sql.startswith(" AND ") else range_sql)
+        params.extend(range_params)
+    if domain:
+        where.append("lower(b.sender_email) LIKE ?")
+        params.append(f"%@{str(domain).lower()}")
+    if mailbox:
+        where.append("lower(b.sender_email) = lower(?)")
+        params.append(mailbox)
+    if campaign_id:
+        where.append("b.campaign_id = ?")
+        params.append(int(campaign_id))
+    if bounce_type:
+        where.append("lower(b.bounce_type) = lower(?)")
+        params.append(bounce_type)
+    return " AND ".join(where), params
+
+
+def bounce_explorer(
+    conn: sqlite3.Connection,
+    workspace_id: Optional[str] = None,
+    *,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    domain: Optional[str] = None,
+    mailbox: Optional[str] = None,
+    campaign_id: Optional[int] = None,
+    bounce_type: Optional[str] = None,
+    group_by: str = "signature",
+    limit: int = 200,
+    offset: int = 0,
+) -> dict:
+    """Bounces for a range, grouped for triage and paginated for reading."""
+    where, params = _bounce_filters(
+        workspace_id, since, until, domain, mailbox, campaign_id, bounce_type)
+
+    total = conn.execute(
+        f"SELECT COUNT(*) c, COALESCE(SUM(occurrence_count), 0) occ FROM bounce_events b WHERE {where}",
+        params,
+    ).fetchone()
+
+    rows = conn.execute(
+        f"""SELECT b.id, b.lead_id, b.lead_email, b.sender_email, b.bounce_type,
+                   b.bounce_message, b.smtp_code, b.recipient_mx, b.platform,
+                   b.campaign_id, b.campaign_name, b.occurrence_count,
+                   b.first_seen_at, b.last_seen_at,
+                   l.name AS lead_name, l.company AS company
+              FROM bounce_events b
+              LEFT JOIN leads l ON l.id = b.lead_id
+             WHERE {where}
+             ORDER BY b.last_seen_at DESC
+             LIMIT ? OFFSET ?""",
+        [*params, int(limit), int(offset)],
+    ).fetchall()
+
+    items = []
+    for r in rows:
+        item = dict(r)
+        item["signature"] = bounce_signature(r["bounce_message"])
+        items.append(item)
+
+    groups: dict[str, dict] = {}
+    if group_by:
+        group_rows = conn.execute(
+            f"""SELECT b.id, b.bounce_message, b.smtp_code, b.bounce_type,
+                       b.sender_email, b.lead_email, b.campaign_name, b.platform,
+                       b.occurrence_count, b.last_seen_at
+                  FROM bounce_events b WHERE {where}""",
+            params,
+        ).fetchall()
+        for r in group_rows:
+            if group_by == "signature":
+                sig = bounce_signature(r["bounce_message"])
+                # The no-diagnostic majority is one honest row saying so, not
+                # thousands of empty ones -- and it names the platform, because
+                # "your sequencer never sent us a reason" is the finding.
+                key = sig or f"(no diagnostic message — {r['platform'] or 'unknown platform'})"
+            elif group_by == "type":
+                key = r["bounce_type"] or "unknown"
+            elif group_by == "mailbox":
+                key = r["sender_email"] or "unknown"
+            elif group_by == "domain":
+                key = (r["sender_email"] or "").split("@")[-1] or "unknown"
+            elif group_by == "recipient_domain":
+                # Whose mail server is rejecting us, rather than which of our
+                # domains is being rejected. One university bouncing 400 sends
+                # is a list problem; four hundred domains bouncing one each is
+                # a reputation problem, and the sending-domain grouping cannot
+                # tell those apart.
+                key = (r["lead_email"] or "").split("@")[-1].lower() or "unknown"
+            elif group_by == "campaign":
+                key = r["campaign_name"] or "unattributed"
+            else:
+                key = "all"
+            entry = groups.setdefault(key, {
+                "key": key, "bounces": 0, "occurrences": 0,
+                "example_id": r["id"], "example_message": r["bounce_message"],
+                "smtp_code": r["smtp_code"], "bounce_type": r["bounce_type"],
+                "last_seen_at": r["last_seen_at"],
+            })
+            entry["bounces"] += 1
+            entry["occurrences"] += int(r["occurrence_count"] or 1)
+            if (r["last_seen_at"] or "") > (entry["last_seen_at"] or ""):
+                entry["last_seen_at"] = r["last_seen_at"]
+
+    return {
+        "total": int(total["c"] or 0),
+        "total_occurrences": int(total["occ"] or 0),
+        "group_by": group_by,
+        "groups": sorted(groups.values(), key=lambda g: -g["bounces"]),
+        "bounces": items,
+        "limit": limit,
+        "offset": offset,
+        "signature_chars": BOUNCE_SIGNATURE_CHARS,
+    }
+
+
+def bounce_detail(
+    conn: sqlite3.Connection, bounce_id: str, *, sends_before: int = 5,
+) -> dict:
+    """One bounce, its full message, and the sends that preceded it.
+
+    "Is this the copy or is this the list?" is unanswerable from a bounce row
+    alone, so the messages we sent this lead before it bounced come back with
+    it -- the same event shape the lead timeline renders.
+    """
+    row = conn.execute(
+        """SELECT b.*, l.name AS lead_name, l.company AS company, l.title AS title
+             FROM bounce_events b LEFT JOIN leads l ON l.id = b.lead_id
+            WHERE b.id = ?""",
+        (bounce_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"bounce not found: {bounce_id}")
+    bounce = dict(row)
+    bounce["signature"] = bounce_signature(row["bounce_message"])
+
+    prior = conn.execute(
+        """SELECT e.id, e.event_type, e.direction, e.channel, e.subject,
+                  e.created_at, e.sender, c.name AS campaign_name,
+                  substr(COALESCE(json_extract(e.metadata_json, '$.body'), ''), 1, 400) AS body_preview,
+                  (json_extract(e.metadata_json, '$.body') IS NOT NULL) AS has_body
+             FROM events e LEFT JOIN campaigns c ON c.id = e.campaign_id
+            WHERE e.lead_id = ?
+              AND lower(COALESCE(e.direction, '')) = 'outbound'
+              AND e.created_at <= ?
+            ORDER BY e.created_at DESC LIMIT ?""",
+        (row["lead_id"], row["first_seen_at"], int(sends_before)),
+    ).fetchall()
+
+    def _siblings(where: str, params: tuple) -> list[dict]:
+        return [dict(r) for r in conn.execute(
+            f"""SELECT id, lead_email, sender_email, last_seen_at, bounce_message,
+                       campaign_name
+                  FROM bounce_events
+                 WHERE id != ? AND {where}
+                 ORDER BY last_seen_at DESC LIMIT 10""",
+            (bounce_id, *params),
+        ).fetchall()]
+
+    # Three different questions, and the pane used to answer only the first.
+    # "Other bounces in this campaign" tells you about the copy. "Other bounces
+    # from this mailbox" tells you the mailbox is burnt. "Other bounces on this
+    # sending domain" tells you the whole domain is -- which is the one that
+    # decides whether you pause a sender or pause everything on that domain.
+    sender_email = (row["sender_email"] or "").strip()
+    sending_domain = sender_email.rpartition("@")[2].lower() if "@" in sender_email else ""
+
+    same_campaign = (_siblings("campaign_id IS NOT NULL AND campaign_id = ?",
+                               (row["campaign_id"],))
+                     if row["campaign_id"] is not None else [])
+    same_sender = (_siblings("lower(sender_email) = lower(?)", (sender_email,))
+                   if sender_email else [])
+    same_domain = (_siblings("lower(sender_email) LIKE ?", (f"%@{sending_domain}",))
+                   if sending_domain else [])
+
+    return {
+        "bounce": bounce,
+        "sends_before": [dict(r) for r in prior],
+        "same_campaign": same_campaign,
+        "same_sender": same_sender,
+        "same_domain": same_domain,
+        "sender_email": sender_email or None,
+        "sending_domain": sending_domain or None,
+    }
+
+
+def bounce_trend(
+    conn: sqlite3.Connection,
+    *,
+    mailbox: Optional[str] = None,
+    domain: Optional[str] = None,
+    days: int = 14,
+) -> dict:
+    """Daily sends and bounces plus the inputs to the trending-down rule.
+
+    The UI renders this; it must never recompute the rule, or the flag and the
+    explanation behind it can disagree.
+    """
+    if not mailbox and not domain:
+        raise ValueError("mailbox or domain is required")
+    if mailbox:
+        bounce_where, bparams = "lower(sender_email) = lower(?)", [mailbox]
+        send_where, sparams = "lower(e.sender) = lower(?)", [mailbox]
+    else:
+        bounce_where, bparams = "lower(sender_email) LIKE ?", [f"%@{str(domain).lower()}"]
+        send_where, sparams = "lower(e.sender) LIKE ?", [f"%@{str(domain).lower()}"]
+
+    bounce_rows = conn.execute(
+        f"""SELECT date(last_seen_at) d, COALESCE(SUM(occurrence_count), COUNT(*)) n
+              FROM bounce_events
+             WHERE {bounce_where} AND last_seen_at >= datetime('now', ?)
+             GROUP BY d ORDER BY d""",
+        [*bparams, f"-{int(days)} days"],
+    ).fetchall()
+    send_rows = conn.execute(
+        f"""SELECT date(e.created_at) d, COUNT(*) n
+              FROM events e
+             WHERE {send_where} AND lower(COALESCE(e.direction, '')) = 'outbound'
+               AND e.created_at >= datetime('now', ?)
+             GROUP BY d ORDER BY d""",
+        [*sparams, f"-{int(days)} days"],
+    ).fetchall()
+
+    window = conn.execute(
+        f"""SELECT
+              COALESCE(SUM(CASE WHEN last_seen_at >= datetime('now', '-7 days')
+                                THEN occurrence_count ELSE 0 END), 0) recent,
+              COALESCE(SUM(CASE WHEN last_seen_at < datetime('now', '-7 days')
+                                 AND last_seen_at >= datetime('now', '-14 days')
+                                THEN occurrence_count ELSE 0 END), 0) prior
+            FROM bounce_events WHERE {bounce_where}""",
+        bparams,
+    ).fetchone()
+
+    bounces_by_day = {r["d"]: int(r["n"] or 0) for r in bounce_rows}
+    sends_by_day = {r["d"]: int(r["n"] or 0) for r in send_rows}
+    all_days = sorted(set(bounces_by_day) | set(sends_by_day))
+    recent, prior = int(window["recent"] or 0), int(window["prior"] or 0)
+    rule = None
+    if recent > prior and recent > 0:
+        rule = "rising_bounces"
+    return {
+        "subject": mailbox or domain,
+        "scope": "mailbox" if mailbox else "domain",
+        "days": days,
+        "series": [{"date": d, "sends": sends_by_day.get(d, 0),
+                    "bounces": bounces_by_day.get(d, 0)} for d in all_days],
+        "bounces_last_7d": recent,
+        "bounces_prior_7d": prior,
+        "delta": recent - prior,
+        "rule_fired": rule,
+        "bounce_rate_threshold": MAILBOX_BOUNCE_RATE_THRESHOLD,
+    }
+
+
+def deliverability_vocab(conn: sqlite3.Connection) -> dict:
+    """Provider and reseller values already in use, for pickers.
+
+    No vocabulary table: the values ARE the data, and a lookup table would need
+    its own CRUD, sync and cleanup to hold the same strings. The seeds cover the
+    common platforms so the first domain someone edits still offers a choice.
+    """
+    seeds_provider = ["google_workspace", "microsoft_365", "smtp_relay", "zoho", "other"]
+    providers = {r[0] for r in conn.execute(
+        "SELECT DISTINCT provider FROM sender_domains WHERE provider IS NOT NULL"
+        " AND TRIM(provider) != ''").fetchall()}
+    providers |= {r[0] for r in conn.execute(
+        "SELECT DISTINCT provider FROM sender_accounts WHERE provider IS NOT NULL"
+        " AND TRIM(provider) != ''").fetchall()}
+    resellers = {r[0] for r in conn.execute(
+        "SELECT DISTINCT reseller FROM sender_domains WHERE reseller IS NOT NULL"
+        " AND TRIM(reseller) != ''").fetchall()}
+    # Deduped case-insensitively, with the value already in the data winning:
+    # offering both GOOGLE_WORKSPACE and google_workspace is the exact confusion
+    # the picker exists to remove.
+    def _fold(value: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", value.strip().lower())
+
+    def _merge(in_use: set, seeds: list) -> list:
+        # In-use values always win, and a seed is dropped when the data already
+        # says the same thing in a different shape -- MICROSOFT365 in the table
+        # must not sit next to a seeded microsoft_365 in the same picker.
+        used = {v.strip() for v in in_use if v and v.strip()}
+        folded = {_fold(v) for v in used}
+        extra = [v for v in seeds if v and v.strip() and _fold(v) not in folded]
+        return sorted(used | set(extra), key=str.lower)
+
+    return {
+        "providers": _merge(providers, seeds_provider),
+        "resellers": _merge(resellers, []),
+        "in_use": {"providers": sorted(providers, key=str.lower),
+                   "resellers": sorted(resellers, key=str.lower)},
+    }

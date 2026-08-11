@@ -108,6 +108,34 @@ CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
 CREATE INDEX IF NOT EXISTS idx_leads_company_name ON leads(company);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain) WHERE domain IS NOT NULL;
 
+-- Two people, one conversation.
+--
+-- A contact replies positively and forwards us to a colleague, who replies too.
+-- That is one opportunity and two real people: merging them is wrong (both have
+-- their own address, title and history) but counting two positives is also
+-- wrong. This records the relationship without destroying either record, and
+-- reporting counts DISTINCT conversation roots instead of leads.
+--
+-- Directional: from_lead_id introduced us to to_lead_id. The root of a chain
+-- (A -> B -> C) is A, resolved by conversation_root_sql()'s recursive CTE, so
+-- an arbitrarily long forward chain still counts once.
+CREATE TABLE IF NOT EXISTS lead_links (
+    id              TEXT PRIMARY KEY,
+    org_id          TEXT NOT NULL,
+    from_lead_id    INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    to_lead_id      INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    -- 'forwarded_to' is the case this exists for. Kept open so a future
+    -- 'same_person_two_records' does not need a second table.
+    kind            TEXT NOT NULL DEFAULT 'forwarded_to',
+    note            TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    created_by      TEXT,
+    UNIQUE (from_lead_id, to_lead_id, kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lead_links_to ON lead_links(to_lead_id);
+CREATE INDEX IF NOT EXISTS idx_lead_links_from ON lead_links(from_lead_id);
+
 CREATE TABLE IF NOT EXISTS lead_merges (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     keep_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,

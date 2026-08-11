@@ -12,6 +12,13 @@
   --ink-1: #0b0b0b; --ink-2: #52514e; --ink-muted: #898781;
   --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
   --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  /* Slots 4 and 5 were referenced by the charts before they existed, so a 4th
+     series silently fell back to body ink -- a gray line among coloured ones,
+     which reads as "disabled" rather than as its own series. Both were chosen
+     by running the palette validator (lightness band, chroma floor, CVD
+     separation, normal-vision floor, contrast) against this surface, in both
+     modes, rather than by eye. */
+  --series-4: #8a63d2; --series-5: #c9a227; --series-6: #0e9aa7;
   --status-good: #0ca30c; --status-warning: #fab219;
   --status-serious: #ec835a; --status-critical: #d03b3b;
   --good-text: #006300;
@@ -23,6 +30,9 @@
     --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
     --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
     --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+    /* Re-stepped for the dark surface, not an automatic flip of the light
+       values -- validated against #1a1a19. */
+    --series-4: #9b7ae8; --series-5: #ad8a25; --series-6: #1e9dab;
     --good-text: #0ca30c;
   }
 }
@@ -93,12 +103,24 @@ tr.clickable:hover td { background: color-mix(in srgb, var(--series-1) 7%, trans
 .controls label { color: var(--ink-2); font-size: 12px; display: flex; gap: 5px; align-items: center; }
 .tfilter { margin-bottom: 8px; }
 .tfilter input { width: 220px; }
+.tpager { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.tpager .spacer { flex: 1; }
+.dsec { border-top: 1px solid var(--grid); padding-top: 10px; margin-top: 12px; }
+.dsec:first-child { border-top: 0; margin-top: 0; }
+.dsec h3 { font-size: 13px; margin: 0 0 6px; }
+.dsec .krow { display: flex; gap: 8px; padding: 2px 0; font-size: 13px; }
+.dsec .krow .k { color: var(--ink-muted); min-width: 132px; }
+.dsec pre.raw { background: var(--card-alt, rgba(127,127,127,.08)); padding: 8px;
+  border-radius: 6px; max-height: 260px; overflow: auto; white-space: pre-wrap;
+  word-break: break-word; font-size: 12px; margin: 0; }
+.spark { display: block; }
 /* timeline (lead history) */
 .timeline { border-top: 1px solid var(--grid); }
 .tl-event { padding: 9px 2px; border-bottom: 1px solid var(--grid); }
 .tl-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); }
 .tl-type { font-weight: 600; color: var(--ink-1); }
 .tl-preview { margin: 4px 0 0; font-size: 13px; color: var(--ink-2); white-space: pre-wrap; }
+.pane-crumb { font-size: 11px; color: var(--ink-muted); letter-spacing: .02em; margin-bottom: 2px; text-transform: none; }
 .tl-body { margin: 6px 0 0; padding: 8px 10px; background: var(--page); border: 1px solid var(--grid); border-radius: 6px; font-size: 13px; white-space: pre-wrap; max-height: 340px; overflow-y: auto; }
 .copy-body { margin: 6px 0; padding: 8px 10px; background: var(--page); border: 1px solid var(--grid); border-radius: 6px; font-size: 13px; white-space: pre-wrap; max-height: 340px; overflow-y: auto; }
 /* slide-over */
@@ -235,6 +257,52 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
     <button data-tab="sync">Sync</button>
   </nav>
 
+  <!-- Shared modal dialogs live OUTSIDE every #tab-* section.
+       A <dialog> inside a hidden section still enters the modal state on
+       showModal() -- the top layer engages and the document goes inert --
+       but renders nothing, so the page becomes unclickable with no dialog
+       visible and only a reload clears it. Merge is opened from Campaigns
+       and from the company pane, both of which run with #tab-contacts
+       hidden. test_dashboard_html_hygiene enforces this placement. -->
+    <dialog id="merge-contacts" style="border:1px solid var(--grid);border-radius:10px;padding:0;max-width:720px;width:94vw">
+      <div style="padding:14px 16px">
+        <h2 style="margin:0 0 2px;font-size:15px">Merge contacts</h2>
+        <div class="stale" style="font-size:12px;margin-bottom:10px">
+          Pick which record survives. Any field it is missing is filled from the others.
+          <b>Merging cannot be undone from here.</b>
+        </div>
+        <div id="merge-contacts-body"></div>
+        <div class="controls" style="margin-top:12px">
+          <button class="small primary" id="merge-contacts-run" disabled>Merge</button>
+          <button class="small" id="merge-contacts-cancel">Cancel</button>
+          <button class="small" id="contact-merge-prompt-btn" title="Copy a prompt for your AI agent to work the whole conflict queue">Copy agent prompt</button>
+          <span class="msg" id="merge-contacts-msg"></span>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="contacts-export" style="border:1px solid var(--grid);border-radius:10px;padding:0;max-width:640px;width:92vw">
+      <form method="dialog" style="margin:0">
+        <div style="padding:14px 16px">
+          <h2 style="margin:0 0 2px;font-size:15px">Configure export</h2>
+          <div class="stale" style="font-size:12px;margin-bottom:10px" id="export-scope"></div>
+          <div style="display:flex;gap:14px;align-items:flex-start">
+            <div style="width:190px;display:flex;flex-direction:column;gap:8px">
+              <label style="font-size:12px">Preset<br><select id="export-preset" style="width:100%"></select></label>
+              <div class="stale" style="font-size:11px">The preset seeds the column list. Whatever is selected when you export is what you get.</div>
+            </div>
+            <label style="flex:1;font-size:12px">Columns
+              <select id="export-fields" multiple size="18" style="width:100%;max-width:260px"></select>
+            </label>
+          </div>
+          <div class="controls" style="margin-top:12px">
+            <button class="small primary" id="export-run" value="export">Export</button>
+            <button class="small" id="export-cancel" value="cancel">Cancel</button>
+            <span class="msg" id="export-msg"></span>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
   <section id="tab-contacts" hidden>
     <div class="card">
       <h2>Stats <span class="sub">email &amp; LinkedIn readiness by tag — click any number to filter</span></h2>
@@ -318,44 +386,6 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         </label>
         <span id="tag-expression" class="stale" style="font-size:12px"></span>
       </div>
-      <dialog id="merge-contacts" style="border:1px solid var(--grid);border-radius:10px;padding:0;max-width:720px;width:94vw">
-        <div style="padding:14px 16px">
-          <h2 style="margin:0 0 2px;font-size:15px">Merge contacts</h2>
-          <div class="stale" style="font-size:12px;margin-bottom:10px">
-            Pick which record survives. Any field it is missing is filled from the others.
-            <b>Merging cannot be undone from here.</b>
-          </div>
-          <div id="merge-contacts-body"></div>
-          <div class="controls" style="margin-top:12px">
-            <button class="small primary" id="merge-contacts-run" disabled>Merge</button>
-            <button class="small" id="merge-contacts-cancel">Cancel</button>
-            <button class="small" id="contact-merge-prompt-btn" title="Copy a prompt for your AI agent to work the whole conflict queue">Copy agent prompt</button>
-            <span class="msg" id="merge-contacts-msg"></span>
-          </div>
-        </div>
-      </dialog>
-      <dialog id="contacts-export" style="border:1px solid var(--grid);border-radius:10px;padding:0;max-width:640px;width:92vw">
-        <form method="dialog" style="margin:0">
-          <div style="padding:14px 16px">
-            <h2 style="margin:0 0 2px;font-size:15px">Configure export</h2>
-            <div class="stale" style="font-size:12px;margin-bottom:10px" id="export-scope"></div>
-            <div style="display:flex;gap:14px;align-items:flex-start">
-              <div style="width:190px;display:flex;flex-direction:column;gap:8px">
-                <label style="font-size:12px">Preset<br><select id="export-preset" style="width:100%"></select></label>
-                <div class="stale" style="font-size:11px">The preset seeds the column list. Whatever is selected when you export is what you get.</div>
-              </div>
-              <label style="flex:1;font-size:12px">Columns
-                <select id="export-fields" multiple size="18" style="width:100%;max-width:260px"></select>
-              </label>
-            </div>
-            <div class="controls" style="margin-top:12px">
-              <button class="small primary" id="export-run" value="export">Export</button>
-              <button class="small" id="export-cancel" value="cancel">Cancel</button>
-              <span class="msg" id="export-msg"></span>
-            </div>
-          </div>
-        </form>
-      </dialog>
       <div id="contacts-active-filters" style="margin-bottom:8px"></div>
       <div class="controls" style="gap:14px">
         <label><input type="checkbox" id="contacts-all-page"> Select page</label>
@@ -397,22 +427,52 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
     <div class="card">
       <h2>Mailboxes <span class="sub">click a mailbox to edit provider / name / limit / status</span></h2>
       <div class="controls">
-        <label>Activity
-          <select id="deliv-age">
-            <option value="all">All</option>
-            <option value="active90" selected>Sent in last 3 mo</option>
-            <option value="stale90">Not sent in 3 mo+</option>
-            <option value="stale180">Not sent in 6 mo+</option>
-            <option value="stale365">Not sent in 12 mo+</option>
-            <option value="never">Never sent</option>
-          </select>
+        <label title="A mailbox nothing has ever sent from is usually not ours at all — inbound events used to create sender accounts from the other party's address. Untick to see them.">
+          <input type="checkbox" id="deliv-never-sent" checked> Exclude never sent from
         </label>
+        <label><input type="checkbox" id="deliv-flagged"> Flagged only</label>
         <span class="spacer"></span>
         <span id="deliv-count" class="stale"></span>
+        <button class="small" id="deliv-bounces-btn">Bounces</button>
       </div>
       <div id="mailboxes"></div>
     </div>
-    <div class="card"><h2>Sending domains <span class="sub">click a domain to filter the mailboxes above and edit it</span></h2><div id="domains"></div></div>
+    <div class="card">
+      <h2>Sending domains <span class="sub">click a domain to filter the mailboxes above and edit it; click the blacklist cell for the full DNSBL report</span></h2>
+      <div class="controls">
+        <span id="domains-sel" class="stale"></span>
+        <button class="small" id="domains-check-btn" disabled
+          title="Runs in the background — each DNSBL lookup is a DNS round trip, so a wide selection takes minutes">Check selected</button>
+        <select id="domains-check-what">
+          <option value="registration,blacklist">Registration + blacklist</option>
+          <option value="registration">Registration date only</option>
+          <option value="blacklist">Blacklist only</option>
+        </select>
+        <span class="spacer"></span>
+        <span id="domains-note" class="stale"></span>
+      </div>
+      <div id="domains"></div>
+    </div>
+    <div class="card" id="bounces-card" hidden>
+      <h2>Bounces <span class="sub">grouped by the failure the receiving server reported — click one to read the message and what we sent before it</span></h2>
+      <div class="controls">
+        <label>Group by
+          <select id="bounce-group">
+            <option value="signature">Failure</option>
+            <option value="type">Bounce type</option>
+            <option value="mailbox">Mailbox</option>
+            <option value="domain">Sending domain</option>
+            <option value="recipient_domain">Recipient domain</option>
+            <option value="campaign">Campaign</option>
+            <option value="none">Don't group</option>
+          </select>
+        </label>
+        <span class="spacer"></span>
+        <span id="bounces-count" class="stale"></span>
+        <button class="small" id="bounces-clear">Clear filters</button>
+      </div>
+      <div id="bounces-body"></div>
+    </div>
   </section>
 
   <section id="tab-pipeline" hidden>
@@ -553,6 +613,16 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         </label>
       </div>
       <div class="chart-wrap"><canvas id="daily-chart"></canvas></div>
+      <div class="controls" style="margin-top:6px">
+        <span class="stale">Outcomes</span>
+        <label title="Counts share an axis with nothing — this chart is separate from the volume chart above precisely so a handful of positives is not flattened against a few hundred sends.">
+          <input type="radio" name="outcomescale" value="count" checked> counts
+        </label>
+        <label title="Each outcome as a percentage of that day's sends. Puts every series on one comparable scale, and is usually the number you actually want to watch.">
+          <input type="radio" name="outcomescale" value="rate"> % of sends
+        </label>
+      </div>
+      <div class="chart-wrap"><canvas id="outcomes-chart"></canvas></div>
       <div class="stale" style="margin-top:4px">Tip: click a day (chart point or table row) to filter everything to that date.</div>
       <div id="daily-matrix"></div>
     </div>
@@ -568,13 +638,34 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <label>Lead status
           <select id="replies-status"><option value="">All</option></select>
         </label>
+        <label title="A bounce and an out-of-office both set a sentiment, so all three land in this list. This is how you ask for the one you meant.">Show
+          <select id="replies-kind">
+            <option value="all">Everything</option>
+            <option value="human">Human replies only</option>
+            <option value="auto_reply">Auto-replies / OOO only</option>
+            <option value="human,auto_reply">Replies + auto-replies</option>
+            <option value="bounce">Bounces only</option>
+          </select>
+        </label>
         <span class="spacer"></span>
+        <span id="replies-sel" class="stale"></span>
+        <button class="small" id="replies-merge" disabled
+          title="Same person, two records — e.g. they replied from a different address">Merge contacts</button>
+        <button class="small" id="replies-link" disabled
+          title="Two DIFFERENT people in one conversation — someone replied and forwarded us to a colleague. Both records stay; they stop counting as two positives.">Link as one conversation</button>
         <span id="replies-count" class="stale"></span>
       </div>
       <div id="replies-table"></div>
     </div>
     <div class="card">
       <h2>Campaigns <span class="sub">click a campaign to filter the replies above to it</span></h2>
+      <div class="controls">
+        <label title="Booking tools publish the calendar slot (&quot;30 Minute Meeting&quot;) as the campaign on every scheduled-meeting webhook. That is a slot on your calendar, not outbound you can judge, and counting it put the same lead in two campaigns.">
+          <input type="checkbox" id="campaigns-scheduling"> Include scheduling tools (Calendly &amp; co)
+        </label>
+        <span class="spacer"></span>
+        <span id="campaigns-note" class="stale"></span>
+      </div>
       <div id="campaigns"></div>
     </div>
     <div class="card" id="subjects-card" hidden>
@@ -667,6 +758,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
 <aside id="slideover">
   <button style="float:right" onclick="dismissPanels()">✕</button>
   <button id="lead-back" class="small" style="display:none;margin-bottom:8px" onclick="navBack()">← Back</button>
+  <div class="pane-crumb" id="lead-crumb"></div>
   <h2 id="lead-name"></h2>
   <div class="meta" id="lead-meta"></div>
   <div id="lead-stale-banner"></div>
@@ -723,6 +815,8 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
 
   <div id="lead-enrich" style="border-top:1px solid var(--grid);padding-top:12px"></div>
 
+  <div id="lead-source" style="border-top:1px solid var(--grid);padding-top:12px"></div>
+
   <div id="lead-company" style="border-top:1px solid var(--grid);padding-top:12px"></div>
 
   <div class="history">
@@ -735,6 +829,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
 <aside id="editPanel">
   <button style="float:right" onclick="dismissPanels()">✕</button>
   <button id="company-back" class="small" style="display:none;margin-bottom:8px" onclick="navBack()">← Back</button>
+  <div class="pane-crumb" id="edit-crumb"></div>
   <h2 id="edit-title"></h2>
   <div class="meta" id="edit-meta"></div>
   <div id="edit-body"></div>
@@ -929,7 +1024,11 @@ function renderTable(container, cols, rows, opts = {}) {
   // gets drag-resizable columns without each call site opting in.
   const tableKey = opts.tableKey || (typeof container === "string" ? container : null);
   const widths = loadColW(tableKey);
-  const st = el._tstate = el._tstate || { sortKey: null, sortDir: 1, filter: "" };
+  const st = el._tstate = el._tstate || { sortKey: null, sortDir: 1, filter: "", page: 0 };
+  // opts.pageSize renders one page at a time while filtering and sorting still
+  // run over the WHOLE set — the point at 400 mailboxes is that sorting by
+  // bounce rate finds the worst one, not the worst one on this page.
+  const pageSize = opts.pageSize || 0;
   // Server-sort mode: the whole (paginated) list is sorted by the backend, so
   // arrows reflect opts.sortKey/sortDir and header clicks call back instead of
   // reordering just the loaded page.
@@ -953,6 +1052,16 @@ function renderTable(container, cols, rows, opts = {}) {
           ? av - bv : String(av).localeCompare(String(bv))) * st.sortDir;
       });
     }
+    // Paginate after filter+sort so the pager describes the view, not the raw rows.
+    const fullView = view;
+    const totalRows = view.length;
+    let pageCount = 1;
+    if (pageSize) {
+      pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
+      if (st.page >= pageCount) st.page = pageCount - 1;
+      if (st.page < 0) st.page = 0;
+      view = view.slice(st.page * pageSize, st.page * pageSize + pageSize);
+    }
     const clipCol = c => !c.num && !c.wrap;
     const head = cols.map((c, ci) => {
       const arrow = st.sortKey === c.key ? `<span class="arrow">${st.sortDir > 0 ? "▲" : "▼"}</span>` : "";
@@ -974,20 +1083,33 @@ function renderTable(container, cols, rows, opts = {}) {
     // sorted* view, not the raw rows, so a totals row always describes what is
     // actually on screen rather than a set the reader has filtered away.
     const foot = opts.footer ? (() => {
-      const vals = opts.footer(view) || {};
+      const vals = opts.footer(fullView) || {};
       const cells = cols.map((c, ci) =>
         `<td class="${c.num ? "num" : ""}" data-ci="${ci}"><b>${vals[c.key] ?? ""}</b></td>`).join("");
       return `<tfoot><tr>${cells}</tr></tfoot>`;
     })() : "";
+    const first = totalRows ? st.page * pageSize + 1 : 0;
+    const last = Math.min(totalRows, (st.page + 1) * pageSize);
+    const pager = (pageSize && totalRows > pageSize) ? `<div class="tpager">
+        <button class="small tpg-prev" ${st.page === 0 ? "disabled" : ""}>‹ Prev</button>
+        <span class="stale">${fmt(first)}–${fmt(last)} of ${fmt(totalRows)}</span>
+        <button class="small tpg-next" ${st.page >= pageCount - 1 ? "disabled" : ""}>Next ›</button>
+        <span class="spacer"></span>
+        <label class="stale">Rows
+          <select class="tpg-size">${[50, 100, 250, 0].map(n =>
+            `<option value="${n}"${n === pageSize ? " selected" : ""}>${n || "all"}</option>`).join("")}</select>
+        </label>
+      </div>` : "";
     el.innerHTML =
       (opts.filter !== false && rows.length > 8
         ? `<div class="tfilter"><input placeholder="Filter…" value="${esc(st.filter)}"></div>` : "") +
-      `<div class="table-wrap"><table>${colgroup}<thead><tr>${head}</tr></thead><tbody>${body}</tbody>${foot}</table></div>`;
+      `<div class="table-wrap"><table>${colgroup}<thead><tr>${head}</tr></thead><tbody>${body}</tbody>${foot}</table></div>` +
+      pager;
     pinColumnWidths(el, cols, widths);
     if (tableKey) wireColResize(el, cols, tableKey);
     const filterInput = el.querySelector(".tfilter input");
     if (filterInput) {
-      filterInput.oninput = () => { st.filter = filterInput.value; draw(); restoreFocus(); };
+      filterInput.oninput = () => { st.filter = filterInput.value; st.page = 0; draw(); restoreFocus(); };
       function restoreFocus() {
         const inp = el.querySelector(".tfilter input");
         inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
@@ -1004,6 +1126,7 @@ function renderTable(container, cols, rows, opts = {}) {
         return;
       }
       if (st.sortKey === key) st.sortDir *= -1; else { st.sortKey = key; st.sortDir = 1; }
+      st.page = 0;
       draw();
     });
     if (opts.onRowClick) el.querySelectorAll("tbody tr").forEach(tr =>
@@ -1012,6 +1135,15 @@ function renderTable(container, cols, rows, opts = {}) {
         if (ev.target.closest("button, a, input, label, select, .copyable")) return;
         opts.onRowClick(rows[+tr.dataset.i]);
       });
+    const prev = el.querySelector(".tpg-prev"), next = el.querySelector(".tpg-next");
+    if (prev) prev.onclick = () => { st.page -= 1; draw(); };
+    if (next) next.onclick = () => { st.page += 1; draw(); };
+    const sizeSel = el.querySelector(".tpg-size");
+    if (sizeSel) sizeSel.onchange = () => {
+      opts.pageSize = +sizeSel.value || 0;
+      st.page = 0;
+      renderTable(container, cols, rows, opts);
+    };
     if (opts.onDraw) opts.onDraw(el);
   };
   draw();
@@ -1379,7 +1511,7 @@ function leadLiUrl(r) {
   return null;
 }
 // Columns the backend can sort whole-list (must match LEAD_SORT_COLUMNS in
-// dashboard_queries.py). Header clicks on other columns are ignored.
+// reporting_queries.py). Header clicks on other columns are ignored.
 const SORTABLE_LEAD_KEYS = new Set([
   "name", "email", "company", "title", "current_status_label", "current_status_sentiment",
   "email_verification_status", "total_replies_count", "email_sent_count", "last_activity_at",
@@ -1400,8 +1532,38 @@ function renderTagChips(r) {
   return shown + (arr.length > 2
     ? `<span class="tag-chip" title="${esc(arr.join(', '))}">+${arr.length - 2}</span>` : "");
 }
+// Verification verdict as a flag, so "don't send to this one" is visible at a
+// glance rather than a word you have to read. The buckets match the `verify`
+// filter in reporting_queries (valid / catch-all / everything-else-is-risky),
+// so the flag and the filter that selects it always agree.
+const _CATCH_ALL_VERIFY = new Set(["catch_all", "catchall", "catch-all", "accept_all", "acceptall"]);
+function renderVerifyFlag(v) {
+  const raw = String(v ?? "").trim();
+  if (!raw) return '<span class="stale">unverified</span>';
+  const k = raw.toLowerCase();
+  if (k === "valid") return `<span class="flag ok">${esc(raw)}</span>`;
+  if (_CATCH_ALL_VERIFY.has(k)) return `<span class="flag warn">catch-all</span>`;
+  return `<span class="flag bad">${esc(raw)}</span>`;
+}
 function renderSentimentFlag(v) {
-  return v ? `<span class="flag ${SENTIMENT_FLAG[String(v).toLowerCase()] ?? ""}">${esc(v)}</span>` : "–";
+  // A blank cell reads as "nothing happened". These rows are real replies that
+  // simply arrived without a verdict — LinkedIn DMs carry no status label — so
+  // they say so, and stay actionable rather than looking like empty data.
+  if (!v) return '<span class="flag warn" title="A reply with no sentiment yet — LinkedIn DMs arrive without a status label. Set one from the contact, or in bulk from Contacts.">unclassified</span>';
+  return `<span class="flag ${SENTIMENT_FLAG[String(v).toLowerCase()] ?? ""}">${esc(v)}</span>`;
+}
+// Last known campaign + how we got there. `campaign_source` says whether this is
+// the lead's own campaign or one inherited from a colleague at the same company,
+// and the "via" chip names whom -- an inherited answer is a weaker claim and has
+// to look like one. Shared by the replies table and the contacts list so the two
+// can never name different campaigns for the same person.
+function renderLastCampaign(r) {
+  if (!r.campaign_name) return '<span class="stale">–</span>';
+  const inherited = String(r.campaign_source || "").startsWith("company");
+  const via = inherited && r.campaign_via_lead_name
+    ? ` <span class="stale" title="No campaign on this contact's own events; inherited from a colleague at the same company">via ${esc(r.campaign_via_lead_name)}</span>`
+    : "";
+  return esc(r.campaign_name) + via;
 }
 function leadColumns() {
   return [
@@ -1419,6 +1581,13 @@ function leadColumns() {
     { key: "current_status_label", label: "Lead status", render: r => esc(r.current_status_label ?? "—") },
     { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
     { key: "tags", label: "Tags", maxw: 190, render: renderTagChips },
+    // Same column, same renderer, same resolution rules as the Campaigns page.
+    { key: "campaign_name", label: "Last known campaign", maxw: 220,
+      sortVal: r => r.campaign_name || "", render: renderLastCampaign },
+    { key: "last_reply_at", label: "Last reply", sortVal: r => r.last_reply_at || "",
+      render: r => r.last_reply_at
+        ? `<span title="${esc(r.last_reply_subject || "")}">${dt(r.last_reply_at)}</span>`
+        : '<span class="stale">–</span>' },
     { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
   ];
 }
@@ -1449,22 +1618,20 @@ function linkedinColumn() {
 }
 
 /* ---------- deliverability ---------- */
-function agePredicate(mode) {
-  const now = Date.now();
-  const days = (ts) => ts ? (now - new Date(ts.replace(" ", "T") + "Z").getTime()) / 86400000 : Infinity;
-  return ({
-    all: () => true,
-    active90: r => days(r.last_outbound_at) <= 90,
-    stale90: r => days(r.last_outbound_at) > 90,
-    stale180: r => days(r.last_outbound_at) > 180,
-    stale365: r => days(r.last_outbound_at) > 365,
-    never: r => !r.last_outbound_at,
-  })[mode] || (() => true);
-}
+// The Activity dropdown that used to live here offered five windows
+// (3mo/6mo/12mo/never/all) that were its own, unrelated to the page's date
+// range — so the domain list and the numbers under it could describe different
+// periods. The range at the top now decides the period, and the only filter
+// left is the one that answers a different question: is this a domain we send
+// from at all? Mailboxes are filtered here; domains server-side, because there
+// it also changes what the totals are computed over.
+const neverSent = r => !r.last_outbound_at;
 
 async function loadDeliverability() {
   skeleton("mailboxes", "domains");
-  const d = await getR("/api/deliverability").catch(e => { toast(e.message); return null; });
+  const excl = $("deliv-never-sent").checked ? "1" : "0";
+  const d = await getR("/api/deliverability?exclude_never_sent=" + excl)
+    .catch(e => { toast(e.message); return null; });
   // Null means the workspace changed mid-flight and a newer load owns the
   // screen -- bow out rather than painting the previous workspace's numbers.
   if (!d) return;
@@ -1472,7 +1639,14 @@ async function loadDeliverability() {
   renderBounceChart(d.series);
   renderDeliv();
 }
-$("deliv-age").onchange = () => { if (state.deliv) renderDeliv(); };
+// Server-side, because it changes which rows exist rather than which are shown
+// — and because the calculations under them have to come from the same set.
+$("deliv-never-sent").onchange = loadDeliverability;
+$("deliv-flagged").onchange = () => { if (state.deliv) renderDeliv(); };
+$("deliv-bounces-btn").onclick = () => showBounces(
+  delivDomainFilter ? { domain: delivDomainFilter } : {});
+$("bounce-group").onchange = () => { bounceView.group_by = $("bounce-group").value; loadBounces(); };
+$("bounces-clear").onclick = () => showBounces({});
 
 // Clicking a domain row filters the mailbox list above to that domain (and
 // opens the edit sidebar) rather than expanding a second table below.
@@ -1480,14 +1654,18 @@ let delivDomainFilter = null;
 
 function renderDeliv() {
   const d = state.deliv;
-  const pred = agePredicate($("deliv-age").value);
-  let mailboxes = d.mailboxes.filter(pred);
-  const domains = d.domains.filter(pred);
+  const hideNeverSent = $("deliv-never-sent").checked;
+  let mailboxes = hideNeverSent ? d.mailboxes.filter(m => !neverSent(m)) : d.mailboxes;
+  const domains = d.domains;  // already filtered server-side
   if (delivDomainFilter) mailboxes = mailboxes.filter(m => m.email_domain === delivDomainFilter);
+  if ($("deliv-flagged").checked) mailboxes = mailboxes.filter(m => m.trending_down);
   const chip = delivDomainFilter
     ? ` · <span class="flag warn">domain: ${esc(delivDomainFilter)}</span> <a href="#" id="deliv-domain-clear">clear</a>`
     : "";
   $("deliv-count").innerHTML = `${mailboxes.length} of ${d.mailboxes.length} mailboxes${chip}`;
+  $("domains-note").textContent = d.never_sent_hidden
+    ? `${fmt(d.never_sent_hidden)} domain(s) hidden — nothing has ever sent from them.`
+    : "";
   if (delivDomainFilter) $("deliv-domain-clear").onclick = (e) => { e.preventDefault(); delivDomainFilter = null; renderDeliv(); };
   // Sends / reply% / bounce% are live from the events collection, scoped to the
   // range at the top (warmup/SPF/DKIM/DMARC/health are sequencer-only and live
@@ -1507,13 +1685,28 @@ function renderDeliv() {
   renderTable("mailboxes", [
     { key: "email", label: "Mailbox",
       render: r => `${esc(r.email)}${r.is_active === 0 ? ' <span class="flag warn">decommissioned</span>' : ""}` },
+    // Provider is the mailbox's own (sequencer-reported); reseller belongs to
+    // the domain and is carried down, because "who did I buy this from" is a
+    // question you ask while looking at a mailbox.
+    { key: "provider", label: "Provider", render: r => esc(r.provider ?? "–") },
+    { key: "domain_reseller", label: "Reseller", render: r => esc(r.domain_reseller ?? "–") },
     { key: "sends", label: "Sends", num: true, render: r => fmt(r.sends || 0) },
     { key: "reply_rate", label: "Reply rate", num: true, render: r => r.reply_rate != null ? pct(r.reply_rate) : "–" },
     { key: "bounce_rate", label: "Bounce rate", num: true, render: r => bflag(r.bounce_rate) },
     { key: "last_outbound_at", label: "Last send", render: r => dt(r.last_outbound_at) || "never" },
     { key: "trending_down", label: "Status", sortVal: r => r.trending_down ? 0 : 1,
-      render: r => r.trending_down ? '<span class="flag bad">▲ trending down</span>' : '<span class="flag ok">✓ ok</span>' },
-  ], mailboxes, { empty: "No mailboxes match this filter.", onRowClick: r => openSenderEdit(r),
+      // The flag alone is an opinion. Clicking it opens what it was computed
+      // from: the two 7-day windows, the threshold, and the daily series.
+      render: r => `<span class="trend-cell" data-mailbox="${esc(r.email)}" style="cursor:pointer">${
+        r.trending_down ? '<span class="flag bad">▲ trending down</span>' : '<span class="flag ok">✓ ok</span>'}${
+        (r.bounces_last_7d || r.bounces_prior_7d)
+          ? ` <span class="stale">${r.bounces_prior_7d || 0}→${r.bounces_last_7d || 0}</span>` : ""}</span>` },
+  ], mailboxes, { empty: "No mailboxes match this filter.", pageSize: 50,
+    onRowClick: r => openSenderEdit(r),
+    onDraw: el => el.querySelectorAll(".trend-cell").forEach(cell => cell.onclick = (ev) => {
+      ev.stopPropagation();
+      openTrendDrawer(cell.dataset.mailbox);
+    }),
     footer: (view) => {
       const t = totals(view);
       return { email: `${view.length} mailbox${view.length === 1 ? "" : "es"}`,
@@ -1522,21 +1715,55 @@ function renderDeliv() {
                bounce_rate: t.bounce_rate != null ? pct(t.bounce_rate) : "–" };
     } });
   renderTable("domains", [
+    { key: "_sel", label: "", sortVal: () => 0,
+      render: r => `<input type="checkbox" class="dom-sel" data-domain="${esc(r.domain)}"${
+        domainsSel.has(r.domain) ? " checked" : ""}>` },
     { key: "domain", label: "Domain",
-      render: r => `${esc(r.domain)}${r.is_active === false ? ' <span class="flag warn">off</span>' : ""}` },
+      render: r => `${esc(r.domain)}${r.is_active === false ? ' <span class="flag warn">off</span>' : ""}${
+        r.never_sent ? ' <span class="flag warn" title="No mailbox on this domain has ever sent. It is probably not a sending domain of yours at all.">never sent</span>' : ""}` },
+    // Sends for the selected range was already computed and thrown away by the
+    // table — it is the denominator under every rate in this row.
+    { key: "sends", label: "Sends", num: true, render: r => fmt(r.sends || 0) },
     { key: "mailboxes", label: "Mailboxes", num: true,
       render: r => r.mailboxes_total > r.mailboxes ? `${r.mailboxes} <span class="stale">(+${r.mailboxes_total - r.mailboxes} off)</span>` : r.mailboxes },
     { key: "reply_rate", label: "Avg reply %", num: true, render: r => r.reply_rate != null ? pct(r.reply_rate) : "–" },
     { key: "bounce_rate", label: "Avg bounce %", num: true, render: r => bflag(r.bounce_rate) },
-    { key: "provider", label: "Provider", render: r => esc(r.provider ?? r.reseller ?? "–") },
+    // Provider and reseller are different facts and used to share one column
+    // that showed the reseller under the heading "Provider".
+    { key: "provider", label: "Provider", render: r => esc(r.provider ?? "–") },
+    { key: "reseller", label: "Reseller", render: r => esc(r.reseller ?? "–") },
+    { key: "domain_age_days", label: "Age", num: true,
+      sortVal: r => r.domain_age_days ?? -1,
+      render: r => r.domain_age_days == null
+        ? '<span class="stale" title="not looked up yet — pipeline.py sender-domains registration">–</span>'
+        : `${fmt(r.domain_age_days)}d <span class="stale">${esc(r.registration_date || "")}</span>` },
     // The Active checkbox lived here and in the domain edit panel. One toggle,
     // in the panel: an in-table checkbox on a row whose click opens that panel
     // is two ways to do the same thing, and the row-click swallows half the
     // attempts to use it.
     { key: "listed", label: "Blacklist", sortVal: r => r.listed ? 0 : 1,
-      render: r => r.listed ? '<span class="flag bad">✖ listed</span>'
-        : r.registered ? '<span class="flag ok">✓ clean</span>' : '<span class="flag warn">—</span>' },
-  ], domains, { empty: "No sending domains match this filter.", onRowClick: r => showDomain(r.domain),
+      // A check that could not run is its own state. Painting it as "clean"
+      // hides a blind spot; painting it as "listed" is the bug that started
+      // all this.
+      render: r => `<span class="dnsbl-cell" data-domain="${esc(r.domain)}" style="cursor:pointer">${
+        r.listed ? '<span class="flag bad">✖ listed</span>'
+          : r.registered ? '<span class="flag ok">✓ clean</span>' : '<span class="flag warn">—</span>'}${
+        r.dnsbl_checks_failed ? ` <span class="flag warn" title="${r.dnsbl_checks_failed} list(s) refused or timed out — not a listing">${r.dnsbl_checks_failed} unchecked</span>` : ""}</span>` },
+  ], domains, { empty: "No sending domains match this filter.", pageSize: 50,
+    onRowClick: r => showDomain(r.domain),
+    onDraw: el => {
+      el.querySelectorAll(".dnsbl-cell").forEach(cell => cell.onclick = (ev) => {
+        ev.stopPropagation();
+        openBlacklistDrawer(cell.dataset.domain);
+      });
+      el.querySelectorAll(".dom-sel").forEach(cb => {
+        cb.onclick = (ev) => ev.stopPropagation();  // ticking must not open the pane
+        cb.onchange = () => {
+          cb.checked ? domainsSel.add(cb.dataset.domain) : domainsSel.delete(cb.dataset.domain);
+          syncDomainsSel();
+        };
+      });
+    },
     footer: (view) => {
       const t = totals(view);
       return { domain: `${view.length} domain${view.length === 1 ? "" : "s"}`,
@@ -1546,13 +1773,276 @@ function renderDeliv() {
     } });
 }
 
-function openSenderEdit(sa) {
-  openEditPanel(esc(sa.email), `${esc(sa.email_domain ?? "")} · ${sa.last_outbound_at ? "last send " + dt(sa.last_outbound_at) : "never sent"}`);
+// Checking registration dates and blacklists one domain at a time was the only
+// option; both underlying commands already took "one or all", and neither
+// answers "these eight". The check runs as a background job because each DNSBL
+// lookup is a DNS round trip against a rate-limited resolver.
+const domainsSel = new Set();
+function syncDomainsSel() {
+  $("domains-sel").textContent = domainsSel.size ? `${domainsSel.size} selected` : "";
+  $("domains-check-btn").disabled = !domainsSel.size;
+}
+$("domains-check-btn").onclick = async () => {
+  const checks = $("domains-check-what").value.split(",");
+  const domains = [...domainsSel];
+  if (!confirm(`Check ${domains.length} domain(s)? This runs in the background and can take a few minutes.`)) return;
+  try {
+    const st = await post("/api/domains/bulk-check", { domains, checks });
+    state.logOffset = st.log_offset || 0;
+    openConsole(true);
+    updateSyncPill(st);
+    toast(`Checking ${domains.length} domain(s) — see the console.`);
+    domainsSel.clear();
+    syncDomainsSel();
+  } catch (e) { toast(e.message); }
+};
+
+// The three "what else bounced" sections of the bounce detail pane. One
+// builder, because they differ only in their heading and their row list, and
+// three near-identical blocks would drift.
+function siblingBounceSections(d) {
+  const table = (rows) => ({
+    cols: [
+      { key: "lead_email", label: "Contact", render: r => esc(r.lead_email || "—") },
+      { key: "sender_email", label: "From", render: r => esc(r.sender_email || "—") },
+      { key: "last_seen_at", label: "Seen", render: r => dt(r.last_seen_at) },
+    ], rows,
+    opts: { onRowClick: r => { navPush("bounce", d.bounce.id); openBounceDrawer(r.id); } },
+  });
+  return [
+    ["Other bounces in this campaign", d.same_campaign || [], null],
+    ["Other bounces from this sender", d.same_sender || [], d.sender_email],
+    ["Other bounces on this sending domain", d.same_domain || [], d.sending_domain],
+  ].map(([label, rows, subject]) => ({
+    heading: `${label}${subject ? ` — ${subject}` : ""} (${rows.length})`,
+    html: rows.length ? "" : '<div class="stale">None.</div>',
+    table: rows.length ? table(rows) : null,
+  }));
+}
+
+/* ---------- deliverability drawers ---------- */
+// Vocabulary for the provider/reseller pickers. Fetched once per page load:
+// the values are just the distinct values already in the table, so they only
+// change when someone edits one.
+let delivVocab = null;
+async function loadDelivVocab() {
+  if (delivVocab) return delivVocab;
+  delivVocab = await api("/api/deliverability/vocab").catch(() =>
+    ({ providers: [], resellers: [] }));
+  return delivVocab;
+}
+
+const DNSBL_STATE_FLAG = {
+  listed: '<span class="flag bad">listed</span>',
+  clean: '<span class="flag ok">clean</span>',
+  check_failed: '<span class="flag warn">could not check</span>',
+};
+
+// Every list we asked, what it said, and when — including the ones that
+// refused to answer. A refused query is not a listing, and the whole reason
+// this drawer exists is that the summary made those two look identical.
+function openBlacklistDrawer(domain) {
+  const row = (state.deliv?.domains || []).find(d => d.domain === domain);
+  if (!row) return;
+  const results = row.dnsbl_results || [];
+  const listed = results.filter(r => r.status === "listed");
+  const failed = results.filter(r => r.status === "check_failed");
+  const head = results.length
+    ? `${results.length} list${results.length === 1 ? "" : "s"} checked · ${listed.length} listed · ${failed.length} could not be checked`
+    : "never checked";
+  openDetailDrawer({
+    pane: "deliverability.blacklist",
+    title: `${esc(domain)} — blacklist`,
+    subtitle: head + (row.dnsbl_checked_at ? ` · last scan ${dt(row.dnsbl_checked_at)}` : ""),
+    sections: [
+      { heading: "Result by list",
+        html: results.length ? "" : '<div class="stale">No stored scan. Run a check below.</div>',
+        table: results.length ? {
+          cols: [
+            { key: "name", label: "List", render: r => esc(r.name || r.host || "?") },
+            { key: "type", label: "Checks", render: r => esc(r.type === "ip" ? "sending IP" : "domain") },
+            { key: "target", label: "Target", render: r => esc(r.target || "") },
+            { key: "status", label: "Verdict",
+              render: r => DNSBL_STATE_FLAG[r.status] || esc(r.status || "") },
+            { key: "addresses", label: "Answer",
+              render: r => esc((r.addresses || []).join(", ") || "—") },
+            { key: "error", label: "Why", render: r => esc(r.error || "") },
+          ],
+          rows: results,
+        } : null },
+      { heading: "Coverage",
+        rows: [
+          ["Tiers scanned", esc((row.dnsbl_tiers_scanned || []).join(", ") || "—")],
+          ["Partial scan", row.dnsbl_partial ? "yes — some lists are from an older run" : "no"],
+          ["Sending IP", esc(row.sending_ip || "not set — IP-based lists are skipped")],
+        ] },
+      { heading: "Re-check",
+        html: `<button class="small" id="dnsbl-recheck">Re-check now</button>
+          <div class="msg" id="dnsbl-msg"></div>
+          <div class="stale" style="margin-top:6px">Runs every tier for this domain and
+            merges the result with what is already stored.</div>`,
+        onDraw: () => {
+          const btn = $("dnsbl-recheck");
+          if (!btn) return;
+          btn.onclick = () => formResult("dnsbl-msg",
+            post("/api/domains/blacklist-check", { domain }),
+            () => { loadDeliverability(); });
+        } },
+    ],
+  });
+}
+
+// What "trending down" was computed from. The UI never recomputes the rule —
+// the server returns which rule fired, so the flag and its explanation cannot
+// disagree.
+async function openTrendDrawer(mailbox) {
+  openDetailDrawer({ pane: "deliverability.mailbox", title: esc(mailbox), subtitle: "loading trend…", sections: [] });
+  const d = await api(`/api/bounce-trend?mailbox=${encodeURIComponent(mailbox)}&days=14`)
+    .catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  const row = (state.deliv?.mailboxes || []).find(m => m.email === mailbox) || {};
+  const why = d.rule_fired === "rising_bounces"
+    ? `bounces rose from ${d.bounces_prior_7d} to ${d.bounces_last_7d} week over week`
+    : (row.bounce_rate != null && row.bounce_rate >= 0.05
+        ? `bounce rate ${pct(row.bounce_rate)} is at or above the ${pct(d.bounce_rate_threshold)} threshold`
+        : "nothing is firing — this mailbox reads as ok");
+  openDetailDrawer({
+    pane: "deliverability.mailbox",
+    title: esc(mailbox),
+    subtitle: why,
+    sections: [
+      { heading: "Bounce trend (14 days)",
+        html: `<div style="color:var(--bad,#c0392b)">${
+          sparkline(d.series.map(x => x.bounces), { width: 260, height: 34 })}</div>`,
+        rows: [
+          ["Last 7 days", `${fmt(d.bounces_last_7d)} bounces`],
+          ["Previous 7 days", `${fmt(d.bounces_prior_7d)} bounces`],
+          ["Change", `${d.delta > 0 ? "+" : ""}${fmt(d.delta)}`],
+          ["Bounce rate", row.bounce_rate != null ? pct(row.bounce_rate) : "–"],
+          ["Threshold", pct(d.bounce_rate_threshold)],
+          ["Rule fired", esc(d.rule_fired || "none")],
+        ] },
+      { heading: "By day",
+        table: { cols: [
+          { key: "date", label: "Day", render: r => esc(r.date) },
+          { key: "sends", label: "Sends", num: true, render: r => fmt(r.sends) },
+          { key: "bounces", label: "Bounces", num: true, render: r => fmt(r.bounces) },
+        ], rows: d.series } },
+      { heading: "Bounces",
+        html: `<button class="small" id="trend-bounces">See these bounces</button>`,
+        onDraw: () => {
+          const btn = $("trend-bounces");
+          if (btn) btn.onclick = () => { dismissPanels(); showBounces({ mailbox }); };
+        } },
+    ],
+  });
+}
+
+// The bounce explorer. Grouping is what makes hundreds navigable: on real data
+// a few thousand bounces collapse to a few dozen distinct failures, and the
+// ones carrying no diagnostic at all become one honest row saying so.
+const bounceView = { group_by: "signature", domain: null, mailbox: null, offset: 0 };
+
+async function showBounces(filters = {}) {
+  Object.assign(bounceView, { domain: null, mailbox: null, offset: 0 }, filters);
+  $("bounces-card").hidden = false;
+  await loadBounces();
+  $("bounces-card").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function loadBounces() {
+  const el = $("bounces-body");
+  el.innerHTML = '<div class="stale">Loading…</div>';
+  const qs = new URLSearchParams({ group_by: bounceView.group_by, limit: "200" });
+  if (bounceView.domain) qs.set("domain", bounceView.domain);
+  if (bounceView.mailbox) qs.set("mailbox", bounceView.mailbox);
+  const d = await getR("/api/bounces?" + qs).catch(e => { toast(e.message); return null; });
+  if (!d) { el.innerHTML = ""; return; }
+  const scope = [bounceView.domain && `domain ${bounceView.domain}`,
+                 bounceView.mailbox && `mailbox ${bounceView.mailbox}`].filter(Boolean).join(" · ");
+  $("bounces-count").textContent =
+    `${fmt(d.total)} bounces · ${fmt(d.total_occurrences)} occurrences${scope ? " · " + scope : ""}`;
+  el.innerHTML = '<div id="bounce-groups"></div><div id="bounce-rows" style="margin-top:12px"></div>';
+  if (d.groups?.length) {
+    renderTable("bounce-groups", [
+      { key: "key", label: "Failure", wrap: true, render: r => esc(r.key) },
+      { key: "bounces", label: "Contacts", num: true, render: r => fmt(r.bounces) },
+      { key: "occurrences", label: "Events", num: true, render: r => fmt(r.occurrences) },
+      { key: "bounce_type", label: "Type", render: r => esc(r.bounce_type || "unknown") },
+      { key: "last_seen_at", label: "Last seen", render: r => dt(r.last_seen_at) },
+    ], d.groups, { empty: "No bounces in this range.", pageSize: 25,
+      onRowClick: r => openBounceDrawer(r.example_id) });
+  }
+  renderTable("bounce-rows", [
+    { key: "lead_name", label: "Contact", render: r => esc(r.lead_name || r.lead_email || "—") },
+    { key: "lead_email", label: "Email", render: r => r.lead_email ? copyableCell(r.lead_email) : "—" },
+    { key: "sender_email", label: "Mailbox", render: r => esc(r.sender_email || "—") },
+    { key: "bounce_type", label: "Type", render: r => esc(r.bounce_type || "unknown") },
+    { key: "smtp_code", label: "Code", render: r => esc(r.smtp_code || "—") },
+    { key: "campaign_name", label: "Campaign", render: r => esc(r.campaign_name || "—") },
+    { key: "occurrence_count", label: "Times", num: true, render: r => fmt(r.occurrence_count || 1) },
+    { key: "last_seen_at", label: "Last seen", render: r => dt(r.last_seen_at) },
+  ], d.bounces, { empty: "No bounces in this range.", pageSize: 50,
+    onRowClick: r => openBounceDrawer(r.id) });
+}
+
+// One bounce, its message verbatim, and what we sent before it — which is the
+// only way to answer "is this the copy or is this the list" on one screen.
+async function openBounceDrawer(bounceId) {
+  openDetailDrawer({ title: "Bounce", subtitle: "loading…", sections: [],
+                     pane: "deliverability.bounce" });
+  const d = await api(`/api/bounces/${encodeURIComponent(bounceId)}`)
+    .catch(e => { toast(e.message); return null; });
+  if (!d) return;
+  const b = d.bounce;
+  openDetailDrawer({
+    pane: "deliverability.bounce",
+    title: esc(b.lead_email || "Bounce"),
+    subtitle: `${esc(b.bounce_type || "unknown")} · ${esc(b.sender_email || "")} · ${dt(b.last_seen_at)}`,
+    sections: [
+      { heading: "What the receiving server said",
+        html: `<pre class="raw">${esc(b.bounce_message
+          || "(the sending platform did not send a diagnostic message)")}</pre>`,
+        rows: [
+          ["SMTP code", esc(b.smtp_code || "—")],
+          ["Recipient MX", esc(b.recipient_mx || "—")],
+          ["Campaign", esc(b.campaign_name || "—")],
+          ["Occurrences", fmt(b.occurrence_count || 1)],
+          ["First seen", dt(b.first_seen_at)],
+        ] },
+      { heading: `Sent before the bounce (${d.sends_before.length})`,
+        html: d.sends_before.length
+          ? d.sends_before.map(compactEventLine).join("")
+          : '<div class="stale">No outbound events recorded before this bounce.</div>' },
+      // Three different questions, and the pane used to answer only the first.
+      // Campaign implicates the copy; mailbox implicates one seat; sending
+      // domain implicates everything on it — which is the one that decides
+      // whether you pause a sender or pause the whole domain.
+      ...siblingBounceSections(d),
+      { heading: "Contact",
+        html: b.lead_id
+          ? `<button class="small" id="bounce-open-lead">Open contact</button>` : "",
+        onDraw: () => {
+          const btn = $("bounce-open-lead");
+          if (btn) btn.onclick = () => { dismissPanels(); openLead(b.lead_id); };
+        } },
+    ],
+  });
+}
+
+async function openSenderEdit(sa) {
+  openEditPanel(esc(sa.email), `${esc(sa.email_domain ?? "")} · ${sa.last_outbound_at ? "last send " + dt(sa.last_outbound_at) : "never sent"}`, "deliverability.mailbox");
+  const vocab = await loadDelivVocab();
   $("edit-body").innerHTML = `
     <form id="sender-edit-form">
       <h3>Edit mailbox <span class="sub" style="font-weight:400;color:var(--ink-muted)">health/warmup metrics stay sync-owned</span></h3>
       <div class="row"><input name="first_name" placeholder="First name" value="${esc(sa.first_name ?? "")}"><input name="last_name" placeholder="Last name" value="${esc(sa.last_name ?? "")}"></div>
-      <div class="row"><input name="provider" placeholder="Provider (google / microsoft / …)" value="${esc(sa.provider ?? "")}"></div>
+      <div class="row">${comboInput({ name: "provider", value: sa.provider,
+        options: vocab.providers, placeholder: "Provider — the platform that sends" })}</div>
+      <div class="sub" style="font-weight:400;color:var(--ink-muted);margin:-4px 0 8px">
+        Your sequencer reports this; if it sends its own value later, that wins.
+        The domain's reseller is
+        <b>${esc(sa.domain_reseller || "not set")}</b> — edit it on the domain.</div>
       <div class="row">
         <input name="daily_limit" type="number" placeholder="Daily limit" value="${sa.daily_limit ?? ""}">
         <select name="status">
@@ -1651,18 +2141,31 @@ async function renderDomainWorkspaces(domain) {
   };
 }
 
-function openDomainEdit(dom, reg) {
-  openEditPanel(esc(dom), "sending domain");
+async function openDomainEdit(dom, reg) {
+  openEditPanel(esc(dom), "sending domain", "deliverability.domain");
+  const vocab = await loadDelivVocab();
+  const row = (state.deliv?.domains || []).find(d => d.domain === dom) || {};
   $("edit-body").innerHTML = `
     <form id="domain-edit-form">
       <h3>Edit domain <span class="sub" style="font-weight:400;color:var(--ink-muted)">reseller / pricing / notes</span></h3>
-      <div class="row"><input name="reseller" placeholder="Provider / reseller" value="${esc(reg?.reseller ?? "")}"></div>
+      <div class="row">${comboInput({ name: "provider", value: reg?.provider,
+        options: vocab.providers, placeholder: "Provider — Google Workspace, Microsoft 365, …" })}</div>
+      <div class="row">${comboInput({ name: "reseller", value: reg?.reseller,
+        options: vocab.resellers, placeholder: "Reseller — who you bought it from" })}</div>
+      <div class="sub" style="font-weight:400;color:var(--ink-muted);margin:-4px 0 8px">
+        Two different facts: the <b>provider</b> is the platform that sends this
+        domain's mail; the <b>reseller</b> is the vendor you bought it from.
+        ${row.registration_date
+          ? `Registered ${esc(row.registration_date)} — ${fmt(row.domain_age_days)} days old.`
+          : "Registration date not looked up yet."}</div>
       <div class="row">
         <input name="domain_cost" type="number" step="0.01" placeholder="Cost (whole domain)" value="${reg?.domain_cost ?? ""}">
         <input name="currency" placeholder="Currency" value="${esc(reg?.currency ?? "USD")}">
       </div>
       <div class="row"><input name="sending_ip" placeholder="Sending IP" value="${esc(reg?.sending_ip ?? "")}"></div>
       <div class="row"><textarea name="notes" placeholder="Notes" rows="2">${esc(reg?.notes ?? "")}</textarea></div>
+      <div class="row"><button class="small" type="button" id="domain-rdap">Look up registration date</button>
+        <span class="msg" id="domain-rdap-msg"></span></div>
       <div class="row"><label><input type="checkbox" name="is_active" ${reg?.is_active !== 0 ? "checked" : ""}> Live domain <span class="sub" style="font-weight:400;color:var(--ink-muted)">uncheck = dropped (skipped by DNSBL/routing)</span></label></div>
       <div class="row"><button class="primary">Save domain</button></div>
       <div class="msg" id="domain-msg"></div>
@@ -1670,6 +2173,8 @@ function openDomainEdit(dom, reg) {
     <div id="domain-ws" style="border-top:1px solid var(--grid);margin-top:12px;padding-top:12px"></div>
     <div id="domain-danger"></div>`;
   renderDomainWorkspaces(dom);
+  $("domain-rdap").onclick = () => formResult("domain-rdap-msg",
+    post("/api/domains/registration", { domain: dom }), loadDeliverability);
   renderDangerZone({
     el: "domain-danger", title: "domain", confirm: dom,
     warning: `Permanently deletes our record of <b>${esc(dom)}</b> (reseller, cost,
@@ -2022,7 +2527,12 @@ async function loadContacts(resetOffset = true) {
   fillSenderSelect();
   fillBulkTags();
   skeleton("contacts-table");
-  const d = await getR(contactsQuery()).catch(e => { toast(e.message); return null; });
+  // Deliberately get(), not getR(): Contacts is a roster of every person in the
+  // workspace, not a report on a window. Under getR() the list was date-scoped
+  // while its own export was not, so "export what's on screen" quietly shipped
+  // more rows than the screen showed. Drill-throughs that DO want a window pass
+  // since/until explicitly through contactsFilters.
+  const d = await get(contactsQuery()).catch(e => { toast(e.message); return null; });
   if (!d) return;
   contactsState.total = d.total;
   contactsState.rows = d.leads;
@@ -2079,7 +2589,9 @@ $("contacts-all-matching").onclick = async (e) => {
     const u = new URL(contactsQuery(), location.origin);
     u.searchParams.delete("offset");
     u.searchParams.set("limit", "50000");
-    const d = await getR(u.pathname.replace("/api/contacts", "/api/contacts/ids") + "?" + u.searchParams.toString());
+    // Same scoping as the list above, or "select all matching" would select a
+    // different set from the one being displayed.
+    const d = await get(u.pathname.replace("/api/contacts", "/api/contacts/ids") + "?" + u.searchParams.toString());
     (d.lead_ids || []).forEach(id => contactsSel.add(id));
     if (d.capped) toast(`Selected the first ${fmt(d.count)} matching (capped).`);
     loadContacts(false);
@@ -2354,7 +2866,7 @@ async function copyAgentPrompt(key, btn) {
 }
 
 /* ---------- companies (Section C) ---------- */
-// Must match COMPANY_SORT_COLUMNS in dashboard_queries.py. Tags are a
+// Must match COMPANY_SORT_COLUMNS in reporting_queries.py. Tags are a
 // GROUP_CONCAT of the loaded page's rows, so there is nothing to sort on
 // server-side and a header click on it is ignored.
 const SORTABLE_COMPANY_KEYS = new Set(
@@ -2490,7 +3002,7 @@ async function openCompany(companyId) {
   const c = d.company;
   openEditPanel(esc(c.name || "Company"),
     [c.industry, c.headcount && c.headcount + " employees", [c.hq_city, c.hq_country].filter(Boolean).join(", ")]
-      .filter(Boolean).join(" · ") || "—");
+      .filter(Boolean).join(" · ") || "—", "company.detail");
   // Show every domain — the company's own primary plus all identity/branch
   // domains — deduped, so a company with a single domain still lists it.
   const allDomains = [];
@@ -2515,6 +3027,7 @@ async function openCompany(companyId) {
       <div class="controls" style="padding:2px 0">
         <span id="company-leads-sel" class="stale"></span>
         <span class="spacer"></span>
+        <button class="small" id="company-leads-merge" disabled>Merge selected</button>
         <button class="small" id="company-leads-delete" disabled>Delete selected</button>
       </div>
       <div id="company-leads"></div>
@@ -2607,12 +3120,24 @@ function renderCompanyLeads(companyId, leads) {
   const syncSel = () => {
     $("company-leads-sel").textContent = sel.size ? `${sel.size} selected` : "";
     $("company-leads-delete").disabled = !sel.size;
+    // Two records for the same person at the same company is the common case
+    // this panel is looking at; merging was only reachable from contact review.
+    $("company-leads-merge").disabled = sel.size < 2;
   };
   renderTable("company-leads", [
     { key: "_sel", label: "", sortVal: () => 0,
       render: r => `<input type="checkbox" class="cl-sel" data-id="${r.lead_id}">` },
     { key: "name", label: "Name", render: r => esc(r.name || "—") },
     { key: "title", label: "Title", render: r => esc(r.title ?? "") },
+    // "Can I actually reach anyone here" is the question this pane is open to
+    // answer, and it needed a click into each contact to answer it. Same
+    // renderers as the contacts table, so the cells copy the same way and a
+    // verdict cannot read differently in the two places.
+    { key: "email", label: "Email", maxw: 220,
+      render: r => r.email ? copyableCell(r.email) : '<span class="flag warn">no email</span>' },
+    { key: "email_verification_status", label: "Verified",
+      render: r => renderVerifyFlag(r.email_verification_status) },
+    linkedinColumn(),
     { key: "current_status_label", label: "Lead status", render: r => esc(r.current_status_label ?? "—") },
     { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
     { key: "record_type", label: "Record type", sortVal: r => r.record_type || "",
@@ -2639,6 +3164,9 @@ function renderCompanyLeads(companyId, leads) {
           .then(() => toast("Contact order updated"))
           .catch(e => { toast(e.message); openCompany(companyId); }));
     } });
+  $("company-leads-merge").onclick = () => openMergeContacts(
+    [...sel], leads.map(l => ({ lead_id: l.lead_id, name: l.name, title: l.title,
+                                email: l.email, subject: null })), companyId);
   $("company-leads-delete").onclick = async () => {
     const ids = [...sel];
     if (!ids.length) return;
@@ -2661,6 +3189,28 @@ function renderCompanyLeads(companyId, leads) {
 // own cold-email sending infrastructure and has nothing to do with the company
 // you're looking at. sender_domains now lives only under Deliverability.
 const DOMAIN_PURPOSES = ["primary", "branch", "email_finding", "parked"];
+
+// Where a domain came from, in English. `legacy_companies_column` was an
+// implementation note leaking into the UI; the rest were only ever readable if
+// you knew the code that wrote them.
+const IDENTITY_SOURCE_LABELS = {
+  merged_company_record: "from a merged company",
+  legacy_companies_column: "from a merged company",
+  ensure_company_registrable_match: "matched by root domain",
+  email_finder_success: "found while finding emails",
+  company_split: "split from another company",
+  relay_pull: "from your sequencer",
+  relay_alias: "from your sequencer",
+  manual: "added by you",
+  manual_purpose: "set by you",
+  manual_label: "labelled by you",
+  backfill: "backfilled",
+  public_email: "from a published email address",
+};
+function identitySourceLabel(source) {
+  if (!source) return "";
+  return IDENTITY_SOURCE_LABELS[source] || source;
+}
 async function renderCompanyDomains(companyId) {
   const el = $("company-domains");
   el.innerHTML = '<h3 style="font-size:13px">Domains</h3><div class="stale">Loading…</div>';
@@ -2670,7 +3220,8 @@ async function renderCompanyDomains(companyId) {
     const opts = DOMAIN_PURPOSES.map(p =>
       `<option ${p === dm.purpose ? "selected" : ""}>${p}</option>`).join("");
     const meta = [
-      dm.role, dm.verified_mx ? "MX ✓" : null, dm.label, dm.source,
+      dm.role, dm.verified_mx ? "MX ✓" : null, dm.label,
+      identitySourceLabel(dm.source),
     ].filter(Boolean).map(esc).join(" · ");
     // Deciding whether a domain belongs to this company usually means looking
     // at the site. Copy-pasting it into a new tab was the missing step.
@@ -2687,10 +3238,39 @@ async function renderCompanyDomains(companyId) {
   el.innerHTML = `<h3 style="font-size:13px">Domains
       <span class="sub" style="font-weight:400;color:var(--ink-muted)">their domains — purpose is what each one is for</span></h3>
     ${rows || '<div class="stale">No domains recorded for this company.</div>'}
+    <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+      <input id="company-domain-new" placeholder="They also own… (acme.com)" style="flex:1">
+      <select id="company-domain-new-purpose">
+        <option value="">purpose…</option>
+        ${DOMAIN_PURPOSES.map(p => `<option>${p}</option>`).join("")}
+      </select>
+      <button class="small" id="company-domain-add">Add</button>
+    </div>
     <div class="msg" id="company-domains-msg"></div>`;
   const reload = () => { renderCompanyDomains(companyId); loadCompanies(false); };
   const send = (body) => formResult("company-domains-msg",
     post(`/api/companies/${companyId}/domains`, body), reload);
+  $("company-domain-add").onclick = async () => {
+    const value = $("company-domain-new").value.trim();
+    if (!value) return;
+    const purpose = $("company-domain-new-purpose").value || null;
+    try {
+      const r = await post(`/api/companies/${companyId}/domains`,
+                           { op: "add", domain: value, purpose });
+      // A domain that already belongs to someone else is a merge decision, not
+      // a failed insert -- so offer the merge rather than just refusing.
+      if (r.status === "conflict") {
+        $("company-domains-msg").textContent = r.error;
+        if (confirm(`${r.error}\n\nOpen that company to merge them?`)) {
+          closeEditPanel();
+          openCompany(r.owner_company_id);
+        }
+        return;
+      }
+      toast(r.already_present ? "Already recorded" : `Added ${r.domain}`);
+      reload();
+    } catch (e) { $("company-domains-msg").textContent = e.message; }
+  };
   el.querySelectorAll(".dom-purpose").forEach(sel => sel.onchange = () => {
     if (!sel.value) return;
     send({ op: "purpose", domain: sel.dataset.domain, purpose: sel.value });
@@ -2716,17 +3296,22 @@ function compactEventLine(ev) {
   </div>${ev.subject ? `<div class="tl-preview"><b>${esc(ev.subject)}</b></div>` : ""}${eventBodyBlock(ev)}</div>`;
 }
 
-// One message body, two states — collapsed shows the preview, expanded REPLACES
-// it with the full text in the same element. The old shape stacked preview,
-// then a button, then the full body underneath it, so an expanded message read
-// as the first two lines twice followed by everything. Shared by the lead
-// timeline and the company activity timeline so they cannot drift.
+// One message body, two states. Collapsed is the SUBJECT LINE ONLY (rendered by
+// the callers, above this block) plus a toggle; expanded fills the same element
+// with the full text. There is deliberately no preview snippet: a timeline of
+// twenty events was twenty two-line excerpts, which is long enough to scroll
+// past but never enough to actually read, so it cost the height of the full
+// message while answering none of the questions the full message answers.
+//
+// A message with no stored body still shows its preview, because there it is
+// the only text that exists rather than a truncation of something reachable.
+// Shared by the lead timeline and the company activity timeline so they cannot
+// drift.
 function eventBodyBlock(ev) {
   const preview = String(ev.body_preview ?? "").trim();
   if (!preview && !ev.has_body) return "";
   if (!ev.has_body) return `<div class="tl-preview">${esc(preview)}</div>`;
-  return `<div class="tl-preview" data-body-for="${ev.id}">${esc(preview)}</div>
-    <button class="small linklike" style="margin-top:4px;font-size:12px"
+  return `<button class="small linklike" style="margin-top:4px;font-size:12px"
       onclick="toggleHistoryBody(this, ${ev.id})">Show full message</button>`;
 }
 
@@ -2753,6 +3338,7 @@ async function openMergeContacts(ids, contacts, companyId) {
       <b>${esc(c.name || "—")}</b>
       <span class="stale">${esc(c.title || "")}${c.email ? " · " + esc(c.email) : ""}
         · ${fmt(c.event_count || 0)} event${c.event_count === 1 ? "" : "s"}</span>
+      ${c.subject ? `<div class="stale" style="margin-left:20px">last reply: ${esc(c.subject)}</div>` : ""}
     </label>`;
   }).join("") + '<div id="merge-preview" style="margin-top:10px"></div>';
   $("merge-contacts-body").querySelectorAll('input[name="merge-keep"]').forEach(r =>
@@ -3065,7 +3651,84 @@ $("merge-bulk-approve").onclick = () => bulkResolveMerges(true);
 $("merge-bulk-reject").onclick = () => bulkResolveMerges(false);
 $("merge-prompt-btn").onclick = (e) => copyAgentPrompt("companyMerges", e.target);
 
-function openEditPanel(title, meta) {
+// One read-only detail surface, used wherever we show a verdict that was
+// computed from evidence: which blacklists actually said what, the bounce
+// message plus the sends before it, and the numbers behind "trending down".
+// Showing the verdict and discarding the evidence is what made all three of
+// those unanswerable without a database query.
+//
+//   sections: [{heading, rows:[[k,v]], html, table:{cols,rows,opts}, spark:[{...}]}]
+function openDetailDrawer({ title, subtitle, sections, pane }) {
+  openEditPanel(title, subtitle || "", pane);
+  const body = $("edit-body");
+  body.innerHTML = (sections || []).map((sec, i) => `<div class="dsec" data-sec="${i}">
+      ${sec.heading ? `<h3>${sec.heading}</h3>` : ""}
+      ${sec.rows ? sec.rows.map(([k, v]) =>
+        `<div class="krow"><span class="k">${esc(k)}</span><span>${v}</span></div>`).join("") : ""}
+      ${sec.html || ""}
+      ${sec.table ? `<div id="dsec-table-${i}"></div>` : ""}
+    </div>`).join("");
+  (sections || []).forEach((sec, i) => {
+    if (sec.table) renderTable(`dsec-table-${i}`, sec.table.cols, sec.table.rows,
+      Object.assign({ filter: false }, sec.table.opts || {}));
+    if (sec.onDraw) sec.onDraw(body.querySelector(`[data-sec="${i}"]`));
+  });
+}
+
+// Native datalist: a dropdown of what is already in use that still accepts a
+// new value. The point is to stop the same reseller being typed three ways,
+// not to stop a fourth reseller existing.
+function comboInput({ name, value, options, placeholder, id }) {
+  const listId = id || `dl-${name}-${Math.random().toString(36).slice(2, 8)}`;
+  return `<input name="${esc(name)}" list="${listId}" value="${esc(value ?? "")}"
+      placeholder="${esc(placeholder || "")}" autocomplete="off">
+    <datalist id="${listId}">${(options || []).map(o =>
+      `<option value="${esc(o)}"></option>`).join("")}</datalist>`;
+}
+
+// Tiny inline sparkline — no library, no axes. It exists to answer "is this
+// getting worse", which a number in a table cannot.
+function sparkline(values, { width = 90, height = 18, color = "currentColor" } = {}) {
+  const nums = (values || []).map(v => Number(v) || 0);
+  if (!nums.length) return "";
+  const max = Math.max(1, ...nums);
+  const step = nums.length > 1 ? width / (nums.length - 1) : width;
+  const points = nums.map((v, i) =>
+    `${(i * step).toFixed(1)},${(height - (v / max) * (height - 2) - 1).toFixed(1)}`).join(" ");
+  return `<svg class="spark" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"
+      preserveAspectRatio="none" aria-hidden="true"><polyline points="${points}"
+      fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+
+// Every slide-in pane has a stable id and a printed breadcrumb. Panes were
+// accumulating faster than names for them, so referring to one in writing (or
+// to an agent) meant describing it: "the thing that opens when you click the
+// bounce row". The crumb on screen and the key in this table are the same
+// string, so "open the deliverability › sender bounce detail pane" is an
+// instruction with one referent. Documented in
+// references/dashboard-panes.md -- keep the two in step.
+const PANES = {
+  "contact.detail":            "Contacts › Contact detail",
+  "contact.merge":             "Contacts › Merge contacts",
+  "company.detail":            "Companies › Company detail",
+  "deliverability.mailbox":    "Deliverability › Mailbox detail",
+  "deliverability.domain":     "Deliverability › Sending domain detail",
+  "deliverability.blacklist":  "Deliverability › Blacklist report",
+  "deliverability.bounce":     "Deliverability › Bounce detail",
+  "campaign.subjects":         "Campaigns › Subject lines & copy",
+  "quality.bucket":            "Data quality › Bucket detail",
+  "sync.outbox":               "Sync › Outbox item detail",
+};
+
+function setPaneCrumb(el, paneId) {
+  const label = PANES[paneId];
+  const node = $(el);
+  if (node) node.textContent = label || "";
+  return label;
+}
+
+function openEditPanel(title, meta, paneId) {
+  setPaneCrumb("edit-crumb", paneId);
   $("edit-title").innerHTML = title;
   $("edit-meta").textContent = meta || "";
   $("edit-body").innerHTML = "";
@@ -3524,23 +4187,45 @@ $("empty-preview-org-btn").onclick = () => previewEmptyLeads("org");
 /* ---------- campaigns ---------- */
 async function loadCampaigns() {
   skeleton("campaigns", "daily-matrix");
+  // One toggle, both requests: the matrix and the table must agree on whether a
+  // Calendly slot counts as a campaign, or their totals stop reconciling.
+  // Restored once per page load, before the first read of .checked.
+  if (!$("campaigns-scheduling").dataset.restored) {
+    $("campaigns-scheduling").checked = localStorage.getItem("om.includeScheduling") === "1";
+    $("campaigns-scheduling").dataset.restored = "1";
+  }
+  const sched = $("campaigns-scheduling").checked ? "include_scheduling=1" : "";
+  const dailyCampaign = $("daily-campaign").value;
+  const dailyQs = [dailyCampaign ? `campaign_id=${dailyCampaign}` : "", sched]
+    .filter(Boolean).join("&");
   const [audit, daily] = await Promise.all([
-    getR("/api/campaigns"),
-    getR("/api/campaigns/daily" + ($("daily-campaign").value ? `?campaign_id=${$("daily-campaign").value}` : "")),
+    getR("/api/campaigns" + (sched ? `?${sched}` : "")),
+    getR("/api/campaigns/daily" + (dailyQs ? `?${dailyQs}` : "")),
   ]).catch(e => { toast(e.message); return [null, null]; });
   if (!audit) return;
   state.campaigns = audit.campaigns;
   fillCampaignSelects();
+  state.daily = daily;
   renderDaily(daily);
   loadReplies();
+  const scheduling = audit.scheduling_excluded || 0;
+  $("campaigns-note").textContent = $("campaigns-scheduling").checked
+    ? "Scheduling tools included — a booked slot may appear as its own campaign."
+    : (scheduling ? `${fmt(scheduling)} scheduling campaign${scheduling === 1 ? "" : "s"} hidden; `
+        + "their meetings are counted against the campaign that earned them." : "");
   renderTable("campaigns", [
-    { key: "name", label: "Campaign" },
-    { key: "status", label: "Status" },
-    { key: "sent", label: "Sent", num: true, render: r => fmt(r.sent) },
-    { key: "replies", label: "Replies", num: true, render: r => fmt(r.replies) },
+    { key: "name", label: "Campaign", render: r => esc(r.name)
+        + (r.is_unattributed
+            ? ' <span class="flag warn" title="Meetings and replies we could not trace back to any campaign. Shown so excluding scheduling tools never silently loses a booking.">unattributed</span>'
+            : r.is_scheduling
+              ? ' <span class="flag" title="A booking-tool event type, not an outbound campaign">scheduling</span>'
+              : "") },
+    // The same columns, in the same order, as the daily-activity matrix above.
+    // Status is gone: it described the campaign record, not its performance,
+    // and nobody sorted by it.
+    ...DAILY_COLUMN_ORDER.map(k => ({
+      key: k, label: DAILY_LABELS[k] || k, num: true, render: r => fmt(r[k]) })),
     { key: "reply_rate", label: "Reply rate", num: true, render: r => pct(r.reply_rate) },
-    { key: "positive", label: "Positives", num: true, render: r => fmt(r.positive) },
-    { key: "meetings", label: "Meetings", num: true, render: r => fmt(r.meetings) },
     { key: "positive_rate", label: "Positive rate", num: true, render: r => pct(r.positive_rate) },
     { key: "bounce_rate", label: "Bounce rate", num: true,
       render: r => r.bounce_rate != null && r.bounce_rate >= 0.05
@@ -3569,8 +4254,74 @@ function fillCampaignSelects() {
   }
 }
 $("daily-campaign").onchange = loadCampaigns;
+$("campaigns-scheduling").onchange = () => {
+  localStorage.setItem("om.includeScheduling", $("campaigns-scheduling").checked ? "1" : "");
+  loadCampaigns();
+};
 
 const SENTIMENT_FLAG = { positive: "ok", negative: "bad", autoreply: "warn", invalid: "warn", neutral: "" };
+
+// A bounce is not a reply and an out-of-office is not a human. All three set a
+// lead's sentiment, so all three arrive in this list; the column says which is
+// which, and the "Show" control filters without ever hiding the total.
+const REPLY_KIND_LABELS = {
+  human: "reply", auto_reply: "auto-reply", bounce: "bounced", status_only: "status only",
+};
+const REPLY_KIND_FLAG = { human: "ok", auto_reply: "warn", bounce: "bad", status_only: "" };
+const REPLY_KIND_ORDER_LIST = ["human", "auto_reply", "bounce", "status_only"];
+const REPLY_KIND_ORDER = Object.fromEntries(REPLY_KIND_ORDER_LIST.map((k, i) => [k, i]));
+
+function renderReplyKind(kind) {
+  const label = REPLY_KIND_LABELS[kind] || kind || "—";
+  const flag = REPLY_KIND_FLAG[kind];
+  return flag ? `<span class="flag ${flag}">${esc(label)}</span>` : `<span class="stale">${esc(label)}</span>`;
+}
+
+// Default is everything -- the fix for "this looks like four replies" is a
+// column that says otherwise, not a filter that quietly drops rows. The choice
+// is remembered per browser.
+const repliesSel = new Set();
+function repliesKind() {
+  const sel = $("replies-kind");
+  if (!sel.value) sel.value = localStorage.getItem("om.repliesKind") || "all";
+  return sel.value;
+}
+function syncRepliesSel() {
+  $("replies-sel").textContent = repliesSel.size ? `${repliesSel.size} selected` : "";
+  $("replies-merge").disabled = repliesSel.size < 2;
+  // A link is a directional pair: exactly two, and you say which came first.
+  $("replies-link").disabled = repliesSel.size !== 2;
+}
+$("replies-merge").onclick = () => {
+  const rows = (state.replies || []).filter(r => repliesSel.has(r.lead_id));
+  // The email and what they last said are what tell you which record to keep
+  // when someone replied from an address we never wrote to.
+  openMergeContacts([...repliesSel], rows.map(r => ({
+    lead_id: r.lead_id, name: r.lead_name, title: r.title,
+    email: r.email, subject: r.subject,
+  })), null);
+};
+// Merging destroys a record; linking does not. Two people who both replied in
+// one thread are not one record to be reconciled -- they are two people and one
+// opportunity, and only the count needs fixing.
+$("replies-link").onclick = async () => {
+  const ids = [...repliesSel];
+  const byId = Object.fromEntries((state.replies || []).map(r => [r.lead_id, r]));
+  const name = id => byId[id]?.lead_name || `#${id}`;
+  // Direction matters: the root of the conversation is who the campaign
+  // actually reached, and that is who its outcome gets credited to.
+  const forward = confirm(
+    `Who was contacted FIRST?\n\nOK = ${name(ids[0])}\nCancel = ${name(ids[1])}`);
+  const [from, to] = forward ? ids : [ids[1], ids[0]];
+  try {
+    await post("/api/leads/link", { from_lead_id: from, to_lead_id: to });
+    toast(`${name(from)} → ${name(to)} — now counted as one conversation`);
+    repliesSel.clear();
+    syncRepliesSel();
+    loadCampaigns();
+  } catch (e) { toast(e.message); }
+};
+
 // The facets come back computed BEFORE the sentiment/status filters apply, so
 // each dropdown keeps offering every value available for the current campaign
 // and date range — choosing "positive" must not strip the status dropdown down
@@ -3589,19 +4340,33 @@ async function loadReplies() {
   if (cid) qs.set("campaign_id", cid);
   if ($("replies-sentiment").value) qs.set("sentiment", $("replies-sentiment").value);
   if ($("replies-status").value) qs.set("status_label", $("replies-status").value);
+  qs.set("reply_kind", repliesKind());
   $("replies-table").innerHTML = '<div class="stale">Loading…</div>';
   const d = await getR("/api/campaigns/replies" + (qs.toString() ? `?${qs}` : ""))
     .catch(e => { toast(e.message); return null; });
   if (!d) { $("replies-table").innerHTML = ""; $("replies-count").textContent = ""; return; }
+  state.replies = d.replies;
   fillReplyFacet("replies-sentiment", d.facets?.sentiment || []);
   fillReplyFacet("replies-status", d.facets?.status_label || []);
-  $("replies-count").textContent = `${fmt(d.replies.length)} lead${d.replies.length === 1 ? "" : "s"}`;
+  // The split is always stated in full, whichever kind is being shown -- the
+  // original complaint was a card headed "Replies" that was mostly bounces.
+  const counts = d.kind_counts || {};
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const parts = REPLY_KIND_ORDER_LIST.filter(k => counts[k])
+    .map(k => `${fmt(counts[k])} ${REPLY_KIND_LABELS[k]}${counts[k] === 1 ? "" : "s"}`);
+  $("replies-count").textContent =
+    `${fmt(total)} lead${total === 1 ? "" : "s"}${parts.length ? " — " + parts.join(" · ") : ""}`
+    + (d.replies.length !== total ? ` · showing ${fmt(d.replies.length)}` : "");
   renderTable("replies-table", [
+    { key: "_sel", label: "", sortVal: () => 0,
+      render: r => `<input type="checkbox" class="rp-sel" data-lead="${r.lead_id}">` },
     { key: "lead_name", label: "Name", render: r => esc(r.lead_name || "—") },
     { key: "company", label: "Company", render: renderCompanyCell },
     { key: "title", label: "Title", render: r => esc(r.title ?? "") },
     { key: "email", label: "Email", render: r => r.email ? copyableCell(r.email) : '<span class="flag warn">no email</span>' },
     linkedinColumn(),
+    { key: "reply_kind", label: "Kind", sortVal: r => REPLY_KIND_ORDER[r.reply_kind] ?? 9,
+      render: r => renderReplyKind(r.reply_kind) },
     { key: "sentiment", label: "Sentiment", render: r => renderSentimentFlag(r.sentiment) },
     { key: "status_label", label: "Lead status", render: r => esc(r.status_label || "—") },
     { key: "tags", label: "Tags", maxw: 190, render: renderTagChips },
@@ -3614,15 +4379,27 @@ async function loadReplies() {
     // recent event of any kind. They answer different questions.
     { key: "event_at", label: "Since", render: r => dt(r.event_at), sortVal: r => r.event_at || "" },
     { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
-  ], d.replies, { empty: "No replies in this range.",
+  ], d.replies, { empty: "Nothing in this range for the selected kind.", pageSize: 50,
     onRowClick: r => openLead(r.lead_id),
-    // The "via <colleague>" chip opens that colleague, not the row's lead.
-    onDraw: el => el.querySelectorAll("[data-via-lead]").forEach(chip => chip.onclick = (e) => {
-      e.stopPropagation();
-      openLead(+chip.dataset.viaLead);
-    }) });
+    onDraw: el => {
+      // The "via <colleague>" chip opens that colleague, not the row's lead.
+      el.querySelectorAll("[data-via-lead]").forEach(chip => chip.onclick = (e) => {
+        e.stopPropagation();
+        openLead(+chip.dataset.viaLead);
+      });
+      el.querySelectorAll(".rp-sel").forEach(cb => cb.onclick = (e) => {
+        e.stopPropagation();            // selecting is not opening
+        cb.checked ? repliesSel.add(+cb.dataset.lead) : repliesSel.delete(+cb.dataset.lead);
+        syncRepliesSel();
+      });
+    } });
+  syncRepliesSel();
 }
-for (const id of ["replies-sentiment", "replies-status"]) $(id).onchange = loadReplies;
+for (const id of ["replies-sentiment", "replies-status", "replies-kind"]) $(id).onchange = () => {
+  if (id === "replies-kind") localStorage.setItem("om.repliesKind", $(id).value);
+  repliesSel.clear();
+  loadReplies();
+};
 // The dropdown and the campaigns table set the same selection, so they move the
 // copy-audit card the same way. Back to "All campaigns" means there is no one
 // campaign whose copy to show.
@@ -3645,6 +4422,13 @@ function renderLastKnownCampaign(r) {
     + `via ${esc(r.campaign_via_lead_name || "a colleague")}</span>`;
 }
 
+// The canonical column order, shared by the daily matrix and the campaigns
+// table so the two read as one set of numbers rather than two.
+const DAILY_COLUMN_ORDER = [
+  "email_sent", "email_received", "dm_sent", "dm_received",
+  "connects_sent", "connects_accepted",
+  "positive", "negative", "invalid", "autoreply", "meetings",
+];
 const DAILY_LABELS = {
   email_sent: "Email sent", email_received: "Email received",
   dm_sent: "DM sent", dm_received: "DM received",
@@ -3653,34 +4437,112 @@ const DAILY_LABELS = {
   meetings: "Meetings",
 };
 
+// Volume and outcomes are drawn as TWO charts sharing an x-axis, not one chart
+// with two y-scales.
+//
+// The problem is real: ~200 sends against ~5 positives on one linear axis leaves
+// the positives line pinned to the baseline, invisible when it doubles. The
+// obvious fix — a second y-axis on the right — is the wrong one. Where the two
+// scales line up is an arbitrary choice made by whoever wrote the chart, so the
+// picture invents a correlation between sends and positives that is not in the
+// data; it is the single most-flagged mistake in dashboard charting. Splitting
+// the plot gives the outcomes series the full height of their own axis and
+// claims nothing about how the two move together.
+//
+// Log scale is also out: every one of these series legitimately hits zero.
+//
+// The "% of sends" toggle is the other legitimate way to put a 5 and a 200 on
+// one scale — index both to a common base — and positive-rate-per-day is
+// usually the number being looked for anyway.
+const VOLUME_SERIES = [
+  { key: "email_sent", label: "Emails sent" },
+  { key: "email_received", label: "Emails received" },
+  { key: "dm_sent", label: "DMs sent" },
+  { key: "dm_received", label: "DMs received" },
+  // Connects are volume, not outcomes: they are the top of the LinkedIn funnel
+  // in the same way sends are the top of the email one. Six series is inside
+  // the categorical soft cap and the palette was validated at that width.
+  { key: "connects_sent", label: "Connects sent" },
+  { key: "connects_accepted", label: "Connects accepted" },
+];
+const OUTCOME_SERIES = [
+  { key: "positive", label: "Positive", css: "--good-text" },
+  { key: "negative", label: "Negative", css: "--status-critical" },
+  { key: "invalid", label: "Invalid", css: "--warn-text" },
+  { key: "autoreply", label: "Autoreply", css: "--series-4" },
+  { key: "meetings", label: "Meetings", css: "--series-5" },
+];
+
+const outcomeScale = () =>
+  document.querySelector('input[name="outcomescale"]:checked')?.value || "count";
+
+function dailyChartOptions(ink, grid, days, { percent = false } = {}) {
+  return {
+    maintainAspectRatio: false, animation: false,
+    interaction: { mode: "index", intersect: false },
+    onClick: (evt, els) => { if (els && els.length) setRangeToDay(days[els[0].index]?.date); },
+    plugins: {
+      legend: { labels: { color: ink, boxWidth: 12 } },
+      tooltip: { callbacks: percent
+        ? { label: c => `${c.dataset.label}: ${c.parsed.y == null ? "–" : c.parsed.y.toFixed(1) + "%"}` }
+        : {} },
+    },
+    scales: {
+      x: { grid: { display: false }, ticks: { color: ink, maxTicksLimit: 10 } },
+      y: { beginAtZero: true, grid: { color: grid }, border: { display: false },
+           ticks: { color: ink, precision: percent ? 1 : 0,
+                    callback: v => percent ? `${v}%` : v } },
+    },
+  };
+}
+
 function renderDaily(d) {
   if (!d) return;
   if (window.Chart) {
     const ci = chartInk();
     const { ink, grid, s1, s2, s3 } = ci;
-    // Sentiment series colors: reuse the flag palette from CSS vars where we can.
     const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || null;
-    const cPos = cssVar("--good-text") || s3, cNeg = cssVar("--status-critical") || s2,
-          cInv = cssVar("--warn-text") || s2, cAuto = cssVar("--series-4") || ink;
+    // Fixed order, never cycled: a series keeps its colour when another is
+    // added or the range changes. The 4th is a real hue, not body ink.
+    const volumeColors = [s1, s3, s2, cssVar("--series-4") || s1,
+                          cssVar("--series-5") || s3, cssVar("--series-6") || s2];
+
     state.charts.daily?.destroy();
     state.charts.daily = new Chart($("daily-chart"), {
       type: "line",
-      data: { labels: d.days.map(p => p.date), datasets: [
-        { label: "Sent (email + DM)", data: d.days.map(p => (p.email_sent || 0) + (p.dm_sent || 0)), borderColor: s1, backgroundColor: s1 },
-        { label: "Replies (email + DM)", data: d.days.map(p => (p.email_received || 0) + (p.dm_received || 0)), borderColor: s3, backgroundColor: s3 },
-        { label: "Positive", data: d.days.map(p => p.positive || 0), borderColor: cPos, backgroundColor: cPos },
-        { label: "Negative", data: d.days.map(p => p.negative || 0), borderColor: cNeg, backgroundColor: cNeg },
-        { label: "Invalid", data: d.days.map(p => p.invalid || 0), borderColor: cInv, backgroundColor: cInv },
-        { label: "Autoreply", data: d.days.map(p => p.autoreply || 0), borderColor: cAuto, backgroundColor: cAuto },
-      ].map(ds => ({ ...ds, borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.15 })) },
-      options: { maintainAspectRatio: false, animation: false,
-        onClick: (evt, els) => {
-          if (els && els.length) setRangeToDay(d.days[els[0].index]?.date);
-        },
-        plugins: { legend: { labels: { color: ink, boxWidth: 12 } } },
-        scales: { x: { grid: { display: false }, ticks: { color: ink, maxTicksLimit: 10 } },
-                  y: { beginAtZero: true, grid: { color: grid }, border: { display: false },
-                       ticks: { color: ink, precision: 0 } } } }
+      data: { labels: d.days.map(p => p.date), datasets: VOLUME_SERIES.map((sd, i) => ({
+        label: sd.label,
+        data: d.days.map(p => p[sd.key] || 0),
+        borderColor: volumeColors[i], backgroundColor: volumeColors[i],
+        borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.15,
+      })) },
+      options: dailyChartOptions(ink, grid, d.days),
+    });
+
+    // Outcomes keep the status palette they already used — these series carry
+    // reserved meanings (positive / negative / invalid), so their colour is not
+    // a free categorical slot to reassign.
+    const percent = outcomeScale() === "rate";
+    const sends = d.days.map(p => (p.email_sent || 0) + (p.dm_sent || 0));
+    state.charts.outcomes?.destroy();
+    state.charts.outcomes = new Chart($("outcomes-chart"), {
+      type: "line",
+      data: { labels: d.days.map(p => p.date), datasets: OUTCOME_SERIES.map((sd, i) => {
+        const color = cssVar(sd.css) || [s3, s2, s2, s1, s1][i];
+        return {
+          label: sd.label,
+          data: d.days.map((p, j) => {
+            const n = p[sd.key] || 0;
+            if (!percent) return n;
+            // No sends that day means the rate is undefined, not zero — a gap
+            // reads as "nothing to divide by", a zero reads as "we failed".
+            return sends[j] ? (n / sends[j]) * 100 : null;
+          }),
+          borderColor: color, backgroundColor: color, spanGaps: true,
+          borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.15,
+        };
+      }) },
+      options: dailyChartOptions(ink, grid, d.days, { percent }),
     });
   }
   const cols = [{ key: "date", label: "Date" }].concat(
@@ -3690,6 +4552,12 @@ function renderDaily(d) {
   renderTable("daily-matrix", cols, rows, { empty: "No activity in range.", filter: false,
     onRowClick: r => setRangeToDay(r.date) });
 }
+
+// Redraw from the payload already in hand — the toggle changes how the same
+// numbers are drawn, so it must not re-fetch.
+document.querySelectorAll('input[name="outcomescale"]').forEach(el => {
+  el.onchange = () => { if (state.daily) renderDaily(state.daily); };
+});
 
 const campaignSubjects = { campaignId: null, name: "" };
 
@@ -3936,7 +4804,8 @@ async function openOutboxItem(row) {
   const d = await api("/api/outbox/detail?" + p.toString()).catch(e => { toast(e.message); return null; });
   if (!d) return;
   openEditPanel(`${esc(d.entity_type)} <span class="stale">${esc(d.entity_id)}</span>`,
-    row.workspace_slug ? `workspace: ${esc(row.workspace_slug)}` : "org-wide entity");
+    row.workspace_slug ? `workspace: ${esc(row.workspace_slug)}` : "org-wide entity",
+    "sync.outbox");
   const kv = (obj) => Object.entries(obj || {}).map(([k, v]) =>
     `<tr><th>${esc(k)}</th><td class="wrap">${v && typeof v === "object" ? esc(JSON.stringify(v)) : esc(v ?? "–")}</td></tr>`).join("");
   const queueRows = d.outbox.map(o => `<tr>
@@ -4030,6 +4899,7 @@ async function openLead(leadId) {
       ${eventBodyBlock(ev)}
     </div>`; }).join("") : '<div class="empty">No events for this lead yet.</div>';
   renderLeadEnrich(lead);
+  renderLeadSource(lead);
   renderCompanyLink(lead);
   renderDangerZone({
     el: "lead-danger", title: "contact", confirm: lead.name || `lead ${lead.id}`,
@@ -4039,9 +4909,34 @@ async function openLead(leadId) {
     onDelete: () => post("/api/leads/delete", { lead_ids: [lead.id], confirm: true }),
     after: () => { dismissPanels(); loadContacts(false); },
   });
+  setPaneCrumb("lead-crumb", "contact.detail");
   $("overlay").style.display = "block";
   $("slideover").style.display = "block";
   updateBackBtns();
+}
+
+// Where this record came from, and where it was last touched. Both halves are
+// already stored and synced; nothing rendered them, so "why is this person in
+// the database" was a question only answerable from SQL.
+//
+// Latest is shown only when it actually differs from original -- for most rows
+// the two are the same import and a second identical line is noise.
+function renderLeadSource(lead) {
+  const line = (label, src, detail, at) => {
+    if (!src && !detail) return "";
+    const when = at ? ` <span class="stale">· ${dt(at)}</span>` : "";
+    const what = detail ? ` <span class="stale">${esc(detail)}</span>` : "";
+    return `<div style="margin-top:2px"><span class="stale" style="display:inline-block;min-width:58px">${label}</span>`
+         + `<b>${esc(src || "—")}</b>${what}${when}</div>`;
+  };
+  const differs = (lead.latest_source || lead.latest_source_detail)
+    && (lead.latest_source !== lead.original_source
+        || lead.latest_source_detail !== lead.original_source_detail);
+  const body = line("Original", lead.original_source, lead.original_source_detail, lead.original_source_at)
+    + (differs ? line("Latest", lead.latest_source, lead.latest_source_detail, lead.latest_source_at) : "");
+  $("lead-source").innerHTML = body
+    ? `<h3 style="font-size:13px;margin:0 0 6px">Source</h3><div style="font-size:12px">${body}</div>`
+    : "";
 }
 
 function renderLeadEnrich(lead) {
@@ -4453,12 +5348,25 @@ function closeLead() {
 /* ---------- lead ↔ company back-stack ---------- */
 // navPush records the panel you're leaving so navBack can return to it. Only the
 // cross-panel links call it — a fresh openLead/openCompany doesn't grow the stack.
-function navPush(type, id) { if (id != null) state.navStack.push({ type, id: +id }); }
+//
+// `type` names which opener to call on the way back. The deliverability panes
+// each take a string key rather than a numeric id, which is why the value is
+// not coerced for them.
+function navPush(type, id) {
+  if (id == null || id === "") return;
+  state.navStack.push({ type, id: typeof id === "number" ? id : String(id) });
+}
+const NAV_OPENERS = {
+  lead:     id => { closeEditPanel(); openLead(+id); },
+  company:  id => { closeLead(); openCompany(+id); },
+  bounce:   id => openBounceDrawer(id),
+  mailbox:  id => openTrendDrawer(id),
+  domain:   id => showDomain(id),
+};
 function navBack() {
   const prev = state.navStack.pop();
   if (!prev) { updateBackBtns(); return; }
-  if (prev.type === "lead") { closeEditPanel(); openLead(prev.id); }
-  else { closeLead(); openCompany(prev.id); }
+  (NAV_OPENERS[prev.type] || NAV_OPENERS.company)(prev.id);
 }
 function updateBackBtns() {
   const has = state.navStack.length > 0;

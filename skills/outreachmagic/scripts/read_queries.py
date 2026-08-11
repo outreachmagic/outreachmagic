@@ -399,8 +399,69 @@ def validate_readonly_sql(sql: str) -> str:
         raise ValueError("Only read-only SELECT / WITH queries are allowed")
     head = text.lstrip()[:20].upper()
     if not (head.startswith("SELECT") or head.startswith("WITH")):
-        raise ValueError("Query must start with SELECT or WITH")
+        raise ValueError(
+            "Query must start with SELECT or WITH. "
+            "For table/column discovery use: pipeline.py schema [table] [--relations]"
+        )
     return text
+
+
+#: CTEs a --workspace query gets for free. `leads` has no workspace_id (the
+#: relationship lives in workspace_leads) and `events` reaches its workspace
+#: through campaigns, so those two joins are what every agent gets wrong first.
+#: They are handed over as pre-bound CTEs rather than by rewriting the caller's
+#: SQL: silently editing someone's query is a footgun, giving them a scoped
+#: table to join against is not.
+WORKSPACE_CTES = (
+    ("ws_workspace", "SELECT * FROM workspaces WHERE id = '{wid}'"),
+    ("ws_leads",
+     "SELECT l.* FROM leads l JOIN workspace_leads wl ON wl.lead_id = l.id"
+     " WHERE wl.workspace_id = '{wid}'"),
+    ("ws_campaigns", "SELECT * FROM campaigns WHERE workspace_id = '{wid}'"),
+    ("ws_events",
+     "SELECT e.* FROM events e JOIN campaigns c ON c.id = e.campaign_id"
+     " WHERE c.workspace_id = '{wid}'"),
+    ("ws_sender_accounts",
+     "SELECT sa.* FROM sender_accounts sa"
+     " JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id"
+     " WHERE wsa.workspace_id = '{wid}'"),
+)
+
+
+def resolve_workspace_id(workspace: str) -> str:
+    """Slug or name or id -> workspace id, with a listing when it doesn't match."""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id FROM workspaces WHERE id = ? OR slug = ? OR name = ?"
+            " ORDER BY (id = ?) DESC LIMIT 1",
+            (workspace, workspace, workspace, workspace),
+        ).fetchone()
+        if row:
+            return row[0]
+        slugs = [r[0] for r in conn.execute(
+            "SELECT slug FROM workspaces ORDER BY slug").fetchall()]
+    finally:
+        conn.close()
+    raise ValueError(f"Unknown workspace: {workspace}. Available: {', '.join(slugs) or 'none'}")
+
+
+def with_workspace_ctes(sql: str, workspace_id: str) -> str:
+    """Prefix the query with the workspace-scoped CTEs.
+
+    The id is interpolated rather than bound because prepending bound
+    parameters would renumber the caller's own placeholders. It is validated
+    against the workspaces table first and matched to an id shape here, so it
+    is never free text from the outside.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", workspace_id or ""):
+        raise ValueError("workspace id has an unexpected shape")
+    ctes = ",\n".join(
+        f"{name} AS ({body.format(wid=workspace_id)})" for name, body in WORKSPACE_CTES)
+    text = sql.strip()
+    if text[:4].upper() == "WITH":
+        return f"WITH {ctes},\n{text[4:].lstrip()}"
+    return f"WITH {ctes}\n{text}"
 
 
 def run_readonly_sql(
@@ -409,11 +470,21 @@ def run_readonly_sql(
     params: Optional[list[Any]] = None,
     limit: int = DEFAULT_ROW_LIMIT,
     timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    workspace: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Execute one read-only query; returns columns, rows, timing."""
+    """Execute one read-only query; returns columns, rows, timing.
+
+    `limit=0` means no cap. Otherwise the cap is appended when the query has no
+    LIMIT of its own, and `truncated` says whether it bit -- silent truncation
+    at 500 rows is a wrong-answer generator.
+    """
     query = validate_readonly_sql(sql)
+    workspace_id = None
+    if workspace:
+        workspace_id = resolve_workspace_id(workspace)
+        query = with_workspace_ctes(query, workspace_id)
     bounded = query.rstrip()
-    if not re.search(r"\blimit\b", bounded, re.IGNORECASE):
+    if limit and not re.search(r"\blimit\b", bounded, re.IGNORECASE):
         bounded = f"{bounded}\nLIMIT {int(limit)}"
     conn = get_conn()
     conn.row_factory = sqlite3.Row
@@ -431,11 +502,120 @@ def run_readonly_sql(
             "row_count": len(rows),
             "elapsed_ms": elapsed_ms,
             "sql": query.strip(),
-            "truncated": len(rows) >= limit,
+            "truncated": bool(limit) and len(rows) >= limit,
             "limit": limit,
+            "workspace_id": workspace_id,
         }
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Schema discovery
+# ---------------------------------------------------------------------------
+
+#: One line per table, so `schema` answers "what is this for" and not just
+#: "what columns does it have". A table missing from here shows as TODO and
+#: fails release-check (tests/test_schema_reference.py) -- the point is that a
+#: new table cannot quietly arrive undocumented.
+TABLE_PURPOSE: dict[str, str] = {
+    "leads": "One row per lead (email and/or LinkedIn identity). Global — workspace scoping lives in workspace_leads.",
+    "companies": "Canonical company records. Linked from leads.company_id.",
+    "lead_links": (
+        "Two people in one conversation (someone replied and forwarded us to a "
+        "colleague). Directional: from_lead_id introduced us to to_lead_id. "
+        "Non-destructive — both leads stay whole; reporting counts distinct "
+        "conversation roots so the thread counts once."),
+    "company_identities": "A company's domains and other identifiers, with provenance. Where a company's extra domains live.",
+    "events": "Primary timeline: sends, replies, bounces, status labels. Use this for analytics.",
+    "campaigns": "Campaign names and their workspace. events.campaign_id joins here.",
+    "workspaces": "Multi-workspace routing. Slug column is `slug`, not `workspace_slug`.",
+    "workspace_leads": "Per-workspace lead status, sentiment anchor and activity. The leads-to-workspace join.",
+    "workspace_lead_events": "Workspace-scoped ingest audit — a subset, not full relay volume.",
+    "workspace_lead_tags": "Workspace-scoped tags on a lead.",
+    "campaign_leads": "Which leads belong to which campaign.",
+    "campaign_workspace_map": "Relay-platform campaign routing (campaign_platform_id = the sequencer's own id). NOT a join path for events.",
+    "unmapped_campaign_queue": "Quarantined webhook events awaiting routing.",
+    "relay_ingested": "Inbound dedupe ledger — a hash per ingested relay event.",
+    "event_push_log": "Outbound push state: has this event been sent to the relay.",
+    "bounce_events": "Deduplicated bounces with message, SMTP code and recipient MX. Never pruned — full history.",
+    "sender_accounts": "Your sending mailboxes. provider is sequencer-owned.",
+    "sender_domains": "Your sending domains: reseller, provider, cost, DNSBL status, registration date.",
+    "workspace_sender_accounts": "Which workspaces a mailbox serves.",
+    "lead_emails": "Additional email addresses for a lead.",
+    "lead_personalization": "Per-lead personalization values.",
+    "company_personalization": "Per-company personalization values.",
+    "lead_merges": "Audit trail of merged lead records.",
+    "outbox": "Pending entity changes queued for the relay.",
+    "phone_numbers": "Phone numbers owned by a lead or company.",
+    "suppression_rules": "Contacts excluded from lists, counts and exports.",
+    "suppression_entries": "Materialized matches of a suppression rule to specific contacts.",
+    "workspace_lead_suppressions": "Per-workspace suppression of one lead.",
+    "company_contact_observations": "Contacts seen on a company's own pages during sourcing.",
+    "company_merge_candidates": "Proposed company merges awaiting a decision.",
+    "company_merges": "Audit trail of executed company merges.",
+    "company_page_cache": "Fetched company pages, cached so sourcing does not pay twice.",
+    "crm_entity_map": "Local entity to CRM record id mapping.",
+    "crm_sync_log": "What was pushed to the CRM, and when.",
+    "crm_workspace_config": "Per-workspace CRM connection settings.",
+    "lead_identities": "A lead's identifying values (email, LinkedIn) with provenance.",
+    "lead_merge_jobs": "Proposed lead merges awaiting a decision.",
+    "lead_provider_observations": "Per-provider enrichment attempts and their outcomes.",
+    "leads_junk_quarantine": "Rows held back as junk rather than imported.",
+    "migration_flags": "One-shot migration markers, so a backfill runs once.",
+    "organizations": "The org a database belongs to (single row in normal use).",
+    "personalization_fields": "Registry of personalization field names and their scope.",
+    "provider_batch_jobs": "Submitted provider batch jobs awaiting download.",
+    "sync_audit": "Record of sync pushes and pulls for debugging.",
+    "sync_shadow": "Last-synced copy of an entity, for change detection.",
+    "workspace_icp_profiles": "Saved ICP definitions per workspace.",
+    "workspace_lead_linkedin_status": "Per-workspace LinkedIn connection state for a lead.",
+    "lead_email_verification": "Email verification results per address.",
+    "email_verification_status": "Consolidated verification verdict per lead.",
+    "unmapped_campaign_resolutions": "Decisions made on quarantined campaign events.",
+    "workspace_sender_domains": "Which workspaces a sending domain serves.",
+    "public_emails": "Published email addresses found on a company's site.",
+    "campaign_workspace_rules": "Name/pattern rules routing campaigns to workspaces.",
+}
+
+#: How each entity is scoped to a workspace. The single most common wrong first
+#: guess is `leads.workspace_id`, which does not exist.
+WORKSPACE_SCOPING: dict[str, str] = {
+    "leads": "via workspace_leads(workspace_id, lead_id) — no column on leads",
+    "campaigns": "direct campaigns.workspace_id",
+    "events": "via events.campaign_id -> campaigns.workspace_id",
+    "sender_accounts": "via workspace_sender_accounts(workspace_id, sender_account_id)",
+    "bounce_events": "bounce_events.workspace_id (older rows may be null)",
+    "campaign_workspace_map": "relay-platform routing only — not a join path for events",
+}
+
+
+def table_relations(tables: Optional[list[str]] = None) -> dict[str, Any]:
+    """Foreign-key graph, so an agent can find the join instead of guessing it."""
+    conn = get_conn()
+    try:
+        names = [
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        wanted = [t for t in names if not tables or t in set(tables)]
+        edges = []
+        for table in wanted:
+            for fk in conn.execute(f'PRAGMA foreign_key_list("{table}")').fetchall():
+                edges.append({
+                    "from_table": table,
+                    "from_column": fk[3],
+                    "to_table": fk[2],
+                    "to_column": fk[4] or "id",
+                })
+    finally:
+        conn.close()
+    return {
+        "relations": edges,
+        "workspace_scoping": WORKSPACE_SCOPING,
+        "db_path": str(get_db_path()),
+    }
 
 
 def list_tables() -> dict[str, Any]:
@@ -451,7 +631,12 @@ def list_tables() -> dict[str, Any]:
         ).fetchall()
     finally:
         conn.close()
-    return {"tables": [r[0] for r in rows], "db_path": str(get_db_path())}
+    tables = [r[0] for r in rows]
+    return {
+        "tables": tables,
+        "purposes": {t: TABLE_PURPOSE.get(t, "TODO — undocumented table") for t in tables},
+        "db_path": str(get_db_path()),
+    }
 
 
 def table_schema(table: str) -> dict[str, Any]:
@@ -475,14 +660,21 @@ def table_schema(table: str) -> dict[str, Any]:
             ]
             raise ValueError(f"Table not found: {table}. Available: {', '.join(all_tables)}")
         cols = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+        fks = [
+            {"column": fk[3], "references": f"{fk[2]}.{fk[4] or 'id'}"}
+            for fk in conn.execute(f'PRAGMA foreign_key_list("{table}")').fetchall()
+        ]
     finally:
         conn.close()
     return {
         "table": table,
+        "purpose": TABLE_PURPOSE.get(table, "TODO — undocumented table"),
+        "workspace_scoping": WORKSPACE_SCOPING.get(table),
         "columns": [
             {"name": c[1], "type": c[2], "notnull": bool(c[3]), "default": c[4], "pk": bool(c[5])}
             for c in cols
         ],
+        "foreign_keys": fks,
         "db_path": str(get_db_path()),
     }
 

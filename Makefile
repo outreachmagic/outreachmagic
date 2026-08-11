@@ -1,10 +1,13 @@
 PYTHON ?= python3
 export PYTHON
 
-.PHONY: manifests release-check test lint setup-hooks
+.PHONY: manifests schema-reference release-check test lint setup-hooks
 
-manifests:
+manifests: schema-reference
 	$(PYTHON) scripts/generate_skill_manifest.py --all
+
+schema-reference:
+	$(PYTHON) skills/outreachmagic/scripts/generate_schema_reference.py
 
 release-check: manifests
 	bash scripts/release-check.sh

@@ -32,7 +32,7 @@ from om_paths import set_data_root_override  # noqa: E402
 
 set_data_root_override(Path(_tmp))
 
-import dashboard_queries as dq  # noqa: E402
+import reporting_queries as dq  # noqa: E402
 import pipeline as om  # noqa: E402
 
 WS = "test-ws"
@@ -238,6 +238,39 @@ class LastKnownCampaignTests(unittest.TestCase):
              "2026-07-01T09:00:00", f"{other_ws}:{event_id}"))
         self.conn.commit()
         self.assertIsNone(self._resolve(lead)["campaign_name"])
+
+    # -- the contacts list reads the same answer ----------------------------
+
+    def test_the_contacts_list_carries_campaign_and_last_reply(self):
+        """Contacts and Campaigns must name the same campaign for one person.
+
+        The columns were added to Contacts by calling the SAME resolver the
+        Campaigns page uses, rather than by reading events.campaign_id off the
+        row -- which is the read that shows "—" for every bounce and auto-reply.
+        """
+        lead = self._lead("Reader")
+        camp = self._campaign("Q3 Outbound")
+        self._event(lead, "email_sent", "outbound", "2026-01-01T09:00:00", camp)
+        self._event(lead, "email_reply", "inbound", "2026-01-05T11:30:00", camp)
+        # A later campaign-less bounce: the naive read would lose the campaign.
+        self._event(lead, "email_bounce", "inbound", "2026-01-06T08:00:00", None)
+
+        row = next(r for r in dq.search_leads(self.conn, WS)["leads"]
+                   if r["lead_id"] == lead)
+        self.assertEqual(row["campaign_name"], "Q3 Outbound")
+        self.assertEqual(row["campaign_source"], "self_reply")
+        self.assertEqual(self._resolve(lead)["campaign_name"], row["campaign_name"])
+        # Last reply is the most recent INBOUND event, bounce included.
+        self.assertEqual(row["last_reply_at"], "2026-01-06T08:00:00")
+
+    def test_a_contact_with_no_inbound_has_no_last_reply(self):
+        lead = self._lead("Silent")
+        camp = self._campaign("Q3 Outbound")
+        self._event(lead, "email_sent", "outbound", "2026-01-01T09:00:00", camp)
+        row = next(r for r in dq.search_leads(self.conn, WS)["leads"]
+                   if r["lead_id"] == lead)
+        self.assertIsNone(row["last_reply_at"])
+        self.assertEqual(row["campaign_source"], "self_send")
 
 
 if __name__ == "__main__":

@@ -3,8 +3,8 @@ contacts list.
 
 The requirement is "whatever is on screen right now, all N of it" — which is
 only true if the export and the list build the same WHERE. So this module takes
-`dashboard_queries.LEAD_FILTER_KEYS` verbatim and calls
-`dashboard_queries.lead_filter_clause()`; there is no second filter set here to
+`reporting_queries.LEAD_FILTER_KEYS` verbatim and calls
+`reporting_queries.lead_filter_clause()`; there is no second filter set here to
 drift out of step. (`pipeline_tags.export_leads` was exactly that second set,
 and is now a shim over this one.)
 
@@ -22,7 +22,7 @@ import sqlite3
 from datetime import datetime
 from typing import Any, Optional
 
-import dashboard_queries as dq
+import reporting_queries as dq
 from constants import COMPANY_DOMAIN_SQL
 from om_paths import get_export_dir
 

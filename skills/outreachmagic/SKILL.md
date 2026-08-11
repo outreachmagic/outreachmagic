@@ -4,7 +4,7 @@ description: >
   Your agent goes blind after send. Sync sequencer webhooks, research leads
   via Serper, and find/verify emails — all in one local SQLite DB your agent
   queries directly.
-version: 1.5.0
+version: 1.7.0
 author: Outreach Magic
 license: MIT
 platforms: [macos, linux]
@@ -100,7 +100,7 @@ Config keys: `data_root` (share DB across agents), `api_base_url`, `dev_repo`.
 ## Platform install
 
 ```bash
-OM_VERSION=v1.5.0
+OM_VERSION=v1.7.0
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"
@@ -183,6 +183,15 @@ Updates are user-triggered only. The CLI may print a notice when a newer release
 
 - **Bulk enrichment:** use `import-profiles`, not repeated `add-lead`.
 - **Reads:** `pipeline.py query` presets first. See [references/query-guide.md](references/query-guide.md).
+- **Don't guess table or column names.** `pipeline.py schema [table] [--relations]` prints
+  them, and [references/schema.md](references/schema.md) has the whole thing including how
+  each entity is scoped to a workspace (`leads` has **no** `workspace_id` — it joins through
+  `workspace_leads`). `PRAGMA` is blocked by the read-only guard; `schema` is the way.
+- **Freshness goes to stderr**, and is also in the JSON body (`freshness_message`).
+  Do not strip it out of stdout with a regex — pass `--quiet` (or `OM_QUIET=1`) instead.
+- **`--limit 0` means no cap.** Ad-hoc SQL stops at 500 rows by default and says so on
+  stderr; a `truncated` flag comes back in the JSON.
+- **`OM_WORKSPACE`** supplies `--workspace` when you do not pass it.
 - **Writes:** only `pipeline.py` mutation commands. Never `INSERT`/`UPDATE`/`DELETE` via ad-hoc SQL.
 - **After any `pull`:** report exact number of new records imported.
 - **Analytics format:** (1) human table, (2) preset name or SQL used, (3) freshness note. Offer `pull` if they need latest data.
@@ -191,6 +200,29 @@ Updates are user-triggered only. The CLI may print a notice when a newer release
 - **Never run `sync` unless the user asked.** Never run `archive --purge` without explicit confirm after `--dry-run`. (A user clicking the dashboard's "Push to relay" button counts as asking.)
 - **Answer with `pipeline.py version`** when user asks about version (authoritative).
 - **Pipeline stages:** `prospecting` → `contacted` → `replied` → `interested` → `scheduled` → `won` | `not_interested` | `lost`.
+
+### Deliverability and bounces
+
+Everything on the dashboard's Deliverability page is a command:
+
+```bash
+python3 scripts/pipeline.py query deliverability --workspace acme --since 7d --json
+python3 scripts/pipeline.py deliverability domains --workspace acme --json       # sends, provider, reseller, age, DNSBL
+python3 scripts/pipeline.py deliverability mailboxes --workspace acme --flagged --json
+python3 scripts/pipeline.py deliverability blacklist --domain acmemail.com --json  # every list, verdict and check time
+python3 scripts/pipeline.py deliverability bounces --workspace acme --group-by signature --json
+python3 scripts/pipeline.py deliverability bounce-detail --id <id> --json          # message + the sends before it
+python3 scripts/pipeline.py deliverability trend --mailbox jane@acmemail.com --json
+python3 scripts/pipeline.py sender-domains registration            # domain age via RDAP (cached)
+python3 scripts/pipeline.py campaign-replies --workspace acme --kind human --json
+```
+
+A DNSBL result of `check_failed` means the list refused or timed out — **it is not a
+listing**. Report it as "could not check", never as blacklisted.
+
+`campaign-replies` splits leads into `human` / `auto_reply` / `bounce` / `status_only`.
+A bounce and an out-of-office both set a sentiment, so "we got 4 replies" is wrong
+unless you looked at the kinds.
 
 ### Pull policy
 
@@ -285,6 +317,24 @@ pipeline.py import-profiles --file enriched.csv --workspace W \
 ```
 
 `add-lead` returns `{"status": "exists", "id": N}` on duplicates (matched by email, LinkedIn, or name+company). `import-profiles` uses tiered identity matching: `external_id` → email → LinkedIn → phone → name+domain → name+company.
+
+**Read the dry run before the real run.** Each row reports `would_fill` — the
+columns that row would actually populate — so "did they have a LinkedIn before?"
+is answered without querying the database. Real runs report `enriched_by_field`
+(`{"linkedin_url": 296, "email": 38}`) rather than one opaque total.
+
+**Same person, two profile URLs.** A list that includes someone twice under two
+LinkedIn URLs and no email looks like two people to the identity tiers.
+`--on-identity-conflict` decides what happens: `review` (default — create, but
+report both records under `identity_review`), `merge`, or `create`. Every run
+also reports `duplicate_candidates`, the same-name/same-company groups it
+touched, with ids ready for `merge-leads`. Nothing merges silently: two people
+can legitimately share a name, a title and an employer.
+
+**Formats detected automatically:** Sales Navigator and AI Ark. A raw AI Ark
+export imports with no preprocessing — `AI Ark People ID` maps to `external_id`,
+so a later pull of the same source matches on identity tier 1 instead of
+duplicating.
 
 Full import field reference, personalization workflow, email verification, dedup, Google Sheets export, quarantine management, and troubleshooting: [references/command-reference.md](references/command-reference.md).
 

@@ -38,6 +38,7 @@ RULE_HINTS: dict[str, str] = {
     "low_activity_bulk": "Many leads with few events (typical after CSV import). Informational only.",
     "verification_gap": "Leads with email outnumber email verification records. If verification was previously run, the structured rows may not have synced to the relay before a fresh pull. Run `sync` before any future DB rebuild, then re-run verification.",
     "verification_status_incomplete": "Email verification rows exist but the consolidated `email_verification_status` is not populated on most leads. Run `sync` to push verification data to the relay, then `refresh --yes` to rebuild and re-import from the cloud with preserved timestamps.",
+    "linkedin_identity_gap": "Leads carry a LinkedIn URL with no matching identity row, so nothing can match them by LinkedIn and re-importing the same person creates a duplicate. Run `pipeline.py repair-linkedin` to see them, then `--apply`.",
 }
 
 STATUS_RANK = {"ok": 0, "info": 1, "warn": 2, "critical": 3}
@@ -131,36 +132,46 @@ def evaluate_health_rules(
     status = "ok"
     triggered: list[dict[str, str]] = []
 
-    def add(rule_id: str, rule_status: str):
+    def add(rule_id: str, rule_status: str, measured=None, threshold=None):
         nonlocal status
         if rule_status == "info":
             pass
         else:
             status = _max_status(status, rule_status)
-        triggered.append(
-            {"id": rule_id, "status": rule_status, "hint": RULE_HINTS.get(rule_id, "")}
-        )
+        # Measured value and threshold travel with the rule: "critical" with no
+        # number attached is an alarm nobody can act on, and the reader should
+        # not have to go find what tripped it.
+        entry = {"id": rule_id, "status": rule_status, "hint": RULE_HINTS.get(rule_id, "")}
+        if measured is not None:
+            entry["measured"] = measured
+        if threshold is not None:
+            entry["threshold"] = threshold
+        triggered.append(entry)
 
     if integrity_ok is False:
-        add("integrity_fail", "critical")
+        add("integrity_fail", "critical", measured="integrity_check failed")
     if file_bytes >= DB_SIZE_CRITICAL_BYTES:
-        add("db_size_critical", "critical")
+        add("db_size_critical", "critical", measured=f"{file_bytes / 1e9:.1f} GB",
+            threshold=f"{DB_SIZE_CRITICAL_BYTES / 1e9:.1f} GB")
     elif file_bytes >= DB_SIZE_WARN_BYTES:
-        add("db_size_warn", "info")
+        add("db_size_warn", "info", measured=f"{file_bytes / 1e9:.1f} GB",
+            threshold=f"{DB_SIZE_WARN_BYTES / 1e9:.1f} GB")
 
     leads = row_counts.get("leads") or 0
     relay = row_counts.get("relay_ingested") or 0
     events = row_counts.get("events") or 0
     if leads > 0 and relay / leads > RELAY_BLOAT_RATIO:
-        add("relay_bloat", "info")
+        add("relay_bloat", "info", measured=f"{relay / leads:.1f} dedupe keys/lead",
+            threshold=f"{RELAY_BLOAT_RATIO} keys/lead")
 
     pending = row_counts.get("pending_sync") or 0
     if pending > PENDING_SYNC_LEADS:
-        add("pending_sync", "warn")
+        add("pending_sync", "warn", measured=f"{pending} leads", threshold=f"{PENDING_SYNC_LEADS} leads")
 
     quarantine = row_counts.get("unmapped_campaign_queue") or 0
     if quarantine > QUARANTINE_BACKLOG:
-        add("quarantine_backlog", "warn")
+        add("quarantine_backlog", "warn", measured=f"{quarantine} events",
+            threshold=f"{QUARANTINE_BACKLOG} events")
 
     if leads > LOW_ACTIVITY_LEADS and events / max(leads, 1) < LOW_ACTIVITY_RATIO:
         add("low_activity_bulk", "info")
@@ -169,11 +180,25 @@ def evaluate_health_rules(
     verification_rows = row_counts.get("lead_email_verification") or 0
     status_populated = row_counts.get("email_verification_status_populated") or 0
     if leads_with_email >= 10 and verification_rows == 0:
-        add("verification_gap", "warn")
+        add("verification_gap", "warn",
+            measured=f"0 of {leads_with_email} leads with email verified",
+            threshold="at least some verification rows")
     elif leads_with_email >= 10 and verification_rows < leads_with_email * 0.3:
-        add("verification_gap", "info")
+        add("verification_gap", "info",
+            measured=f"{verification_rows} of {leads_with_email} leads with email verified",
+            threshold="30% of leads with email")
+    orphan_li = row_counts.get("linkedin_url_without_identity") or 0
+    if orphan_li:
+        # Not proportional: every one of these is a lead that will duplicate on
+        # the next import of the same person, so ten is already worth saying.
+        add("linkedin_identity_gap", "warn" if orphan_li >= 10 else "info",
+            measured=f"{orphan_li} lead(s) with a LinkedIn URL and no identity row",
+            threshold="0")
+
     if verification_rows > 0 and status_populated < verification_rows * 0.5:
-        add("verification_status_incomplete", "info")
+        add("verification_status_incomplete", "info",
+            measured=f"{status_populated} of {verification_rows} verification rows consolidated",
+            threshold="50% of verification rows")
 
     return status, triggered
 
@@ -216,6 +241,15 @@ def collect_db_health(
         ).fetchone()[0],
         "email_verification_status_populated": conn.execute(
             "SELECT COUNT(*) FROM leads WHERE email_verification_status IS NOT NULL"
+        ).fetchone()[0],
+        # A LinkedIn URL on the row with no identity row behind it. Invisible
+        # until it produces a duplicate, which is how it reached 193 leads.
+        "linkedin_url_without_identity": conn.execute(
+            """SELECT COUNT(*) FROM leads l
+                WHERE l.linkedin_url IS NOT NULL AND TRIM(l.linkedin_url) != ''
+                  AND NOT EXISTS (SELECT 1 FROM lead_identities i
+                                   WHERE i.lead_id = l.id
+                                     AND i.identity_type = 'linkedin_url')"""
         ).fetchone()[0],
     }
 
@@ -348,7 +382,10 @@ def maybe_report_db_health_to_cloud(
         return {
             "db_health_reported": "reported",
             "health_status": health["healthStatus"],
+            # Full rule records, not just ids: an agent that only gets
+            # ["db_size_critical"] has an alarm and no way to act on it.
             "rules_triggered": [r["id"] for r in health.get("rulesTriggered") or []],
+            "rules": health.get("rulesTriggered") or [],
         }
     except Exception as exc:
         return {"db_health_reported": "error", "db_health_error": str(exc)[:200]}

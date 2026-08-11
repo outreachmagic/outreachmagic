@@ -15,7 +15,7 @@ SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-import dashboard_queries as dq  # noqa: E402
+import reporting_queries as dq  # noqa: E402
 import lead_export  # noqa: E402
 import pipeline as om  # noqa: E402
 import pipeline_tags  # noqa: E402

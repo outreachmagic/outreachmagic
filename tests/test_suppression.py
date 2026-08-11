@@ -24,7 +24,7 @@ SCRIPTS = ROOT / "skills" / "outreachmagic" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-import dashboard_queries as dq  # noqa: E402
+import reporting_queries as dq  # noqa: E402
 import lead_export  # noqa: E402
 import pipeline as om  # noqa: E402
 import suppression as sp  # noqa: E402
@@ -233,3 +233,40 @@ def test_bad_values_are_rejected_and_bulk_add_reports_the_bad_row():
     assert result["failed"] == 1
     assert result["errors"][0]["row"] == 2
     conn.close()
+
+
+def test_the_sync_panel_can_describe_a_queued_suppression_rule():
+    """Clicking a suppression row in the Sync tab used to be a dead end.
+
+    _resolve_outbox_entity had no branch for the entity type, so the panel
+    answered "Could not build payload: unknown entity_type: suppression" for a
+    rule that was otherwise perfectly well formed.
+    """
+    conn, ws_id = _workspace()
+    result = sp.add_entry(conn, entry_type="email", value="Jane@Acme.com",
+                          workspace_id=ws_id, reason="manual", note="asked to stop")
+    conn.commit()
+    entry_id = result["entry_id"]
+
+    record, payload, error = dq._resolve_outbox_entity(
+        conn, "suppression", entry_id, "acme")
+    assert error is None, error
+    assert record is not None and record["value_normalized"] == "jane@acme.com"
+    assert payload["entry_type"] == "email"
+    assert payload["value"] == "jane@acme.com"
+    assert payload["workspace"] == "acme"
+    assert payload["note"] == "asked to stop"
+    # Null-valued columns never reach the wire.
+    assert all(v is not None for v in payload.values())
+    conn.close()
+
+
+def test_a_suppression_rule_is_reported_as_unpushable_not_broken():
+    """No relay endpoint exists for suppression, so the panel must say that.
+
+    Otherwise a row sitting at attempts=0 since the day it was written reads as
+    a stuck or failing push, and the next person goes looking for a bug in the
+    push loop instead of a missing endpoint.
+    """
+    assert "suppression" in dq.UNPUSHABLE_ENTITY_TYPES
+    assert "no suppression endpoint" in dq.UNPUSHABLE_ENTITY_TYPES["suppression"]

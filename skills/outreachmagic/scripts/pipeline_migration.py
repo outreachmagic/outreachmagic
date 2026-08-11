@@ -195,6 +195,8 @@ def build_outbox_triggers() -> list[str]:
             "(SELECT uid FROM leads WHERE id = OLD.lead_id)",
             "(SELECT slug FROM workspaces WHERE id = OLD.workspace_id)",
         ),
+        # A link is deleted outright (unlink_leads), and its id is the wire key.
+        "lead_links": ("OLD.id", "NULL"),
         "sender_accounts": ("CAST(OLD.id AS TEXT)", "NULL"),
         "sender_domains": ("OLD.domain", "NULL"),
         # Suppression entries are soft-deleted (`revoked_at`), so this fires
@@ -1760,6 +1762,76 @@ def _add_campaigns_workspace_id(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_relay_ingested_to_hash(conn: sqlite3.Connection) -> dict:
+    """Rebuild a pre-hash relay_ingested table into (dedupe_hash BLOB PK, ...).
+
+    relay_ingested stored the dedupe key as text until the hashed shape landed
+    (the keys average ~129 bytes across ~800k rows, so the text cost ~146 MB).
+    No migration shipped with that change, so any database created before it
+    crashes on the next `pull` with "no such column: dedupe_hash" -- the scripts
+    moved and the file did not. The PK type changes, so this rebuilds rather
+    than ALTERs.
+
+    A key that cannot be hashed is dropped: the cost is one redundant re-ingest,
+    which is idempotent, and keeping it would fail the whole migration.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(relay_ingested)").fetchall()}
+    if not cols or "dedupe_hash" in cols:
+        return {"status": "skipped"}
+    if "dedupe_key" not in cols:
+        return {"status": "skipped"}
+
+    from relay_ingest import relay_dedupe_hash
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS relay_ingested_hashed (
+            dedupe_hash     BLOB PRIMARY KEY,
+            lead_id         INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+            ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    has_lead = "lead_id" in cols
+    has_at = "ingested_at" in cols
+    select = "SELECT dedupe_key{lead}{at} FROM relay_ingested".format(
+        lead=", lead_id" if has_lead else "",
+        at=", ingested_at" if has_at else "",
+    )
+    migrated = dropped = 0
+    batch: list = []
+    for row in conn.execute(select).fetchall():
+        key = row["dedupe_key"]
+        if not key:
+            dropped += 1
+            continue
+        try:
+            digest = relay_dedupe_hash(str(key))
+        except Exception:  # noqa: BLE001 - an unhashable key costs one re-ingest
+            dropped += 1
+            continue
+        batch.append((
+            digest,
+            row["lead_id"] if has_lead else None,
+            row["ingested_at"] if has_at else datetime.now(timezone.utc).isoformat(),
+        ))
+        if len(batch) >= 5000:
+            conn.executemany(
+                "INSERT OR IGNORE INTO relay_ingested_hashed (dedupe_hash, lead_id, ingested_at)"
+                " VALUES (?, ?, ?)", batch)
+            migrated += len(batch)
+            batch = []
+    if batch:
+        conn.executemany(
+            "INSERT OR IGNORE INTO relay_ingested_hashed (dedupe_hash, lead_id, ingested_at)"
+            " VALUES (?, ?, ?)", batch)
+        migrated += len(batch)
+
+    conn.execute("DROP TABLE relay_ingested")
+    conn.execute("ALTER TABLE relay_ingested_hashed RENAME TO relay_ingested")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_relay_ingested_lead_id ON relay_ingested(lead_id)")
+    return {"status": "migrated", "rows": migrated, "dropped": dropped}
+
+
 def migrate_db(conn=None):
     """Apply incremental schema changes and backfill derived data."""
     own_conn = conn is None
@@ -2250,6 +2322,17 @@ def migrate_db(conn=None):
     except sqlite3.OperationalError:
         pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_relay ON events(relay_id)")
+    # `legacy_companies_column` was an implementation note leaking into the UI:
+    # it means "this domain came from the merged company's own companies.domain
+    # field". Renamed to something a reader can act on. One writer, no readers
+    # branch on the string, so a straight UPDATE is safe.
+    try:
+        conn.execute(
+            "UPDATE company_identities SET source = 'merged_company_record'"
+            " WHERE source = 'legacy_companies_column'")
+    except sqlite3.OperationalError:
+        pass
+    _migrate_relay_ingested_to_hash(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_relay_ingested_lead_id ON relay_ingested(lead_id)")
     conn.execute(
         """UPDATE events SET relay_id = json_extract(metadata_json, '$.relay_id')
@@ -2599,6 +2682,20 @@ def migrate_db(conn=None):
     # dnsbl_status: dedicated JSON column for blacklist scan results -- never crammed
     # into notes, which is a blind-overwrite freeform field on both manual set and cloud sync.
     for col in ("sending_ip", "dnsbl_status"):
+        try:
+            conn.execute(f"ALTER TABLE sender_domains ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass
+    # provider: the mail platform that actually sends (Google Workspace,
+    # Microsoft 365, an SMTP relay) -- NOT the reseller you bought from.
+    # The two were conflated: the dashboard's "Provider" column was reading
+    # `reseller`, so a domain bought from a reseller reported the reseller as
+    # its sending platform. registration_*: RDAP creation date for the domain,
+    # fetched once and cached (a registration date never changes).
+    # registration_checked_at is what distinguishes "the registry redacts this"
+    # from "we never asked" -- both leave registration_date null.
+    for col in ("provider", "registration_date", "registration_checked_at",
+                "registration_source"):
         try:
             conn.execute(f"ALTER TABLE sender_domains ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:

@@ -22,7 +22,7 @@ from om_paths import set_data_root_override  # noqa: E402
 
 set_data_root_override(Path(_tmp))
 
-import dashboard_queries as dq  # noqa: E402
+import reporting_queries as dq  # noqa: E402
 import pipeline as om  # noqa: E402
 
 
@@ -159,6 +159,89 @@ class CampaignRepliesFilterTests(unittest.TestCase):
         self._replier("Alice", "positive", "interested")
         row = self._replies()["replies"][0]
         self.assertIsNone(row["tags"])
+
+
+class UnclassifiedReplyTests(CampaignRepliesFilterTests):
+    """A reply with no sentiment is still a reply.
+
+    The Replies card was one row per lead keyed on `current_status_sentiment` /
+    `current_sentiment_since`, so a lead with no sentiment could not appear in
+    it whatever they actually did. Email sequencers ship a status label with
+    every reply and that is what sets sentiment; Prosp ships none -- all 715
+    inbound LinkedIn events carried `lead_status_raw` NULL. The whole channel
+    was therefore missing from the card that claims to list replies: 92 leads
+    had a LinkedIn DM reply and only 12 showed up.
+    """
+
+    def _dm_replier(self, name, *, at="2026-07-02 12:00:00"):
+        """A LinkedIn DM reply, exactly as Prosp delivers it: no status label."""
+        lead_id = om.add_lead(name=name, linkedin_url=f"linkedin.com/in/{name.lower()}")["id"]
+        conn = om.get_conn()
+        try:
+            conn.execute(
+                """INSERT OR IGNORE INTO workspace_leads
+                       (id, org_id, workspace_id, lead_id)
+                   VALUES (?,?,?,?)""",
+                (f"wl-{lead_id}", self.org_id, self.ws, lead_id))
+            event_id = conn.execute(
+                """INSERT INTO events
+                       (lead_id, event_type, direction, channel, subject,
+                        metadata_json, created_at)
+                   VALUES (?, 'linkedin_message', 'inbound', 'linkedin', ?, '{}', ?)""",
+                (lead_id, f"{name} replied on LinkedIn", at)).lastrowid
+            conn.execute(
+                """INSERT INTO workspace_lead_events
+                       (workspace_id, org_id, lead_id, event_id, event_type,
+                        event_at, idempotency_key)
+                   VALUES (?,?,?,?,'linkedin_message',?,?)""",
+                (self.ws, self.org_id, lead_id, event_id, at, f"k-{event_id}"))
+            conn.commit()
+        finally:
+            conn.close()
+        return lead_id
+
+    def test_a_linkedin_dm_reply_appears_in_the_list(self):
+        self._dm_replier("Markzgoodman")
+        names = [r["lead_name"] for r in self._replies()["replies"]]
+        self.assertIn("Markzgoodman", names)
+
+    def test_it_is_classified_as_a_human_reply_with_no_sentiment(self):
+        """Honest, not invented. Defaulting DMs to 'positive' would corrupt
+        every positive count on the Campaigns page."""
+        self._dm_replier("Markzgoodman")
+        row = next(r for r in self._replies()["replies"]
+                   if r["lead_name"] == "Markzgoodman")
+        self.assertEqual(row["reply_kind"], "human")
+        self.assertIsNone(row["sentiment"])
+
+    def test_it_is_anchored_on_the_reply_time(self):
+        self._dm_replier("Markzgoodman", at="2026-07-02 12:00:00")
+        row = next(r for r in self._replies()["replies"]
+                   if r["lead_name"] == "Markzgoodman")
+        self.assertEqual(str(row["event_at"])[:10], "2026-07-02")
+
+    def test_the_date_range_still_applies_to_it(self):
+        self._dm_replier("Recent", at="2026-07-20 12:00:00")
+        self._dm_replier("Ancient", at="2020-01-01 12:00:00")
+        names = {r["lead_name"] for r in self._replies(since="2026-07-01")["replies"]}
+        self.assertIn("Recent", names)
+        self.assertNotIn("Ancient", names)
+
+    def test_sentiment_bearing_leads_are_unaffected(self):
+        """Sentiment still wins where it exists, so the daily columns still
+        reconcile with this list."""
+        self._seed()
+        self._dm_replier("Markzgoodman")
+        d = self._replies()
+        self.assertEqual(len(d["replies"]), 4)
+        self.assertEqual(
+            {r["lead_name"] for r in self._replies(sentiment="positive")["replies"]},
+            {"Alice", "Bob"})
+
+    def test_a_lead_with_no_reply_and_no_sentiment_stays_out(self):
+        om.add_lead(name="Silent", email="silent@acme.com", company="Acme")
+        self._seed()
+        self.assertEqual(len(self._replies()["replies"]), 3)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,45 @@
 
 Read-only analytics against your local SQLite database. Prefer **`pipeline.py query`** presets; use `query --sql` only when presets do not fit. **Writes** stay on mutation commands (`add-lead`, `import-profiles`, `sync`, etc.).
 
+## Discover the schema first (do not guess)
+
+```bash
+python3 scripts/pipeline.py schema                 # every table + what it is for
+python3 scripts/pipeline.py schema leads           # columns, types, foreign keys
+python3 scripts/pipeline.py schema --relations     # join graph + workspace scoping
+```
+
+Full generated reference: [schema.md](schema.md). `PRAGMA` is rejected by the
+read-only guard — `schema` exists so it does not need to be allowed.
+
+**Workspace scoping differs per entity**, which is the single most expensive thing
+to get wrong:
+
+| Entity | How |
+|--------|-----|
+| `leads` | via `workspace_leads(workspace_id, lead_id)` — there is **no** `leads.workspace_id` |
+| `campaigns` | direct `campaigns.workspace_id` |
+| `events` | `events.campaign_id → campaigns.id → campaigns.workspace_id` |
+| `sender_accounts` | via `workspace_sender_accounts` |
+| `campaign_workspace_map` | relay routing only — **not** a join path for events |
+
+Or let the CLI do it: `sql --workspace <slug>` pre-binds `ws_leads`,
+`ws_campaigns`, `ws_events`, `ws_sender_accounts` and `ws_workspace`.
+
+```bash
+python3 scripts/pipeline.py sql \
+  "SELECT stage, COUNT(*) n FROM ws_leads GROUP BY stage" --workspace acme --json
+```
+
+## Output contract
+
+- The freshness line goes to **stderr**, and the same information is in the JSON
+  body (`freshness_message`, `last_pull`, `stale_minutes`). If your harness merges
+  the two streams, pass `--quiet` or set `OM_QUIET=1` — never strip it with a regex.
+- Ad-hoc SQL caps at 500 rows, warns on stderr when the cap bites, and returns
+  `truncated: true`. `--limit 0` removes the cap.
+- `OM_WORKSPACE` fills in `--workspace` when omitted, and says so on stderr.
+
 ## Database path
 
 ```bash

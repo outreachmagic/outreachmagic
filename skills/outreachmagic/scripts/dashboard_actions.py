@@ -487,7 +487,10 @@ def edit_sender_domain(domain: str, fields: dict) -> dict:
 
     if not domain:
         raise ValueError("domain is required")
-    allowed = {"reseller", "domain_cost", "currency", "notes", "sending_ip", "is_active"}
+    # provider is the mail platform that sends; reseller is who you bought from.
+    # Both are user-owned and survive a pull.
+    allowed = {"reseller", "provider", "domain_cost", "currency", "notes",
+               "sending_ip", "is_active"}
     unknown = sorted(set(fields) - allowed)
     if unknown:
         raise ValueError(f"Unknown domain fields: {', '.join(unknown)}. "
@@ -496,6 +499,24 @@ def edit_sender_domain(domain: str, fields: dict) -> dict:
     if result.get("status") == "error":
         raise ValueError(result["error"])
     return result
+
+
+def run_domain_blacklist_check(domain: str, tier: str = "all") -> dict:
+    """Re-scan one domain and return the merged report the drawer renders."""
+    import pipeline as _pipeline
+
+    if not domain:
+        raise ValueError("domain is required")
+    return _pipeline.run_blacklist_check(domain=domain, tier=tier)
+
+
+def fetch_domain_registration(domain: str, refresh: bool = False) -> dict:
+    """RDAP lookup for one domain's registration date (cached after the first)."""
+    import domain_registration
+
+    if not domain:
+        raise ValueError("domain is required")
+    return domain_registration.refresh_registration(domain, refresh=refresh)
 
 
 def delete_company(company_id: int, confirm: bool = False) -> dict:
@@ -748,7 +769,15 @@ def company_domain_action(company_id: int, body: dict) -> dict:
     if not domain:
         raise ValueError("domain is required")
     op = (body.get("op") or "purpose").strip().lower()
-    if op == "purpose":
+    if op == "add":
+        result = _pipeline.add_company_domain(
+            company_id, domain, body.get("purpose") or None)
+        # A domain that already belongs to someone else is a merge decision,
+        # not a failed insert -- pass the conflict through so the surface can
+        # offer the merge instead of just refusing.
+        if result.get("status") == "conflict":
+            return result
+    elif op == "purpose":
         result = _pipeline.set_company_domain_purpose(
             company_id, domain, body.get("purpose") or "")
     elif op == "detach":
@@ -758,7 +787,7 @@ def company_domain_action(company_id: int, body: dict) -> dict:
             company_id, domain, body.get("into") or "",
             dry_run=bool(body.get("dry_run")))
     else:
-        raise ValueError("op must be 'purpose', 'detach' or 'split'")
+        raise ValueError("op must be 'add', 'purpose', 'detach' or 'split'")
     if result.get("status") == "error":
         raise ValueError(result["error"])
     return result
@@ -1026,6 +1055,13 @@ class SyncManager:
             "serper", self._run_serper,
             workspace_slug=workspace_slug, lead_ids=lead_ids, force=force, deep=deep)
 
+    def start_domain_check(self, **kwargs) -> Optional[dict]:
+        """Registration / DNSBL checks over a selection of domains, in the
+        background. Each DNSBL lookup is a DNS round trip against a
+        deliberately rate-limited resolver, so a selection of forty domains is
+        minutes of work -- far too long to hold a request thread."""
+        return self._start("domain_check", self._run_domain_check, **kwargs)
+
     def start_export(self, **kwargs) -> Optional[dict]:
         """A contacts CSV, as a background job.
 
@@ -1116,6 +1152,43 @@ class SyncManager:
         else:
             imported, skipped = _do()
         return {"imported": imported, "skipped": skipped}
+
+    def _run_domain_check(
+        self,
+        domains: list,
+        checks: Optional[list] = None,
+        tier: str = "all",
+        refresh: bool = False,
+    ) -> dict:
+        checks = checks or ["registration", "blacklist"]
+        out: dict = {"domains": len(domains), "checks": checks}
+        if "registration" in checks:
+            import domain_registration
+
+            self._log(f"registration: {len(domains)} domain(s)…")
+            reg = domain_registration.refresh_registration(domains, refresh=refresh)
+            out["registration"] = {
+                "checked": reg.get("checked", 0),
+                "dates_found": reg.get("dates_found", 0),
+                "skipped_cached": reg.get("skipped_cached", 0),
+            }
+            self._log(f"registration: {out['registration']['dates_found']} date(s) found, "
+                      f"{out['registration']['skipped_cached']} already cached")
+        if "blacklist" in checks:
+            import pipeline as _pipeline
+
+            self._log(f"blacklist: {len(domains)} domain(s), tier={tier}…")
+            bl = _pipeline.run_blacklist_check(domain=domains, tier=tier)
+            listed = [r["domain"] for r in bl.get("results", []) if not r.get("all_clean")]
+            out["blacklist"] = {
+                "domains_checked": bl.get("domains_checked", 0),
+                "listed": listed,
+                "newly_listed": bl.get("newly_listed", []),
+            }
+            self._log(f"blacklist: {len(listed)} listed of {out['blacklist']['domains_checked']}")
+            for domain in bl.get("newly_listed", []):
+                self._log(f"blacklist: ⚠ NEWLY LISTED {domain}")
+        return out
 
     def _run_export(
         self,
@@ -1228,7 +1301,7 @@ class SyncManager:
         filter entirely and re-tries every candidate.
         """
         import email_finder
-        import dashboard_queries
+        import reporting_queries
         from pipeline_provider_attempts import attempted_domains, has_attempted
         from waterfall import run_find_with_domain_fallback
 
@@ -1277,7 +1350,7 @@ class SyncManager:
                 if (lead["email"] or "").strip():
                     summary["results"].append({"lead_id": lead_id, "status": "has_email"})
                     continue
-                auto_domains, company_text = dashboard_queries._lead_domains(conn, lead_id)
+                auto_domains, company_text = reporting_queries._lead_domains(conn, lead_id)
                 cand = overrides.get(lead_id) or auto_domains
                 cand = [d for d in cand if d]
                 if not cand:

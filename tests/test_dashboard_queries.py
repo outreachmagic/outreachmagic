@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for dashboard_queries: shapes, workspace isolation, thresholds."""
+"""Tests for reporting_queries: shapes, workspace isolation, thresholds."""
 
 import json
 import sys
@@ -18,7 +18,7 @@ from om_paths import set_data_root_override  # noqa: E402
 
 set_data_root_override(Path(_tmp))
 
-import dashboard_queries as dq  # noqa: E402
+import reporting_queries as dq  # noqa: E402
 import lead_actions  # noqa: E402
 import pipeline as om  # noqa: E402
 from bounces import record_bounce_event  # noqa: E402
@@ -166,8 +166,10 @@ def test_domain_health_flags_listed():
                 "INSERT INTO sender_domains (domain, dnsbl_status) VALUES (?, ?)",
                 (domain, report))
         conn.commit()
-        out = dq.domain_health(conn, WS["alpha"])
-        beta = dq.domain_health(conn, WS["beta"])
+        # Asserts on DNSBL verdicts, not on send activity; the fixture registers
+        # domains without sending from them.
+        out = dq.domain_health(conn, WS["alpha"], exclude_never_sent=False)
+        beta = dq.domain_health(conn, WS["beta"], exclude_never_sent=False)
     finally:
         conn.close()
     by_domain = {d["domain"]: d for d in out["domains"]}
@@ -482,7 +484,9 @@ def test_domain_health_includes_unregistered_domains():
         sa = ensure_sender_account(conn, "ops@unregistered-example.com")
         link_sender_account_to_workspace(conn, WS["alpha"], sa)
         conn.commit()
-        out = dq.domain_health(conn, WS["alpha"])
+        # exclude_never_sent=False: this asserts on a domain's attributes, not
+        # on whether anything was sent from it, and the fixture sends nothing.
+        out = dq.domain_health(conn, WS["alpha"], exclude_never_sent=False)
     finally:
         conn.close()
     d = {x["domain"]: x for x in out["domains"]}["unregistered-example.com"]

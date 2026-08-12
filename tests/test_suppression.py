@@ -272,3 +272,40 @@ def test_a_suppression_rule_can_now_push():
 
     assert "suppression" not in dq.UNPUSHABLE_ENTITY_TYPES
     assert _SNAPSHOT_DELETE_ACTIONS["suppression"] == "suppression_delete"
+
+
+def test_a_pushed_suppression_rule_applies_on_another_machine():
+    """The rule is what travels; the per-workspace index is rebuilt locally."""
+    conn, ws_id = _workspace()
+    _lead(conn, ws_id, "Jane", "jane@acme.com", "Acme")
+    result = sp.add_entry(conn, entry_type="email", value="jane@acme.com",
+                          workspace_id=ws_id, reason="manual", note="asked to stop")
+    entry_id = result["entry_id"]
+    payload = sp.build_suppression_sync_payload(conn, entry_id)
+
+    # Simulate the other machine: same workspace and lead, no rule.
+    conn.execute("DELETE FROM workspace_lead_suppressions")
+    conn.execute("DELETE FROM suppression_entries")
+    conn.commit()
+    assert _names(conn, ws_id) == ["Jane"]
+
+    applied = sp.apply_agent_suppression_payload(
+        conn, f"suppression:{entry_id}", payload)
+    assert applied
+    # The rule took effect: reconcile ran, so Jane is suppressed here too.
+    assert _names(conn, ws_id) == []
+    conn.close()
+
+
+def test_applying_a_suppression_rule_twice_is_idempotent():
+    conn, ws_id = _workspace()
+    result = sp.add_entry(conn, entry_type="email", value="jane@acme.com",
+                          workspace_id=ws_id)
+    entry_id = result["entry_id"]
+    payload = sp.build_suppression_sync_payload(conn, entry_id)
+    key = f"suppression:{entry_id}"
+    sp.apply_agent_suppression_payload(conn, key, payload)
+    sp.apply_agent_suppression_payload(conn, key, payload)
+    n = conn.execute("SELECT COUNT(*) c FROM suppression_entries").fetchone()["c"]
+    assert n == 1
+    conn.close()

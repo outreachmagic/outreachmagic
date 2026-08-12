@@ -224,3 +224,56 @@ def list_links(conn: sqlite3.Connection, limit: int = 100) -> dict:
         (int(limit),),
     ).fetchall()
     return {"links": [dict(r) for r in rows], "count": len(rows)}
+
+
+def apply_agent_lead_link_payload(
+    conn: sqlite3.Connection, entity_key: str, payload: dict,
+    *, org_id: str = DEFAULT_ORG_ID,
+) -> bool:
+    """Apply a link pulled from the relay. Returns True when something changed.
+
+    The wire form carries the two leads' uids, not local row ids -- ids are per
+    machine. A link whose endpoints are not both present locally is skipped
+    rather than guessed at: it will apply on a later pull once the leads
+    themselves arrive, and lead_core snapshots pull before this kind.
+    """
+    link_id = str(entity_key or "").split(":", 1)[-1].strip()
+    if not link_id:
+        return False
+    from_uid = str((payload or {}).get("from_uid") or "").strip()
+    to_uid = str((payload or {}).get("to_uid") or "").strip()
+    if not from_uid or not to_uid:
+        return False
+
+    def _lead_by_uid(uid: str) -> Optional[int]:
+        row = conn.execute("SELECT id FROM leads WHERE uid = ?", (uid,)).fetchone()
+        return int(row["id"]) if row else None
+
+    from_id, to_id = _lead_by_uid(from_uid), _lead_by_uid(to_uid)
+    if not from_id or not to_id or from_id == to_id:
+        return False
+
+    kind = str((payload or {}).get("kind") or "forwarded_to")
+    if kind not in LINK_KINDS:
+        return False
+    # Keyed on the relay's id so a pull is idempotent and a link edited
+    # elsewhere lands on the same row rather than creating a second edge.
+    existing = conn.execute(
+        "SELECT id FROM lead_links WHERE id = ?", (link_id,)).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE lead_links SET kind = ?, note = ? WHERE id = ?",
+            (kind, (payload or {}).get("note"), link_id))
+        return True
+    # A cycle can only arrive from a machine that had a different view of the
+    # graph; refuse it here too rather than corrupting the walk.
+    if _would_cycle(conn, from_id, to_id):
+        return False
+    conn.execute(
+        """INSERT OR IGNORE INTO lead_links
+               (id, org_id, from_lead_id, to_lead_id, kind, note, created_at, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), ?)""",
+        (link_id, org_id, from_id, to_id, kind, (payload or {}).get("note"),
+         (payload or {}).get("created_at"), (payload or {}).get("created_by")),
+    )
+    return True

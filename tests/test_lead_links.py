@@ -252,5 +252,53 @@ class LeadLinkTests(unittest.TestCase):
         self.assertEqual(dq.UNPUSHABLE_ENTITY_TYPES, {})
 
 
+class RoundTripTests(LeadLinkTests):
+    """What one machine pushes, another must be able to apply.
+
+    Push alone is half a feature: the link would reach the relay and no other
+    machine would ever act on it, so the counts would still disagree -- which is
+    the entire thing the link exists to fix.
+    """
+
+    def test_a_pushed_link_applies_on_another_machine(self):
+        import lead_links
+
+        a, b = self._lead("A Origin"), self._lead("B Forwarded")
+        link = lead_links.link_leads(self.conn, a, b, note="intro")
+        payload = lead_links.build_lead_link_sync_payload(self.conn, link["id"])
+
+        # Simulate the other machine: same leads (by uid), no link.
+        self.conn.execute("DELETE FROM lead_links")
+        self.conn.commit()
+        self.assertEqual(lead_links.conversation_root(self.conn, b), b)
+
+        applied = lead_links.apply_agent_lead_link_payload(
+            self.conn, f"lead_link:{link['id']}", payload)
+        self.assertTrue(applied)
+        self.assertEqual(lead_links.conversation_root(self.conn, b), a)
+
+    def test_applying_twice_is_idempotent(self):
+        import lead_links
+
+        a, b = self._lead("A Origin"), self._lead("B Forwarded")
+        link = lead_links.link_leads(self.conn, a, b)
+        payload = lead_links.build_lead_link_sync_payload(self.conn, link["id"])
+        key = f"lead_link:{link['id']}"
+        lead_links.apply_agent_lead_link_payload(self.conn, key, payload)
+        lead_links.apply_agent_lead_link_payload(self.conn, key, payload)
+        n = self.conn.execute("SELECT COUNT(*) c FROM lead_links").fetchone()["c"]
+        self.assertEqual(n, 1)
+
+    def test_a_link_whose_leads_are_not_here_yet_is_skipped_not_guessed(self):
+        """lead_core pulls before this kind, so a later pull picks it up."""
+        import lead_links
+
+        applied = lead_links.apply_agent_lead_link_payload(
+            self.conn, "lead_link:lnk_x",
+            {"from_uid": "uid_missing_a", "to_uid": "uid_missing_b",
+             "kind": "forwarded_to"})
+        self.assertFalse(applied)
+
+
 if __name__ == "__main__":
     unittest.main()

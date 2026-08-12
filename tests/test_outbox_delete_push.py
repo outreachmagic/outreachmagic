@@ -282,6 +282,8 @@ def test_sync_all_pushes_workspace_delete_and_clears_it(monkeypatch):
         "_push_pending_sender_account_updates",
         "_push_pending_sender_domain_updates",
         "_push_pending_lead_link_updates",
+        "_push_pending_lead_link_outbox_deletes",
+        "_push_pending_suppression_outbox_deletes",
         "_push_pending_suppression_updates",
     ):
         monkeypatch.setattr(om, fn_name, _noop_push)

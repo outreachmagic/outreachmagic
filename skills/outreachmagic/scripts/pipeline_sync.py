@@ -128,10 +128,12 @@ RELAY_URL = "https://api.outreachmagic.io"
 _SNAPSHOT_KIND_STREAM = {
     "core": "Lead", "workspace": "Workspace", "company": "Company",
     "sender_account": "SenderAccount", "sender_domain": "SenderDomain",
+    "lead_link": "ContactLink", "suppression": "Suppression",
 }
 # Snapshot kinds pulled via the per-kind snapshot_after_id/snapshot_kind cursor
 # mechanism (as opposed to the plain events cursor).
-_SNAPSHOT_PULL_KINDS = ("company", "core", "workspace", "sender_account", "sender_domain")
+_SNAPSHOT_PULL_KINDS = ("company", "core", "workspace", "sender_account", "sender_domain",
+                        "lead_link", "suppression")
 # Adding a kind above without giving it a cursor slot is the bug that made every
 # pull re-download the whole workspace stream. Fail at import, not in the field.
 assert set(_SNAPSHOT_PULL_KINDS) <= set(_SNAPSHOT_CURSOR_KEYS), (
@@ -853,7 +855,7 @@ def _pull_page_already_ingested(
 # remaining source of this data, self-pushed snapshots must still be applied.
 SNAPSHOT_ACTIONS = frozenset({
     "company_update", "lead_core_update", "lead_workspace_update", "sender_account_update",
-    "sender_domain_update",
+    "sender_domain_update", "lead_link_update", "suppression_update",
 })
 
 # ingest_agent_entry()'s return type is Optional[int] (a lead_id) everywhere
@@ -870,6 +872,8 @@ _SNAPSHOT_ACTION_ENTITY = {
     "company_update": "company",
     "sender_account_update": "sender_account",
     "sender_domain_update": "sender_domain",
+    "lead_link_update": "lead_link",
+    "suppression_update": "suppression",
 }
 
 
@@ -1033,6 +1037,24 @@ def ingest_agent_entry(
             domain = resolve_sender_domain_from_entity_key(conn, entity_key) if entity_key else None
             if domain:
                 apply_agent_sender_domain_sync_payload(domain, payload, conn=conn)
+                applied_without_lead = True
+            if own_conn:
+                conn.commit()
+                conn.close()
+                conn = None
+        elif action == "lead_link_update":
+            from lead_links import apply_agent_lead_link_payload
+
+            if apply_agent_lead_link_payload(conn, entity_key, payload):
+                applied_without_lead = True
+            if own_conn:
+                conn.commit()
+                conn.close()
+                conn = None
+        elif action == "suppression_update":
+            from suppression import apply_agent_suppression_payload
+
+            if apply_agent_suppression_payload(conn, entity_key, payload):
                 applied_without_lead = True
             if own_conn:
                 conn.commit()

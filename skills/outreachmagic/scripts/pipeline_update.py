@@ -890,6 +890,8 @@ _SNAPSHOT_CURSOR_KEYS = {
     "company": "last_snapshot_company_after_id",
     "sender_account": "last_snapshot_sender_account_after_id",
     "sender_domain": "last_snapshot_sender_domain_after_id",
+    "lead_link": "last_snapshot_lead_link_after_id",
+    "suppression": "last_snapshot_suppression_after_id",
 }
 
 

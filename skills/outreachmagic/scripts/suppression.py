@@ -618,3 +618,65 @@ def reconcile_after_write(workspace_id: Optional[str], lead_ids: list) -> dict:
         return reconcile(conn, workspace_id=workspace_id, lead_ids=lead_ids)
     finally:
         conn.close()
+
+
+def apply_agent_suppression_payload(
+    conn: sqlite3.Connection, entity_key: str, payload: dict,
+    *, org_id: str = DEFAULT_ORG_ID,
+) -> bool:
+    """Apply a suppression rule pulled from the relay.
+
+    Keyed on the rule's own id, so a pull is idempotent and a rule edited on
+    another machine updates in place instead of creating a second entry for the
+    same address.
+
+    The derived per-workspace index is NOT part of the wire form -- it is
+    rebuilt locally from the rules. reconcile() is called for the affected
+    workspace so a pulled rule takes effect immediately rather than at the next
+    manual reconcile.
+    """
+    entry_id = str(entity_key or "").split(":", 1)[-1].strip()
+    if not entry_id:
+        return False
+    entry_type = str((payload or {}).get("entry_type") or "").strip()
+    value = str((payload or {}).get("value") or "").strip()
+    if entry_type not in ENTRY_TYPES or not value:
+        return False
+
+    scope = str((payload or {}).get("scope") or "workspace")
+    workspace_id = None
+    slug = str((payload or {}).get("workspace") or "").strip()
+    if scope != "org" and slug:
+        row = conn.execute(
+            "SELECT id FROM workspaces WHERE slug = ? OR id = ?", (slug, slug)).fetchone()
+        if not row:
+            # The workspace has not been pulled yet; a later pull re-applies.
+            return False
+        workspace_id = row["id"]
+
+    conn.execute(
+        """INSERT INTO suppression_entries
+               (id, org_id, workspace_id, scope, entry_type, value_raw,
+                value_normalized, reason, note, source, created_by, created_at,
+                expires_at, revoked_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+               scope = excluded.scope,
+               reason = excluded.reason,
+               note = excluded.note,
+               expires_at = excluded.expires_at,
+               revoked_at = excluded.revoked_at""",
+        (entry_id, org_id, workspace_id, scope, entry_type,
+         (payload or {}).get("value_raw") or value, value,
+         (payload or {}).get("reason") or "manual", (payload or {}).get("note"),
+         (payload or {}).get("source"), (payload or {}).get("created_by"),
+         (payload or {}).get("created_at"), (payload or {}).get("expires_at"),
+         (payload or {}).get("revoked_at")),
+    )
+    try:
+        reconcile(conn, workspace_id=workspace_id)
+    except sqlite3.Error:
+        # Never fail an ingest over index bookkeeping; `suppression reconcile`
+        # rebuilds it, and the authored rule -- the durable part -- is written.
+        pass
+    return True

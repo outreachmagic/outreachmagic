@@ -776,9 +776,11 @@ def sync_all(
         _push_pending_lead_workspace_outbox_deletes,
         _push_pending_merge_deletes,
         _push_pending_quarantine_resolutions,
+        _push_pending_lead_link_outbox_deletes,
         _push_pending_lead_link_updates,
         _push_pending_sender_account_updates,
         _push_pending_sender_domain_updates,
+        _push_pending_suppression_outbox_deletes,
         _push_pending_suppression_updates,
     )
 
@@ -964,6 +966,22 @@ def sync_all(
             # Give the console/log a line (the generic delete drainer emits none).
             _relay_log(f"{_ARROW_PUSH} pushed {sd_deletes} sender-domain delete(s)")
             parts.append(f"Pushed {sd_deletes} sender domain delete{'s' if sd_deletes != 1 else ''} to relay.")
+
+        # Unlinking a pair and hard-deleting a suppression rule both tombstone.
+        # Without a drain the tombstone sits in the outbox forever and every
+        # other machine keeps acting on a link or a rule that is gone here.
+        for _label, _fn, _key in (
+            ("contact link", _push_pending_lead_link_outbox_deletes, "lead_link"),
+            ("suppression rule", _push_pending_suppression_outbox_deletes, "suppression"),
+        ):
+            _res = _fn(agent_key, bulk=transport["bulk"])
+            _n = int(_res.get("pushed", 0) or 0)
+            results[f"{_key}_outbox_deletes_pushed"] = _n
+            if _res.get("error"):
+                results[f"{_key}_outbox_deletes_error"] = _res["error"]
+            if _n > 0:
+                _relay_log(f"{_ARROW_PUSH} pushed {_n} {_label} delete(s)")
+                parts.append(f"Pushed {_n} {_label} delete{'s' if _n != 1 else ''} to relay.")
 
         lead_push = _push_pending_lead_snapshots(agent_key, bulk=transport["bulk"], workspace=workspace)
         leads_pushed = int(lead_push.get("pushed", 0) or 0)
@@ -1835,6 +1853,24 @@ def _push_pending_sender_domain_outbox_deletes(
     return _push_outbox_delete(
         agent_key, entity_type="sender_domain", action="sender_domain_delete",
         stream_label="sender_domain_delete", bulk=bulk, sample_limit=sample_limit, dry_run=dry_run,
+    )
+
+
+def _push_pending_lead_link_outbox_deletes(
+    agent_key: str, *, bulk: bool = False, sample_limit: Optional[int] = None, dry_run: bool = False,
+) -> dict:
+    return _push_outbox_delete(
+        agent_key, entity_type="lead_link", action="lead_link_delete",
+        stream_label="lead_link_delete", bulk=bulk, sample_limit=sample_limit, dry_run=dry_run,
+    )
+
+
+def _push_pending_suppression_outbox_deletes(
+    agent_key: str, *, bulk: bool = False, sample_limit: Optional[int] = None, dry_run: bool = False,
+) -> dict:
+    return _push_outbox_delete(
+        agent_key, entity_type="suppression", action="suppression_delete",
+        stream_label="suppression_delete", bulk=bulk, sample_limit=sample_limit, dry_run=dry_run,
     )
 
 

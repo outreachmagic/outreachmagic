@@ -731,8 +731,33 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
             <option value="current">Currently positive</option>
           </select>
         </label>
+        <label title="A bounce is not a reply and an out-of-office is not a human. All three set a lead's sentiment, so all three land in these columns unless you say which you meant. Narrows the reply and sentiment columns only — sends are always counted in full, or the rates would describe a population that does not exist.">Show
+          <select id="campaigns-kind">
+            <option value="all">All kinds</option>
+            <option value="human">Replies (human)</option>
+            <option value="auto_reply">Auto-replies</option>
+            <option value="bounce">Bounced</option>
+            <option value="status_only">Status only</option>
+          </select>
+        </label>
         <span class="spacer"></span>
         <span id="campaigns-note" class="stale"></span>
+      </div>
+      <!-- Same tag bar as Contacts (makeTagBar), so "exclude existing_customer"
+           means the same thing on both pages. Tags describe the lead, so unlike
+           the kind filter they narrow every column including sends. -->
+      <div class="controls" style="margin-top:6px;align-items:center">
+        <span class="stale" style="font-size:12px">Tags:</span>
+        <span id="campaigns-tag-chips" style="display:flex;gap:5px;flex-wrap:wrap"></span>
+        <input id="campaigns-tag-add" list="campaigns-all-tags" placeholder="+ add tag…" style="width:170px">
+        <datalist id="campaigns-all-tags"></datalist>
+        <label style="font-size:12px" title="Applies to included tags only">
+          <input type="radio" name="camptagmode" value="any" checked> any
+        </label>
+        <label style="font-size:12px">
+          <input type="radio" name="camptagmode" value="all"> all
+        </label>
+        <span id="campaigns-tag-expression" class="stale" style="font-size:12px"></span>
       </div>
       <div id="campaigns"></div>
     </div>
@@ -1448,8 +1473,8 @@ function resetWorkspaceScopedState() {
   for (const k of Object.keys(contactsFilters)) delete contactsFilters[k];
   // Tags are workspace-scoped; carrying chips across a switch filters the new
   // workspace by tags it may not have, which reads as an empty workspace.
-  tagChips.length = 0;
-  if ($("tag-chips")) renderTagFilterBar();
+  contactsTags.clear({ silent: true });
+  campaignsTags.clear({ silent: true });
   companiesState.offset = 0;
   companiesState.sortKey = null;
   for (const k of Object.keys(companiesFilters)) delete companiesFilters[k];
@@ -1549,7 +1574,7 @@ function skeleton(...ids) {
 
 function loadTab() {
   ({ deliverability: loadDeliverability, pipeline: loadPipeline,
-     contacts: () => { loadContacts(); loadSuppression(); fillTagOptions(); },
+     contacts: () => { loadContacts(); loadSuppression(); contactsTags.fillOptions(); },
      companies: () => { loadCompaniesStats(); loadCompanies(); },
      quality: loadQuality,
      campaigns: loadCampaigns,
@@ -2402,11 +2427,7 @@ function contactsFilterParams() {
   if ($("contacts-record-type").value) p.set("record_type", $("contacts-record-type").value);
   if ($("contacts-suppressed").value) p.set("suppressed", $("contacts-suppressed").value);
   // Tag chips are repeated params, not comma-joined: a tag may contain a comma.
-  const include = tagChips.filter(c => !c.exclude).map(c => c.tag);
-  const exclude = tagChips.filter(c => c.exclude).map(c => c.tag);
-  const key = tagMode() === "all" ? "tags_all" : "tags_any";
-  include.forEach(t => p.append(key, t));
-  exclude.forEach(t => p.append("tags_none", t));
+  contactsTags.params(p);
   for (const [k, v] of Object.entries(contactsFilters)) {
     // Multi-select facets are arrays and travel as repeated params, the same way
     // tags do -- a value may contain a comma, so joining them is not safe.
@@ -2419,57 +2440,87 @@ function contactsFilterParams() {
 /* ---------- tag chips: include / exclude, any / all ---------- */
 // [{tag, exclude}] — one row per selected tag. Kept as an array so the order
 // the operator added them is the order the expression reads back in.
-let tagChips = [];
-const tagMode = () => document.querySelector('input[name="tagmode"]:checked').value;
-
-function renderTagFilterBar() {
-  $("tag-chips").innerHTML = tagChips.map((c, i) => `
-    <button class="small" data-i="${i}" title="Click to ${c.exclude ? "include" : "exclude"}"
-      style="${c.exclude ? "text-decoration:line-through;opacity:.65" : ""}">
-      ${c.exclude ? "⊘ " : ""}${esc(c.tag)} <span data-rm="${i}" style="opacity:.6">×</span>
-    </button>`).join("");
-  $("tag-chips").querySelectorAll("button").forEach(b => {
-    b.onclick = (ev) => {
-      const i = +b.dataset.i;
-      if (ev.target.dataset.rm != null) tagChips.splice(i, 1);
-      else tagChips[i].exclude = !tagChips[i].exclude;
-      renderTagFilterBar();
-      contactsState.offset = 0;
-      loadContacts();
-      loadContactsStats();
-    };
+// One tag filter bar, shared by Contacts and Campaigns. Click a chip to flip it
+// between include and exclude; the any/all switch governs the include chips
+// only, since exclusions can only ever mean "none of". The component owns the
+// chips, the expression line and the datalist — the caller only says where its
+// elements live and what to reload when the selection changes. Two hand-rolled
+// tag bars would be two tag filters that never quite agreed.
+function makeTagBar({ chips: chipsId, input: inputId, list: listId,
+                      mode: modeName, expr: exprId, onChange }) {
+  const chips = [];
+  const mode = () => {
+    const el = document.querySelector(`input[name="${modeName}"]:checked`);
+    return el ? el.value : "any";
+  };
+  const changed = () => { render(); onChange(); };
+  function render() {
+    const host = $(chipsId);
+    if (!host) return;
+    host.innerHTML = chips.map((c, i) => `
+      <button class="small" data-i="${i}" title="Click to ${c.exclude ? "include" : "exclude"}"
+        style="${c.exclude ? "text-decoration:line-through;opacity:.65" : ""}">
+        ${c.exclude ? "⊘ " : ""}${esc(c.tag)} <span data-rm="${i}" style="opacity:.6">×</span>
+      </button>`).join("");
+    host.querySelectorAll("button").forEach(b => {
+      b.onclick = (ev) => {
+        const i = +b.dataset.i;
+        if (ev.target.dataset.rm != null) chips.splice(i, 1);
+        else chips[i].exclude = !chips[i].exclude;
+        changed();
+      };
+    });
+    // The expression is spelled out rather than counted: someone excluding a
+    // tag from a performance table needs to see exactly what they excluded.
+    const inc = chips.filter(c => !c.exclude).map(c => c.tag);
+    const exc = chips.filter(c => c.exclude).map(c => c.tag);
+    const parts = [];
+    if (inc.length) parts.push(inc.join(mode() === "all" ? " AND " : " OR "));
+    if (exc.length) parts.push(exc.map(t => "NOT " + t).join(" AND "));
+    if ($(exprId)) $(exprId).textContent = parts.length ? parts.join(" AND ") : "";
+  }
+  const add = (tag) => {
+    const t = (tag || "").trim().toLowerCase();
+    if (!t || chips.some(c => c.tag === t)) return;
+    chips.push({ tag: t, exclude: false });
+    changed();
+  };
+  const clear = ({ silent = false } = {}) => {
+    chips.length = 0;
+    silent ? render() : changed();
+  };
+  // Repeated params, not comma-joined: a tag may contain a comma.
+  const params = (p) => {
+    const key = mode() === "all" ? "tags_all" : "tags_any";
+    chips.filter(c => !c.exclude).forEach(c => p.append(key, c.tag));
+    chips.filter(c => c.exclude).forEach(c => p.append("tags_none", c.tag));
+    return p;
+  };
+  // Suggestions only — a tag not yet in the workspace is still a legal filter.
+  const fillOptions = async () => {
+    const d = await get("/api/tags").catch(() => null);
+    if (!d || !d.tags || !$(listId)) return;
+    $(listId).innerHTML = d.tags.map(t => `<option value="${esc(t.tag ?? t)}">`).join("");
+  };
+  if ($(inputId)) {
+    $(inputId).onchange = () => { add($(inputId).value); $(inputId).value = ""; };
+  }
+  document.querySelectorAll(`input[name="${modeName}"]`).forEach(r => {
+    r.onchange = changed;
   });
-  const inc = tagChips.filter(c => !c.exclude).map(c => c.tag);
-  const exc = tagChips.filter(c => c.exclude).map(c => c.tag);
-  const parts = [];
-  if (inc.length) parts.push(inc.join(tagMode() === "all" ? " AND " : " OR "));
-  if (exc.length) parts.push(exc.map(t => "NOT " + t).join(" AND "));
-  $("tag-expression").textContent = parts.length ? parts.join(" AND ") : "";
+  return { chips, mode, render, add, clear, params, fillOptions, has: () => chips.length > 0 };
 }
 
-function addTagChip(tag) {
-  const t = (tag || "").trim().toLowerCase();
-  if (!t || tagChips.some(c => c.tag === t)) return;
-  tagChips.push({ tag: t, exclude: false });
-  renderTagFilterBar();
-  contactsState.offset = 0;
-  loadContacts();
-  loadContactsStats();
-}
+const contactsTags = makeTagBar({
+  chips: "tag-chips", input: "tag-add-input", list: "all-tags",
+  mode: "tagmode", expr: "tag-expression",
+  onChange: () => { contactsState.offset = 0; loadContacts(); loadContactsStats(); },
+});
 
-$("tag-add-input").onchange = () => {
-  addTagChip($("tag-add-input").value);
-  $("tag-add-input").value = "";
-};
-
-// Suggestions only — a tag not yet in the workspace is still a legal filter.
-async function fillTagOptions() {
-  const d = await get("/api/tags").catch(() => null);
-  if (!d || !d.tags) return;
-  $("all-tags").innerHTML = d.tags.map(t => `<option value="${esc(t.tag ?? t)}">`).join("");
-}
-document.querySelectorAll('input[name="tagmode"]').forEach(r => {
-  r.onchange = () => { renderTagFilterBar(); contactsState.offset = 0; loadContacts(); loadContactsStats(); };
+const campaignsTags = makeTagBar({
+  chips: "campaigns-tag-chips", input: "campaigns-tag-add", list: "campaigns-all-tags",
+  mode: "camptagmode", expr: "campaigns-tag-expression",
+  onChange: () => loadCampaigns(),
 });
 
 function contactsQuery() {
@@ -2661,8 +2712,7 @@ function wireFilterPanel() {
   };
   $("f-reset").onclick = () => {
     for (const k of Object.keys(contactsFilters)) delete contactsFilters[k];
-    tagChips = [];
-    renderTagFilterBar();
+    contactsTags.clear({ silent: true });
     reload();
   };
   syncFilterPanel();
@@ -2719,7 +2769,7 @@ function setContactsFilter(patch) {
   if (patch.tag != null && patch.tag !== "") {
     const { tag, ...rest } = patch;
     state.tab !== "contacts" && switchTab("contacts");
-    addTagChip(tag);
+    contactsTags.add(tag);
     if (!Object.keys(rest).length) return;
     patch = rest;
   }
@@ -4478,15 +4528,26 @@ async function loadCampaigns() {
     $("campaigns-anchor").value = localStorage.getItem("om.positiveAnchor") || "first";
     $("campaigns-anchor").dataset.restored = "1";
   }
+  if (!$("campaigns-kind").dataset.restored) {
+    $("campaigns-kind").value = localStorage.getItem("om.campaignKind") || "all";
+    $("campaigns-kind").dataset.restored = "1";
+  }
   const sched = $("campaigns-scheduling").checked ? "include_scheduling=1" : "";
   // Only the campaigns table reads the anchor: the daily matrix is a per-day
   // series, and "first turned positive" is already the day it plots.
   const anchor = `positive_anchor=${encodeURIComponent($("campaigns-anchor").value)}`;
+  const kind = $("campaigns-kind").value;
+  // Kind and tags go to the table only. The daily matrix has no kind concept —
+  // wiring one in is a separate change, and letting it silently ignore the
+  // control would put two different populations on the same screen. The note
+  // line below says so whenever a filter is active.
+  const auditQs = campaignsTags.params(new URLSearchParams());
+  if (kind && kind !== "all") auditQs.set("kind", kind);
   const dailyCampaign = $("daily-campaign").value;
   const dailyQs = [dailyCampaign ? `campaign_id=${dailyCampaign}` : "", sched]
     .filter(Boolean).join("&");
   const [audit, daily] = await Promise.all([
-    getR("/api/campaigns?" + [sched, anchor].filter(Boolean).join("&")),
+    getR("/api/campaigns?" + [sched, anchor, auditQs.toString()].filter(Boolean).join("&")),
     getR("/api/campaigns/daily" + (dailyQs ? `?${dailyQs}` : "")),
   ]).catch(e => { toast(e.message); return [null, null]; });
   if (!audit) return;
@@ -4496,10 +4557,17 @@ async function loadCampaigns() {
   renderDaily(daily);
   loadReplies();
   const scheduling = audit.scheduling_excluded || 0;
-  $("campaigns-note").textContent = $("campaigns-scheduling").checked
+  const notes = [];
+  if (kind && kind !== "all") {
+    notes.push(`Showing ${REPLY_KIND_LABELS[kind] || kind} only — replies and sentiment columns; `
+      + "sends are counted in full. The daily chart above is unfiltered.");
+  }
+  if (campaignsTags.has()) notes.push("Tag filter applies to every column.");
+  notes.push($("campaigns-scheduling").checked
     ? "Scheduling tools included — a booked slot may appear as its own campaign."
     : (scheduling ? `${fmt(scheduling)} scheduling campaign${scheduling === 1 ? "" : "s"} hidden; `
-        + "their meetings are counted against the campaign that earned them." : "");
+        + "their meetings are counted against the campaign that earned them." : ""));
+  $("campaigns-note").textContent = notes.filter(Boolean).join(" ");
   renderTable("campaigns", [
     { key: "name", label: "Campaign", render: r => esc(r.name)
         + (r.is_unattributed
@@ -4518,6 +4586,22 @@ async function loadCampaigns() {
       render: r => r.bounce_rate != null && r.bounce_rate >= 0.05
         ? `<span class="flag bad">${pct(r.bounce_rate)}</span>` : pct(r.bounce_rate) },
   ], audit.campaigns, { empty: "No campaigns with activity in this workspace.",
+    // Every campaign, in one row. Sums are honest here and only here: each
+    // conversation is credited to exactly one campaign, so no lead is counted
+    // twice across rows. Rates are sum/sum, never the mean of the per-row
+    // rates. Computed over the filtered view, so typing in the table's filter
+    // box narrows the total to what is actually on screen.
+    footer: (view) => {
+      const sum = k => view.reduce((a, r) => a + (r[k] || 0), 0);
+      const sent = sum("sent"), replies = sum("replies"), positive = sum("positive");
+      const bounces = sum("bounces");
+      const out = { name: `${view.length} campaign${view.length === 1 ? "" : "s"}`,
+        reply_rate: sent ? pct(replies / sent) : "–",
+        positive_rate: sent ? pct(positive / sent) : "–",
+        bounce_rate: sent ? pct(bounces / sent) : "–" };
+      for (const k of DAILY_COLUMN_ORDER) out[k] = fmt(sum(k));
+      return out;
+    },
     // Clicking a campaign filters the Replies table above rather than opening a
     // second lead list underneath. There was only ever one question being asked
     // of both — "who replied, out of which campaign" — and two tables answering
@@ -4543,6 +4627,10 @@ function fillCampaignSelects() {
 $("daily-campaign").onchange = loadCampaigns;
 $("campaigns-anchor").onchange = () => {
   localStorage.setItem("om.positiveAnchor", $("campaigns-anchor").value);
+  loadCampaigns();
+};
+$("campaigns-kind").onchange = () => {
+  localStorage.setItem("om.campaignKind", $("campaigns-kind").value);
   loadCampaigns();
 };
 $("campaigns-scheduling").onchange = () => {

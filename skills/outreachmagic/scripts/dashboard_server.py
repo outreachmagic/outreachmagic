@@ -381,7 +381,11 @@ def handle_campaigns(conn, ws_id, match, query):
     return reporting_queries.campaign_audit(
         conn, ws_id, since=_q(query, "since"), until=_q(query, "until"),
         include_scheduling=_bool_q(query, "include_scheduling"),
-        positive_anchor=_q(query, "positive_anchor"))
+        positive_anchor=_q(query, "positive_anchor"),
+        reply_kind=_q(query, "kind"),
+        tags_any=_list_q(query, "tags_any"),
+        tags_all=_list_q(query, "tags_all"),
+        tags_none=_list_q(query, "tags_none"))
 
 
 @_workspace_scoped
@@ -744,7 +748,10 @@ def handle_campaign_replies(conn, ws_id, match, query):
         limit=_int_q(query, "limit", 200, lo=1, hi=500),
         sentiment=_q(query, "sentiment"), status_label=_q(query, "status_label"),
         reply_kind=_q(query, "reply_kind"),
-        attribution=_q(query, "attribution"))
+        attribution=_q(query, "attribution"),
+        tags_any=_list_q(query, "tags_any"),
+        tags_all=_list_q(query, "tags_all"),
+        tags_none=_list_q(query, "tags_none"))
 
 
 @_workspace_scoped

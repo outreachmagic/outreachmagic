@@ -150,6 +150,24 @@ outbound yet, and looks identical on that column alone. The Deliverability page
 hides never-sent domains by default (untick **Exclude never sent from** to see
 them).
 
+## Campaigns table, with filters and a total
+
+```bash
+pipeline.py campaign-audit --workspace acme --since 30d --json
+pipeline.py campaign-audit --workspace acme --since 30d --kind human --json
+pipeline.py campaign-audit --workspace acme --exclude-tag existing_customer --sort positive
+```
+
+One row per campaign — sends, replies, the four sentiments, meetings, bounces
+and rates — plus `totals` for the whole selection. This is the same function the
+dashboard's Campaigns table calls, so the numbers cannot differ.
+
+| Flag | Reach |
+|------|-------|
+| `--kind` | replies + sentiment columns only; `sent` is always counted in full |
+| `--tag` / `--tags-all` / `--exclude-tag` | every column, including sends |
+| `--positive-anchor first` (default) | dated from when a lead FIRST turned positive, so history stops moving |
+
 ## Replies, split by kind
 
 ```bash

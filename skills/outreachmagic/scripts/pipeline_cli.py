@@ -1421,6 +1421,7 @@ def main():
 
     deliverability_cli.register_deliverability_parser(sub)
     deliverability_cli.register_campaign_replies_parser(sub)
+    deliverability_cli.register_campaign_audit_parser(sub)
     query_cli.register_query_parser(sub)
     query_cli.register_sql_parser(sub)
     query_cli.register_schema_parser(sub)
@@ -3311,6 +3312,8 @@ def main():
         deliverability_cli.cmd_deliverability(args)
     elif args.command == "campaign-replies":
         deliverability_cli.cmd_campaign_replies(args)
+    elif args.command == "campaign-audit":
+        deliverability_cli.cmd_campaign_audit(args)
     elif args.command == "tag-summary":
         query_cli.cmd_tag_summary(args)
     elif args.command == "sheets" and getattr(args, "sheets_command", None) == "campaign-stats":

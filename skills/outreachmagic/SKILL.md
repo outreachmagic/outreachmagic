@@ -4,7 +4,7 @@ description: >
   Your agent goes blind after send. Sync sequencer webhooks, research leads
   via Serper, and find/verify emails — all in one local SQLite DB your agent
   queries directly.
-version: 1.7.0
+version: 1.7.1
 author: Outreach Magic
 license: MIT
 platforms: [macos, linux]
@@ -100,7 +100,7 @@ Config keys: `data_root` (share DB across agents), `api_base_url`, `dev_repo`.
 ## Platform install
 
 ```bash
-OM_VERSION=v1.7.0
+OM_VERSION=v1.7.1
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"
@@ -216,6 +216,21 @@ python3 scripts/pipeline.py deliverability trend --mailbox jane@acmemail.com --j
 python3 scripts/pipeline.py sender-domains registration            # domain age via RDAP (cached)
 python3 scripts/pipeline.py campaign-replies --workspace acme --kind human --json
 ```
+
+The Campaigns table is a command too — reach for it before writing reply SQL:
+
+```bash
+# "positive human replies in the last 30 days, by campaign"
+python3 scripts/pipeline.py campaign-audit --workspace acme --since 30d --kind human --json
+python3 scripts/pipeline.py campaign-audit --workspace acme --exclude-tag existing_customer
+```
+
+`campaign-audit` returns one row per campaign plus a `totals` row. `--kind`
+narrows the reply and sentiment columns only (sends stay whole, or the rates
+describe a population that does not exist); `--tag` / `--exclude-tag` narrow
+every column. Hand-writing the reply condition is how the date filter gets
+swallowed by operator precedence and a 30-day question returns all-time totals —
+see `references/query-guide.md`.
 
 A DNSBL result of `check_failed` means the list refused or timed out — **it is not a
 listing**. Report it as "could not check", never as blacklisted.

@@ -76,7 +76,11 @@ class DashboardHtmlHygieneTests(unittest.TestCase):
         # the row-taking function, not the zero-arg filter-bar renderer.
         self.assertIn("render: renderTagChips", self.source)
         self.assertIn("function renderTagChips(r) {", self.source)
-        self.assertIn("function renderTagFilterBar() {", self.source)
+        # The filter bar's own renderer lives inside makeTagBar now (one
+        # component, two instances: Contacts and Campaigns), so it can no longer
+        # be reached by name from a column definition at all.
+        self.assertIn("function makeTagBar(", self.source)
+        self.assertNotIn("render: render()", self.source)
 
     def test_dialogs_are_not_inside_tab_sections(self):
         """A <dialog> must be a sibling of the tab sections, never a child.

@@ -86,6 +86,114 @@ def cmd_campaign_replies(args) -> None:
     _emit(args, payload, text)
 
 
+def register_campaign_audit_parser(sub) -> None:
+    """`campaign-audit` — the Campaigns table, with its filters and its total.
+
+    This is the command to reach for instead of hand-writing reply SQL. The
+    reply condition is an OR nested inside an AND; written out by hand it loses
+    its parentheses and the date filter gets swallowed by operator precedence,
+    which is how a 30-day question quietly returns all-time totals.
+
+        campaign-audit --workspace acme --since 30d --kind human --json
+
+    is "positive human replies in the last 30 days, by campaign" -- read
+    `positive` off each row, and `totals` for the whole workspace.
+    """
+    p = sub.add_parser(
+        "campaign-audit",
+        help="Per-campaign sends, replies, sentiments, meetings and rates, with a total",
+    )
+    p.add_argument("--workspace", help="Workspace slug (or set OM_WORKSPACE)")
+    p.add_argument("--since", help="Start of range: YYYY-MM-DD, 7d, 30d, today, all")
+    p.add_argument("--until", help="End of range: YYYY-MM-DD")
+    p.add_argument(
+        "--kind", default="all",
+        help="all (default) | human | auto_reply | bounce | status_only "
+             "(comma-separate to combine). Narrows replies and the sentiment "
+             "columns only -- sends are always counted in full")
+    p.add_argument("--tag", "--tags-any", dest="tags_any", action="append",
+                   help="Only leads carrying any of these tags (repeatable)")
+    p.add_argument("--tags-all", dest="tags_all", action="append",
+                   help="Only leads carrying all of these tags (repeatable)")
+    p.add_argument("--exclude-tag", dest="tags_none", action="append",
+                   help="Drop leads carrying this tag, from every column (repeatable)")
+    p.add_argument("--include-scheduling", action="store_true",
+                   help="Include booking-tool calendars as campaigns")
+    p.add_argument("--positive-anchor", dest="positive_anchor",
+                   choices=("current", "first"), default="first",
+                   help="first (default): dated from when a lead FIRST turned "
+                        "positive, so history does not move. current: leads "
+                        "positive right now, dated from the start of that run")
+    p.add_argument("--sort", default="sent",
+                   choices=("sent", "replies", "positive", "meetings", "bounces",
+                            "reply_rate", "positive_rate", "bounce_rate", "name"),
+                   help="Sort key (default: sent)")
+    p.add_argument("--limit", type=int, default=0, help="Max rows (0 = all)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--quiet", action="store_true")
+    p.set_defaults(command="campaign-audit")
+
+
+def cmd_campaign_audit(args) -> None:
+    conn = get_conn()
+    try:
+        ws = _resolve_workspace(conn, getattr(args, "workspace", None))
+        payload = reporting_queries.campaign_audit(
+            conn, ws["id"],
+            since=getattr(args, "since", None), until=getattr(args, "until", None),
+            include_scheduling=bool(getattr(args, "include_scheduling", False)),
+            positive_anchor=getattr(args, "positive_anchor", None),
+            reply_kind=getattr(args, "kind", "all"),
+            tags_any=getattr(args, "tags_any", None),
+            tags_all=getattr(args, "tags_all", None),
+            tags_none=getattr(args, "tags_none", None),
+        )
+    except ValueError as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(str(exc), file=sys.stderr)
+        sys.exit(1)
+        return
+    finally:
+        conn.close()
+    payload["workspace"] = ws["slug"]
+    rows = _sorted(payload["campaigns"], args.sort,
+                   reverse=args.sort != "name")
+    if getattr(args, "limit", 0):
+        rows = rows[:args.limit]
+    payload["campaigns"] = rows
+
+    def text(p):
+        t = p["totals"]
+        head = (f"{t['campaigns']} campaigns · {t['sent']} sent · "
+                f"{t['replies']} replies · {t['positive']} positive")
+        scope = []
+        if p.get("reply_kind") not in (None, "all"):
+            scope.append(f"kind={p['reply_kind']} (replies & sentiments only)")
+        for key, label in (("tags_any", "tags"), ("tags_all", "tags-all"),
+                           ("tags_none", "excluding")):
+            if p.get(key):
+                scope.append(f"{label}={','.join(p[key])}")
+        lines = [head + (f"  [{'; '.join(scope)}]" if scope else ""), ""]
+        fmt = "  {:<34} {:>7} {:>7} {:>8} {:>8} {:>7} {:>7} {:>7}"
+        lines.append(fmt.format("CAMPAIGN", "SENT", "REPLIES", "POSITIVE",
+                                "MEETINGS", "BOUNCE", "RPLY%", "POS%"))
+        for r in p["campaigns"]:
+            lines.append(fmt.format(
+                (r["name"] or "—")[:34], r["sent"], r["replies"], r["positive"],
+                r["meetings"], r["bounces"],
+                _fmt_pct(r["reply_rate"]), _fmt_pct(r["positive_rate"])))
+        # Straight from the payload, never re-summed here: one definition of the
+        # total, whatever is reading it.
+        lines += ["", fmt.format(
+            "TOTAL", t["sent"], t["replies"], t["positive"], t["meetings"],
+            t["bounces"], _fmt_pct(t["reply_rate"]), _fmt_pct(t["positive_rate"]))]
+        return "\n".join(lines)
+
+    _emit(args, payload, text)
+
+
 def register_deliverability_parser(sub) -> None:
     p = sub.add_parser(
         "deliverability",

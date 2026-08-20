@@ -137,23 +137,64 @@ GROUP BY campaign_name, event_type
 ORDER BY n DESC;
 ```
 
-## Replies (registry-aligned types)
+## Replies by campaign — use the command, not SQL
 
-```sql
-SELECT c.name, COUNT(*) AS replies
-FROM events e
-LEFT JOIN campaigns c ON e.campaign_id = c.id
-WHERE c.name LIKE 'acme |%'
-  AND (
-    lower(e.event_type) IN ('email_reply', 'linkedin_reply')
-    OR (lower(e.direction) = 'inbound' AND lower(e.event_type) = 'email')
-  )
-  AND e.created_at >= datetime('now', '-7 days')
-GROUP BY c.name
-ORDER BY replies DESC;
+**Do not hand-write the reply condition.** It is an OR nested inside an AND, and
+written out by hand it loses its parentheses: the date filter binds to one
+branch only and the query silently returns **all-time totals in every time
+window**. This has cost real analysis time.
+
+The whole Campaigns table, filtered, is one command:
+
+```bash
+# "positive human replies in the last 30 days, by campaign" — read `positive`
+# off each row, and `totals` for the workspace
+pipeline.py campaign-audit --workspace acme --since 30d --kind human --json
+
+pipeline.py campaign-audit --workspace acme --exclude-tag existing_customer
+pipeline.py campaign-audit --workspace acme --since 30d --sort positive
 ```
 
-Or: `pipeline.py query replies --workspace acme --since 7d --json`
+`--kind` (`human` / `auto_reply` / `bounce` / `status_only`, comma-separable)
+narrows the reply and sentiment columns only — `sent` is always counted in full,
+because filtering the denominator by "this lead's last reply was human" makes
+every rate meaningless. Tags describe the lead, so `--tag` / `--exclude-tag`
+narrow **every** column including sends.
+
+## View: reply events, already parenthesized
+
+If you must write SQL, select from `v_reply_events` — the condition is applied
+**inside** the view, so a flat AND chain is all you need and the precedence bug
+cannot be expressed:
+
+```sql
+SELECT campaign_name, reply_kind, COUNT(DISTINCT lead_id) AS leads
+FROM v_reply_events
+WHERE workspace_id = ?
+  AND event_at >= '2026-08-01' AND event_at < '2026-09-01'
+  AND reply_kind = 'human'
+GROUP BY campaign_name, reply_kind
+ORDER BY leads DESC;
+```
+
+Filter on `event_at` (the workspace's own timestamp, what every dashboard range
+uses), not `events.created_at`. Only `human` and `auto_reply` appear here:
+`bounce` and `status_only` are lead-level verdicts with no reply event behind
+them.
+
+## View: sentiment, with both anchors named
+
+```sql
+SELECT sentiment, COUNT(*) FROM v_lead_sentiment
+WHERE workspace_id = ? AND first_positive_at >= '2026-08-01'
+GROUP BY sentiment;
+```
+
+Which column anchors a window matters: `current_sentiment_since` is when the
+lead entered its **current** sentiment (a flip away and back resets it), while
+`first_positive_at` is the first time it ever turned positive and never moves.
+Performance questions want the second — otherwise last month's number changes
+every time you look at it.
 
 ## Recent events for one lead
 

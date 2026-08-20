@@ -106,8 +106,14 @@ def _range_clause(
     return clause, params
 
 
-def _ws_events(since: Optional[str], until: Optional[str] = None) -> tuple[str, list]:
+def _ws_events(
+    since: Optional[str], until: Optional[str] = None, scope=None,
+) -> tuple[str, list]:
+    """The workspace-scoped event CTE. `scope` narrows it to a set of leads —
+    a tag filter has to reach the raw event columns too, or the reply rate ends
+    up with a denominator that counts people the numerator excluded."""
     clause, params = _range_clause(since, until, "wle.event_at")
+    clause += _scope_clause(scope, "wle.lead_id")
     return _WS_EVENTS_CTE.format(range_clause=clause), params
 
 
@@ -785,6 +791,7 @@ def _meetings_by_day(
 def _meetings_by_campaign(
     conn: sqlite3.Connection, workspace_id: str,
     since: Optional[str], until: Optional[str],
+    scope: Optional["_LeadScope"] = None,
 ) -> tuple[dict, int]:
     """{campaign_id: meetings} attributed to the campaign that EARNED the meeting.
 
@@ -805,7 +812,8 @@ def _meetings_by_campaign(
               FROM workspace_lead_events wle
               JOIN events e ON e.id = wle.event_id
               JOIN leads l ON l.id = wle.lead_id
-             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}""",
+             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}"""
+        + _scope_clause(scope, "wle.lead_id"),
         (workspace_id, *range_params),
     ).fetchall()
     if not rows:
@@ -860,10 +868,183 @@ def positive_count_in_range(
     ).fetchone()["n"]
 
 
+# ── Reply kind and lead scopes ────────────────────────────────────────────────
+# Two things every campaign-shaped question needs and used to re-derive: which
+# events count as a reply (and what kind of reply), and which leads are in
+# scope. Both live here, once, so the Campaigns table, the Replies list and the
+# CLI cannot drift the way the three definitions of "positive" did.
+
+REPLY_KINDS = ("human", "auto_reply", "bounce", "status_only")
+
+
+def last_reply_join_sql(wl_alias: str = "wl", alias: str = "lr") -> str:
+    """LEFT JOIN to a lead's most recent inbound reply event.
+
+    Extracted from campaign_replies so the Campaigns table and the Replies list
+    classify a lead's kind from the same event. `wl_alias` must be a
+    workspace_leads row already in scope.
+    """
+    cond = (reply_event_sql_condition()
+            .replace("event_type", "e2.event_type")
+            .replace("direction", "e2.direction"))
+    return f"""
+        LEFT JOIN events {alias} ON {alias}.id = (
+            SELECT wle2.event_id
+            FROM workspace_lead_events wle2 JOIN events e2 ON e2.id = wle2.event_id
+            WHERE wle2.workspace_id = {wl_alias}.workspace_id
+              AND wle2.lead_id = {wl_alias}.lead_id
+              AND {cond}
+            ORDER BY wle2.event_at DESC, wle2.id DESC LIMIT 1)"""
+
+
+def reply_kind_list(reply_kind) -> list:
+    """Validated kinds from a `--kind` selection. [] means "every kind".
+
+    Unknown kinds raise rather than filtering to nothing: `--kind reply` used to
+    return an empty table that looked like a real answer.
+    """
+    if not reply_kind or str(reply_kind).strip().lower() == "all":
+        return []
+    wanted = [k.strip() for k in str(reply_kind).split(",") if k.strip()]
+    unknown = [k for k in wanted if k not in REPLY_KINDS]
+    if unknown:
+        raise ValueError(
+            f"unknown reply kind(s): {', '.join(unknown)}. "
+            f"Valid: {', '.join(REPLY_KINDS)}, or 'all'")
+    return wanted
+
+
+def reply_kind_filter(reply_kind, expr: str = "reply_kind") -> tuple[str, list]:
+    """(" AND <expr> IN (?,…)", params) for a kind selection, else ("", []).
+
+    `expr` is either an already-selected `reply_kind` column (the Replies list,
+    which classifies in a subquery) or the CASE itself via reply_kind_case_sql.
+    """
+    wanted = reply_kind_list(reply_kind)
+    if not wanted:
+        return "", []
+    return f" AND {expr} IN ({', '.join('?' for _ in wanted)})", wanted
+
+
+class _LeadScope:
+    """A materialized set of lead ids, applied as an indexed subquery.
+
+    Inlining the ids as a literal IN list instead is opaque to the planner: it
+    stopped one campaign query driving from the narrow lead set and fell back to
+    scanning, taking it from 1.4s to 926s. TEMP is per-connection, so concurrent
+    requests on other connections cannot see or clobber it.
+    """
+
+    def __init__(self, table: str):
+        self.table = table
+
+    def clause(self, column: str) -> str:
+        return f" AND {column} IN (SELECT lead_id FROM {self.table})"
+
+
+def _materialize_lead_ids(conn, table: str, lead_ids) -> _LeadScope:
+    conn.execute(f"DROP TABLE IF EXISTS temp.{table}")
+    conn.execute(f"CREATE TEMP TABLE {table} (lead_id INTEGER PRIMARY KEY)")
+    conn.executemany(
+        f"INSERT OR IGNORE INTO {table} VALUES (?)",
+        [(int(i),) for i in lead_ids])
+    return _LeadScope(table)
+
+
+def tag_scope(
+    conn: sqlite3.Connection, workspace_id: str, *,
+    tags_any: Optional[list] = None,
+    tags_all: Optional[list] = None,
+    tags_none: Optional[list] = None,
+) -> Optional[_LeadScope]:
+    """Lead ids passing a tag filter, or None when no tag filter is active.
+
+    Built from lead_filter_clause so "exclude existing_customer" means exactly
+    the same thing here as it does on the Contacts list. record_type / test /
+    suppressed are pinned to "all" deliberately: this is a *tag* filter, and
+    inheriting the contacts defaults would silently drop suppressed leads and
+    company records from every campaign column the moment one tag was picked.
+    """
+    if not (_tag_list(tags_any) or _tag_list(tags_all) or _tag_list(tags_none)):
+        return None
+    where, params = lead_filter_clause(
+        workspace_id, tags_any=tags_any, tags_all=tags_all, tags_none=tags_none,
+        record_type="all", test="all", suppressed="all")
+    rows = conn.execute(
+        f"""SELECT wl.lead_id AS lead_id FROM workspace_leads wl
+              JOIN leads l ON l.id = wl.lead_id
+             WHERE {where}""", params).fetchall()
+    return _materialize_lead_ids(
+        conn, "_campaign_tag_scope", [r["lead_id"] for r in rows])
+
+
+def kind_scope(
+    conn: sqlite3.Connection, workspace_id: str, reply_kind,
+    since: Optional[str], until: Optional[str],
+) -> Optional[_LeadScope]:
+    """Lead ids whose reply kind matches, or None when no kind filter is active.
+
+    Classifying a kind needs a correlated lookup of each lead's latest reply, so
+    this is driven from the leads that could appear in this window at all — a
+    sentiment or first-positive anchored in range, or a reply event in range —
+    rather than from every workspace lead. The candidate set is deliberately a
+    superset (all three arms, whichever anchor is in use): the kind filter is
+    what decides, the candidates only bound the scan.
+    """
+    kind_sql, kind_params = reply_kind_filter(
+        reply_kind, _reply_kind_case("lr", "wl.current_status_sentiment"))
+    if not kind_sql:
+        return None
+    sent_range, sent_params = _range_clause(since, until, "wl.current_sentiment_since")
+    first_range, first_params = _range_clause(since, until, "wl.first_positive_at")
+    reply_range, reply_params = _range_clause(since, until, "wle.event_at")
+    reply_cond = (reply_event_sql_condition()
+                  .replace("event_type", "e.event_type")
+                  .replace("direction", "e.direction"))
+    rows = conn.execute(
+        f"""WITH candidates AS (
+              SELECT wl.lead_id AS lead_id FROM workspace_leads wl
+               WHERE wl.workspace_id = ?
+                 AND wl.current_status_sentiment IS NOT NULL
+                 AND wl.current_sentiment_since IS NOT NULL{sent_range}
+              UNION
+              SELECT wl.lead_id FROM workspace_leads wl
+               WHERE wl.workspace_id = ? AND wl.first_positive_at IS NOT NULL{first_range}
+              UNION
+              SELECT wle.lead_id FROM workspace_lead_events wle
+                JOIN events e ON e.id = wle.event_id
+               WHERE wle.workspace_id = ?
+                 AND wle.event_type IN ({reply_event_types_sql_list()})
+                 AND {reply_cond}{reply_range}
+            )
+            SELECT wl.lead_id AS lead_id
+              FROM workspace_leads wl
+              JOIN candidates c ON c.lead_id = wl.lead_id{last_reply_join_sql()}
+             WHERE wl.workspace_id = ?{kind_sql}""",
+        (workspace_id, *sent_params, workspace_id, *first_params,
+         workspace_id, *reply_params, workspace_id, *kind_params),
+    ).fetchall()
+    return _materialize_lead_ids(
+        conn, "_campaign_kind_scope", [r["lead_id"] for r in rows])
+
+
+def _reply_kind_case(alias: str, sentiment_col: str) -> str:
+    from campaign_stats import reply_kind_case_sql
+
+    return reply_kind_case_sql(alias, sentiment_col)
+
+
+def _scope_clause(scope: Optional[_LeadScope], column: str) -> str:
+    """Pass-through so callers can thread an optional scope unconditionally."""
+    return scope.clause(column) if scope else ""
+
+
 def _sentiment_by_campaign(
     conn: sqlite3.Connection, workspace_id: str,
     since: Optional[str], until: Optional[str],
     positive_anchor: Optional[str] = None,
+    scope: Optional[_LeadScope] = None,
+    kind: Optional[_LeadScope] = None,
 ) -> tuple[dict, dict]:
     """{campaign_id: {sentiment: n}} counting each lead exactly ONCE.
 
@@ -876,6 +1057,11 @@ def _sentiment_by_campaign(
     Returns (per-campaign counts, unattributed counts).
     """
     range_sql, range_params = _range_clause(since, until, "wl.current_sentiment_since")
+    # Tags narrow the population; kind narrows which replies count as replies.
+    # Both are applied to the first-positive branch below as well -- forgetting
+    # one there would make --kind silently revert to unfiltered on the anchor
+    # the campaigns page actually defaults to.
+    narrow = _scope_clause(scope, "wl.lead_id") + _scope_clause(kind, "wl.lead_id")
     rows = conn.execute(
         f"""SELECT wl.lead_id AS lead_id, l.company_id AS company_id,
                    lower(wl.current_status_sentiment) AS sentiment
@@ -883,7 +1069,7 @@ def _sentiment_by_campaign(
               JOIN leads l ON l.id = wl.lead_id
              WHERE wl.workspace_id = ?
                AND wl.current_status_sentiment IS NOT NULL
-               AND wl.current_sentiment_since IS NOT NULL{range_sql}""",
+               AND wl.current_sentiment_since IS NOT NULL{range_sql}{narrow}""",
         (workspace_id, *range_params),
     ).fetchall()
     # On the `first` anchor the positive column is a different population: leads
@@ -898,7 +1084,7 @@ def _sentiment_by_campaign(
                       FROM workspace_leads wl
                       JOIN leads l ON l.id = wl.lead_id
                      WHERE wl.workspace_id = ?
-                       AND wl.first_positive_at IS NOT NULL{pos_range}""",
+                       AND wl.first_positive_at IS NOT NULL{pos_range}{narrow}""",
                 (workspace_id, *pos_params),
             ).fetchall()]
     if not rows:
@@ -951,6 +1137,7 @@ def _sentiment_by_campaign(
 def attributed_lead_ids(
     conn: sqlite3.Connection, workspace_id: str, campaign_id: int,
     since: Optional[str], until: Optional[str],
+    scope: Optional[_LeadScope] = None,
 ) -> set:
     """Lead ids whose conversation is credited to `campaign_id`.
 
@@ -987,7 +1174,8 @@ def attributed_lead_ids(
               JOIN leads l ON l.id = wl.lead_id
              WHERE wl.workspace_id = ?
                AND wl.current_status_sentiment IS NOT NULL
-               AND wl.current_sentiment_since IS NOT NULL{range_sql}
+               AND wl.current_sentiment_since IS NOT NULL{range_sql}{
+                   _scope_clause(scope, "wl.lead_id")}
             UNION
             SELECT wle.lead_id AS lead_id, l2.company_id AS company_id
               FROM workspace_lead_events wle
@@ -995,7 +1183,8 @@ def attributed_lead_ids(
               JOIN leads l2 ON l2.id = wle.lead_id
              WHERE wle.workspace_id = ?
                AND wle.event_type IN ({reply_event_types_sql_list()})
-               AND {reply_cond}{reply_range}""",
+               AND {reply_cond}{reply_range}{
+                   _scope_clause(scope, "wle.lead_id")}""",
         (workspace_id, *range_params, workspace_id, *reply_params),
     ).fetchall()
     if not rows:
@@ -1027,6 +1216,26 @@ def attributed_lead_ids(
     }
 
 
+def _campaign_totals(rows: list) -> dict:
+    """The all-campaigns row. Sums, with rates recomputed weighted.
+
+    Summing sentiment columns across campaigns is a real number here and only
+    here: _sentiment_by_campaign credits each conversation to exactly one
+    campaign, so no lead is in two rows. Rates are sum/sum, never the mean of
+    the per-row rates -- a campaign with 3 sends and 1 reply would otherwise
+    drag a 33% into an average that describes nobody.
+    """
+    keys = ("sent", "replies", "bounces", "meetings", *SENTIMENT_KEYS,
+            *(k for k in DAILY_EVENT_KEYS if k != "meetings"))
+    totals = {k: sum(int(r.get(k) or 0) for r in rows) for k in keys}
+    sent = totals["sent"]
+    totals["campaigns"] = len(rows)
+    totals["reply_rate"] = round(totals["replies"] / sent, 4) if sent else None
+    totals["positive_rate"] = round(totals["positive"] / sent, 4) if sent else None
+    totals["bounce_rate"] = round(totals["bounces"] / sent, 4) if sent else None
+    return totals
+
+
 def campaign_audit(
     conn: sqlite3.Connection,
     workspace_id: str,
@@ -1034,13 +1243,38 @@ def campaign_audit(
     until: Optional[str] = None,
     include_scheduling: bool = False,
     positive_anchor: Optional[str] = None,
+    reply_kind: Optional[str] = None,
+    tags_any: Optional[list] = None,
+    tags_all: Optional[list] = None,
+    tags_none: Optional[list] = None,
 ) -> dict:
     """Per-campaign activity, in the same columns as the daily-activity matrix.
 
     `include_scheduling` brings booking-tool event types back into the list. Off
     by default: a Calendly slot is a calendar, not a campaign you can judge.
+
+    Two filters, with deliberately different reach:
+
+    `tags_any/tags_all/tags_none` describe the LEAD, so they narrow every column
+    -- sends, replies, sentiments, meetings and all three rates. Excluding
+    `existing_customer` from the numerator but not the denominator would be a
+    reply rate for a population that does not exist.
+
+    `reply_kind` (human / auto_reply / bounce / status_only, comma-separated,
+    or "all") describes the REPLY, so it narrows KIND_SCOPED_COLUMNS only. The
+    classification is the lead's most recent inbound reply, the same one the
+    Replies list shows, so the two tables cannot disagree about what a reply is.
+    Note the axis is the lead: with a kind filter active, `replies` counts the
+    reply events of leads of that kind, so a human replier's stray
+    out-of-office still lands in their event total.
+
+    `totals` is the all-campaigns row, computed here rather than by each
+    consumer -- see _campaign_totals.
     """
-    cte, since_params = _ws_events(since, until)
+    scope = tag_scope(conn, workspace_id, tags_any=tags_any, tags_all=tags_all,
+                      tags_none=tags_none)
+    kind = kind_scope(conn, workspace_id, reply_kind, since, until)
+    cte, since_params = _ws_events(since, until, scope)
     # The same column expressions the daily matrix uses, grouped by campaign
     # instead of by day -- one definition, so "DMs sent" cannot mean one thing
     # per day and another per campaign.
@@ -1052,7 +1286,10 @@ def campaign_audit(
                -- event stream. Only ever shown for scheduling rows, which are
                -- opt-in -- so it cannot double-count the attributed figure.
                SUM(event_type = 'meeting_booked') AS meetings_on_calendar,
-               SUM({reply_event_sql_condition()}) AS replies,
+               -- A kind filter narrows this column and the sentiments; it never
+               -- touches `sent`. See KIND_SCOPED_COLUMNS.
+               SUM(({reply_event_sql_condition()}){
+                   _scope_clause(kind, "lead_id")}) AS replies,
                SUM(event_type IN {BOUNCE_EVENT_TYPES_SQL}) AS bounces
         FROM ws_events
         WHERE campaign_id IS NOT NULL
@@ -1074,10 +1311,12 @@ def campaign_audit(
         (workspace_id,),
     ).fetchall()
 
+    # Meetings take the tag scope but not the kind scope: a booked meeting is
+    # not a reply, so "show me human replies only" must not delete it.
     meetings_by_campaign, meetings_unattributed = _meetings_by_campaign(
-        conn, workspace_id, since, until)
+        conn, workspace_id, since, until, scope)
     sentiment_by_campaign, sentiment_unattributed = _sentiment_by_campaign(
-        conn, workspace_id, since, until, positive_anchor)
+        conn, workspace_id, since, until, positive_anchor, scope, kind)
 
     def _row(campaign_id, name, sent, m, meetings, sentiments):
         """One table row. `meetings` is the attributed count for a real campaign
@@ -1138,10 +1377,22 @@ def campaign_audit(
     out.sort(key=lambda c: (c.get("is_unattributed", False), -c["sent"], -c["meetings"]))
     return {
         "since": since,
+        "until": until,
         "campaigns": out,
+        # The all-campaigns row. Computed once here so the dashboard footer, the
+        # CLI's TOTAL line and an agent reading the JSON cannot each sum it
+        # slightly differently.
+        "totals": _campaign_totals(out),
         "include_scheduling": include_scheduling,
         "scheduling_excluded": sum(1 for c in campaigns if c["id"] in scheduling_ids),
         "columns": list(DAILY_COLUMN_KEYS),
+        # Echoed so every consumer can state what is actually being counted.
+        "positive_anchor": positive_anchor or "current",
+        "reply_kind": reply_kind or "all",
+        "kind_scoped_columns": list(KIND_SCOPED_COLUMNS),
+        "tags_any": _tag_list(tags_any) or None,
+        "tags_all": _tag_list(tags_all) or None,
+        "tags_none": _tag_list(tags_none) or None,
     }
 
 
@@ -1400,6 +1651,9 @@ def campaign_replies(
     status_label: Optional[str] = None,
     reply_kind: Optional[str] = None,
     attribution: Optional[str] = None,
+    tags_any: Optional[list] = None,
+    tags_all: Optional[list] = None,
+    tags_none: Optional[list] = None,
 ) -> dict:
     """One row per lead that currently carries a sentiment, anchored on the day
     it entered that sentiment (current_sentiment_since) — NOT one row per reply
@@ -1421,6 +1675,10 @@ def campaign_replies(
     "Replies" -- which reads as "we got four real replies" when we got none.
     The classification is campaign_stats.classify_reply_kind, shared with the
     CLI preset so the two can never drift.
+
+    `tags_any/tags_all/tags_none` are the same tag filter the Campaigns table
+    takes, so drilling into a campaign row keeps the exclusion that produced the
+    number you clicked.
 
     `attribution` selects what "in this campaign" means when `campaign_id` is
     given: "last_known" (default) matches the Campaigns table exactly, see
@@ -1481,11 +1739,15 @@ def campaign_replies(
     # The CTE takes the workspace and its range first, then the outer query's.
     base_params: list = [workspace_id, *cte_params, workspace_id,
                          *sent_params, *reply_params]
-    camp = ""
+    # Materialized, so it costs no bind parameters and cannot disturb the
+    # carefully ordered list above.
+    scope = tag_scope(conn, workspace_id, tags_any=tags_any, tags_all=tags_all,
+                      tags_none=tags_none)
+    camp = _scope_clause(scope, "wl.lead_id")
     if campaign_id is not None:
         if (attribution or "last_known") == "membership":
-            camp = (" AND wl.lead_id IN (SELECT lead_id FROM campaign_leads"
-                    " WHERE campaign_id = ?)")
+            camp += (" AND wl.lead_id IN (SELECT lead_id FROM campaign_leads"
+                     " WHERE campaign_id = ?)")
             base_params.append(int(campaign_id))
         else:
             # Resolved in Python rather than re-expressed in SQL: last-known
@@ -1501,12 +1763,13 @@ def campaign_replies(
             # 926s. An indexed relation restores the plan the campaign_leads
             # subquery used to get. TEMP is per-connection, so concurrent
             # requests on other connections cannot see or clobber it.
-            ids = attributed_lead_ids(conn, workspace_id, int(campaign_id), since, until)
+            ids = attributed_lead_ids(
+                conn, workspace_id, int(campaign_id), since, until, scope)
             conn.execute("DROP TABLE IF EXISTS temp._attributed_leads")
             conn.execute("CREATE TEMP TABLE _attributed_leads (lead_id INTEGER PRIMARY KEY)")
             conn.executemany("INSERT OR IGNORE INTO _attributed_leads VALUES (?)",
                              [(int(i),) for i in ids])
-            camp = " AND wl.lead_id IN (SELECT lead_id FROM _attributed_leads)"
+            camp += " AND wl.lead_id IN (SELECT lead_id FROM _attributed_leads)"
 
     # Either a materialized sentiment, or a real inbound reply with no verdict
     # attached yet. The second kind renders with sentiment "–" rather than being
@@ -1546,17 +1809,8 @@ def campaign_replies(
     # reply_kind is computed in SQL so the filter runs BEFORE the row cap.
     # Classifying the fetched page instead meant asking for human replies on a
     # page that happened to hold five bounces returned nothing at all.
-    from campaign_stats import reply_kind_case_sql
-
-    kind_sql = reply_kind_case_sql("lr", "wl.current_status_sentiment")
-    kind_filter = ""
-    kind_params: list = []
-    if reply_kind and reply_kind != "all":
-        wanted = [k.strip() for k in str(reply_kind).split(",") if k.strip()]
-        if wanted:
-            kind_filter = (" AND reply_kind IN (%s)"
-                           % ", ".join("?" for _ in wanted))
-            kind_params = wanted
+    kind_sql = _reply_kind_case("lr", "wl.current_status_sentiment")
+    kind_filter, kind_params = reply_kind_filter(reply_kind)
 
     inner = f"""
         SELECT wl.lead_id AS lead_id,
@@ -1579,14 +1833,7 @@ def campaign_replies(
                (lr.id IS NOT NULL AND json_extract(lr.metadata_json, '$.body') IS NOT NULL)
                    AS has_body
         FROM workspace_leads wl{last_reply_join}
-        JOIN leads l ON l.id = wl.lead_id
-        LEFT JOIN events lr ON lr.id = (
-            SELECT wle2.event_id
-            FROM workspace_lead_events wle2 JOIN events e2 ON e2.id = wle2.event_id
-            WHERE wle2.workspace_id = wl.workspace_id
-              AND wle2.lead_id = wl.lead_id
-              AND {reply_cond.replace('event_type', 'e2.event_type').replace('direction', 'e2.direction')}
-            ORDER BY wle2.event_at DESC, wle2.id DESC LIMIT 1)
+        JOIN leads l ON l.id = wl.lead_id{last_reply_join_sql()}
         WHERE {base_where}{narrow}"""
 
     # Counted over the whole selection, never the page: the split is the point,
@@ -1768,6 +2015,13 @@ DAILY_COLUMN_KEYS = (
     "connects_sent", "connects_accepted",
     *SENTIMENT_KEYS, "meetings",
 )
+
+# Which campaign_audit columns a --kind selection narrows. A reply kind
+# describes a reply, so it filters the reply-classified surfaces only; `sent`
+# and the raw outbound event columns stay whole. Filtering sends by "this
+# lead's last reply was human" would collapse the denominator and turn every
+# rate into fiction.
+KIND_SCOPED_COLUMNS = ("replies", "reply_rate", "positive_rate", *SENTIMENT_KEYS)
 
 
 # A lead sits in exactly one sentiment at a time: its current_status_sentiment,

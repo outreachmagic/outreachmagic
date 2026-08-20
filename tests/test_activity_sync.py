@@ -52,7 +52,9 @@ class ActivitySyncTests(unittest.TestCase):
         self.assertEqual(merged["linkedin_sent_count"], 3)
         self.assertEqual(merged["total_replies_count"], 1)
         self.assertEqual(merged["total_contacted_count"], 5)
-        self.assertEqual(merged["last_contacted_at"], "2026-02-01T00:00:00")
+        # A sync dict is a wire payload, so timestamps come back ISO-8601. This
+        # input was already ISO, so it only gains an explicit UTC offset.
+        self.assertEqual(merged["last_contacted_at"], "2026-02-01T00:00:00+00:00")
 
     def test_activity_in_sync_payload_and_roundtrip(self):
         ws_id = self._workspace_id()
@@ -92,7 +94,14 @@ class ActivitySyncTests(unittest.TestCase):
         self.assertEqual(activity.get("email_sent_count"), 2)
         self.assertEqual(activity.get("linkedin_sent_count"), 1)
         self.assertEqual(activity.get("total_contacted_count"), 3)
-        self.assertEqual(activity.get("last_contacted_at"), "2026-02-23T21:35:48.310000")
+        # Storage normalizes to SQLite's comparable 'YYYY-MM-DD HH:MM:SS' shape
+        # (every *_at filter is a text comparison against datetime('now', ...),
+        # and 'T' sorts above ' ', so a mixed column mis-answers range queries);
+        # the wire re-emits ISO-8601, the convention every other outbound
+        # timestamp follows. Sub-second precision is dropped on the way in,
+        # matching utc_now_for_storage() and the rest of the schema.
+        self.assertEqual(
+            activity.get("last_contacted_at"), "2026-02-23T21:35:48.000000+00:00")
 
         om.init_db()
         replay_conn = om.get_conn()
@@ -138,7 +147,8 @@ class ActivitySyncTests(unittest.TestCase):
         conn.close()
         self.assertEqual(wl["email_sent_count"], 2)
         self.assertEqual(wl["linkedin_sent_count"], 1)
-        self.assertEqual(wl["last_activity_at"], "2026-02-23T21:35:48.310000")
+        # A stored column, so it holds the comparable shape, not the input dialect.
+        self.assertEqual(wl["last_activity_at"], "2026-02-23 21:35:48")
         self.assertEqual(wl["current_status_label"], "information request")
 
     def test_refresh_activity_from_events(self):
@@ -185,7 +195,8 @@ class ActivitySyncTests(unittest.TestCase):
         self.assertEqual(activity.get("email_sent_count"), 2)
         self.assertEqual(activity.get("total_replies_count"), 1)
         self.assertEqual(activity.get("total_contacted_count"), 2)
-        self.assertEqual(activity.get("last_contacted_at"), "2026-03-02T10:00:00")
+        self.assertEqual(
+            activity.get("last_contacted_at"), "2026-03-02T10:00:00.000000+00:00")
 
 
     def test_multi_workspace_prefetch_sync_payloads(self):

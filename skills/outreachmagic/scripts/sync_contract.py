@@ -245,6 +245,7 @@ NOT_SYNCED_COLUMNS: dict[str, dict[str, str]] = {
         "owner_user_id": "CRM contact-owner assignment is not wired into the sync payload yet",
         "stage_entered_at": "not read by _assemble_lead_workspace_sync_payload",
         "last_activity_at": "internal 'any activity happened' bookkeeping, distinct from last_contacted_at which is what travels",
+        "first_positive_at": "derived locally from the event stream (pipeline_migration._backfill_first_positive_at) and kept current by ingest; the events it is computed from already arrive on every pull, so shipping the column too would put a second, staler copy of the same fact on the wire",
         "latest_sender": "not read by the workspace payload builder; leads.latest_sender (the core-level column) is what travels",
         "created_at": "audit only",
         "updated_at": "audit only",

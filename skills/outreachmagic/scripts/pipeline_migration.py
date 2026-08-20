@@ -873,6 +873,75 @@ def _backfill_current_sentiment_since(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _backfill_first_positive_at(conn: sqlite3.Connection) -> bool:
+    """Seed first_positive_at from event history.
+
+    current_sentiment_since answers "where does this lead stand now, and since
+    when" -- it is the start of the CURRENT run, so a flip away and back moves
+    it, and a lead that later goes cold stops being counted as a positive at
+    all. Measured on live data: of 1,336 leads that were ever positive, 192
+    (14.4%) are no longer positive and are therefore invisible in every current
+    count, and 21 of the survivors have an anchor that has drifted off the day
+    they actually turned. That is why a campaign's July number changes when you
+    look at it in September.
+
+    This column is set once and never moved, so `first_positive_at IS NOT NULL`
+    is itself the durable record that a lead was positive at some point --
+    independent of what current_status_sentiment says today. One column, both
+    failure modes.
+
+    Convergence, the same trap _backfill_current_sentiment_since documents: the
+    guard and the UPDATE must select the same rows or this re-fires on every
+    invocation and re-dirties the outbox forever. The COALESCE fallback is what
+    makes them agree -- a lead whose sentiment was set directly (a manual stage
+    change, no webhook) has no positive EVENT, so an event-only anchor would
+    return NULL, write NULL over NULL, and still qualify next pass.
+    """
+    def anchor(row: str) -> str:
+        return f"""
+        SELECT COALESCE(
+            (SELECT MIN(wle.event_at)
+               FROM workspace_lead_events wle JOIN events e ON e.id = wle.event_id
+              WHERE wle.workspace_id = {row}.workspace_id
+                AND wle.lead_id = {row}.lead_id
+                AND lower(json_extract(e.metadata_json, '$.lead_status_sentiment'))
+                    = 'positive'),
+            CASE WHEN lower(COALESCE({row}.current_status_sentiment, '')) = 'positive'
+                 THEN {row}.current_sentiment_since END)
+        """
+
+    def qualifies(row: str) -> str:
+        return f"{row}.first_positive_at IS NULL AND ({anchor(row)}) IS NOT NULL"
+
+    # Returns True only when the backfill actually ran to completion, so the
+    # caller does not record the one-shot flag for a pass that was skipped.
+    #
+    # Unlike current_sentiment_since, "first_positive_at IS NULL" matches every
+    # row on a database that has never run this, so the cheap pre-check cannot
+    # keep us away from the event tables the way that one does. During init_db
+    # the event schema is not necessarily in its final shape yet (event_id is
+    # added by a later migration step), and parsing the anchor subquery against
+    # a half-built workspace_lead_events raises. Check the shape first.
+    if not conn.execute(
+        "SELECT 1 FROM workspace_leads WHERE first_positive_at IS NULL LIMIT 1"
+    ).fetchone():
+        return True
+    wle_columns = {r["name"] for r in
+                   conn.execute("PRAGMA table_info(workspace_lead_events)").fetchall()}
+    if not {"event_id", "event_at", "lead_id", "workspace_id"} <= wle_columns:
+        return False
+    if not conn.execute(
+        f"SELECT 1 FROM workspace_leads wl WHERE {qualifies('wl')} LIMIT 1"
+    ).fetchone():
+        return True
+    conn.execute(f"""
+        UPDATE workspace_leads
+           SET first_positive_at = ({anchor('workspace_leads')})
+         WHERE {qualifies('workspace_leads')}
+    """)
+    return True
+
+
 def _repair_sales_nav_id_casing(conn: sqlite3.Connection) -> None:
     """Unify 'ACwAA...' and 'acwaa...' -- they're the same person, and the local
     store kept them as two.
@@ -1976,6 +2045,7 @@ def migrate_db(conn=None):
             current_status_label TEXT,
             current_status_sentiment TEXT,
             current_sentiment_since TEXT,
+            first_positive_at TEXT,
             contact_priority INTEGER,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -2195,6 +2265,10 @@ def migrate_db(conn=None):
         conn.execute("ALTER TABLE workspace_leads ADD COLUMN current_sentiment_since TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE workspace_leads ADD COLUMN first_positive_at TEXT")
+    except sqlite3.OperationalError:
+        pass
     # The per-lead half is one-shot -- on a converged DB it walks all of leads to
     # issue ~176k INSERT OR IGNOREs that change nothing (~1.5s), on every single
     # CLI invocation. The campaign-map half still runs every time; see the
@@ -2270,6 +2344,17 @@ def migrate_db(conn=None):
         conn.execute(
             "INSERT INTO migration_flags (name) VALUES ('current_sentiment_since_backfill')"
         )
+    # Same one-shot discipline: derived from event history once, kept current by
+    # ingest from there.
+    if not conn.execute(
+        "SELECT 1 FROM migration_flags WHERE name = 'first_positive_at_backfill'"
+    ).fetchone():
+        # Flagged only on a pass that actually ran: skipped because the event
+        # schema was still being built means retry next invocation, not "done".
+        if _backfill_first_positive_at(conn):
+            conn.execute(
+                "INSERT INTO migration_flags (name) VALUES ('first_positive_at_backfill')"
+            )
     for col, col_type in [
         ("headcount_numeric", "INTEGER"),
         ("location_city", "TEXT"),

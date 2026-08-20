@@ -255,6 +255,8 @@ from relay_ingest import (
     relay_dedupe_key,
 )
 
+from normalize import normalize_sentinel
+
 from pipeline_utils import (
     _dedupe_tags,
     _parse_tags,
@@ -3108,6 +3110,24 @@ def resolve_lead(
     overwrite_source: bool = False,
 ) -> dict:
     """Match or create lead by tiered identities (email, external_id, name+company, etc.)."""
+    # Placeholders are not values. Applied here rather than at each caller
+    # because this is the one function every ingest path goes through -- the
+    # relay pull, CSV import, enrichment and the dashboard all land here -- so
+    # it is the only place that can hold the invariant against a call site that
+    # has not been written yet. Without it a merge promotes an inbound
+    # "unknown" over a real title, since the merge rule only fills fields it
+    # considers empty. `name` is deliberately excluded: 'unknown' is the marker
+    # junk_cleanup keys on to find identity-less rows.
+    title = normalize_sentinel(title)
+    company = normalize_sentinel(company)
+    industry = normalize_sentinel(industry)
+    headcount = normalize_sentinel(headcount)
+    location_city = normalize_sentinel(location_city)
+    location_state = normalize_sentinel(location_state)
+    location_country = normalize_sentinel(location_country)
+    hq_city = normalize_sentinel(hq_city)
+    hq_state = normalize_sentinel(hq_state)
+    hq_country = normalize_sentinel(hq_country)
     email_norm = normalize_email(email)
     li_parsed = parse_linkedin_value(linkedin_url) if linkedin_url else []
     li_public = next((v for t, v in li_parsed if t == "linkedin_url"), None)

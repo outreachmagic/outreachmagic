@@ -92,6 +92,8 @@ def log_event(
 #: Fields the merge preview compares. The engine fills a blank on the survivor
 #: from the loser (COALESCE, see pipeline.merge_leads); this shows which values
 #: that would actually move, so nobody has to trust a description of the rule.
+from normalize import normalize_sentinel
+
 MERGE_PREVIEW_FIELDS = (
     "name", "email", "title", "company", "linkedin_url", "industry", "headcount",
     "location_city", "location_country", "email_verification_status",
@@ -117,14 +119,17 @@ def merge_leads_preview(keep_id: int, merge_ids: list[int]) -> dict:
                 raise ValueError(f"lead not found: {lead_id}")
             losers.append(row)
 
+        # A placeholder counts as absent on BOTH sides: as the survivor's value it
+        # must not block a real one from being inherited, and as a loser's it must
+        # not be promoted into the surviving record. Historic rows still hold
+        # 'unknown' (cleanup-sentinels backfills them), and nothing stops an
+        # upstream export from sending another one tomorrow.
         result, inherited = {}, {}
         for field in MERGE_PREVIEW_FIELDS:
-            value = (keep[field] or "") if field in keep.keys() else ""
-            value = value.strip() if isinstance(value, str) else value
+            value = normalize_sentinel(keep[field]) if field in keep.keys() else None
             if not value:
                 for row in losers:
-                    candidate = (row[field] or "") if field in row.keys() else ""
-                    candidate = candidate.strip() if isinstance(candidate, str) else candidate
+                    candidate = normalize_sentinel(row[field]) if field in row.keys() else None
                     if candidate:
                         value, inherited[field] = candidate, row["id"]
                         break

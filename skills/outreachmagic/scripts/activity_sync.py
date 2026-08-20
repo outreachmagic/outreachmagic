@@ -34,7 +34,16 @@ class ActivitySummary:
             "total_contacted_count": self.total_contacted_count,
         }
         if self.last_contacted_at:
-            out["last_contacted_at"] = self.last_contacted_at
+            # ISO-8601 on the wire, the same convention every other outbound
+            # timestamp follows (normalize_relay_timestamp, used for the outbox
+            # `timestamp` fields). This used to pass the stored string through
+            # verbatim, which meant the payload's format depended on which
+            # dialect the row happened to be written in -- the relay received
+            # three different shapes for one field. Storage stays in SQLite's
+            # comparable shape; the two are converted at their own boundary.
+            from pipeline_update import normalize_relay_timestamp
+
+            out["last_contacted_at"] = normalize_relay_timestamp(self.last_contacted_at)
         return out
 
     @classmethod
@@ -242,8 +251,18 @@ def _write_workspace_activity(
     activity: dict,
 ) -> None:
     summary = ActivitySummary.from_dict(activity)
+    # The relay speaks several timestamp dialects -- "2025-04-18T13:59:23Z",
+    # "2025-04-23 15:36:50.250000", "2024-01-01 14:02:26" -- and this is the one
+    # place they become columns. Stored raw (as they were), the CSV export shows
+    # two formats for one field, and worse: every *_at filter in the codebase is
+    # a lexicographic comparison against datetime('now', ...), and 'T' (0x54)
+    # sorts ABOVE ' ' (0x20). A mixed column silently mis-answers range queries.
+    # to_sync_dict() is untouched -- the wire format is ISO by contract.
+    from pipeline_update import normalize_relay_timestamp_for_storage
+
     last = summary.last_contacted_at
     if last:
+        last = normalize_relay_timestamp_for_storage(last)
         conn.execute(
             """UPDATE workspace_leads SET
                    email_sent_count = ?,

@@ -180,14 +180,31 @@ class SchedulingCampaignTests(unittest.TestCase):
 
     # -- the daily matrix agrees -------------------------------------------
 
-    def test_the_daily_matrix_excludes_scheduling_too(self):
-        """Matrix and table must reconcile, or the page contradicts itself."""
+    def test_the_daily_matrix_counts_meetings_either_way(self):
+        """Matrix and table must reconcile, or the page contradicts itself.
+
+        They used to reconcile at the wrong number: the matrix read meetings off
+        `events.campaign_id`, so excluding booking-tool campaigns -- the default
+        -- deleted every meeting from the chart, while the Campaigns table went
+        on showing them because it resolves them through last-known-campaign.
+        The toggle governs which CAMPAIGNS are listed, never whether a meeting
+        that happened is counted.
+        """
         lead = self._lead("Booker")
         self._booked(lead)
-        daily = dq.campaign_daily(self.conn, WS, since="all")
-        self.assertEqual(sum(d["meetings"] for d in daily["days"]), 0)
-        with_sched = dq.campaign_daily(self.conn, WS, since="all", include_scheduling=True)
-        self.assertEqual(sum(d["meetings"] for d in with_sched["days"]), 1)
+
+        def matrix_total(**kw):
+            return sum(d["meetings"] for d in
+                       dq.campaign_daily(self.conn, WS, since="all", **kw)["days"])
+
+        def table_total(**kw):
+            audit = dq.campaign_audit(self.conn, WS, since="all", **kw)
+            return sum(c["meetings"] for c in audit["campaigns"])
+
+        self.assertEqual(matrix_total(), 1)
+        self.assertEqual(matrix_total(include_scheduling=True), 1)
+        # The invariant the docstring has always claimed.
+        self.assertEqual(matrix_total(), table_total())
 
 
 if __name__ == "__main__":

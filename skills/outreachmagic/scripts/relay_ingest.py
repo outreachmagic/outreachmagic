@@ -1430,6 +1430,14 @@ def ingest_relay_event(
                     "ELSE current_sentiment_since END"
                 )
                 mat_params.extend([status_sentiment, sentiment_at])
+                # Set once, never moved -- unlike current_sentiment_since, which
+                # tracks the CURRENT run and so rewrites history when a lead
+                # flips away and back, or drops it entirely when a lead cools.
+                # A campaign's July positives must not change in September.
+                if str(status_sentiment).strip().lower() == "positive":
+                    mat_sets.append(
+                        "first_positive_at = COALESCE(first_positive_at, ?)")
+                    mat_params.append(sentiment_at)
             mat_sets.append("updated_at = datetime('now')")
             mat_params.append(ws_lead_id)
             conn.execute(

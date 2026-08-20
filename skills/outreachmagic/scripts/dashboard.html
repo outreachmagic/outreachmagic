@@ -194,6 +194,14 @@ tr.clickable:hover td { background: color-mix(in srgb, var(--series-1) 7%, trans
 .enrich-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 button.linklike { border: none; background: none; padding: 0; font: inherit; font-weight: 600;
   color: var(--series-1); cursor: pointer; text-decoration: underline; }
+.fgrp { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 6px 0; }
+.fgrp + .fgrp { border-top: 1px solid var(--grid); }
+.fgrp-name { font-size: 12px; font-weight: 600; min-width: 96px; color: var(--ink-1); }
+.fchips { display: flex; gap: 5px; flex-wrap: wrap; }
+.fchip { font-size: 11px; padding: 1px 8px; border: 1px solid var(--border);
+  border-radius: 999px; background: none; color: var(--ink-2); cursor: pointer; }
+.fchip.inc { border-color: var(--series-1); color: var(--series-1); font-weight: 600; }
+.fchip.exc { text-decoration: line-through; opacity: .7; }
 .tag-chip { display: inline-block; padding: 1px 7px; margin: 0 3px 2px 0; font-size: 11px;
   border: 1px solid var(--border); border-radius: 999px; color: var(--ink-2); }
 .stat-grid { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -219,6 +227,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
     <select id="range">
       <option value="today">Today</option>
       <option value="yesterday">Yesterday</option>
+      <option value="7d">Last 7 days</option>
       <option value="14d">Last 14 days</option>
       <option value="30d" selected>Last 30 days</option>
       <option value="90d">Last 90 days</option>
@@ -386,6 +395,56 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         </label>
         <span id="tag-expression" class="stale" style="font-size:12px"></span>
       </div>
+      <!-- Grouped in a disclosure rather than inline: the toolbar above already
+           carries nine controls, and these are the ones you set once while
+           building a list, not the ones you touch every visit. Every selection
+           echoes into the chip bar below, so what is applied stays visible with
+           the panel shut -- and because all four surfaces (list, select-all,
+           tiles, export) read the same filter set, that chip bar is also a
+           truthful statement of what the export will contain. -->
+      <details id="contacts-filter-panel" style="margin:6px 0">
+        <summary style="cursor:pointer;font-size:12px;font-weight:600">Filters</summary>
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:6px">
+          <div class="fgrp">
+            <div class="fgrp-name">Engagement</div>
+            <div class="fchips" id="f-sentiment"></div>
+            <label style="font-size:12px">Last contacted
+              <select id="f-contacted">
+                <option value="">Any time</option>
+                <option value="30d">Within 30 days</option>
+                <option value="90d">Within 90 days</option>
+                <option value="180d">Within 180 days</option>
+                <option value="365d">Within 365 days</option>
+                <option value="custom">Custom…</option>
+              </select>
+            </label>
+            <span id="f-contacted-custom" hidden>
+              <input type="date" id="f-contacted-since" title="From"> –
+              <input type="date" id="f-contacted-until" title="To">
+            </span>
+          </div>
+          <div class="fgrp">
+            <div class="fgrp-name">Email quality</div>
+            <div class="fchips" id="f-verify"></div>
+          </div>
+          <div class="fgrp">
+            <div class="fgrp-name">Identity</div>
+            <label style="font-size:12px">Email
+              <select id="f-has-email" data-filter="has_email">
+                <option value="">Any</option><option value="1">Has</option><option value="0">Missing</option>
+              </select></label>
+            <label style="font-size:12px">LinkedIn
+              <select id="f-has-linkedin" data-filter="has_linkedin">
+                <option value="">Any</option><option value="1">Has</option><option value="0">Missing</option>
+              </select></label>
+            <label style="font-size:12px">Sales Nav id
+              <select id="f-has-salesnav" data-filter="has_sales_nav">
+                <option value="">Any</option><option value="1">Has</option><option value="0">Missing</option>
+              </select></label>
+          </div>
+          <div style="margin-top:8px"><button class="small" id="f-reset">Reset filters</button></div>
+        </div>
+      </details>
       <div id="contacts-active-filters" style="margin-bottom:8px"></div>
       <div class="controls" style="gap:14px">
         <label><input type="checkbox" id="contacts-all-page"> Select page</label>
@@ -414,6 +473,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <button id="contacts-prev" class="small">‹ Prev</button>
         <span id="contacts-page" class="stale"></span>
         <button id="contacts-next" class="small">Next ›</button>
+        <label class="stale">Rows <select id="contacts-size"></select></label>
       </div>
     </div>
   </section>
@@ -510,6 +570,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <button id="companies-prev" class="small">‹ Prev</button>
         <span id="companies-page" class="stale"></span>
         <button id="companies-next" class="small">Next ›</button>
+        <label class="stale">Rows <select id="companies-size"></select></label>
       </div>
     </div>
     <div class="card" id="merge-card" hidden>
@@ -649,6 +710,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         </label>
         <span class="spacer"></span>
         <span id="replies-sel" class="stale"></span>
+        <button class="small" id="replies-clear" hidden>Clear selection</button>
         <button class="small" id="replies-merge" disabled
           title="Same person, two records — e.g. they replied from a different address">Merge contacts</button>
         <button class="small" id="replies-link" disabled
@@ -662,6 +724,12 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <div class="controls">
         <label title="Booking tools publish the calendar slot (&quot;30 Minute Meeting&quot;) as the campaign on every scheduled-meeting webhook. That is a slot on your calendar, not outbound you can judge, and counting it put the same lead in two campaigns.">
           <input type="checkbox" id="campaigns-scheduling"> Include scheduling tools (Calendly &amp; co)
+        </label>
+        <label title="First positive: counts a lead in the period it FIRST turned positive, and keeps it there even if it later goes cold — so a past month's number stops moving. Currently positive: who is warm right now, dated from the start of their current run.">Positives
+          <select id="campaigns-anchor">
+            <option value="first">First turned positive</option>
+            <option value="current">Currently positive</option>
+          </select>
         </label>
         <span class="spacer"></span>
         <span id="campaigns-note" class="stale"></span>
@@ -1014,6 +1082,22 @@ function wireColResize(el, cols, tableKey) {
     };
   });
 }
+// Rows per page. 25 is the default everywhere: 50 put more on screen than an
+// operator reads before scrolling past it. 0 = show all. Persisted per table so
+// the choice survives a reload, the same way column widths do.
+const PAGE_SIZES = [25, 50, 100, 250];
+const DEFAULT_PAGE_SIZE = 25;
+function loadPageSize(tableKey, fallback) {
+  if (!tableKey) return fallback;
+  const raw = localStorage.getItem("om.pageSize." + tableKey);
+  if (raw === null) return fallback;
+  const n = +raw;
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+function savePageSize(tableKey, n) {
+  if (tableKey) localStorage.setItem("om.pageSize." + tableKey, String(n));
+}
+
 function renderTable(container, cols, rows, opts = {}) {
   const el = typeof container === "string" ? $(container) : container;
   if (!rows.length) {
@@ -1028,7 +1112,10 @@ function renderTable(container, cols, rows, opts = {}) {
   // opts.pageSize renders one page at a time while filtering and sorting still
   // run over the WHOLE set — the point at 400 mailboxes is that sorting by
   // bounce rate finds the worst one, not the worst one on this page.
-  const pageSize = opts.pageSize || 0;
+  // One paging policy for every table. The operator's choice is remembered per
+  // table (not per call), because opts is rebuilt on each load -- writing the
+  // choice back into it, as this used to, forgot it on the next refresh.
+  const pageSize = opts.pageSize ? loadPageSize(tableKey, opts.pageSize) : 0;
   // Server-sort mode: the whole (paginated) list is sorted by the backend, so
   // arrows reflect opts.sortKey/sortDir and header clicks call back instead of
   // reordering just the loaded page.
@@ -1090,13 +1177,16 @@ function renderTable(container, cols, rows, opts = {}) {
     })() : "";
     const first = totalRows ? st.page * pageSize + 1 : 0;
     const last = Math.min(totalRows, (st.page + 1) * pageSize);
-    const pager = (pageSize && totalRows > pageSize) ? `<div class="tpager">
+    // Shown whenever the table COULD paginate at the smallest offered size, not
+    // only when it currently does -- otherwise the one control that lets you
+    // shrink a 40-row table to 25 is hidden until you no longer need it.
+    const pager = (pageSize && totalRows > PAGE_SIZES[0]) ? `<div class="tpager">
         <button class="small tpg-prev" ${st.page === 0 ? "disabled" : ""}>‹ Prev</button>
         <span class="stale">${fmt(first)}–${fmt(last)} of ${fmt(totalRows)}</span>
         <button class="small tpg-next" ${st.page >= pageCount - 1 ? "disabled" : ""}>Next ›</button>
         <span class="spacer"></span>
         <label class="stale">Rows
-          <select class="tpg-size">${[50, 100, 250, 0].map(n =>
+          <select class="tpg-size">${PAGE_SIZES.concat(0).map(n =>
             `<option value="${n}"${n === pageSize ? " selected" : ""}>${n || "all"}</option>`).join("")}</select>
         </label>
       </div>` : "";
@@ -1140,7 +1230,7 @@ function renderTable(container, cols, rows, opts = {}) {
     if (next) next.onclick = () => { st.page += 1; draw(); };
     const sizeSel = el.querySelector(".tpg-size");
     if (sizeSel) sizeSel.onchange = () => {
-      opts.pageSize = +sizeSel.value || 0;
+      savePageSize(tableKey, +sizeSel.value || 0);
       st.page = 0;
       renderTable(container, cols, rows, opts);
     };
@@ -1701,7 +1791,7 @@ function renderDeliv() {
         r.trending_down ? '<span class="flag bad">▲ trending down</span>' : '<span class="flag ok">✓ ok</span>'}${
         (r.bounces_last_7d || r.bounces_prior_7d)
           ? ` <span class="stale">${r.bounces_prior_7d || 0}→${r.bounces_last_7d || 0}</span>` : ""}</span>` },
-  ], mailboxes, { empty: "No mailboxes match this filter.", pageSize: 50,
+  ], mailboxes, { empty: "No mailboxes match this filter.", pageSize: DEFAULT_PAGE_SIZE,
     onRowClick: r => openSenderEdit(r),
     onDraw: el => el.querySelectorAll(".trend-cell").forEach(cell => cell.onclick = (ev) => {
       ev.stopPropagation();
@@ -1749,7 +1839,7 @@ function renderDeliv() {
         r.listed ? '<span class="flag bad">✖ listed</span>'
           : r.registered ? '<span class="flag ok">✓ clean</span>' : '<span class="flag warn">—</span>'}${
         r.dnsbl_checks_failed ? ` <span class="flag warn" title="${r.dnsbl_checks_failed} list(s) refused or timed out — not a listing">${r.dnsbl_checks_failed} unchecked</span>` : ""}</span>` },
-  ], domains, { empty: "No sending domains match this filter.", pageSize: 50,
+  ], domains, { empty: "No sending domains match this filter.", pageSize: DEFAULT_PAGE_SIZE,
     onRowClick: r => showDomain(r.domain),
     onDraw: el => {
       el.querySelectorAll(".dnsbl-cell").forEach(cell => cell.onclick = (ev) => {
@@ -1970,7 +2060,7 @@ async function loadBounces() {
       { key: "occurrences", label: "Events", num: true, render: r => fmt(r.occurrences) },
       { key: "bounce_type", label: "Type", render: r => esc(r.bounce_type || "unknown") },
       { key: "last_seen_at", label: "Last seen", render: r => dt(r.last_seen_at) },
-    ], d.groups, { empty: "No bounces in this range.", pageSize: 25,
+    ], d.groups, { empty: "No bounces in this range.", pageSize: DEFAULT_PAGE_SIZE,
       onRowClick: r => openBounceDrawer(r.example_id) });
   }
   renderTable("bounce-rows", [
@@ -1982,7 +2072,7 @@ async function loadBounces() {
     { key: "campaign_name", label: "Campaign", render: r => esc(r.campaign_name || "—") },
     { key: "occurrence_count", label: "Times", num: true, render: r => fmt(r.occurrence_count || 1) },
     { key: "last_seen_at", label: "Last seen", render: r => dt(r.last_seen_at) },
-  ], d.bounces, { empty: "No bounces in this range.", pageSize: 50,
+  ], d.bounces, { empty: "No bounces in this range.", pageSize: DEFAULT_PAGE_SIZE,
     onRowClick: r => openBounceDrawer(r.id) });
 }
 
@@ -2287,7 +2377,8 @@ async function showStageLeads(status, more = false) {
 $("leads-more").onclick = () => showStageLeads(state.leadsStatus, true);
 
 /* ---------- contacts (Section B) ---------- */
-const contactsState = { offset: 0, limit: 50, total: 0, sortKey: null, sortDir: -1 };
+const contactsState = { offset: 0, limit: loadPageSize("contacts", DEFAULT_PAGE_SIZE),
+                        total: 0, sortKey: null, sortDir: -1 };
 let contactsTimer = null;
 // Extra filters set by the stats section's click-to-filter (tag / verify /
 // qualify_finding / has_linkedin). Cleared via the active-filters chip.
@@ -2316,7 +2407,12 @@ function contactsFilterParams() {
   const key = tagMode() === "all" ? "tags_all" : "tags_any";
   include.forEach(t => p.append(key, t));
   exclude.forEach(t => p.append("tags_none", t));
-  for (const [k, v] of Object.entries(contactsFilters)) if (v != null && v !== "") p.set(k, v);
+  for (const [k, v] of Object.entries(contactsFilters)) {
+    // Multi-select facets are arrays and travel as repeated params, the same way
+    // tags do -- a value may contain a comma, so joining them is not safe.
+    if (Array.isArray(v)) v.forEach(item => p.append(k, item));
+    else if (v != null && v !== "") p.set(k, v);
+  }
   return p;
 }
 
@@ -2482,18 +2578,139 @@ async function fillSenderSelect() {
     .map(s => `<option value="${esc(s.sender_profile)}">${esc(s.sender_slug || s.sender_profile)} (${fmt(s.connected)})</option>`).join("");
   sel.value = cur;
 }
+// Two multi-select facets, driven by one three-state chip: off -> include ->
+// exclude -> off. Deliberately the same interaction as the tag chips directly
+// above them -- a second idiom for the same idea ("some of these, none of
+// those") is a second thing to learn for no gain.
+const FACETS = {
+  sentiment: { key: "sentiment", noneKey: "sentiment_none", el: "f-sentiment",
+    values: [["positive", "positive"], ["negative", "negative"],
+             ["autoreply", "auto-reply"], ["invalid", "invalid"], ["", "no sentiment"]] },
+  verify: { key: "verify", noneKey: "verify_none", el: "f-verify",
+    values: [["valid", "valid"], ["catch_all", "catch-all"], ["unknown", "unknown"],
+             ["invalid", "invalid"], ["soft_bounce", "soft bounce"], ["bounced", "bounced"],
+             ["unverified", "not checked"], ["none", "no email"]] },
+};
+
+function facetState(f, value) {
+  if ((contactsFilters[f.key] || []).includes(value)) return "inc";
+  if ((contactsFilters[f.noneKey] || []).includes(value)) return "exc";
+  return "";
+}
+function cycleFacet(f, value) {
+  const inc = contactsFilters[f.key] || [];
+  const exc = contactsFilters[f.noneKey] || [];
+  const drop = (arr) => arr.filter(v => v !== value);
+  const state = facetState(f, value);
+  let nextInc = drop(inc), nextExc = drop(exc);
+  if (state === "") nextInc = [...nextInc, value];
+  else if (state === "inc") nextExc = [...nextExc, value];
+  // "exc" falls through to neither, which is off.
+  nextInc.length ? contactsFilters[f.key] = nextInc : delete contactsFilters[f.key];
+  nextExc.length ? contactsFilters[f.noneKey] = nextExc : delete contactsFilters[f.noneKey];
+}
+function renderFacets() {
+  for (const f of Object.values(FACETS)) {
+    const el = $(f.el);
+    if (!el) continue;
+    el.innerHTML = f.values.map(([value, label]) =>
+      `<button class="fchip ${facetState(f, value)}" data-v="${esc(value)}"
+        title="Click to include, again to exclude, again to clear">${esc(label)}</button>`).join("");
+    el.querySelectorAll(".fchip").forEach(b => b.onclick = () => {
+      cycleFacet(f, b.dataset.v);
+      renderFacets();
+      renderActiveFilters();
+      contactsState.offset = 0;
+      loadContacts();
+      loadContactsStats();
+    });
+  }
+}
+function syncFilterPanel() {
+  $("f-contacted").value = contactsFilters.contacted_within
+    || (contactsFilters.contacted_since || contactsFilters.contacted_until ? "custom" : "");
+  $("f-contacted-custom").hidden = $("f-contacted").value !== "custom";
+  for (const id of ["f-has-email", "f-has-linkedin", "f-has-salesnav"]) {
+    $(id).value = contactsFilters[$(id).dataset.filter] ?? "";
+  }
+  renderFacets();
+}
+function wireFilterPanel() {
+  const reload = () => {
+    renderActiveFilters(); syncFilterPanel();
+    contactsState.offset = 0; loadContacts(); loadContactsStats();
+  };
+  $("f-contacted").onchange = () => {
+    const v = $("f-contacted").value;
+    delete contactsFilters.contacted_within;
+    delete contactsFilters.contacted_since;
+    delete contactsFilters.contacted_until;
+    if (v && v !== "custom") contactsFilters.contacted_within = v;
+    reload();
+  };
+  for (const id of ["f-contacted-since", "f-contacted-until"]) $(id).onchange = () => {
+    const key = id === "f-contacted-since" ? "contacted_since" : "contacted_until";
+    const v = $(id).value;
+    v ? contactsFilters[key] = v : delete contactsFilters[key];
+    reload();
+  };
+  for (const id of ["f-has-email", "f-has-linkedin", "f-has-salesnav"]) $(id).onchange = () => {
+    const key = $(id).dataset.filter, v = $(id).value;
+    v === "" ? delete contactsFilters[key] : contactsFilters[key] = v;
+    reload();
+  };
+  $("f-reset").onclick = () => {
+    for (const k of Object.keys(contactsFilters)) delete contactsFilters[k];
+    tagChips = [];
+    renderTagFilterBar();
+    reload();
+  };
+  syncFilterPanel();
+}
+
+// Labels for the chip bar. Without these a chip reads "sentiment_none: negative",
+// which states the parameter name rather than what was asked for.
+const FILTER_LABELS = {
+  sentiment: "sentiment", sentiment_none: "not sentiment",
+  verify: "email", verify_none: "not email",
+  contacted_within: "contacted within", contacted_since: "contacted after",
+  contacted_until: "contacted before",
+  has_email: "email", has_linkedin: "LinkedIn", has_sales_nav: "Sales Nav id",
+  verify_bucket: "email", record_type: "record type", suppressed: "suppressed",
+};
+const TRI_LABELS = { "1": "present", "0": "missing" };
+
 function renderActiveFilters() {
+  if (typeof syncFilterPanel === "function" && $("f-sentiment")) syncFilterPanel();
   const chips = [];
   for (const [k, v] of Object.entries(contactsFilters)) {
-    chips.push(`<span class="tag-chip" style="cursor:pointer" data-clear="${esc(k)}">${esc(k)}: ${esc(String(v))} ✕</span>`);
+    const label = FILTER_LABELS[k] || k;
+    const shown = Array.isArray(v)
+      ? v.map(x => x === "" ? "none" : x).join(" / ")
+      : (TRI_LABELS[String(v)] ?? String(v));
+    chips.push(`<span class="tag-chip" style="cursor:pointer" data-clear="${esc(k)}">${esc(label)}: ${esc(shown)} ✕</span>`);
   }
   const el = $("contacts-active-filters");
   el.innerHTML = chips.length ? "Filters: " + chips.join(" ") : "";
   el.querySelectorAll("[data-clear]").forEach(c => c.onclick = () => {
-    delete contactsFilters[c.dataset.clear]; renderActiveFilters(); loadContacts();
+    delete contactsFilters[c.dataset.clear];
+    renderActiveFilters();
+    syncFilterPanel();
+    contactsState.offset = 0;
+    loadContacts();
+    loadContactsStats();
   });
 }
+// Facet keys are lists. A drill-through from a stat tile still says
+// {verify: "valid"}, which is one selection -- promote it rather than making
+// every caller know the shape.
+const FACET_KEYS = new Set(["sentiment", "sentiment_none", "verify", "verify_none"]);
 function setContactsFilter(patch) {
+  for (const k of Object.keys(patch)) {
+    if (FACET_KEYS.has(k) && patch[k] != null && !Array.isArray(patch[k])) {
+      patch[k] = patch[k] === "" ? [] : [patch[k]];
+    }
+  }
   // Tags have ONE home: the chip bar. A `tag` in a patch — from a stats-table
   // drill-through or a chip in the lead panel — becomes a chip like any other,
   // rather than a second, scalar tag filter rendered somewhere else and cleared
@@ -2614,11 +2831,12 @@ $("bulk-apply").onclick = () => {
 };
 
 // Existing workspace tags feed the add/remove-tag type-ahead; custom values
-// still allowed (the datalist only suggests). Loaded once per workspace.
-let contactsTagsLoaded = false;
+// still allowed (the datalist only suggests). Refetched on every Contacts visit:
+// this used to be cached behind a load-once flag that nothing reset -- not on a
+// workspace switch, not after a tag was created -- so a tag added during the
+// session was missing from the remove-tag dropdown for the rest of it. The
+// query is one GROUP BY over a workspace's tags (tens of rows), not worth a cache.
 async function fillBulkTags() {
-  if (contactsTagsLoaded) return;
-  contactsTagsLoaded = true;
   const d = await get("/api/tags").catch(() => null);
   if (!d || !d.tags) return;
   $("bulk-tags").innerHTML = d.tags
@@ -2654,7 +2872,9 @@ function loadContactsStats() {
     // Drill-in: clear any conflicting bucket keys, clear the range (so the table
     // matches the all-time stat), then apply the filter.
     const drill = (patch) => {
-      ["verify", "qualify_finding", "has_linkedin", "has_domain", "tag",
+      ["verify", "verify_none", "sentiment", "sentiment_none", "qualify_finding",
+       "has_linkedin", "has_email", "has_sales_nav", "has_domain", "tag",
+       "contacted_within", "contacted_since", "contacted_until",
        "suppressed"].forEach(k => delete contactsFilters[k]);
       setRangeAll();
       setContactsFilter(patch);
@@ -2663,17 +2883,6 @@ function loadContactsStats() {
       `<div class="stat-cell" data-patch='${esc(JSON.stringify(patch))}'>
          <div class="label">${label}</div><div class="value">${fmt(value || 0)}</div></div>`;
     const tags = (d.by_tag || []).filter(t => t.total > 0);   // hide empty/phantom tags
-    const tcell = (t, key, patch) =>
-      `<td class="num" data-patch='${esc(JSON.stringify(patch))}'>${fmt(t[key])}</td>`;
-    const tagRows = tags.map(t => `<tr data-tag="${esc(t.tag)}">
-        <td class="clip" style="max-width:220px"><button class="linklike">${esc(t.tag)}</button></td>
-        ${tcell(t, "total", { tag: t.tag })}
-        ${tcell(t, "valid_email", { tag: t.tag, verify: "valid" })}
-        ${tcell(t, "catch_all_email", { tag: t.tag, verify: "catch_all" })}
-        ${tcell(t, "no_email", { tag: t.tag, verify: "none" })}
-        ${tcell(t, "qualify_finding", { tag: t.tag, qualify_finding: "1" })}
-        ${tcell(t, "has_linkedin", { tag: t.tag, has_linkedin: "1" })}
-      </tr>`).join("");
     // Three rows, each answering one question: what kind of records are these,
     // how much usable email do they have, how ready are they to enrich.
     // Rows 2 and 3 are always "of the records selected in row 1", which is
@@ -2702,13 +2911,37 @@ function loadContactsStats() {
         ${cell("Has domain", o.has_domain, { has_domain: "1" })}
         ${cell("Find-eligible", o.qualify_finding, { qualify_finding: "1" })}
       </div>
-      ${tags.length ? `<div style="margin-top:12px;overflow-x:auto"><table class="stat-table">
-        <thead><tr><th>Tag</th><th class="num">Records</th><th class="num">Valid</th><th class="num">Catch-all</th>
-          <th class="num">No email</th><th class="num">Find-elig.</th><th class="num">LinkedIn</th></tr></thead>
-        <tbody>${tagRows}</tbody></table></div>` : ""}`;
+      ${tags.length ? '<div class="stale" style="margin:12px 0 6px">Tags</div><div id="contacts-tag-table"></div>' : ""}`;
+    // Was hand-built <table> markup, which is why it had no sorting: renderTable
+    // gives sorting, paging and column resize to every other table on the page,
+    // and "which tag has gone quiet" is a question you answer by sorting on the
+    // last-activity column.
+    if (tags.length) {
+      const numCol = (key, label, patch) => ({
+        key, label, num: true, sortVal: r => r[key] || 0,
+        render: r => `<span data-patch='${esc(JSON.stringify(patch(r)))}'>${fmt(r[key])}</span>`,
+      });
+      renderTable("contacts-tag-table", [
+        { key: "tag", label: "Tag", maxw: 220,
+          render: r => `<button class="linklike" data-patch='${esc(JSON.stringify({ tag: r.tag }))}'>${esc(r.tag)}</button>` },
+        numCol("total", "Records", r => ({ tag: r.tag })),
+        numCol("valid_email", "Valid", r => ({ tag: r.tag, verify: "valid" })),
+        numCol("catch_all_email", "Catch-all", r => ({ tag: r.tag, verify: "catch_all" })),
+        numCol("no_email", "No email", r => ({ tag: r.tag, verify: "none" })),
+        numCol("qualify_finding", "Find-elig.", r => ({ tag: r.tag, qualify_finding: "1" })),
+        numCol("has_linkedin", "LinkedIn", r => ({ tag: r.tag, has_linkedin: "1" })),
+        // The newest activity of any lead carrying the tag: what says whether a
+        // list is still live or was worked through months ago.
+        { key: "last_activity_at", label: "Last activity",
+          sortVal: r => r.last_activity_at || "",
+          render: r => dt(r.last_activity_at) || "–" },
+      ], tags, { empty: "No tags.", filter: false, pageSize: DEFAULT_PAGE_SIZE,
+        sortKey: "total", sortDir: -1,
+        onDraw: el => el.querySelectorAll("[data-patch]").forEach(n =>
+          n.onclick = (e) => { e.stopPropagation(); drill(JSON.parse(n.dataset.patch)); }) });
+    }
     $("contacts-stats").querySelectorAll(".stat-cell").forEach(c => c.onclick = () => drill(JSON.parse(c.dataset.patch)));
-    $("contacts-stats").querySelectorAll("tr[data-tag] .linklike").forEach(b => b.onclick = () => drill({ tag: b.closest("tr").dataset.tag }));
-    $("contacts-stats").querySelectorAll("td[data-patch]").forEach(td => td.onclick = () => drill(JSON.parse(td.dataset.patch)));
+
   }).catch(() => {});
 }
 $("contacts-q").oninput = () => { clearTimeout(contactsTimer); contactsTimer = setTimeout(() => loadContacts(), 300); };
@@ -2791,6 +3024,20 @@ $("sup-add").onclick = () => {
     loadSuppression(); loadContacts(); loadContactsStats();
   }).catch(e => { $("sup-msg").textContent = String(e); });
 };
+// Server-paged: no "all" option, since the contacts API caps a page at 200.
+function wireServerPageSize(id, state, reload) {
+  const sel = $(id);
+  sel.innerHTML = PAGE_SIZES.map(n =>
+    `<option value="${n}"${n === state.limit ? " selected" : ""}>${n}</option>`).join("");
+  sel.onchange = () => {
+    state.limit = +sel.value;
+    savePageSize(id.replace("-size", ""), state.limit);
+    state.offset = 0;
+    reload();
+  };
+}
+wireFilterPanel();
+wireServerPageSize("contacts-size", contactsState, () => loadContacts());
 $("contacts-prev").onclick = () => { contactsState.offset = Math.max(0, contactsState.offset - contactsState.limit); loadContacts(false); };
 $("contacts-next").onclick = () => { contactsState.offset += contactsState.limit; loadContacts(false); };
 
@@ -2871,7 +3118,8 @@ async function copyAgentPrompt(key, btn) {
 // server-side and a header click on it is ignored.
 const SORTABLE_COMPANY_KEYS = new Set(
   ["name", "domain", "domains", "industry", "headcount", "leads"]);
-const companiesState = { offset: 0, limit: 50, sortKey: null, sortDir: -1 };
+const companiesState = { offset: 0, limit: loadPageSize("companies", DEFAULT_PAGE_SIZE),
+                         sortKey: null, sortDir: -1 };
 const companiesFilters = {};   // tag / missing_domain / no_reachable_contact / placeholder_only
 let companiesTimer = null;
 
@@ -2993,6 +3241,7 @@ $("companies-q").oninput = () => { clearTimeout(companiesTimer); companiesTimer 
 // Choosing from the dropdown drops a sticky header sort — otherwise the
 // dropdown would appear to do nothing, because the header key wins.
 $("companies-sort").onchange = () => { companiesState.sortKey = null; loadCompanies(); };
+wireServerPageSize("companies-size", companiesState, () => loadCompanies());
 $("companies-prev").onclick = () => { companiesState.offset = Math.max(0, companiesState.offset - companiesState.limit); loadCompanies(false); };
 $("companies-next").onclick = () => { companiesState.offset += companiesState.limit; loadCompanies(false); };
 
@@ -3321,31 +3570,45 @@ function eventBodyBlock(ev) {
 // what actually happens, which is worse than showing nothing.
 const mergeContacts = { keepId: null, ids: [], companyId: null };
 
-async function openMergeContacts(ids, contacts, companyId) {
+// `onMerged` is how the dialog tells whoever opened it to clean up. Merging
+// destroys a record, so any selection held by the opener now contains an id that
+// does not resolve -- acting on it fails, or worse, silently targets nothing.
+async function openMergeContacts(ids, contacts, companyId, onMerged) {
   if (ids.length < 2) return;
-  const byId = Object.fromEntries(contacts.map(c => [c.lead_id, c]));
-  // Default the survivor to the record with the most history, since that is
-  // the one whose id other things are most likely to reference -- but show the
-  // counts, so the default is visible reasoning rather than a hidden rule.
   mergeContacts.ids = ids;
   mergeContacts.companyId = companyId;
-  mergeContacts.keepId = [...ids].sort(
-    (a, b) => (byId[b]?.event_count || 0) - (byId[a]?.event_count || 0))[0];
-  $("merge-contacts-body").innerHTML = ids.map(id => {
-    const c = byId[id] || {};
+  mergeContacts.onMerged = onMerged || null;
+  mergeContacts.byId = Object.fromEntries(contacts.map(c => [c.lead_id, c]));
+  // Counts come from the server (merge/preview.event_counts), never from the
+  // caller: three of the four call sites have no event_count to give, which
+  // rendered "0 events" on records with history AND silently broke the survivor
+  // default below, since sorting by a field that is 0 for everyone is a no-op.
+  mergeContacts.counts = null;
+  mergeContacts.keepId = ids[0];
+  renderMergeChoices();
+  $("merge-contacts-msg").textContent = "";
+  $("merge-contacts").showModal();
+  renderMergePreview();
+}
+
+function renderMergeChoices() {
+  const counts = mergeContacts.counts;
+  $("merge-contacts-body").innerHTML = mergeContacts.ids.map(id => {
+    const c = mergeContacts.byId[id] || {};
+    const n = counts ? (counts[id] || 0) : null;
+    const events = n === null
+      ? '<span class="stale">counting…</span>'
+      : `${fmt(n)} event${n === 1 ? "" : "s"}`;
     return `<label style="display:block;padding:6px 0;border-top:1px solid var(--grid);cursor:pointer">
       <input type="radio" name="merge-keep" value="${id}" ${id === mergeContacts.keepId ? "checked" : ""}>
       <b>${esc(c.name || "—")}</b>
       <span class="stale">${esc(c.title || "")}${c.email ? " · " + esc(c.email) : ""}
-        · ${fmt(c.event_count || 0)} event${c.event_count === 1 ? "" : "s"}</span>
+        · ${events}</span>
       ${c.subject ? `<div class="stale" style="margin-left:20px">last reply: ${esc(c.subject)}</div>` : ""}
     </label>`;
   }).join("") + '<div id="merge-preview" style="margin-top:10px"></div>';
   $("merge-contacts-body").querySelectorAll('input[name="merge-keep"]').forEach(r =>
     r.onchange = () => { mergeContacts.keepId = +r.value; renderMergePreview(); });
-  $("merge-contacts-msg").textContent = "";
-  $("merge-contacts").showModal();
-  renderMergePreview();
 }
 
 // Saving a LinkedIn URL that already belongs to another lead used to end at
@@ -3376,12 +3639,28 @@ async function renderMergePreview() {
   const d = await post("/api/leads/merge/preview", { keep_id, merge_ids })
     .catch(e => { el.innerHTML = `<div class="msg">${esc(e.message)}</div>`; return null; });
   if (!d) return;
+  // First response settles the counts, and with them the default survivor: the
+  // record with the most history, since that is the id other things are most
+  // likely to reference. Counts are the same whichever record is currently
+  // selected, so this costs one extra round trip on open and none after.
+  if (!mergeContacts.counts && d.event_counts) {
+    mergeContacts.counts = d.event_counts;
+    const best = [...mergeContacts.ids].sort(
+      (a, b) => (d.event_counts[b] || 0) - (d.event_counts[a] || 0))[0];
+    if (best !== keep_id) {
+      mergeContacts.keepId = best;
+      renderMergeChoices();
+      return renderMergePreview();
+    }
+    renderMergeChoices();
+  }
+  const target = $("merge-preview");
   const rows = Object.entries(d.result).map(([k, v]) => {
     const from = d.inherited_from[k];
     return `<tr><td class="stale">${esc(k)}</td><td>${esc(v ?? "—")}</td>
       <td class="stale">${from ? `inherited from #${from}` : ""}</td></tr>`;
   }).join("");
-  el.innerHTML = `<div class="stale" style="font-size:12px;margin-bottom:4px">Resulting record</div>
+  target.innerHTML = `<div class="stale" style="font-size:12px;margin-bottom:4px">Resulting record</div>
     <div class="table-wrap"><table><tbody>${rows}</tbody></table></div>`;
   $("merge-contacts-run").disabled = false;
 }
@@ -3401,7 +3680,8 @@ $("merge-contacts-run").onclick = async () => {
     if (r.status === "error") throw new Error(r.errors?.[0]?.error || "merge failed");
     toast(`Merged ${r.merged} record(s) into #${keep_id}`);
     $("merge-contacts").close();
-    if (mergeContacts.companyId) renderCompanyActivity(mergeContacts.companyId);
+    if (mergeContacts.onMerged) mergeContacts.onMerged(keep_id);
+    else if (mergeContacts.companyId) renderCompanyActivity(mergeContacts.companyId);
     // Reached from an identity conflict rather than the company pane: land on
     // the surviving record, since the one you were editing may be the one that
     // just went away.
@@ -4194,12 +4474,19 @@ async function loadCampaigns() {
     $("campaigns-scheduling").checked = localStorage.getItem("om.includeScheduling") === "1";
     $("campaigns-scheduling").dataset.restored = "1";
   }
+  if (!$("campaigns-anchor").dataset.restored) {
+    $("campaigns-anchor").value = localStorage.getItem("om.positiveAnchor") || "first";
+    $("campaigns-anchor").dataset.restored = "1";
+  }
   const sched = $("campaigns-scheduling").checked ? "include_scheduling=1" : "";
+  // Only the campaigns table reads the anchor: the daily matrix is a per-day
+  // series, and "first turned positive" is already the day it plots.
+  const anchor = `positive_anchor=${encodeURIComponent($("campaigns-anchor").value)}`;
   const dailyCampaign = $("daily-campaign").value;
   const dailyQs = [dailyCampaign ? `campaign_id=${dailyCampaign}` : "", sched]
     .filter(Boolean).join("&");
   const [audit, daily] = await Promise.all([
-    getR("/api/campaigns" + (sched ? `?${sched}` : "")),
+    getR("/api/campaigns?" + [sched, anchor].filter(Boolean).join("&")),
     getR("/api/campaigns/daily" + (dailyQs ? `?${dailyQs}` : "")),
   ]).catch(e => { toast(e.message); return [null, null]; });
   if (!audit) return;
@@ -4254,6 +4541,10 @@ function fillCampaignSelects() {
   }
 }
 $("daily-campaign").onchange = loadCampaigns;
+$("campaigns-anchor").onchange = () => {
+  localStorage.setItem("om.positiveAnchor", $("campaigns-anchor").value);
+  loadCampaigns();
+};
 $("campaigns-scheduling").onchange = () => {
   localStorage.setItem("om.includeScheduling", $("campaigns-scheduling").checked ? "1" : "");
   loadCampaigns();
@@ -4288,10 +4579,16 @@ function repliesKind() {
 }
 function syncRepliesSel() {
   $("replies-sel").textContent = repliesSel.size ? `${repliesSel.size} selected` : "";
+  $("replies-clear").hidden = !repliesSel.size;
   $("replies-merge").disabled = repliesSel.size < 2;
   // A link is a directional pair: exactly two, and you say which came first.
   $("replies-link").disabled = repliesSel.size !== 2;
 }
+$("replies-clear").onclick = () => {
+  repliesSel.clear();
+  syncRepliesSel();
+  loadReplies();
+};
 $("replies-merge").onclick = () => {
   const rows = (state.replies || []).filter(r => repliesSel.has(r.lead_id));
   // The email and what they last said are what tell you which record to keep
@@ -4299,7 +4596,15 @@ $("replies-merge").onclick = () => {
   openMergeContacts([...repliesSel], rows.map(r => ({
     lead_id: r.lead_id, name: r.lead_name, title: r.title,
     email: r.email, subject: r.subject,
-  })), null);
+  })), null, () => {
+    // Both ids were selected; one of them no longer exists. Drop the whole
+    // selection rather than guessing, and reload so the row that survived shows
+    // its inherited fields.
+    repliesSel.clear();
+    syncRepliesSel();
+    loadReplies();
+    loadCampaigns();
+  });
 };
 // Merging destroys a record; linking does not. Two people who both replied in
 // one thread are not one record to be reconciled -- they are two people and one
@@ -4359,7 +4664,12 @@ async function loadReplies() {
     + (d.replies.length !== total ? ` · showing ${fmt(d.replies.length)}` : "");
   renderTable("replies-table", [
     { key: "_sel", label: "", sortVal: () => 0,
-      render: r => `<input type="checkbox" class="rp-sel" data-lead="${r.lead_id}">` },
+      // Bound to repliesSel, not left to the DOM: renderTable rebuilds these rows
+      // on every sort, filter and page turn, so an unbound box paints unchecked
+      // while the id is still selected -- the row is selected, looks selected to
+      // nobody, and clicking it "again" re-adds what was never removed.
+      render: r => `<input type="checkbox" class="rp-sel" data-lead="${r.lead_id}"${
+        repliesSel.has(r.lead_id) ? " checked" : ""}>` },
     { key: "lead_name", label: "Name", render: r => esc(r.lead_name || "—") },
     { key: "company", label: "Company", render: renderCompanyCell },
     { key: "title", label: "Title", render: r => esc(r.title ?? "") },
@@ -4379,7 +4689,7 @@ async function loadReplies() {
     // recent event of any kind. They answer different questions.
     { key: "event_at", label: "Since", render: r => dt(r.event_at), sortVal: r => r.event_at || "" },
     { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
-  ], d.replies, { empty: "Nothing in this range for the selected kind.", pageSize: 50,
+  ], d.replies, { empty: "Nothing in this range for the selected kind.", pageSize: DEFAULT_PAGE_SIZE,
     onRowClick: r => openLead(r.lead_id),
     onDraw: el => {
       // The "via <colleague>" chip opens that colleague, not the row's lead.

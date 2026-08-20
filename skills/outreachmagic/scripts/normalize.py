@@ -16,6 +16,48 @@ _LINKEDIN_RE = re.compile(r"^https?://", re.I)
 _LINKEDIN_DOMAIN_RE = re.compile(r"^(?:https?://)?(?:www\.)?linkedin\.com/", re.I)
 
 
+# Placeholder strings that mean "we do not know", written by upstream exporters
+# and by our own early importers. They are not values: a lead whose title is the
+# string "unknown" reads as known-to-be-unknown, sorts and groups as a real
+# title, satisfies a NOT NULL check, and -- the reason this exists -- WINS a
+# merge, because the merge rule fills an empty field from the other record and
+# "unknown" is not empty. Absence is NULL; nothing else.
+#
+# Deliberately conservative: only strings whose *entire* content is a placeholder.
+# "Unknown Systems Ltd" is a company, and "N/A Consulting" is somebody's employer.
+SENTINEL_VALUES = frozenset({
+    "unknown", "n/a", "n.a.", "na", "none", "null", "nil", "-", "--", "---",
+    "not available", "not applicable", "not provided", "not specified",
+    "no title", "no data", "undefined", "tbd", "?", "??", "(unknown)", "[unknown]",
+})
+
+
+def normalize_sentinel(value):
+    """Return `value`, or None when it is a placeholder rather than a value.
+
+    Whitespace-only and empty strings collapse to None too, so a caller can use
+    this as the single "is there anything here?" gate instead of pairing it with
+    a separate truthiness check. Non-strings are returned untouched.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return None
+    return None if text.casefold() in SENTINEL_VALUES else text
+
+
+def sentinel_sql_condition(column: str) -> str:
+    """SQL that is true when `column` holds a placeholder, empty string or NULL.
+
+    Kept beside the Python list so a backfill and a query can never disagree
+    about what counts as absent.
+    """
+    values = ", ".join("'" + v.replace("'", "''") + "'" for v in sorted(SENTINEL_VALUES))
+    return (f"({column} IS NULL OR TRIM({column}) = ''"
+            f" OR LOWER(TRIM({column})) IN ({values}))")
+
+
 def signal_fingerprint(
     name: str = "", domain: str = "", linkedin: str = "",
 ) -> str:

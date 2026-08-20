@@ -2363,6 +2363,20 @@ def main():
     cleanup_rules_p.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
     cleanup_rules_p.add_argument("--json", action="store_true")
 
+    cleanup_sent_p = sub.add_parser(
+        "cleanup-sentinels",
+        help="Replace placeholder values ('unknown', 'N/A', ...) with NULL")
+    cleanup_sent_p.add_argument("--apply", action="store_true",
+                                help="Write the changes (default is a dry run)")
+    cleanup_sent_p.add_argument("--json", action="store_true")
+
+    cleanup_ts_p = sub.add_parser(
+        "cleanup-timestamps",
+        help="Rewrite *_at columns into one comparable timestamp format")
+    cleanup_ts_p.add_argument("--apply", action="store_true",
+                              help="Write the changes (default is a dry run)")
+    cleanup_ts_p.add_argument("--json", action="store_true")
+
     outbox_p = sub.add_parser("outbox", help="Pending local changes awaiting push")
     outbox_p.add_argument(
         "--backfill",
@@ -5744,6 +5758,28 @@ def main():
                 print(f"  {row['month']}: {row['count']:>7,}")
             if result["dry_run"]:
                 print("\n(dry-run) Re-run with --yes to actually delete.")
+
+    elif args.command in ("cleanup-sentinels", "cleanup-timestamps"):
+        import data_hygiene
+
+        # Dry run is the default: both commands rewrite historic rows in place,
+        # so the reader sees the blast radius before anything moves.
+        dry = not getattr(args, "apply", False)
+        fn = (data_hygiene.cleanup_sentinels if args.command == "cleanup-sentinels"
+              else data_hygiene.cleanup_timestamps)
+        result = fn(dry_run=dry)
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            verb = "Would clean" if dry else "Cleaned"
+            print(f"{verb} {result['found']} value(s)")
+            for column, n in sorted(result["by_column"].items(), key=lambda kv: -kv[1]):
+                print(f"  {column}: {n}")
+            if result.get("unparseable"):
+                print(f"  left as-is (unparseable): {result['unparseable']}")
+            if dry and result["found"]:
+                print(f"\nRe-run with --apply to write. Corrected rows are queued "
+                      f"for the next push, so the fix reaches the relay too.")
 
     elif args.command == "cleanup-rules":
         result = _pipeline.cleanup_campaign_rules(dry_run=getattr(args, "dry_run", False))

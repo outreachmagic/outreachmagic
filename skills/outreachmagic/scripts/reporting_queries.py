@@ -39,13 +39,57 @@ WITH ws_events AS (
 )
 """
 
+# Company size arrives two ways in the same column: LinkedIn-style bands
+# ("11-50", "10001+") and bare counts ("6", "120"). Grouped raw they never meet
+# -- "51-200" and "62" describe the same company and land in different rows, and
+# a bare count is its own group of one, so nothing clears a min-sample floor.
+# leads.headcount_numeric already holds the parsed midpoint
+# (pipeline_utils.parse_headcount_numeric) and is populated for 99.5% of the
+# leads that carry any headcount text, so the band is derived from that.
+# Boundaries are LinkedIn's, which is what the source data is speaking.
+HEADCOUNT_BANDS = (
+    (1, 1, "1"),
+    (2, 10, "2-10"),
+    (11, 50, "11-50"),
+    (51, 200, "51-200"),
+    (201, 500, "201-500"),
+    (501, 1000, "501-1000"),
+    (1001, 5000, "1001-5000"),
+    (5001, 10000, "5001-10000"),
+)
+HEADCOUNT_TOP_BAND = "10001+"
+
+
+def headcount_band_sql(column: str = "l.headcount_numeric") -> str:
+    """CASE mapping a numeric headcount onto its band label.
+
+    Ordering is by the band's lower bound, not the label -- '1001-5000' sorts
+    before '11-50' as text, which would present the sizes shuffled.
+    """
+    whens = " ".join(
+        f"WHEN {column} <= {hi} THEN '{label}'" for _, hi, label in HEADCOUNT_BANDS)
+    return (f"CASE WHEN {column} IS NULL THEN NULL "
+            f"{whens} ELSE '{HEADCOUNT_TOP_BAND}' END")
+
+
+def headcount_band_order_sql(column: str = "l.headcount_numeric") -> str:
+    whens = " ".join(
+        f"WHEN {column} <= {hi} THEN {i}" for i, (_, hi, _) in enumerate(HEADCOUNT_BANDS))
+    return (f"CASE WHEN {column} IS NULL THEN 999 "
+            f"{whens} ELSE {len(HEADCOUNT_BANDS)} END")
+
+
 ATTRIBUTE_FIELDS = {
     "industry": "l.industry",
     "title": "l.title",
-    "headcount": "l.headcount",
+    "headcount": headcount_band_sql(),
     "location_country": "l.location_country",
     "source": "l.original_source_platform",
 }
+
+# Attributes whose values are buckets, not free text: they group on the
+# expression itself and sort by magnitude rather than alphabetically.
+ATTRIBUTE_ORDER_OVERRIDES = {"headcount": headcount_band_order_sql()}
 
 # sender_accounts.bounce_rate at or above this flags the mailbox.
 MAILBOX_BOUNCE_RATE_THRESHOLD = 0.05
@@ -613,8 +657,15 @@ def attribute_performance(
     # Group case-insensitively ("Career Services Coordinator" == "career
     # services coordinator"); display the first variant in case-sensitive
     # order so the shown label is deterministic.
+    # A derived band is already canonical, so it groups on itself; free-text
+    # attributes keep the case-insensitive grouping with a deterministic label.
+    banded = field in ATTRIBUTE_ORDER_OVERRIDES
+    value_sql = expr if banded else f"MIN(TRIM({expr}))"
+    group_sql = expr if banded else f"lower(TRIM({expr}))"
+    order_sql = (f"{ATTRIBUTE_ORDER_OVERRIDES[field]} ASC" if banded
+                 else "CAST(replied AS REAL) / contacted DESC, contacted DESC")
     rows = conn.execute(
-        f"""SELECT MIN(TRIM({expr})) AS value,
+        f"""SELECT {value_sql} AS value,
                COUNT(*) AS leads,
                SUM(wl.email_sent_count > 0 OR wl.linkedin_sent_count > 0) AS contacted,
                SUM(wl.total_replies_count > 0) AS replied,
@@ -623,9 +674,9 @@ def attribute_performance(
             JOIN leads l ON l.id = wl.lead_id
             WHERE wl.workspace_id = ?
               AND {expr} IS NOT NULL AND TRIM({expr}) != ''{campaign_filter}
-            GROUP BY lower(TRIM({expr}))
+            GROUP BY {group_sql}
             HAVING contacted >= ?
-            ORDER BY CAST(replied AS REAL) / contacted DESC, contacted DESC""",
+            ORDER BY {order_sql}""",
         params,
     ).fetchall()
     out = []
@@ -685,6 +736,52 @@ UNATTRIBUTED_SCHEDULING_ID = -1
 UNATTRIBUTED_SCHEDULING_NAME = "Unattributed (scheduling)"
 
 
+def _meetings_by_day(
+    conn: sqlite3.Connection, workspace_id: str,
+    campaign_id: Optional[int], since: Optional[str], until: Optional[str],
+) -> dict[str, int]:
+    """{day: meetings} for the daily matrix, attributed like _meetings_by_campaign.
+
+    The daily chart used to read meetings straight off `events.campaign_id` along
+    with every other column, which meant excluding booking-tool campaigns (the
+    default) deleted EVERY meeting from the chart -- a `meeting_booked` webhook
+    carries the calendar slot as its campaign, so the exclusion matched all of
+    them. The Campaigns table meanwhile showed those same meetings, because it
+    resolves them through last-known-campaign. One number, two answers.
+
+    Counting is per lead per day: a lead who books twice in an afternoon moved
+    once, which is the same thing the per-campaign view counts.
+    """
+    range_sql, range_params = _range_clause(since, until, "wle.event_at")
+    rows = conn.execute(
+        f"""SELECT DISTINCT wle.lead_id AS lead_id, l.company_id AS company_id,
+                   date(wle.event_at) AS day
+              FROM workspace_lead_events wle
+              JOIN events e ON e.id = wle.event_id
+              JOIN leads l ON l.id = wle.lead_id
+             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}""",
+        (workspace_id, *range_params),
+    ).fetchall()
+    if not rows:
+        return {}
+    resolved = resolve_last_known_campaigns(
+        conn, workspace_id, [{"lead_id": r["lead_id"], "company_id": r["company_id"]}
+                             for r in rows])
+    out: dict[str, int] = defaultdict(int)
+    for r in rows:
+        if not r["day"]:
+            continue
+        # Scoped to one campaign: only the meetings that campaign earned. Across
+        # the workspace: every meeting, traced or not -- an untraceable meeting
+        # still happened, and dropping it is the bug this replaced.
+        if campaign_id is not None:
+            got = resolved.get(int(r["lead_id"]), _EMPTY_CAMPAIGN)["campaign_id"]
+            if got != campaign_id:
+                continue
+        out[r["day"]] += 1
+    return dict(out)
+
+
 def _meetings_by_campaign(
     conn: sqlite3.Connection, workspace_id: str,
     since: Optional[str], until: Optional[str],
@@ -725,9 +822,48 @@ def _meetings_by_campaign(
     return dict(counts), unattributed
 
 
+# "Positive" can be anchored two ways, and they answer different questions.
+#   current  -- leads whose CURRENT sentiment is positive, dated from the start
+#               of that run. The pipeline view: who is warm right now.
+#   first    -- leads that EVER turned positive, dated from the first time they
+#               did. The performance view: what this campaign produced in a
+#               period, which must not change when a lead later goes cold.
+# Default is `first` on the campaigns page, because a performance table whose
+# history moves is not a performance table.
+POSITIVE_ANCHORS = ("current", "first")
+
+
+def positive_anchor_sql(anchor: Optional[str]) -> tuple[str, str]:
+    """(date column, extra predicate) for the requested anchor."""
+    if (anchor or "current") == "first":
+        return "wl.first_positive_at", "wl.first_positive_at IS NOT NULL"
+    return ("wl.current_sentiment_since",
+            "lower(COALESCE(wl.current_status_sentiment, '')) = 'positive'"
+            " AND wl.current_sentiment_since IS NOT NULL")
+
+
+def positive_count_in_range(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str], until: Optional[str], anchor: Optional[str] = None,
+) -> int:
+    """Positives in a window, counted once per CONVERSATION, on either anchor."""
+    from lead_links import CONVERSATION_ROOT_SQL
+
+    column, predicate = positive_anchor_sql(anchor)
+    range_sql, params = _range_clause(since, until, column)
+    return conn.execute(
+        f"""SELECT COUNT(DISTINCT COALESCE(cr.root_id, wl.lead_id)) AS n
+              FROM workspace_leads wl
+              LEFT JOIN ({CONVERSATION_ROOT_SQL}) cr ON cr.lead_id = wl.lead_id
+             WHERE wl.workspace_id = ? AND {predicate}{range_sql}""",
+        (workspace_id, *params),
+    ).fetchone()["n"]
+
+
 def _sentiment_by_campaign(
     conn: sqlite3.Connection, workspace_id: str,
     since: Optional[str], until: Optional[str],
+    positive_anchor: Optional[str] = None,
 ) -> tuple[dict, dict]:
     """{campaign_id: {sentiment: n}} counting each lead exactly ONCE.
 
@@ -750,6 +886,21 @@ def _sentiment_by_campaign(
                AND wl.current_sentiment_since IS NOT NULL{range_sql}""",
         (workspace_id, *range_params),
     ).fetchall()
+    # On the `first` anchor the positive column is a different population: leads
+    # that EVER turned positive, dated from when they first did. The other three
+    # sentiments stay current-state -- "how many are negative right now" is the
+    # only sensible reading of a column with no first-entry concept.
+    if (positive_anchor or "current") == "first":
+        pos_range, pos_params = _range_clause(since, until, "wl.first_positive_at")
+        rows = [r for r in rows if r["sentiment"] != "positive"] + [
+            dict(r, sentiment="positive") for r in conn.execute(
+                f"""SELECT wl.lead_id AS lead_id, l.company_id AS company_id
+                      FROM workspace_leads wl
+                      JOIN leads l ON l.id = wl.lead_id
+                     WHERE wl.workspace_id = ?
+                       AND wl.first_positive_at IS NOT NULL{pos_range}""",
+                (workspace_id, *pos_params),
+            ).fetchall()]
     if not rows:
         return {}, {}
     from lead_links import CONVERSATION_ROOT_SQL
@@ -797,12 +948,92 @@ def _sentiment_by_campaign(
             {k: len(v) for k, v in unattributed.items()})
 
 
+def attributed_lead_ids(
+    conn: sqlite3.Connection, workspace_id: str, campaign_id: int,
+    since: Optional[str], until: Optional[str],
+) -> set:
+    """Lead ids whose conversation is credited to `campaign_id`.
+
+    The ONE definition of "in this campaign" for reporting, shared with
+    _sentiment_by_campaign so the Campaigns table and the Replies list cannot
+    disagree. They used to: the table counted by last-known campaign (resolving
+    through the lead's own events, then a colleague's at the same company) while
+    the list filtered on raw `campaign_leads` membership. Measured against live
+    data those differ by up to 5x on a single campaign -- one campaign showed 2
+    positives in the table and 10 leads in the list.
+
+    Membership is still a legitimate question ("everyone we ever put in this
+    campaign"), which is why callers can ask for it explicitly. It is just the
+    wrong default for a performance view: a lead sits in every campaign that
+    ever touched them, so summing membership counts one reply several times.
+
+    Every member of a linked conversation comes back, not just its root -- the
+    list shows one row per person with a "via" chip, while the table counts the
+    conversation once. Both describe the same set.
+    """
+    from lead_links import CONVERSATION_ROOT_SQL
+
+    range_sql, range_params = _range_clause(since, until, "wl.current_sentiment_since")
+    # Qualified: both joined tables carry event_type/direction.
+    reply_cond = (reply_event_sql_condition()
+                  .replace("event_type", "e.event_type")
+                  .replace("direction", "e.direction"))
+    # Candidates are the same population the Replies list draws from: a
+    # materialized sentiment in range, or an inbound reply in range.
+    reply_range, reply_params = _range_clause(since, until, "wle.event_at")
+    rows = conn.execute(
+        f"""SELECT wl.lead_id AS lead_id, l.company_id AS company_id
+              FROM workspace_leads wl
+              JOIN leads l ON l.id = wl.lead_id
+             WHERE wl.workspace_id = ?
+               AND wl.current_status_sentiment IS NOT NULL
+               AND wl.current_sentiment_since IS NOT NULL{range_sql}
+            UNION
+            SELECT wle.lead_id AS lead_id, l2.company_id AS company_id
+              FROM workspace_lead_events wle
+              JOIN events e ON e.id = wle.event_id
+              JOIN leads l2 ON l2.id = wle.lead_id
+             WHERE wle.workspace_id = ?
+               AND wle.event_type IN ({reply_event_types_sql_list()})
+               AND {reply_cond}{reply_range}""",
+        (workspace_id, *range_params, workspace_id, *reply_params),
+    ).fetchall()
+    if not rows:
+        return set()
+
+    roots = {int(r["lead_id"]): int(r["root_id"]) for r in
+             conn.execute(CONVERSATION_ROOT_SQL).fetchall()}
+    # The root carries the credit, so it has to be resolvable even when it is
+    # not itself in the candidate set (it may have replied outside the range).
+    candidates = {int(r["lead_id"]): dict(r) for r in rows}
+    for lead_id in list(candidates):
+        root = roots.get(lead_id, lead_id)
+        if root not in candidates:
+            root_row = conn.execute(
+                "SELECT id AS lead_id, company_id FROM leads WHERE id = ?", (root,)
+            ).fetchone()
+            if root_row:
+                candidates[root] = dict(root_row)
+    resolved = resolve_last_known_campaigns(
+        conn, workspace_id, list(candidates.values()))
+    # The synthetic "Unattributed" row is a real bucket, not a real campaign:
+    # asked for it, return the leads that resolved to nothing, so clicking that
+    # row filters the list instead of emptying it.
+    want = None if campaign_id == UNATTRIBUTED_SCHEDULING_ID else campaign_id
+    return {
+        lead_id for lead_id in candidates
+        if resolved.get(roots.get(lead_id, lead_id),
+                        _EMPTY_CAMPAIGN)["campaign_id"] == want
+    }
+
+
 def campaign_audit(
     conn: sqlite3.Connection,
     workspace_id: str,
     since: Optional[str] = None,
     until: Optional[str] = None,
     include_scheduling: bool = False,
+    positive_anchor: Optional[str] = None,
 ) -> dict:
     """Per-campaign activity, in the same columns as the daily-activity matrix.
 
@@ -846,7 +1077,7 @@ def campaign_audit(
     meetings_by_campaign, meetings_unattributed = _meetings_by_campaign(
         conn, workspace_id, since, until)
     sentiment_by_campaign, sentiment_unattributed = _sentiment_by_campaign(
-        conn, workspace_id, since, until)
+        conn, workspace_id, since, until, positive_anchor)
 
     def _row(campaign_id, name, sent, m, meetings, sentiments):
         """One table row. `meetings` is the attributed count for a real campaign
@@ -1168,6 +1399,7 @@ def campaign_replies(
     sentiment: Optional[str] = None,
     status_label: Optional[str] = None,
     reply_kind: Optional[str] = None,
+    attribution: Optional[str] = None,
 ) -> dict:
     """One row per lead that currently carries a sentiment, anchored on the day
     it entered that sentiment (current_sentiment_since) — NOT one row per reply
@@ -1189,6 +1421,11 @@ def campaign_replies(
     "Replies" -- which reads as "we got four real replies" when we got none.
     The classification is campaign_stats.classify_reply_kind, shared with the
     CLI preset so the two can never drift.
+
+    `attribution` selects what "in this campaign" means when `campaign_id` is
+    given: "last_known" (default) matches the Campaigns table exactly, see
+    attributed_lead_ids; "membership" is raw campaign_leads, which answers
+    "everyone we ever put in this campaign" and counts a lead in each.
 
     The campaign column is `last_known_campaign_sql`, not the latest reply's
     own campaign_id: a lead whose sentiment came from a bounce has no campaign
@@ -1246,9 +1483,30 @@ def campaign_replies(
                          *sent_params, *reply_params]
     camp = ""
     if campaign_id is not None:
-        camp = (" AND wl.lead_id IN (SELECT lead_id FROM campaign_leads"
-                " WHERE campaign_id = ?)")
-        base_params.append(int(campaign_id))
+        if (attribution or "last_known") == "membership":
+            camp = (" AND wl.lead_id IN (SELECT lead_id FROM campaign_leads"
+                    " WHERE campaign_id = ?)")
+            base_params.append(int(campaign_id))
+        else:
+            # Resolved in Python rather than re-expressed in SQL: last-known
+            # attribution has a company-level fallback (a reply from someone we
+            # never emailed is credited to the colleague's campaign) that no
+            # single expression captures, and a second implementation of it is
+            # exactly how the two views drifted apart.
+            #
+            # Materialized into a TEMP table rather than inlined as a literal
+            # IN list. Same rows either way, but a literal list is opaque to the
+            # planner: it stopped driving this query from the narrow lead set and
+            # fell back to scanning, taking one campaign's replies from 1.4s to
+            # 926s. An indexed relation restores the plan the campaign_leads
+            # subquery used to get. TEMP is per-connection, so concurrent
+            # requests on other connections cannot see or clobber it.
+            ids = attributed_lead_ids(conn, workspace_id, int(campaign_id), since, until)
+            conn.execute("DROP TABLE IF EXISTS temp._attributed_leads")
+            conn.execute("CREATE TEMP TABLE _attributed_leads (lead_id INTEGER PRIMARY KEY)")
+            conn.executemany("INSERT OR IGNORE INTO _attributed_leads VALUES (?)",
+                             [(int(i),) for i in ids])
+            camp = " AND wl.lead_id IN (SELECT lead_id FROM _attributed_leads)"
 
     # Either a materialized sentiment, or a real inbound reply with no verdict
     # attached yet. The second kind renders with sentiment "–" rather than being
@@ -1552,15 +1810,15 @@ def _sentiment_count_in_range(
 
 def _positive_count_in_range(
     conn: sqlite3.Connection, workspace_id: str,
-    since: Optional[str], until: Optional[str],
+    since: Optional[str], until: Optional[str], anchor: Optional[str] = None,
 ) -> int:
     # summary() is polled every few seconds; memoize this one count briefly.
-    key = (workspace_id, since, until)
+    key = (workspace_id, since, until, anchor or "current")
     now = time.time()
     hit = _POSITIVE_COUNT_CACHE.get(key)
     if hit and now - hit[0] < _POSITIVE_COUNT_TTL:
         return hit[1]
-    n = _sentiment_count_in_range(conn, workspace_id, "positive", since, until)
+    n = positive_count_in_range(conn, workspace_id, since, until, anchor)
     _POSITIVE_COUNT_CACHE[key] = (now, n)
     return n
 
@@ -1633,7 +1891,7 @@ def campaign_daily(
                 JOIN events e ON e.id = wle.event_id
                 WHERE wle.workspace_id = ?{range_sql}{campaign_sql}
             )
-            SELECT date(event_at) AS day, {_DAILY_COLUMNS_SQL}
+            SELECT date(event_at) AS day, {_daily_columns_sql(exclude=("meetings",))}
             FROM day_events
             GROUP BY day ORDER BY day""",
         params,
@@ -1644,8 +1902,13 @@ def campaign_daily(
     # with no campaign-attributed events, so union the day sets from both sides.
     event_by_day = {r["day"]: r for r in rows}
     sent_by_day = _sentiment_by_day(conn, workspace_id, campaign_id, since, until)
+    # Resolved through last-known-campaign rather than taken from the event, so
+    # the scheduling-tool toggle governs which CAMPAIGNS are listed, not whether
+    # meetings exist. See _meetings_by_day.
+    meetings_by_day = _meetings_by_day(conn, workspace_id, campaign_id, since, until)
     all_days = sorted(
         set(event_by_day)
+        | set(meetings_by_day)
         | {d for per_day in sent_by_day.values() for d in per_day}
     )
     days = []
@@ -1654,7 +1917,10 @@ def campaign_daily(
         er = event_by_day.get(day)
         row = {"date": day}
         for key in DAILY_EVENT_KEYS:
-            row[key] = (er[key] or 0) if er else 0
+            if key == "meetings":
+                row[key] = meetings_by_day.get(day, 0)
+            else:
+                row[key] = (er[key] or 0) if er else 0
         for s in SENTIMENT_KEYS:
             row[s] = sent_by_day.get(s, {}).get(day, 0)
         for key in DAILY_COLUMN_KEYS:
@@ -2307,6 +2573,24 @@ _HAS_LINKEDIN_SQL = (
     "((l.linkedin_url IS NOT NULL AND TRIM(l.linkedin_url) != '')"
     " OR (l.linkedin_sales_nav_id IS NOT NULL AND TRIM(l.linkedin_sales_nav_id) != ''))"
 )
+_HAS_EMAIL_SQL = "(l.email IS NOT NULL AND TRIM(l.email) != '')"
+_HAS_SALES_NAV_SQL = (
+    "(l.linkedin_sales_nav_id IS NOT NULL AND TRIM(l.linkedin_sales_nav_id) != '')"
+)
+
+
+def _tri_state(value) -> Optional[bool]:
+    """"1"/"0"/"" -> True/False/None. Anything unrecognised means "don't care"."""
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "has"):
+        return True
+    if text in ("0", "false", "no", "missing"):
+        return False
+    return None
+
+
 _HAS_DOMAIN_SQL = (
     f"(({COMPANY_DOMAIN_SQL.rsplit(' AS company_domain', 1)[0]}) IS NOT NULL"
     f" AND TRIM(({COMPANY_DOMAIN_SQL.rsplit(' AS company_domain', 1)[0]})) != '')"
@@ -2387,7 +2671,8 @@ def contacts_stats(conn: sqlite3.Connection, workspace_id: str, **filters) -> di
 
     tag_where, tag_params = lead_filter_clause(workspace_id, **filters)
     by_tag = conn.execute(
-        f"""SELECT t.tag AS tag, {_contacts_stats_selects()}
+        f"""SELECT t.tag AS tag, MAX(wl.last_activity_at) AS last_activity_at,
+                   {_contacts_stats_selects()}
             FROM workspace_lead_tags t
             JOIN workspace_leads wl ON wl.workspace_id = t.workspace_id AND wl.lead_id = t.lead_id
             JOIN leads l ON l.id = wl.lead_id
@@ -2469,6 +2754,12 @@ LEAD_FILTER_KEYS = (
     "tags_any", "tags_all", "tags_none",
     "connected", "sender", "has_linkedin", "verify", "qualify_finding",
     "record_type", "lead_ids", "suppressed", "has_domain", "test", "personalized",
+    # Added together because they are one filter panel: every surface that means
+    # "the contacts you are looking at" reads this tuple, so a key missing here
+    # is an export that disagrees with the list it claims to mirror.
+    "sentiment", "sentiment_none", "verify_none",
+    "contacted_within", "contacted_since", "contacted_until",
+    "has_email", "has_sales_nav",
 )
 
 
@@ -2498,6 +2789,45 @@ def _tag_list(value) -> list[str]:
 MAX_EXPLICIT_LEAD_IDS = 50_000
 
 
+def _verify_clause(value) -> tuple[str, list]:
+    """OR of one or more verification selections: (sql, params), or ("", []).
+
+    Accepts the four bucket names the stat tiles use and any raw
+    email_verification_status, in any combination, as a string or a list.
+    """
+    if value is None:
+        return "", []
+    items = value if isinstance(value, (list, tuple, set)) else [value]
+    items = [str(v).strip().lower() for v in items if str(v).strip()]
+    if not items:
+        return "", []
+    parts, params = [], []
+    raw_statuses = []
+    for item in items:
+        if item == "valid":
+            parts.append("LOWER(l.email_verification_status) = 'valid'")
+        elif item in ("catch_all", "catchall", "catch-all"):
+            parts.append(f"LOWER(l.email_verification_status) IN {_CATCH_ALL_STATUSES_SQL}")
+        elif item == "risky":
+            parts.append(_RISKY_SQL)
+        elif item == "none":
+            parts.append("(l.email IS NULL OR TRIM(l.email) = '')")
+        elif item == "unverified":
+            # Has an address nobody has checked -- distinct from having no address.
+            parts.append("(l.email IS NOT NULL AND TRIM(l.email) != ''"
+                         " AND (l.email_verification_status IS NULL"
+                         " OR TRIM(l.email_verification_status) = ''))")
+        else:
+            raw_statuses.append(item)
+    if raw_statuses:
+        parts.append("LOWER(l.email_verification_status) IN (%s)"
+                     % ",".join("?" for _ in raw_statuses))
+        params += raw_statuses
+    if not parts:
+        return "", []
+    return "(" + " OR ".join(parts) + ")", params
+
+
 def lead_filter_clause(
     workspace_id: str,
     q: Optional[str] = None,
@@ -2521,6 +2851,14 @@ def lead_filter_clause(
     has_domain: Optional[bool] = None,
     test: Optional[str] = None,
     personalized: Optional[list] = None,
+    sentiment: Optional[list] = None,
+    sentiment_none: Optional[list] = None,
+    verify_none: Optional[list] = None,
+    contacted_within: Optional[str] = None,
+    contacted_since: Optional[str] = None,
+    contacted_until: Optional[str] = None,
+    has_email: Optional[str] = None,
+    has_sales_nav: Optional[str] = None,
 ) -> tuple[str, list]:
     """The shared WHERE for anything selecting workspace leads: (sql, params).
 
@@ -2632,23 +2970,63 @@ def lead_filter_clause(
             params.append(sender)
         conn_sql += ")"
         where.append(conn_sql)
-    if has_linkedin:
-        where.append(
-            "((l.linkedin_url IS NOT NULL AND TRIM(l.linkedin_url) != '')"
-            " OR (l.linkedin_sales_nav_id IS NOT NULL AND TRIM(l.linkedin_sales_nav_id) != ''))")
-    if verify == "valid":
-        where.append("LOWER(l.email_verification_status) = 'valid'")
-    elif verify == "catch_all":
-        where.append(f"LOWER(l.email_verification_status) IN {_CATCH_ALL_STATUSES_SQL}")
-    elif verify == "risky":
-        # Verified, and the verdict was neither valid nor catch-all: invalid,
-        # bounced, disposable, unknown. One bucket, because five separate tiles
-        # for the same decision ("don't send") is five tiles nobody reads.
-        where.append(_RISKY_SQL)
-    elif verify == "none":
-        where.append("(l.email IS NULL OR TRIM(l.email) = '')")
+    li_state = _tri_state(has_linkedin) if not isinstance(has_linkedin, bool) else has_linkedin
+    if li_state is True:
+        where.append(_HAS_LINKEDIN_SQL)
+    elif li_state is False:
+        where.append(f"NOT {_HAS_LINKEDIN_SQL}")
+    # `verify` accepts a bucket name, a raw status, or several of either. The
+    # tiles ask for buckets ("risky" is one decision, not five); the filter panel
+    # asks for the statuses themselves, because "catch-all AND unknown but not
+    # invalid" is a real list-building question a single bucket cannot express.
+    verify_sql, verify_params = _verify_clause(verify)
+    if verify_sql:
+        where.append(verify_sql)
+        params += verify_params
+    excl_sql, excl_params = _verify_clause(verify_none)
+    if excl_sql:
+        where.append(f"NOT {excl_sql}")
+        params += excl_params
     if has_domain:
         where.append(_HAS_DOMAIN_SQL)
+    # Presence filters are tri-state: "" / None means "don't care", "1" means it
+    # is there, "0" means it is missing. A checkbox cannot say "missing", which
+    # is half of what these are for -- finding the records worth enriching.
+    for value, sql in ((has_email, _HAS_EMAIL_SQL),
+                       (has_sales_nav, _HAS_SALES_NAV_SQL)):
+        state = _tri_state(value)
+        if state is True:
+            where.append(sql)
+        elif state is False:
+            where.append(f"NOT {sql}")
+    sentiments = [str(v).strip().lower() for v in (sentiment or []) if str(v).strip()]
+    if sentiments:
+        where.append("LOWER(COALESCE(wl.current_status_sentiment, '')) IN (%s)"
+                     % ",".join("?" for _ in sentiments))
+        params += sentiments
+    excluded = [str(v).strip().lower() for v in (sentiment_none or []) if str(v).strip()]
+    if excluded:
+        # COALESCE, not a bare comparison: excluding "negative" must keep the
+        # leads that carry no sentiment at all, and NULL <> 'negative' is NULL.
+        where.append("LOWER(COALESCE(wl.current_status_sentiment, '')) NOT IN (%s)"
+                     % ",".join("?" for _ in excluded))
+        params += excluded
+    # Last CONTACTED, not last activity: "who have we not touched in 90 days" is
+    # a different question from "who has been quiet", and only the first tells
+    # you who to send to. Reads the materialized wl.last_contacted_at, so this
+    # stays an indexed comparison rather than a scan over the event stream.
+    contacted = (contacted_within or "").strip()
+    if contacted:
+        clause, cparams = _since_clause(contacted, column="wl.last_contacted_at")
+        if clause:
+            where.append(clause.replace(" AND ", "", 1))
+            params += cparams
+    if contacted_since and str(contacted_since).strip():
+        where.append("wl.last_contacted_at >= ?")
+        params.append(str(contacted_since).strip())
+    if contacted_until and str(contacted_until).strip():
+        where.append("wl.last_contacted_at < datetime(?, '+1 day')")
+        params.append(str(contacted_until).strip())
     if qualify_finding:
         where.append(_QUALIFY_FINDING_SQL)
     if q and q.strip():
@@ -2704,6 +3082,7 @@ def search_leads(
     limit: int = 50,
     offset: int = 0,
     ids_only: bool = False,
+    **extra_filters,
 ) -> dict:
     """Search workspace leads by any attribute. `missing` in
     {email,company,title,name,linkable} filters to under-enriched leads
@@ -2718,7 +3097,12 @@ def search_leads(
         has_linkedin=has_linkedin, verify=verify, qualify_finding=qualify_finding,
         record_type=record_type, suppressed=suppressed, has_domain=has_domain,
         test=test, personalized=personalized,
-        tags_any=tags_any, tags_all=tags_all, tags_none=tags_none)
+        tags_any=tags_any, tags_all=tags_all, tags_none=tags_none,
+        # Filters added to LEAD_FILTER_KEYS arrive here without this function
+        # having to re-declare each one -- the list, the ids, the stats and the
+        # export then gain them together, which is the property that keeps an
+        # export honest about the list it claims to mirror.
+        **{k: v for k, v in extra_filters.items() if k in LEAD_FILTER_KEYS})
     order = _lead_order_by(sort, direction)
     # ids_only powers the "select all N matching" bulk action: same WHERE, but
     # just the ids (capped by `limit`) so the client can select every match

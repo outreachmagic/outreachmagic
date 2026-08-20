@@ -810,6 +810,7 @@ Per-workspace lead status, sentiment anchor and activity. The leads-to-workspace
 | `latest_sender` | TEXT |  |
 | `created_at` | TEXT | not null |
 | `updated_at` | TEXT | not null |
+| `first_positive_at` | TEXT |  |
 | `email_sent_count` | INTEGER | not null |
 | `linkedin_sent_count` | INTEGER | not null |
 | `total_replies_count` | INTEGER | not null |

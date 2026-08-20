@@ -380,7 +380,8 @@ def handle_attributes(conn, ws_id, match, query):
 def handle_campaigns(conn, ws_id, match, query):
     return reporting_queries.campaign_audit(
         conn, ws_id, since=_q(query, "since"), until=_q(query, "until"),
-        include_scheduling=_bool_q(query, "include_scheduling"))
+        include_scheduling=_bool_q(query, "include_scheduling"),
+        positive_anchor=_q(query, "positive_anchor"))
 
 
 @_workspace_scoped
@@ -442,14 +443,24 @@ def _lead_filters_from(query: dict) -> dict:
         "tags_none": _list_q(query, "tags_none"),
         "connected": _bool_q(query, "connected"),
         "sender": _q(query, "sender"),
-        "has_linkedin": _bool_q(query, "has_linkedin"),
-        "verify": _q(query, "verify"),
+        "has_linkedin": _q(query, "has_linkedin"),
+        "verify": _list_q(query, "verify"),
         "qualify_finding": _bool_q(query, "qualify_finding"),
         "has_domain": _bool_q(query, "has_domain"),
         "record_type": _q(query, "record_type"),
         # Absent means exclude. The safe answer is the one you get by default.
         "suppressed": _q(query, "suppressed"),
         "test": _q(query, "test"),
+        # Multi-select facets travel as repeated params for the same reason tags
+        # do: a value may contain a comma.
+        "sentiment": _list_q(query, "sentiment"),
+        "sentiment_none": _list_q(query, "sentiment_none"),
+        "verify_none": _list_q(query, "verify_none"),
+        "contacted_within": _q(query, "contacted_within"),
+        "contacted_since": _q(query, "contacted_since"),
+        "contacted_until": _q(query, "contacted_until"),
+        "has_email": _q(query, "has_email"),
+        "has_sales_nav": _q(query, "has_sales_nav"),
     }
 
 
@@ -732,7 +743,8 @@ def handle_campaign_replies(conn, ws_id, match, query):
         since=_q(query, "since"), until=_q(query, "until"),
         limit=_int_q(query, "limit", 200, lo=1, hi=500),
         sentiment=_q(query, "sentiment"), status_label=_q(query, "status_label"),
-        reply_kind=_q(query, "reply_kind"))
+        reply_kind=_q(query, "reply_kind"),
+        attribution=_q(query, "attribution"))
 
 
 @_workspace_scoped

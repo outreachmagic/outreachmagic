@@ -377,7 +377,11 @@ def export_rows(
     """
     cols, cursor = iter_export_rows(
         conn, workspace_id, preset=preset, fields=fields, limit=limit, **filters)
-    return cols, [dict(r) for r in cursor]
+    # Same timestamp normalization the CSV writer applies, so an in-memory
+    # consumer and a downloaded file never describe the same lead differently.
+    return cols, [
+        {k: _normalized_cell(k, r[k]) for k in r.keys()} for r in cursor
+    ]
 
 
 def iter_export_rows(
@@ -476,9 +480,7 @@ def export_to_csv(
         writer = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         writer.writeheader()
         for row in cursor:
-            writer.writerow({
-                k: "" if row[k] is None else _csv_value(row[k]) for k in cols
-            })
+            writer.writerow({k: _csv_cell(k, row[k]) for k in cols})
             written += 1
             if progress is not None and written % 2000 == 0:
                 progress(written)
@@ -501,3 +503,32 @@ def _csv_value(value: Any) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
+
+
+def _is_timestamp_column(name: str) -> bool:
+    return name.endswith("_at") or name.endswith("_since")
+
+
+def _normalized_cell(column: str, value: Any) -> Any:
+    """Timestamp columns in one format; everything else untouched (and None
+    stays None -- only the CSV layer turns absence into an empty string)."""
+    if isinstance(value, str) and _is_timestamp_column(column):
+        from pipeline_update import normalize_relay_timestamp_for_storage
+
+        return normalize_relay_timestamp_for_storage(value)
+    return value
+
+
+def _csv_cell(column: str, value: Any) -> str:
+    """One CSV cell, with every timestamp column emitted in one format.
+
+    Applied on read as well as at ingest, deliberately: the columns hold
+    whatever dialect the relay used at the time the row was written, so an
+    install that has not run `cleanup-timestamps` yet -- or that pulls a row
+    written by an older client -- would otherwise ship a CSV with
+    '2025-04-18T13:59:23Z' on one line and '2024-01-01 14:02:26' on the next.
+    Spreadsheets parse those as two different types.
+    """
+    if value is None:
+        return ""
+    return _csv_value(_normalized_cell(column, value))

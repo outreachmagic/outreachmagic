@@ -847,6 +847,51 @@ _SCHEDULING_CAMPAIGN_IDS_SQL = f"""
 """
 
 
+def tags_in_scope(
+    conn: sqlite3.Connection,
+    workspace_id: str,
+    campaign_id: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    include_scheduling: bool = False,
+) -> dict:
+    """Tags actually carried by leads the campaigns in view reached.
+
+    The workspace-wide tag list is the right suggestion set for the Contacts
+    page, which filters every lead there is. It is the wrong one for the
+    Campaigns table: most of those tags are on leads no campaign in this window
+    touched, so picking one empties the table and looks like a broken filter.
+
+    With no campaign and no range this is the workspace list, so the caller can
+    pass the scope through unconditionally.
+    """
+    range_sql, params = _range_clause(since, until, "wle.event_at")
+    campaign_sql = ""
+    if campaign_id is not None:
+        campaign_sql = " AND e.campaign_id = ?"
+        params.append(int(campaign_id))
+    elif not include_scheduling:
+        campaign_sql = (" AND (e.campaign_id IS NULL OR e.campaign_id NOT IN"
+                        f" ({_SCHEDULING_CAMPAIGN_IDS_SQL}))")
+    rows = conn.execute(
+        f"""SELECT t.tag AS tag, COUNT(DISTINCT t.lead_id) AS lead_count
+              FROM workspace_lead_tags t
+             WHERE t.workspace_id = ?
+               AND t.lead_id IN (
+                   SELECT wle.lead_id FROM workspace_lead_events wle
+                     JOIN events e ON e.id = wle.event_id
+                    WHERE wle.workspace_id = ?{range_sql}{campaign_sql})
+          GROUP BY t.tag ORDER BY lead_count DESC, t.tag""",
+        (workspace_id, workspace_id, *params),
+    ).fetchall()
+    return {
+        "campaign_id": campaign_id,
+        "scope": "campaigns" if (campaign_id is not None or params) else "workspace",
+        **resolve_window(since, until),
+        "tags": [dict(r) for r in rows],
+    }
+
+
 def scheduling_campaign_ids(conn: sqlite3.Connection) -> set:
     """Campaign ids that are booking-tool event types, not outbound campaigns."""
     return {r["campaign_id"] for r in conn.execute(_SCHEDULING_CAMPAIGN_IDS_SQL).fetchall()}

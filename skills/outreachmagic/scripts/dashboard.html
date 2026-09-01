@@ -765,8 +765,9 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <div class="controls" style="margin-top:6px;align-items:center">
         <span class="stale" style="font-size:12px">Tags:</span>
         <span id="campaigns-tag-chips" style="display:flex;gap:5px;flex-wrap:wrap"></span>
-        <input id="campaigns-tag-add" list="campaigns-all-tags" placeholder="+ add tag…" style="width:170px">
-        <datalist id="campaigns-all-tags"></datalist>
+        <select id="campaigns-tag-add" style="width:200px" title="Tags carried by leads these campaigns reached in the selected range">
+          <option value="">+ add tag…</option>
+        </select>
         <label style="font-size:12px" title="Applies to included tags only">
           <input type="radio" name="camptagmode" value="any" checked> any
         </label>
@@ -1593,7 +1594,9 @@ function loadTab() {
      contacts: () => { loadContacts(); loadSuppression(); contactsTags.fillOptions(); },
      companies: () => { loadCompaniesStats(); loadCompanies(); },
      quality: loadQuality,
-     campaigns: loadCampaigns,
+     // The tag vocabulary is scoped to the campaigns and window on screen, so
+     // it is refetched with them rather than once at startup.
+     campaigns: () => { loadCampaigns(); campaignsTags.fillOptions(); },
      attributes: loadAttributes, crm: loadCrm,
      activity: () => loadActivity(true), sync: loadOutbox })[state.tab]();
   markRefreshed();
@@ -2459,17 +2462,29 @@ function contactsFilterParams() {
 // One tag filter bar, shared by Contacts and Campaigns. Click a chip to flip it
 // between include and exclude; the any/all switch governs the include chips
 // only, since exclusions can only ever mean "none of". The component owns the
-// chips, the expression line and the datalist — the caller only says where its
-// elements live and what to reload when the selection changes. Two hand-rolled
-// tag bars would be two tag filters that never quite agreed.
+// chips, the expression line and the option list — the caller only says where
+// its elements live and what to reload when the selection changes. Two
+// hand-rolled tag bars would be two tag filters that never quite agreed.
+//
+// `picker` chooses how the vocabulary is offered. "typeahead" is a datalist on
+// a text input: right for Contacts, where the workspace can hold hundreds of
+// tags and you already know the one you want. "select" is a dropdown listing
+// every offered tag with its count: right for Campaigns, where the useful
+// vocabulary is small, scoped to what is on screen, and worth browsing rather
+// than recalling. `optionsUrl` says which vocabulary to ask for.
 function makeTagBar({ chips: chipsId, input: inputId, list: listId,
-                      mode: modeName, expr: exprId, onChange }) {
+                      mode: modeName, expr: exprId, onChange,
+                      picker = "typeahead", optionsUrl = () => "/api/tags" }) {
   const chips = [];
   const mode = () => {
     const el = document.querySelector(`input[name="${modeName}"]:checked`);
     return el ? el.value : "any";
   };
-  const changed = () => { render(); onChange(); };
+  const changed = () => {
+    render();
+    if (picker === "select") fillOptions();
+    onChange();
+  };
   function render() {
     const host = $(chipsId);
     if (!host) return;
@@ -2512,14 +2527,34 @@ function makeTagBar({ chips: chipsId, input: inputId, list: listId,
     chips.filter(c => c.exclude).forEach(c => p.append("tags_none", c.tag));
     return p;
   };
-  // Suggestions only — a tag not yet in the workspace is still a legal filter.
+  // Suggestions only — a tag not yet in the workspace is still a legal filter,
+  // and a scoped list is a vocabulary, not a constraint.
   const fillOptions = async () => {
-    const d = await get("/api/tags").catch(() => null);
-    if (!d || !d.tags || !$(listId)) return;
-    $(listId).innerHTML = d.tags.map(t => `<option value="${esc(t.tag ?? t)}">`).join("");
+    const d = await get(optionsUrl()).catch(() => null);
+    if (!d || !d.tags) return;
+    const rows = d.tags.filter(x => !chips.some(c => c.tag === (x.tag ?? x)));
+    if (picker === "select") {
+      const sel = $(inputId);
+      if (!sel) return;
+      sel.innerHTML = rows.length
+        ? `<option value="">+ add tag…</option>` + rows.map(x =>
+            `<option value="${esc(x.tag ?? x)}">${esc(x.tag ?? x)}${
+              x.lead_count != null ? ` (${fmt(x.lead_count)})` : ""}</option>`).join("")
+        : `<option value="">no tags in view</option>`;
+      sel.disabled = !rows.length;
+      return;
+    }
+    if (!$(listId)) return;
+    $(listId).innerHTML = rows.map(x => `<option value="${esc(x.tag ?? x)}">`).join("");
   };
   if ($(inputId)) {
-    $(inputId).onchange = () => { add($(inputId).value); $(inputId).value = ""; };
+    $(inputId).onchange = () => {
+      add($(inputId).value);
+      $(inputId).value = "";
+      // A dropdown has to drop what was taken, or the same tag stays offered
+      // after it has been added.
+      if (picker === "select") fillOptions();
+    };
   }
   document.querySelectorAll(`input[name="${modeName}"]`).forEach(r => {
     r.onchange = changed;
@@ -2533,9 +2568,13 @@ const contactsTags = makeTagBar({
   onChange: () => { contactsState.offset = 0; loadContacts(); loadContactsStats(); },
 });
 
+// A dropdown, and scoped to the campaigns on screen: the workspace-wide tag
+// list is mostly tags no campaign in this window touched, so picking one
+// emptied the table and read as a broken filter.
 const campaignsTags = makeTagBar({
-  chips: "campaigns-tag-chips", input: "campaigns-tag-add", list: "campaigns-all-tags",
+  chips: "campaigns-tag-chips", input: "campaigns-tag-add",
   mode: "camptagmode", expr: "campaigns-tag-expression",
+  picker: "select", optionsUrl: () => withRange("/api/tags"),
   onChange: () => loadCampaigns(),
 });
 

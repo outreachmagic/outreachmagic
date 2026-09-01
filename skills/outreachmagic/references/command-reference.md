@@ -178,6 +178,18 @@ once per lead per day and the row total once per lead per range, so a lead who
 books on two days adds two to one and one to the other; every other column sums
 exactly.
 
+## Tag vocabulary, scoped
+
+```bash
+pipeline.py tag list --workspace acme                        # every tag there is
+pipeline.py tag list --workspace acme --since 14d            # only tags on leads reached in the window
+pipeline.py tag list --workspace acme --campaign-id 42
+```
+
+The unscoped list is the right vocabulary for filtering contacts. For filtering
+a campaigns table it is the wrong one: most of those tags sit on leads no
+campaign in the window reached, so picking one returns nothing.
+
 ## Best-performing lead attributes
 
 ```bash

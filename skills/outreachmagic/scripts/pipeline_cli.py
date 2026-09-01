@@ -660,6 +660,13 @@ def main():
     tag_list_p = tag_sub.add_parser("list", help="List tags in a workspace")
     tag_list_p.add_argument("--workspace", required=True)
     tag_list_p.add_argument("--lead-id", type=int, help="Optional: filter to one lead")
+    # Scoping the list is what makes it useful as a FILTER vocabulary: the
+    # workspace-wide list is mostly tags no campaign in the window touched, and
+    # picking one of those empties the table.
+    tag_list_p.add_argument("--since", help="Only tags on leads reached in this range")
+    tag_list_p.add_argument("--until", help="End of range: YYYY-MM-DD")
+    tag_list_p.add_argument("--campaign-id", dest="campaign_id", type=int,
+                            help="Only tags on leads this campaign reached")
     tag_bulk_p = tag_sub.add_parser("bulk", help="Add/remove tags across multiple leads")
     tag_bulk_p.add_argument("--workspace", required=True)
     tag_bulk_p.add_argument("--lead-ids", help="Comma-separated lead IDs")
@@ -3626,7 +3633,20 @@ def main():
             tags_list = _pipeline._parse_cli_tags(args.tags)
             print(json.dumps(_pipeline.tag_set(ws_id, args.lead_id, tags_list)))
         elif action == "list":
-            print(json.dumps(_pipeline.tag_list(ws_id, lead_id=getattr(args, "lead_id", None))))
+            if (getattr(args, "since", None) or getattr(args, "until", None)
+                    or getattr(args, "campaign_id", None)):
+                import reporting_queries
+
+                conn = _pipeline.get_conn()
+                try:
+                    print(json.dumps(reporting_queries.tags_in_scope(
+                        conn, ws_id, campaign_id=getattr(args, "campaign_id", None),
+                        since=getattr(args, "since", None),
+                        until=getattr(args, "until", None)), indent=2))
+                finally:
+                    conn.close()
+            else:
+                print(json.dumps(_pipeline.tag_list(ws_id, lead_id=getattr(args, "lead_id", None))))
         elif action == "bulk":
             tags_list = _pipeline._parse_cli_tags(args.tags)
             identity_type = getattr(args, "identity_type", None)

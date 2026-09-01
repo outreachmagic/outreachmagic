@@ -250,6 +250,47 @@ def test_attribute_performance_rejects_unknown_field():
         conn.close()
 
 
+def test_tags_in_scope_offers_only_what_the_campaigns_touched():
+    """The Campaigns tag filter needs the tags on screen, not every tag there is.
+
+    The workspace-wide list is right for Contacts, which filters every lead. On
+    the Campaigns table most of those tags sit on leads no campaign in the
+    window reached, so picking one emptied the table and read as a broken
+    filter.
+    """
+    reached = _add_lead("Nia N", "nia@n-example.com")
+    untouched = _add_lead("Omar O", "omar@o-example.com")
+    _log(reached, "email_sent", subject="Hi", metadata={"campaign": "alpha | q3"})
+    conn = _conn()
+    try:
+        import pipeline_tags
+        pipeline_tags.tag_add(WS["alpha"], reached, "speaker")
+        pipeline_tags.tag_add(WS["alpha"], untouched, "never_contacted")
+        scoped = dq.tags_in_scope(conn, WS["alpha"], since="30d")
+        everything = pipeline_tags.tag_list(WS["alpha"], conn=conn)
+    finally:
+        conn.close()
+    assert [r["tag"] for r in scoped["tags"]] == ["speaker"]
+    assert scoped["tags"][0]["lead_count"] == 1
+    assert scoped["scope"] == "campaigns"
+    assert {r["tag"] for r in everything} == {"speaker", "never_contacted"}
+
+
+def test_tags_in_scope_with_no_filter_is_the_workspace_list():
+    """So a caller can pass the scope through unconditionally."""
+    lead = _add_lead("Pia P", "pia@p-example.com")
+    _log(lead, "email_sent", subject="Hi", metadata={"campaign": "alpha | q3"})
+    conn = _conn()
+    try:
+        import pipeline_tags
+        pipeline_tags.tag_add(WS["alpha"], lead, "speaker")
+        out = dq.tags_in_scope(conn, WS["alpha"])
+    finally:
+        conn.close()
+    assert out["scope"] == "workspace"
+    assert [r["tag"] for r in out["tags"]] == ["speaker"]
+
+
 def test_campaign_audit_and_subjects():
     l1 = _add_lead("Kim K", "kim@k-example.com")
     l2 = _add_lead("Lee L", "lee@l-example.com")

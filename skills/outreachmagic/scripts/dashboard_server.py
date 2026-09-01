@@ -568,9 +568,18 @@ def handle_contacts_stats(conn, ws_id, match, query):
 
 @_workspace_scoped
 def handle_tags(conn, ws_id, match, query):
-    # Existing workspace tags, for the bulk add/remove tag type-ahead.
+    # Unscoped: every tag in the workspace, for the Contacts type-ahead.
+    # Scoped by campaign or date range: only the tags on leads those campaigns
+    # reached, so the Campaigns filter offers values that can actually match.
+    campaign_id = _q(query, "campaign_id")
+    if campaign_id or _q(query, "since") or _q(query, "until"):
+        return reporting_queries.tags_in_scope(
+            conn, ws_id,
+            campaign_id=int(campaign_id) if campaign_id else None,
+            since=_q(query, "since"), until=_q(query, "until"),
+            include_scheduling=_bool_q(query, "include_scheduling"))
     import pipeline_tags
-    return {"tags": pipeline_tags.tag_list(ws_id, conn=conn)}
+    return {"scope": "workspace", "tags": pipeline_tags.tag_list(ws_id, conn=conn)}
 
 
 @_workspace_scoped

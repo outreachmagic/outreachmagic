@@ -12,7 +12,7 @@ import re
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from db_conn import get_conn
@@ -90,6 +90,51 @@ def normalize_since(since: Optional[str]) -> Optional[str]:
     if m:
         return f"datetime('now', '-{int(m.group(1)) * 7} days')"
     return raw
+
+
+def resolve_window(since: Optional[str], until: Optional[str] = None) -> dict:
+    """The UTC bounds a since/until pair actually resolves to, right now.
+
+    Echoed in reporting payloads so a consumer never has to re-derive "what does
+    14d mean" -- and so two answers taken minutes apart can be told apart. UTC
+    because that is what SQLite's datetime('now') compares against; `until` is
+    inclusive of its whole day, matching _range_clause.
+    """
+    now = datetime.now(timezone.utc)
+    start: Optional[datetime] = None
+    raw = (since or "").strip().lower()
+    if raw and raw != "all":
+        if raw == "today":
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif m := re.match(r"^(\d+)\s*h(?:ours?)?$", raw):
+            start = now - timedelta(hours=int(m.group(1)))
+        elif m := re.match(r"^(\d+)\s*d(?:ays?)?$", raw):
+            start = now - timedelta(days=int(m.group(1)))
+        elif m := re.match(r"^(\d+)\s*w(?:eeks?)?$", raw):
+            start = now - timedelta(weeks=int(m.group(1)))
+        else:
+            try:
+                start = datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
+            except ValueError:
+                start = None
+    end = now
+    if until and until.strip():
+        try:
+            end = (datetime.fromisoformat(until.strip()).replace(tzinfo=timezone.utc)
+                   + timedelta(days=1))
+        except ValueError:
+            pass
+
+    def _iso(dt: Optional[datetime]) -> Optional[str]:
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
+
+    return {
+        "since": since,
+        "until": until,
+        "since_resolved_utc": _iso(start),
+        "until_resolved_utc": _iso(end),
+        "window_days": round((end - start).total_seconds() / 86400, 4) if start else None,
+    }
 
 
 def workspace_campaign_prefix(workspace: Optional[str], campaign_prefix: Optional[str]) -> str:

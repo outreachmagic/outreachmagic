@@ -378,14 +378,17 @@ def handle_attributes(conn, ws_id, match, query):
 
 @_workspace_scoped
 def handle_campaigns(conn, ws_id, match, query):
-    return reporting_queries.campaign_audit(
+    audit = (reporting_queries.campaign_audit_compared
+             if _bool_q(query, "compare") else reporting_queries.campaign_audit)
+    return audit(
         conn, ws_id, since=_q(query, "since"), until=_q(query, "until"),
         include_scheduling=_bool_q(query, "include_scheduling"),
         positive_anchor=_q(query, "positive_anchor"),
         reply_kind=_q(query, "kind"),
         tags_any=_list_q(query, "tags_any"),
         tags_all=_list_q(query, "tags_all"),
-        tags_none=_list_q(query, "tags_none"))
+        tags_none=_list_q(query, "tags_none"),
+        by_day=_bool_q(query, "by_day"))
 
 
 @_workspace_scoped

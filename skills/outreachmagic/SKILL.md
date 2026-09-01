@@ -223,6 +223,9 @@ The Campaigns table is a command too — reach for it before writing reply SQL:
 # "positive human replies in the last 30 days, by campaign"
 python3 scripts/pipeline.py campaign-audit --workspace acme --since 30d --kind human --json
 python3 scripts/pipeline.py campaign-audit --workspace acme --exclude-tag existing_customer
+# per-day sends and replies, and this window against the one before it
+python3 scripts/pipeline.py campaign-audit --workspace acme --since 14d --by-day --json
+python3 scripts/pipeline.py campaign-audit --workspace acme --since 14d --compare-previous-window
 ```
 
 `campaign-audit` returns one row per campaign plus a `totals` row. `--kind`
@@ -230,7 +233,8 @@ narrows the reply and sentiment columns only (sends stay whole, or the rates
 describe a population that does not exist); `--tag` / `--exclude-tag` narrow
 every column. Hand-writing the reply condition is how the date filter gets
 swallowed by operator precedence and a 30-day question returns all-time totals —
-see `references/query-guide.md`.
+see `references/query-guide.md`. `--by-day` covers the daily breakdown, so that
+is not a reason to write SQL either; `references/sql-pitfalls.md` lists the rest.
 
 A DNSBL result of `check_failed` means the list refused or timed out — **it is not a
 listing**. Report it as "could not check", never as blacklisted.

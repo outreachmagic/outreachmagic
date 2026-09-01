@@ -129,6 +129,13 @@ def register_campaign_audit_parser(sub) -> None:
                             "reply_rate", "positive_rate", "bounce_rate", "name"),
                    help="Sort key (default: sent)")
     p.add_argument("--limit", type=int, default=0, help="Max rows (0 = all)")
+    p.add_argument("--by-day", dest="by_day", action="store_true",
+                   help="Attach a per-day sent/replies/bounces/meetings array "
+                        "to each campaign. Use this instead of writing the "
+                        "breakdown as SQL -- same window, same definitions.")
+    p.add_argument("--compare-previous-window", dest="compare", action="store_true",
+                   help="Also return the same window immediately before this "
+                        "one, per campaign and in total (needs --since)")
     p.add_argument("--json", action="store_true")
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(command="campaign-audit")
@@ -138,7 +145,9 @@ def cmd_campaign_audit(args) -> None:
     conn = get_conn()
     try:
         ws = _resolve_workspace(conn, getattr(args, "workspace", None))
-        payload = reporting_queries.campaign_audit(
+        audit = (reporting_queries.campaign_audit_compared
+                 if getattr(args, "compare", False) else reporting_queries.campaign_audit)
+        payload = audit(
             conn, ws["id"],
             since=getattr(args, "since", None), until=getattr(args, "until", None),
             include_scheduling=bool(getattr(args, "include_scheduling", False)),
@@ -147,6 +156,7 @@ def cmd_campaign_audit(args) -> None:
             tags_any=getattr(args, "tags_any", None),
             tags_all=getattr(args, "tags_all", None),
             tags_none=getattr(args, "tags_none", None),
+            by_day=bool(getattr(args, "by_day", False)),
         )
     except ValueError as exc:
         if getattr(args, "json", False):
@@ -184,6 +194,16 @@ def cmd_campaign_audit(args) -> None:
                 (r["name"] or "—")[:34], r["sent"], r["replies"], r["positive"],
                 r["meetings"], r["bounces"],
                 _fmt_pct(r["reply_rate"]), _fmt_pct(r["positive_rate"])))
+            if r.get("previous") is not None:
+                prev = r["previous"]
+                lines.append(fmt.format(
+                    "  ↳ previous window", prev["sent"], prev["replies"],
+                    prev["positive"], prev["meetings"], prev["bounces"],
+                    _fmt_pct(prev["reply_rate"]), _fmt_pct(prev["positive_rate"])))
+            for d in r.get("daily") or []:
+                lines.append(f"      {d['date']}  {d['sent']:>6} sent"
+                             f"  {d['replies']:>4} rply  {d['bounces']:>4} bnc"
+                             f"  {d['meetings']:>3} mtg")
         # Straight from the payload, never re-summed here: one definition of the
         # total, whatever is reading it.
         lines += ["", fmt.format(

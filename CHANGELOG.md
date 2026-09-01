@@ -2,7 +2,23 @@
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-09-01
+
+**One removal worth knowing before you upgrade:** `copy-insights`,
+`segment-insights` and the Campaigns page's **Subject lines & copy** card are
+gone. All three scored copy or segments off a lead's *current* status and the
+first outbound email sent to them, which is not what made the copy work — and
+status moves for reasons that have nothing to do with the message. Use
+`campaign-audit` and the new `attribute-audit` for performance questions, and
+`history` for message bodies.
+
 ### Fixed
+
+- **The Best-performing lead attributes table ignored the date range.** It read three lifetime columns — `email_sent_count`, `total_replies_count`, `current_status_sentiment` — and took no date parameter at all, so the page's range control sat above an all-time answer. With a range it now recomputes every column from events inside it, using the same window helpers, the same definitions of a send and a reply, and the same tag and reply-kind filters as the Campaigns table. Positives are dated from `first_positive_at`. This is an **activity** window, stated on the card and in the payload: a lead contacted on day 13 who replies on day 16 is in the denominator and not the numerator — the same thing the Campaigns table has always meant by a date range.
+- **Linking two replies as one conversation asked a three-state question through a two-state dialog.** OK meant one person was contacted first, Cancel meant the other — and also meant dismissing the box, so there was no way to say never mind and no way to tell the two apart. A wrong choice was then permanent: the reverse direction is a cycle and correctly refused, the refusal said only "would close a loop" with two bare ids, and the dashboard had no unlink route at all (the library and the CLI have had one all along). There is now a dialog with a named button per person, the existing link between the two shown *before* the choice with an **Unlink** button beside it, a refusal that names both people and the link to remove, and `POST /api/leads/unlink` behind it. "Already linked" no longer shares a success message with "linked".
+- **The Campaigns tag filter offered every tag in the workspace**, most of them on leads no campaign in the window reached — so picking one emptied the table and read as a broken filter. It now offers the tags actually carried by leads those campaigns reached, with counts, from a dropdown rather than a type-ahead you had to already know the answer to use. Contacts keeps the type-ahead, where the list is long and you do know.
+- **A timestamp `--until` was rounded up to the end of its day.** Right for a bare `--until 2026-08-14`, wrong for back-to-back windows computed from timestamps: each window overlapped the next by 24 hours and counted the same sends twice. A bare date stays inclusive of its whole day; a timestamp is now an exact bound.
+- **`db-health`'s size and bloat hints described an action instead of naming one.** They now print the `pipeline.py archive` invocation to run.
 
 - **The same person could exist twice with the same LinkedIn profile.** Not a normalization bug: `normalize_linkedin()` is correct and the canonical bare `linkedin.com/in/<slug>` was already the overwhelming majority (104,468 rows against 1,664 carrying `https://www.`). The cause was that `leads.linkedin_url` could be written **without a matching `lead_identities` row** — `resolve_lead` sets the column from the URL argument but takes identities from the caller's list, so the Prosp path (which passes email + Sales Navigator id) set the column and registered neither. Such a lead is unmatchable by LinkedIn forever, so the next import of the same person creates a second record. **193 leads were in that state, 166 of them from Prosp.** The evidence that this is the only duplicate mechanism: no two leads share a LinkedIn identity value — the unique constraint holds — so a duplicate can only exist where one side never registered. `resolve_lead` now appends the identity itself, in the one function that writes the column, so a call site written later cannot reintroduce the gap. `set_lead_linkedin_url` likewise stores the canonical form and registers the identity together.
 - **`pipeline.py repair-linkedin`** normalizes stored URLs and backfills the missing identity rows, reporting first and writing under `--apply`. It also reports the duplicate pairs the backfill reveals rather than merging them — `leads.linkedin_url` is UNIQUE, which is exactly why the `www.` variants could coexist, so a colliding row is skipped and listed for `merge-leads` instead of failing the constraint. New `db_health` rule `linkedin_identity_gap` flags the state, which was previously invisible until it produced a visible duplicate.
@@ -10,11 +26,25 @@
 
 ### Added
 
+- **`pipeline.py sql` cannot run forever.** SQLite has no statement timeout, so a join with no row-reducing predicate on `events` ran until someone killed the process — a real 4-way join on a multi-gigabyte database did exactly that. Queries are now cancelled after **10 seconds** (`--timeout N` to raise it, `--timeout 0` to remove the ceiling), through a progress handler, which needs no signals and leaves the connection usable.
+- **`pipeline.py sql --explain`** prints the query plan and the shape warnings without running anything. The warnings also print (never block) on a normal run: `CROSS JOIN`, three or more joins with no `WHERE`, a large table with no date/campaign/lead predicate, `campaigns`/`workspace_leads` with no `workspace_id`, and `email_sent_count` in a query that also mentions campaigns. New `references/sql-pitfalls.md` documents each one with the shape that fixes it.
+- **`campaign-audit --by-day`** attaches a per-day `sent` / `replies` / `bounces` / `meetings` array to every campaign row — the same window, scope and definitions as the totals beside it. It exists so the breakdown stops being hand-written SQL. **`--compare-previous-window`** returns the same-length window immediately before this one, per campaign and in total. Every response now echoes `since_resolved_utc` / `until_resolved_utc` / `window_days`.
+- **`campaign-audit`'s daily volume as a sparkline** in each Campaigns row — drawn from the array the table already requests, so no extra query.
+- **`pipeline.py attribute-audit`** — reply and positive rates by lead attribute (`industry`, `title`, `headcount`, `location_country`, `source`), with `--since`, `--kind`, and the same tag filters as `campaign-audit`. The dashboard's attributes card was the last big reporting surface with no CLI command, which is why the question kept being answered with hand-written SQL.
+- **`pipeline.py tag list --since / --campaign-id`** returns the tags on leads those campaigns reached, rather than every tag in the workspace.
+- **Column semantics where you are about to use the column.** `workspace_leads.email_sent_count` is a **lifetime, workspace-wide** counter, not sends in one campaign — reading it as the latter once reported 15,565 sends for a campaign that had sent 106. `current_sentiment_since` is when the status **last changed**, not first contact and not first positive, so windowing on it to find recent positives silently drops every lead whose status has not moved. Those and five more now carry a note that appears in `references/schema.md`, in `pipeline.py schema <table>` beside the column, and in the SQL lint. A test asserts every note still names a real column.
+- **`v_campaign_lead_events`** — the per-campaign, per-lead shape `email_sent_count` looks like it provides and does not. Flat and unaggregated, so a caller's campaign and date predicates flatten into it.
+- **Freshness next to the controls that set a window.** "Last pulled 40 minutes ago" in the page header is easy to scroll past, and a date-range answer read off stale data is wrong in a way its own numbers cannot show. `/api/sync/status` now carries the same freshness fields every CLI read command attaches.
+
 - **Connects sent / accepted are in the daily-activity chart**, alongside emails and DMs — they are volume (the top of the LinkedIn funnel) rather than outcomes. A sixth palette token was added and the whole six-colour set re-validated for lightness, chroma, CVD separation and contrast in both light and dark; the dark steps are separately chosen, not a flip of the light ones.
 
 ### Performance
 
 - **The Replies query keeps its old speed despite the wider selection.** The last-reply lookup is a CTE materialized once rather than a correlated subquery, the date filter is applied per branch on its own column instead of once over a `COALESCE` (which is not sargable and cost a 10x regression), and an indexed `event_type` pre-filter runs before the join to `events`. Measured on a 126k-event workspace: 0.4s before, 0.2–0.9s after.
+
+### Removed
+
+- **`copy-insights`, `segment-insights`, and the Campaigns page's Subject lines & copy card.** See the note above. Copy analysis worth having starts from the event stream and a real attribution window, not from `status = 'interested'`; that is its own change.
 
 ## [1.7.0] — 2026-08-10
 

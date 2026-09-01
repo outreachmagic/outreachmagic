@@ -851,7 +851,34 @@ def handle_leads_link(match, query, body):
             conn, int(from_lead), int(to_lead),
             kind=body.get("kind") or "forwarded_to", note=body.get("note"))
     except lead_links.LeadLinkError as exc:
-        return 400, {"error": str(exc)}
+        # 409, and the context travels with it: "would close a loop" is only
+        # actionable if the surface can name the link standing in the way and
+        # offer to remove it.
+        return 409, {"error": str(exc), **getattr(exc, "context", {})}
+    finally:
+        conn.close()
+
+
+def handle_leads_unlink(match, query, body):
+    """Undo a link. The library and the CLI have always had this; the dashboard
+    did not, so one wrong click was unrecoverable without dropping to a shell."""
+    import lead_links
+
+    body = body or {}
+    from_lead = body.get("from_lead_id")
+    to_lead = body.get("to_lead_id")
+    if not from_lead or not to_lead:
+        return 400, {"error": "from_lead_id and to_lead_id are required"}
+    conn = get_conn()
+    try:
+        # "Unlink these two" from a surface means whichever direction exists;
+        # the library stays directional because the CLI wants to say which.
+        result = lead_links.unlink_leads(
+            conn, int(from_lead), int(to_lead), kind=body.get("kind"))
+        if not result["removed"]:
+            result = lead_links.unlink_leads(
+                conn, int(to_lead), int(from_lead), kind=body.get("kind"))
+        return 200, result
     finally:
         conn.close()
 
@@ -1155,6 +1182,7 @@ ROUTES = [
     ("POST", re.compile(r"^/api/leads/(\d+)/identity$"), handle_lead_identity),
     ("POST", re.compile(r"^/api/serper/apply$"), handle_serper_apply),
     ("POST", re.compile(r"^/api/leads/link$"), handle_leads_link),
+    ("POST", re.compile(r"^/api/leads/unlink$"), handle_leads_unlink),
     ("GET", re.compile(r"^/api/leads/(\d+)/conversation$"), handle_lead_conversation),
     ("POST", re.compile(r"^/api/leads/merge/preview$"), handle_leads_merge_preview),
     ("POST", re.compile(r"^/api/leads/merge$"), handle_leads_merge),

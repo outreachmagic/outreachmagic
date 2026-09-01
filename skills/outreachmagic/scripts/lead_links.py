@@ -28,7 +28,17 @@ LINK_KINDS = ("forwarded_to", "same_person")
 
 
 class LeadLinkError(ValueError):
-    """A link that cannot exist: unknown lead, self-link, or a cycle."""
+    """A link that cannot exist: unknown lead, self-link, or a cycle.
+
+    `context` carries what the surface needs to offer a way out -- which link
+    already exists, and between whom. A refusal that only says "would close a
+    loop" leaves the operator with two ids and no next move, which is how one
+    accidental first choice became unrecoverable from the dashboard.
+    """
+
+    def __init__(self, message: str, **context):
+        super().__init__(message)
+        self.context = context
 
 
 # Resolve each lead to the head of its forward chain. Anchored on leads with no
@@ -58,6 +68,30 @@ def conversation_root_sql(alias: str = "cr") -> str:
 def _lead_exists(conn: sqlite3.Connection, lead_id: int) -> bool:
     return conn.execute(
         "SELECT 1 FROM leads WHERE id = ?", (int(lead_id),)).fetchone() is not None
+
+
+def _lead_label(conn: sqlite3.Connection, lead_id: int) -> str:
+    """A name for an error message; the id alone is not something to act on."""
+    row = conn.execute(
+        "SELECT name, email FROM leads WHERE id = ?", (int(lead_id),)).fetchone()
+    if not row:
+        return f"#{lead_id}"
+    return f"{row['name'] or row['email'] or 'unnamed'} (#{lead_id})"
+
+
+def existing_link(
+    conn: sqlite3.Connection, from_lead_id: int, to_lead_id: int,
+) -> Optional[dict]:
+    """The link between these two, in whichever direction it runs."""
+    row = conn.execute(
+        """SELECT id, from_lead_id, to_lead_id, kind, note, created_at
+             FROM lead_links
+            WHERE (from_lead_id = ? AND to_lead_id = ?)
+               OR (from_lead_id = ? AND to_lead_id = ?)
+            ORDER BY created_at LIMIT 1""",
+        (int(from_lead_id), int(to_lead_id), int(to_lead_id), int(from_lead_id)),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def _would_cycle(conn: sqlite3.Connection, from_lead_id: int, to_lead_id: int) -> bool:
@@ -102,9 +136,21 @@ def link_leads(
         if not _lead_exists(conn, lead_id):
             raise LeadLinkError(f"lead not found: {lead_id}")
     if _would_cycle(conn, from_lead_id, to_lead_id):
+        # By far the commonest way to reach here is the direct reverse edge:
+        # somebody picked the wrong origin, then tried to correct it by linking
+        # the other way. Say that, name both people, and name the link to undo.
+        reverse = existing_link(conn, from_lead_id, to_lead_id)
+        who = f"{_lead_label(conn, from_lead_id)} → {_lead_label(conn, to_lead_id)}"
+        if reverse and reverse["from_lead_id"] == to_lead_id:
+            raise LeadLinkError(
+                f"{_lead_label(conn, to_lead_id)} is already recorded as "
+                f"reaching {_lead_label(conn, from_lead_id)} first. Unlink that "
+                "to reverse the direction.",
+                reason="reverse_exists", existing=reverse,
+                from_lead_id=from_lead_id, to_lead_id=to_lead_id)
         raise LeadLinkError(
-            f"linking {from_lead_id} -> {to_lead_id} would close a loop; "
-            "a conversation has one origin")
+            f"linking {who} would close a loop; a conversation has one origin",
+            reason="cycle", from_lead_id=from_lead_id, to_lead_id=to_lead_id)
 
     existing = conn.execute(
         "SELECT id FROM lead_links WHERE from_lead_id = ? AND to_lead_id = ? AND kind = ?",

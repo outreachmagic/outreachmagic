@@ -159,6 +159,42 @@ class LeadLinkTests(unittest.TestCase):
         with self.assertRaises(lead_links.LeadLinkError):
             lead_links.link_leads(self.conn, b, a)
 
+    def test_the_reverse_direction_says_what_to_undo(self):
+        """The refusal has to be actionable.
+
+        Picking the wrong origin and then trying to correct it by linking the
+        other way is the commonest path to this error, and "would close a loop"
+        leaves the operator holding two ids and no next move.
+        """
+        alice = self._lead("Alice Origin")
+        bob = self._lead("Bob Forwarded")
+        link = lead_links.link_leads(self.conn, alice, bob)
+        with self.assertRaises(lead_links.LeadLinkError) as caught:
+            lead_links.link_leads(self.conn, bob, alice)
+        exc = caught.exception
+        self.assertEqual(exc.context["reason"], "reverse_exists")
+        self.assertEqual(exc.context["existing"]["id"], link["id"])
+        self.assertIn("Alice Origin", str(exc))
+        self.assertIn("Bob Forwarded", str(exc))
+        self.assertIn("Unlink", str(exc))
+
+    def test_unlinking_then_relinking_the_other_way_works(self):
+        """The whole point of naming the link: it can be acted on."""
+        alice, bob = self._lead("Alice Origin"), self._lead("Bob Forwarded")
+        lead_links.link_leads(self.conn, alice, bob)
+        lead_links.unlink_leads(self.conn, alice, bob)
+        self.assertEqual(
+            lead_links.link_leads(self.conn, bob, alice)["status"], "linked")
+
+    def test_existing_link_is_found_in_either_direction(self):
+        alice, bob = self._lead("Alice Origin"), self._lead("Bob Forwarded")
+        link = lead_links.link_leads(self.conn, alice, bob)
+        for pair in ((alice, bob), (bob, alice)):
+            self.assertEqual(
+                lead_links.existing_link(self.conn, *pair)["id"], link["id"])
+        self.assertIsNone(
+            lead_links.existing_link(self.conn, alice, self._lead("Unrelated")))
+
     def test_an_unknown_lead_is_refused(self):
         alice = self._lead("Alice Origin")
         with self.assertRaises(lead_links.LeadLinkError):

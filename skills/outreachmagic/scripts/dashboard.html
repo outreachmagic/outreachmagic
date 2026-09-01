@@ -289,6 +289,22 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         </div>
       </div>
     </dialog>
+    <dialog id="link-conversation" style="border:1px solid var(--grid);border-radius:10px;padding:0;max-width:620px;width:92vw">
+      <div style="padding:14px 16px">
+        <h2 style="margin:0 0 2px;font-size:15px">One conversation, two people</h2>
+        <div class="stale" style="font-size:12px;margin-bottom:10px">
+          Both records stay whole and individually visible. Only the COUNT collapses —
+          two positives in one thread become one opportunity. Direction matters:
+          the person contacted first is the conversation's origin, and the
+          campaign's outcome is credited to them.
+        </div>
+        <div id="link-conversation-body"></div>
+        <div class="controls" style="margin-top:12px">
+          <button class="small" id="link-conversation-cancel">Cancel</button>
+          <span class="msg" id="link-conversation-msg"></span>
+        </div>
+      </div>
+    </dialog>
     <dialog id="contacts-export" style="border:1px solid var(--grid);border-radius:10px;padding:0;max-width:640px;width:92vw">
       <form method="dialog" style="margin:0">
         <div style="padding:14px 16px">
@@ -1486,6 +1502,10 @@ function resetWorkspaceScopedState() {
   // differ), so a switch mid-configure would offer the wrong columns.
   const exportPanel = $("contacts-export");
   if (exportPanel?.open) exportPanel.close();
+  // Same reasoning for the link dialog: it names two leads from the workspace
+  // being left behind.
+  const linkPanel = $("link-conversation");
+  if (linkPanel?.open) linkPanel.close();
   closeDetails();
 }
 
@@ -4691,23 +4711,72 @@ $("replies-merge").onclick = () => {
 // Merging destroys a record; linking does not. Two people who both replied in
 // one thread are not one record to be reconciled -- they are two people and one
 // opportunity, and only the count needs fixing.
+// A confirm() is a two-state dialog, and this is a three-state question: A
+// first, B first, or neither. Cancel used to mean "B first", which is
+// indistinguishable from dismissing the box, and there was no way at all to
+// undo a wrong choice — the reverse direction then reads as a cycle and is
+// refused, which is where this got stuck.
 $("replies-link").onclick = async () => {
   const ids = [...repliesSel];
   const byId = Object.fromEntries((state.replies || []).map(r => [r.lead_id, r]));
-  const name = id => byId[id]?.lead_name || `#${id}`;
-  // Direction matters: the root of the conversation is who the campaign
-  // actually reached, and that is who its outcome gets credited to.
-  const forward = confirm(
-    `Who was contacted FIRST?\n\nOK = ${name(ids[0])}\nCancel = ${name(ids[1])}`);
-  const [from, to] = forward ? ids : [ids[1], ids[0]];
+  const name = id => byId[id]?.lead_name || byId[id]?.email || `#${id}`;
+  const dlg = $("link-conversation");
+  $("link-conversation-msg").textContent = "";
+
+  // Whatever already joins these two, shown before the choice rather than as
+  // the error after it.
+  let existing = null;
   try {
-    await post("/api/leads/link", { from_lead_id: from, to_lead_id: to });
-    toast(`${name(from)} → ${name(to)} — now counted as one conversation`);
+    const convo = await api(`/api/leads/${ids[0]}/conversation`);
+    existing = (convo.links || []).find(
+      l => ids.includes(l.from_lead_id) && ids.includes(l.to_lead_id)) || null;
+  } catch (e) { /* the choice still stands without it */ }
+
+  $("link-conversation-body").innerHTML = existing
+    ? `<div class="banner">Already linked: <b>${esc(name(existing.from_lead_id))}</b> →
+         <b>${esc(name(existing.to_lead_id))}</b>.</div>
+       <div class="controls" style="margin-top:10px">
+         <button class="small" data-unlink="1">Unlink them</button>
+       </div>`
+    : `<div class="controls" style="flex-direction:column;align-items:stretch;gap:6px">
+         ${ids.map(id => `<button class="small" data-from="${id}">
+             <b>${esc(name(id))}</b> was contacted first</button>`).join("")}
+       </div>`;
+
+  const finish = (message) => {
+    dlg.close();
+    toast(message);
     repliesSel.clear();
     syncRepliesSel();
+    loadReplies();
     loadCampaigns();
-  } catch (e) { toast(e.message); }
+  };
+
+  $("link-conversation-body").querySelectorAll("button").forEach(b => {
+    b.onclick = async () => {
+      try {
+        if (b.dataset.unlink) {
+          await post("/api/leads/unlink",
+                     { from_lead_id: ids[0], to_lead_id: ids[1] });
+          finish("Unlinked — they count separately again");
+          return;
+        }
+        const from = +b.dataset.from;
+        const to = ids.find(id => id !== from);
+        const r = await post("/api/leads/link", { from_lead_id: from, to_lead_id: to });
+        finish(r.status === "exists"
+          ? `${name(from)} → ${name(to)} — already linked, nothing changed`
+          : `${name(from)} → ${name(to)} — now counted as one conversation`);
+      } catch (e) {
+        // The server's message names the link in the way and what to do about
+        // it, so show it verbatim and leave the dialog open to act on.
+        $("link-conversation-msg").textContent = e.message;
+      }
+    };
+  });
+  dlg.showModal();
 };
+$("link-conversation-cancel").onclick = () => $("link-conversation").close();
 
 // The facets come back computed BEFORE the sentiment/status filters apply, so
 // each dropdown keeps offering every value available for the current campaign

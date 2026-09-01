@@ -373,7 +373,13 @@ def handle_attributes(conn, ws_id, match, query):
         conn, ws_id,
         field=_q(query, "field", "industry"),
         min_sample=_int_q(query, "min_sample", 20, lo=1, hi=10_000),
-        campaign_id=int(campaign_id) if campaign_id else None)
+        campaign_id=int(campaign_id) if campaign_id else None,
+        since=_q(query, "since"), until=_q(query, "until"),
+        reply_kind=_q(query, "kind"),
+        positive_anchor=_q(query, "positive_anchor"),
+        tags_any=_list_q(query, "tags_any"),
+        tags_all=_list_q(query, "tags_all"),
+        tags_none=_list_q(query, "tags_none"))
 
 
 @_workspace_scoped

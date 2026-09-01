@@ -236,6 +236,17 @@ swallowed by operator precedence and a 30-day question returns all-time totals �
 see `references/query-guide.md`. `--by-day` covers the daily breakdown, so that
 is not a reason to write SQL either; `references/sql-pitfalls.md` lists the rest.
 
+"Which titles / industries actually reply" is a command too:
+
+```bash
+python3 scripts/pipeline.py attribute-audit --workspace acme --since 14d --field title --json
+```
+
+Same window and filters as `campaign-audit`, grouped by a lead attribute.
+Positives are dated from `first_positive_at`, not `current_sentiment_since` —
+that column is when the status LAST changed, so windowing on it drops every
+lead whose status has not moved since.
+
 A DNSBL result of `check_failed` means the list refused or timed out — **it is not a
 listing**. Report it as "could not check", never as blacklisted.
 

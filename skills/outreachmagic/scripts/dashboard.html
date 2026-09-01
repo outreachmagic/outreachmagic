@@ -765,7 +765,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
 
   <section id="tab-attributes" hidden>
     <div class="card">
-      <h2>Best-performing lead attributes <span class="sub">case-insensitive grouping</span></h2>
+      <h2>Best-performing lead attributes <span class="sub" id="attr-sub">case-insensitive grouping</span></h2>
       <div class="controls">
         <label>Attribute
           <select id="attr-field">
@@ -4951,9 +4951,17 @@ async function loadAttributes() {
   const field = $("attr-field").value, min = $("attr-min").value || 1;
   const cid = $("attr-campaign").value;
   skeleton("attributes");
-  const d = await get(`/api/attributes?field=${field}&min_sample=${min}${cid ? `&campaign_id=${cid}` : ""}`)
+  const d = await getR(`/api/attributes?field=${field}&min_sample=${min}${cid ? `&campaign_id=${cid}` : ""}`)
     .catch(e => { toast(e.message); return null; });
   if (!d) return;
+  // Say which window, and which KIND of window. An activity window counts the
+  // send and the reply inside the same range, so a lead contacted on day 13
+  // who replies on day 16 sits in the denominator and not the numerator —
+  // exactly what the Campaigns table means by a date range. Two panes on one
+  // page disagreeing about "the last 14 days" would be worse than either.
+  $("attr-sub").textContent = d.window === "activity"
+    ? `${rangeLabel()} — contacted and replied both counted inside the range`
+    : "all time — lifetime counters, unaffected by the date range";
   renderTable("attributes", [
     { key: "value", label: "Value", wrap: true },
     { key: "contacted", label: "Contacted", num: true, render: r => fmt(r.contacted) },

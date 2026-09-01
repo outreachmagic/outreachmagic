@@ -178,6 +178,28 @@ once per lead per day and the row total once per lead per range, so a lead who
 books on two days adds two to one and one to the other; every other column sums
 exactly.
 
+## Best-performing lead attributes
+
+```bash
+pipeline.py attribute-audit --workspace acme --since 14d --field title --json
+pipeline.py attribute-audit --workspace acme --field industry --min-sample 30
+pipeline.py attribute-audit --workspace acme --since 30d --kind human --exclude-tag existing_customer
+```
+
+The Campaigns table's sibling: the same window, the same tag and kind filters,
+the same definition of a send and a reply — grouped by an attribute of the LEAD
+(`industry`, `title`, `headcount`, `location_country`, `source`) instead of by
+campaign.
+
+With `--since`, every column is recomputed from events in the window: contacted
+means reached in it, replied means replied in it, positive means the lead FIRST
+turned positive in it. Without `--since`, the columns are lifetime counters and
+the answer is an all-time one — `window` in the payload says which you got.
+
+This is an **activity** window, not a cohort one: a lead contacted on day 13 who
+replies on day 16 is in the denominator and not the numerator. Deliberate — it
+is what the Campaigns table means by a date range too.
+
 ## Replies, split by kind
 
 ```bash

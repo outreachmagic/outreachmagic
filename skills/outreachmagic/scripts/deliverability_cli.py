@@ -214,6 +214,111 @@ def cmd_campaign_audit(args) -> None:
     _emit(args, payload, text)
 
 
+def register_attribute_audit_parser(sub) -> None:
+    """`attribute-audit` — which lead attributes actually produce replies.
+
+    The Campaigns table's sibling: same window, same tag and kind filters, same
+    definition of a send and a reply, grouped by an attribute of the LEAD
+    instead of by campaign. It had no CLI command at all, which is why "best
+    performing titles in the last 14 days" kept being answered with hand-written
+    SQL against a lifetime counter.
+
+        attribute-audit --workspace acme --since 14d --field title --json
+    """
+    p = sub.add_parser(
+        "attribute-audit",
+        help="Reply and positive rates by lead attribute, over a window",
+    )
+    p.add_argument("--workspace", help="Workspace slug (or set OM_WORKSPACE)")
+    p.add_argument("--field", default="industry",
+                   help="Lead attribute to group by (see --field ? for the list)")
+    p.add_argument("--since", help="Start of range: YYYY-MM-DD, 7d, 30d, today. "
+                                   "Omit for all-time (lifetime counters)")
+    p.add_argument("--until", help="End of range: YYYY-MM-DD")
+    p.add_argument("--min-sample", dest="min_sample", type=int, default=20,
+                   help="Drop values contacted fewer than this many times "
+                        "(default: 20) -- a 100%% reply rate on two leads is noise")
+    p.add_argument("--campaign-id", dest="campaign_id", type=int,
+                   help="Only leads in this campaign")
+    p.add_argument(
+        "--kind", default="all",
+        help="all (default) | human | auto_reply | bounce | status_only "
+             "(comma-separate to combine). Narrows the reply columns only")
+    p.add_argument("--tag", "--tags-any", dest="tags_any", action="append",
+                   help="Only leads carrying any of these tags (repeatable)")
+    p.add_argument("--tags-all", dest="tags_all", action="append",
+                   help="Only leads carrying all of these tags (repeatable)")
+    p.add_argument("--exclude-tag", dest="tags_none", action="append",
+                   help="Drop leads carrying this tag (repeatable)")
+    p.add_argument("--positive-anchor", dest="positive_anchor",
+                   choices=("current", "first"), default="first",
+                   help="first (default): dated from when a lead FIRST turned "
+                        "positive, so history does not move")
+    p.add_argument("--sort", default="reply_rate",
+                   choices=("reply_rate", "positive_rate", "contacted", "replied",
+                            "positive", "leads", "value"),
+                   help="Sort key (default: reply_rate)")
+    p.add_argument("--limit", type=int, default=0, help="Max rows (0 = all)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--quiet", action="store_true")
+    p.set_defaults(command="attribute-audit")
+
+
+def cmd_attribute_audit(args) -> None:
+    conn = get_conn()
+    try:
+        ws = _resolve_workspace(conn, getattr(args, "workspace", None))
+        payload = reporting_queries.attribute_performance(
+            conn, ws["id"],
+            field=getattr(args, "field", "industry"),
+            min_sample=getattr(args, "min_sample", 20),
+            campaign_id=getattr(args, "campaign_id", None),
+            since=getattr(args, "since", None), until=getattr(args, "until", None),
+            reply_kind=getattr(args, "kind", "all"),
+            positive_anchor=getattr(args, "positive_anchor", None),
+            tags_any=getattr(args, "tags_any", None),
+            tags_all=getattr(args, "tags_all", None),
+            tags_none=getattr(args, "tags_none", None),
+        )
+    except ValueError as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(str(exc), file=sys.stderr)
+        sys.exit(1)
+        return
+    finally:
+        conn.close()
+    payload["workspace"] = ws["slug"]
+    rows = _sorted(payload["rows"], args.sort, reverse=args.sort != "value")
+    if getattr(args, "limit", 0):
+        rows = rows[:args.limit]
+    payload["rows"] = rows
+
+    def text(p):
+        window = ("all time (lifetime counters)" if p["window"] == "lifetime"
+                  else f"{p['since_resolved_utc']} → {p['until_resolved_utc']}")
+        lines = [f"{p['field']} · {window} · min sample {p['min_sample']}"]
+        if p["window"] == "activity":
+            # Said out loud because it is the one thing that makes a rate here
+            # not comparable to a cohort rate somebody computed elsewhere.
+            lines.append("activity window: contacted AND replied are both counted "
+                         "inside the range, so a late reply falls outside it")
+        lines.append("")
+        fmt = "  {:<38} {:>7} {:>9} {:>8} {:>8} {:>8} {:>8}"
+        lines.append(fmt.format("VALUE", "LEADS", "CONTACTED", "REPLIED",
+                                "POSITIVE", "RPLY%", "POS%"))
+        for r in p["rows"]:
+            lines.append(fmt.format(
+                (r["value"] or "—")[:38], r["leads"], r["contacted"], r["replied"],
+                r["positive"], _fmt_pct(r["reply_rate"]), _fmt_pct(r["positive_rate"])))
+        if not p["rows"]:
+            lines.append("  (nothing cleared the min-sample floor)")
+        return "\n".join(lines)
+
+    _emit(args, payload, text)
+
+
 def register_deliverability_parser(sub) -> None:
     p = sub.add_parser(
         "deliverability",

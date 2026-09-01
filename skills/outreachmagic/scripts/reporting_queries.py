@@ -657,26 +657,121 @@ def pipeline_leads(
     }
 
 
+def _attribute_window_ctes(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str], until: Optional[str],
+    scope: Optional["_LeadScope"], kind: Optional["_LeadScope"],
+    positive_anchor: Optional[str],
+) -> tuple[str, list]:
+    """CTEs giving each lead its in-window facts: active, contacted, replied,
+    turned positive.
+
+    Every definition is lifted from campaign_audit rather than restated: a send
+    is the send the Campaigns table counts, a reply is the reply it counts, and
+    a positive is dated from `first_positive_at` under the default anchor. Two
+    panes on one page that disagree about "the last 14 days" are worse than
+    either definition on its own.
+    """
+    cte, params = _ws_events(since, until, scope)
+    sent_expr = " + ".join(
+        _DAILY_COLUMN_EXPRESSIONS[k] for k in ("email_sent", "dm_sent", "connects_sent"))
+    # `first` by default here, not `current`: a performance table whose history
+    # moves when a lead later goes cold is not a performance table. Same default
+    # the Campaigns page uses.
+    anchor_column, anchor_predicate = positive_anchor_sql(positive_anchor or "first")
+    positive_range, positive_params = _range_clause(since, until, anchor_column)
+    return (
+        cte + f""",
+        lead_activity AS (
+            SELECT lead_id,
+                   ({sent_expr}) > 0 AS contacted,
+                   SUM(({reply_event_sql_condition()}){
+                       _scope_clause(kind, "lead_id")}) > 0 AS replied
+              FROM ws_events GROUP BY lead_id
+        ),
+        lead_positive AS (
+            SELECT wl.lead_id AS lead_id
+              FROM workspace_leads wl
+             WHERE wl.workspace_id = ? AND {anchor_predicate}{positive_range}
+        )""",
+        [workspace_id, *params, workspace_id, *positive_params],
+    )
+
+
 def attribute_performance(
     conn: sqlite3.Connection,
     workspace_id: str,
     field: str = "industry",
     min_sample: int = 20,
     campaign_id: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    reply_kind: Optional[str] = None,
+    positive_anchor: Optional[str] = None,
+    tags_any: Optional[list] = None,
+    tags_all: Optional[list] = None,
+    tags_none: Optional[list] = None,
 ) -> dict:
+    """Which lead attributes actually produce replies -- campaign_audit's
+    population, grouped by an attribute instead of by campaign.
+
+    With no `since`, the columns are lifetime counters and the answer is an
+    all-time one. With a window, every column is recomputed from events inside
+    it: contacted means reached in the window, replied means replied in the
+    window, positive means the lead FIRST turned positive in the window. This
+    is an ACTIVITY window, not a cohort one -- a lead contacted on day 13 who
+    replies on day 16 is in the denominator and not the numerator -- which is
+    the same thing the Campaigns table means by a date range, deliberately.
+
+    One difference from campaign_audit, and it is unavoidable: positives are
+    counted per LEAD here, not per conversation. Two people in one forwarded
+    thread have two titles, so collapsing them to a conversation root would
+    credit an attribute one of them does not have.
+    """
     expr = ATTRIBUTE_FIELDS.get(field)
     if expr is None:
         raise ValueError(
             f"Unknown attribute field: {field}. Valid: {', '.join(sorted(ATTRIBUTE_FIELDS))}"
         )
+    windowed = bool((since or "").strip() or (until or "").strip())
+    scope = tag_scope(conn, workspace_id, tags_any=tags_any, tags_all=tags_all,
+                      tags_none=tags_none)
+    kind = kind_scope(conn, workspace_id, reply_kind, since, until) if windowed else None
+
     campaign_filter = ""
-    params: list = [workspace_id]
+    lead_filter = _scope_clause(scope, "wl.lead_id")
+    prefix, params = "", []
+    if windowed:
+        prefix, params = _attribute_window_ctes(
+            conn, workspace_id, since, until, scope, kind, positive_anchor)
+    params.append(workspace_id)
     if campaign_id is not None:
         campaign_filter = (
             " AND wl.lead_id IN (SELECT lead_id FROM campaign_leads WHERE campaign_id = ?)"
         )
         params.append(int(campaign_id))
     params.append(max(min_sample, 1))
+
+    if windowed:
+        # `leads` is leads with ANY activity in the window, not everyone who
+        # carries the attribute: a lifetime population beside three windowed
+        # columns is the mislabel this whole change exists to remove.
+        source = """FROM workspace_leads wl
+            JOIN leads l ON l.id = wl.lead_id
+            JOIN lead_activity a ON a.lead_id = wl.lead_id
+            LEFT JOIN lead_positive p ON p.lead_id = wl.lead_id"""
+        counts = """COUNT(*) AS leads,
+               SUM(a.contacted) AS contacted,
+               SUM(a.replied) AS replied,
+               SUM(p.lead_id IS NOT NULL) AS positive"""
+    else:
+        source = """FROM workspace_leads wl
+            JOIN leads l ON l.id = wl.lead_id"""
+        counts = """COUNT(*) AS leads,
+               SUM(wl.email_sent_count > 0 OR wl.linkedin_sent_count > 0) AS contacted,
+               SUM(wl.total_replies_count > 0) AS replied,
+               SUM(lower(COALESCE(wl.current_status_sentiment, '')) = 'positive') AS positive"""
+
     # Group case-insensitively ("Career Services Coordinator" == "career
     # services coordinator"); display the first variant in case-sensitive
     # order so the shown label is deterministic.
@@ -688,15 +783,12 @@ def attribute_performance(
     order_sql = (f"{ATTRIBUTE_ORDER_OVERRIDES[field]} ASC" if banded
                  else "CAST(replied AS REAL) / contacted DESC, contacted DESC")
     rows = conn.execute(
-        f"""SELECT {value_sql} AS value,
-               COUNT(*) AS leads,
-               SUM(wl.email_sent_count > 0 OR wl.linkedin_sent_count > 0) AS contacted,
-               SUM(wl.total_replies_count > 0) AS replied,
-               SUM(lower(COALESCE(wl.current_status_sentiment, '')) = 'positive') AS positive
-            FROM workspace_leads wl
-            JOIN leads l ON l.id = wl.lead_id
+        f"""{prefix}
+            SELECT {value_sql} AS value,
+               {counts}
+            {source}
             WHERE wl.workspace_id = ?
-              AND {expr} IS NOT NULL AND TRIM({expr}) != ''{campaign_filter}
+              AND {expr} IS NOT NULL AND TRIM({expr}) != ''{campaign_filter}{lead_filter}
             GROUP BY {group_sql}
             HAVING contacted >= ?
             ORDER BY {order_sql}""",
@@ -716,7 +808,22 @@ def attribute_performance(
             "reply_rate": round(replied / contacted, 4) if contacted else None,
             "positive_rate": round(positive / contacted, 4) if contacted else None,
         })
-    return {"field": field, "min_sample": min_sample, "campaign_id": campaign_id, "rows": out}
+    return {
+        "field": field,
+        "fields": sorted(ATTRIBUTE_FIELDS),
+        "min_sample": min_sample,
+        "campaign_id": campaign_id,
+        # "activity" says what a date range means here, so nobody has to infer
+        # it from the numbers; "lifetime" says there is no range at all.
+        "window": "activity" if windowed else "lifetime",
+        **resolve_window(since, until),
+        "positive_anchor": (positive_anchor or "first") if windowed else None,
+        "reply_kind": reply_kind or "all",
+        "tags_any": _tag_list(tags_any) or None,
+        "tags_all": _tag_list(tags_all) or None,
+        "tags_none": _tag_list(tags_none) or None,
+        "rows": out,
+    }
 
 
 # A campaign whose every event came from a booking tool is a calendar, not

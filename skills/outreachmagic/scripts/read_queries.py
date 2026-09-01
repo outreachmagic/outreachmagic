@@ -619,7 +619,7 @@ def lint_sql(sql: str) -> list[str]:
         out.append(
             "workspace_leads.email_sent_count is a LIFETIME, WORKSPACE-WIDE "
             "counter -- it is not sends in this campaign. For per-campaign "
-            "sends use `campaign-audit` or the v_campaign_lead_sends view.")
+            "sends use `campaign-audit` or the v_campaign_lead_events view.")
 
     return out
 

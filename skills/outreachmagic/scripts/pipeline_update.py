@@ -347,6 +347,23 @@ def fetch_update_manifest(repo_base: str, skill_repo_path: Optional[str] = None)
     return payload
 
 
+def manifest_reference_docs(manifest: Optional[dict] = None) -> list[str]:
+    """`references/*.md` entries in the manifest.
+
+    These sit beside SKILL.md rather than in scripts/, so update_download_names
+    (which walks the scripts directory and filters .md out) never saw them --
+    which meant an installed reference doc was frozen at whatever shipped in
+    the original install, forever. A timeout message naming
+    references/sql-pitfalls.md is worse than no message if that page is not
+    there to read.
+    """
+    files = (manifest or {}).get("files") if isinstance(manifest, dict) else None
+    if not isinstance(files, dict):
+        return []
+    return sorted(n for n in files
+                  if n.startswith("references/") and n.endswith(".md"))
+
+
 def update_download_names(manifest: Optional[dict] = None) -> list[str]:
     from pipeline import UPDATE_MANIFEST_FILES
 
@@ -603,6 +620,12 @@ def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release"
             if root_src.is_file():
                 shutil.copy2(root_src, dest.parent / name)
                 updated.append(name)
+        for name in manifest_reference_docs(manifest):
+            ref_src = local_src.parent / name
+            if ref_src.is_file():
+                (dest.parent / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ref_src, dest.parent / name)
+                updated.append(name)
     else:
         for name in download_names:
             content = _fetch_url(f"{scripts_base}/{name}")
@@ -625,13 +648,14 @@ def update_skill(explicit_tag: Optional[str] = None, *, channel: str = "release"
             updated.append("SKILL.md")
         except (urllib.error.URLError, urllib.error.HTTPError, OSError):
             pass
-        for name in ROOT_SKILL_FILES:
+        for name in list(ROOT_SKILL_FILES) + manifest_reference_docs(manifest):
             url = f"{repo_base.rstrip('/')}/{skill_path}/{name}"
             try:
                 content = _fetch_url(url)
                 expected = (manifest or {}).get("files", {}).get(name)
                 if expected and _sha256_hex(content) != expected:
                     raise RuntimeError(f"Checksum mismatch for {name}. Refusing to install.")
+                (dest.parent / name).parent.mkdir(parents=True, exist_ok=True)
                 (dest.parent / name).write_bytes(content)
                 updated.append(name)
             except (urllib.error.URLError, urllib.error.HTTPError, OSError):

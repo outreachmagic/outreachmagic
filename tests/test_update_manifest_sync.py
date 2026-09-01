@@ -1,6 +1,7 @@
 """Ensure pipeline update installs every file listed in update-manifest.json."""
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -109,3 +110,44 @@ class UpdateManifestSyncTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReferenceDocShippingTests(unittest.TestCase):
+    """`update` has to carry the docs the code points people at.
+
+    references/*.md live beside SKILL.md, not in scripts/, and
+    update_download_names walks the scripts directory and filters .md out — so
+    an installed reference doc was frozen at whatever the original install
+    shipped, forever. The SQL timeout message names references/sql-pitfalls.md
+    as the place to look, which is worse than saying nothing if the page never
+    arrives.
+    """
+
+    def test_reference_docs_are_selected_from_the_manifest(self):
+        import pipeline_update
+
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        docs = pipeline_update.manifest_reference_docs(manifest)
+        self.assertIn("references/sql-pitfalls.md", docs)
+        self.assertTrue(all(d.startswith("references/") for d in docs), docs)
+        # And they must not also be in the scripts list, or update would try to
+        # copy them out of scripts/ and fail.
+        self.assertFalse(
+            set(docs) & set(pipeline_update.update_download_names(manifest)))
+
+    def test_no_manifest_means_no_reference_docs(self):
+        import pipeline_update
+
+        self.assertEqual(pipeline_update.manifest_reference_docs(None), [])
+        self.assertEqual(pipeline_update.manifest_reference_docs({}), [])
+
+    def test_every_referenced_doc_the_skill_cites_is_shipped(self):
+        """A doc named in an error message or SKILL.md has to be in the manifest."""
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        shipped = set(manifest["files"])
+        cited = set()
+        for path in (SCRIPTS.glob("*.py")):
+            for match in re.finditer(r"references/([a-z0-9-]+\.md)", path.read_text()):
+                cited.add(f"references/{match.group(1)}")
+        missing = sorted(cited - shipped)
+        self.assertFalse(missing, f"cited in code but not shipped: {missing}")

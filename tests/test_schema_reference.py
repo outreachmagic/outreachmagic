@@ -7,6 +7,7 @@ documented it. A generated, committed reference only helps if it cannot go
 stale, so this test is the thing that keeps it honest.
 """
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -49,20 +50,27 @@ def test_every_column_note_points_at_a_real_column():
     COLUMN_NOTE is the one place a column's semantics are written down, and it
     is keyed by name rather than declared beside the DDL -- so nothing stops a
     rename from leaving the warning behind, still rendered, still read.
+
+    Run out of process, like the generator check above. `_reference_db()` sets
+    om_paths._DB_PATH_OVERRIDE, which outranks the per-test data root every
+    other test gets from conftest -- calling it in-process pins the whole
+    session to one shared database.
     """
-    import sqlite3
-
-    sys.path.insert(0, str(SCRIPTS))
-    import generate_schema_reference
-    import read_queries
-
-    conn = sqlite3.connect(str(generate_schema_reference._reference_db()))
-    try:
-        for table, column in read_queries.COLUMN_NOTE:
-            cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
-            assert cols, f"COLUMN_NOTE names a table that does not exist: {table}"
-            assert column in cols, (
-                f"COLUMN_NOTE documents {table}.{column}, which no longer exists. "
-                "Update or remove the note.")
-    finally:
-        conn.close()
+    probe = """
+import json, sys
+sys.path.insert(0, %r)
+import generate_schema_reference, read_queries, sqlite3
+conn = sqlite3.connect(str(generate_schema_reference._reference_db()))
+missing = [
+    f"{t}.{c}" for t, c in read_queries.COLUMN_NOTE
+    if c not in {r[1] for r in conn.execute('PRAGMA table_info("%%s")' %% t)}
+]
+print(json.dumps(missing))
+""" % str(SCRIPTS)
+    result = subprocess.run([sys.executable, "-c", probe],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    missing = json.loads(result.stdout.strip().splitlines()[-1])
+    assert not missing, (
+        f"COLUMN_NOTE documents columns that no longer exist: {missing}. "
+        "Update or remove those notes.")

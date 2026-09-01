@@ -108,6 +108,12 @@ def build_reference(db_path: Path) -> str:
                     notes.append("not null")
                 if col["name"] in fks:
                     notes.append(f"→ `{fks[col['name']]}`")
+                # The semantic warning goes last and in bold: it is the thing a
+                # reader skimming for "what is this column" most needs to see,
+                # and the structural notes beside it are all guessable.
+                note = read_queries.COLUMN_NOTE.get((table, col["name"]))
+                if note:
+                    notes.append(f"**{note}**")
                 out.append(f"| `{col['name']}` | {col['type'] or ''} | {', '.join(notes)} |\n")
             out.append("\n")
         out.append(FOOTER)

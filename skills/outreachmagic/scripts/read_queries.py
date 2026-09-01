@@ -764,6 +764,47 @@ TABLE_PURPOSE: dict[str, str] = {
     "campaign_workspace_rules": "Name/pattern rules routing campaigns to workspaces.",
 }
 
+
+#: Columns whose NAME does not tell you what they mean, keyed (table, column).
+#: Rendered into references/schema.md and printed by `pipeline.py schema
+#: <table>`, so the warning reaches whoever is about to use the column rather
+#: than living in a docstring nobody opens.
+#:
+#: Every entry here is a wrong answer that has already been shipped. Reading
+#: email_sent_count as "sends in this campaign" once reported 15,565 sends for
+#: a campaign that had sent 106.
+COLUMN_NOTE: dict[tuple[str, str], str] = {
+    ("workspace_leads", "email_sent_count"):
+        "LIFETIME and WORKSPACE-WIDE — not sends in one campaign. "
+        "For per-campaign sends use `campaign-audit` or the v_campaign_lead_events view.",
+    ("workspace_leads", "linkedin_sent_count"):
+        "LIFETIME and WORKSPACE-WIDE, like email_sent_count.",
+    ("workspace_leads", "total_replies_count"):
+        "LIFETIME and WORKSPACE-WIDE — not replies in one campaign or window.",
+    ("workspace_leads", "current_sentiment_since"):
+        "When the status LAST CHANGED. Not first contact, not first positive. "
+        "Windowing on this to find recent positives silently drops every lead "
+        "whose status has not moved since; use first_positive_at.",
+    ("workspace_leads", "current_status_sentiment"):
+        "The lead's sentiment RIGHT NOW. A lead that went positive and later "
+        "cold is not counted here; `campaign-audit --positive-anchor first` "
+        "answers the historical question.",
+    ("workspace_leads", "first_positive_at"):
+        "First time this lead ever turned positive — the anchor behind "
+        "`--positive-anchor first`, and the column to window on.",
+    ("workspace_leads", "last_activity_at"):
+        "Any event in any campaign, inbound or outbound.",
+    ("events", "campaign_id"):
+        "The campaign the PLATFORM stamped on the event. A booking webhook "
+        "stamps the calendar slot, so meetings counted off this column credit "
+        "the calendar rather than the sequence that earned them.",
+}
+
+
+def column_note(table: str, column: str) -> Optional[str]:
+    return COLUMN_NOTE.get((table, column))
+
+
 #: How each entity is scoped to a workspace. The single most common wrong first
 #: guess is `leads.workspace_id`, which does not exist.
 WORKSPACE_SCOPING: dict[str, str] = {
@@ -857,7 +898,8 @@ def table_schema(table: str) -> dict[str, Any]:
         "purpose": TABLE_PURPOSE.get(table, "TODO — undocumented table"),
         "workspace_scoping": WORKSPACE_SCOPING.get(table),
         "columns": [
-            {"name": c[1], "type": c[2], "notnull": bool(c[3]), "default": c[4], "pk": bool(c[5])}
+            {"name": c[1], "type": c[2], "notnull": bool(c[3]), "default": c[4],
+             "pk": bool(c[5]), "note": COLUMN_NOTE.get((table, c[1]))}
             for c in cols
         ],
         "foreign_keys": fks,

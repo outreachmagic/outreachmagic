@@ -308,7 +308,7 @@ Primary timeline: sends, replies, bounces, status labels. Use this for analytics
 | `subject` | TEXT |  |
 | `body_preview` | TEXT |  |
 | `metadata_json` | TEXT |  |
-| `campaign_id` | INTEGER | → `campaigns.id` |
+| `campaign_id` | INTEGER | → `campaigns.id`, **The campaign the PLATFORM stamped on the event. A booking webhook stamps the calendar slot, so meetings counted off this column credit the calendar rather than the sequence that earned them.** |
 | `sender` | TEXT |  |
 | `relay_id` | INTEGER |  |
 | `created_at` | TEXT | not null |
@@ -802,18 +802,18 @@ Per-workspace lead status, sentiment anchor and activity. The leads-to-workspace
 | `status` | TEXT | not null |
 | `owner_user_id` | TEXT |  |
 | `stage_entered_at` | TEXT |  |
-| `last_activity_at` | TEXT |  |
+| `last_activity_at` | TEXT | **Any event in any campaign, inbound or outbound.** |
 | `current_status_label` | TEXT |  |
-| `current_status_sentiment` | TEXT |  |
-| `current_sentiment_since` | TEXT |  |
+| `current_status_sentiment` | TEXT | **The lead's sentiment RIGHT NOW. A lead that went positive and later cold is not counted here; `campaign-audit --positive-anchor first` answers the historical question.** |
+| `current_sentiment_since` | TEXT | **When the status LAST CHANGED. Not first contact, not first positive. Windowing on this to find recent positives silently drops every lead whose status has not moved since; use first_positive_at.** |
 | `contact_priority` | INTEGER |  |
 | `latest_sender` | TEXT |  |
 | `created_at` | TEXT | not null |
 | `updated_at` | TEXT | not null |
-| `first_positive_at` | TEXT |  |
-| `email_sent_count` | INTEGER | not null |
-| `linkedin_sent_count` | INTEGER | not null |
-| `total_replies_count` | INTEGER | not null |
+| `first_positive_at` | TEXT | **First time this lead ever turned positive — the anchor behind `--positive-anchor first`, and the column to window on.** |
+| `email_sent_count` | INTEGER | not null, **LIFETIME and WORKSPACE-WIDE — not sends in one campaign. For per-campaign sends use `campaign-audit` or the v_campaign_lead_events view.** |
+| `linkedin_sent_count` | INTEGER | not null, **LIFETIME and WORKSPACE-WIDE, like email_sent_count.** |
+| `total_replies_count` | INTEGER | not null, **LIFETIME and WORKSPACE-WIDE — not replies in one campaign or window.** |
 | `last_contacted_at` | TEXT |  |
 
 ### `workspace_sender_accounts`

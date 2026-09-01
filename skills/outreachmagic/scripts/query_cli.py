@@ -156,6 +156,10 @@ def cmd_schema(args) -> None:
             nn = " NOT NULL" if col["notnull"] else ""
             default = f" DEFAULT {col['default']}" if col["default"] is not None else ""
             print(f"  {col['name']}  {col['type']}{nn}{default}{pk}")
+            if col.get("note"):
+                # Indented under the column it belongs to: the warning is
+                # useless anywhere the reader is not already looking.
+                print(f"      ! {col['note']}")
         for fk in result.get("foreign_keys") or []:
             print(f"  FK {fk['column']} -> {fk['references']}")
 

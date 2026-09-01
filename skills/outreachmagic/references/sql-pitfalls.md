@@ -68,8 +68,14 @@ it inside a per-campaign aggregation once turned 106 sends into 15,565.
 Per-campaign sends come from `campaign-audit`, or from the read-only view:
 
 ```sql
-SELECT lead_id, sends, replies FROM v_campaign_lead_sends WHERE campaign_id = ?;
+SELECT lead_id, SUM(is_send) AS sends, SUM(is_reply) AS replies
+  FROM v_campaign_lead_events
+ WHERE campaign_id = ? AND event_at >= datetime('now', '-14 days')
+ GROUP BY lead_id;
 ```
+
+`pipeline.py schema workspace_leads` prints this warning beside the column
+itself, along with the other columns whose names do not say what they mean.
 
 ---
 

@@ -41,3 +41,28 @@ def test_reference_answers_the_workspace_scoping_question():
     assert "no column on leads" in text
     assert "events.campaign_id -> campaigns.workspace_id" in text
     assert "campaign_platform_id" in text
+
+
+def test_every_column_note_points_at_a_real_column():
+    """A note on a column that no longer exists is a lie that outlives it.
+
+    COLUMN_NOTE is the one place a column's semantics are written down, and it
+    is keyed by name rather than declared beside the DDL -- so nothing stops a
+    rename from leaving the warning behind, still rendered, still read.
+    """
+    import sqlite3
+
+    sys.path.insert(0, str(SCRIPTS))
+    import generate_schema_reference
+    import read_queries
+
+    conn = sqlite3.connect(str(generate_schema_reference._reference_db()))
+    try:
+        for table, column in read_queries.COLUMN_NOTE:
+            cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+            assert cols, f"COLUMN_NOTE names a table that does not exist: {table}"
+            assert column in cols, (
+                f"COLUMN_NOTE documents {table}.{column}, which no longer exists. "
+                "Update or remove the note.")
+    finally:
+        conn.close()

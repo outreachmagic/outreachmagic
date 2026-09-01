@@ -1073,7 +1073,15 @@ def handle_crm_sync(match, query, body):
 
 
 def handle_sync_status(match, query, body):
-    return 200, dashboard_actions.sync_manager.status()
+    # Freshness rides along with sync state because that is what the operator
+    # is actually asking when they look at the pill: not "is a pull running"
+    # but "how old is what I am reading". The same fields every CLI read
+    # command already attaches, from the same helper.
+    from data_freshness import attach_freshness
+    from pipeline_update import get_last_pull
+
+    return 200, attach_freshness(
+        dashboard_actions.sync_manager.status(), last_pull=get_last_pull())
 
 
 def handle_sync_log(match, query, body):

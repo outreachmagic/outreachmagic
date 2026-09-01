@@ -114,6 +114,10 @@ tr.clickable:hover td { background: color-mix(in srgb, var(--series-1) 7%, trans
   border-radius: 6px; max-height: 260px; overflow: auto; white-space: pre-wrap;
   word-break: break-word; font-size: 12px; margin: 0; }
 .spark { display: block; }
+/* Inline beside a table cell's text, rather than on its own line. */
+.spark.inline { display: inline-block; vertical-align: middle; margin-left: 6px;
+  opacity: .45; }
+.spark.inline:hover { opacity: .9; }
 /* timeline (lead history) */
 .timeline { border-top: 1px solid var(--grid); }
 .tl-event { padding: 9px 2px; border-bottom: 1px solid var(--grid); }
@@ -757,6 +761,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           </select>
         </label>
         <span class="spacer"></span>
+        <span data-freshness class="flag" title="How old the local data is"></span>
         <span id="campaigns-note" class="stale"></span>
       </div>
       <!-- Same tag bar as Contacts (makeTagBar), so "exclude existing_customer"
@@ -797,6 +802,8 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           <select id="attr-campaign"><option value="">All campaigns</option></select>
         </label>
         <label>Min contacted <input id="attr-min" type="number" value="20" min="1" style="width:70px"></label>
+        <span class="spacer"></span>
+        <span data-freshness class="flag" title="How old the local data is"></span>
       </div>
       <div id="attributes"></div>
     </div>
@@ -1387,7 +1394,34 @@ async function refreshSummary() {
     $("staleness").textContent = s.latest_event_at
       ? "latest event: " + dt(s.latest_event_at) + " UTC" : "no events pulled yet";
     updateSyncPill(sync);
+    // Kept on state, not only in the header: a date-range answer read off
+    // stale data is wrong in a way the numbers themselves cannot show, so the
+    // window-setting panes say it too.
+    state.freshness = sync;
+    paintFreshness();
   } catch (e) { /* transient poll error; pill shows state */ }
+}
+
+// "Last pulled 40 minutes ago" belongs next to whoever is choosing a window,
+// not only in the page header they scrolled past. Rendered into every element
+// carrying data-freshness.
+function paintFreshness() {
+  const f = state.freshness;
+  if (!f) return;
+  const mins = f.stale_minutes;
+  const text = f.last_pull == null ? "never pulled"
+    : mins == null ? ""
+    : mins < 1 ? "pulled just now"
+    : mins < 60 ? `pulled ${Math.round(mins)}m ago`
+    : mins < 1440 ? `pulled ${Math.round(mins / 60)}h ago`
+    : `pulled ${Math.round(mins / 1440)}d ago`;
+  document.querySelectorAll("[data-freshness]").forEach(el => {
+    el.textContent = text;
+    // Over an hour old is where a "last 14 days" answer starts quietly
+    // missing today, which is the case worth a colour.
+    el.className = "flag" + (f.last_pull == null || (mins ?? 0) >= 60 ? " warn" : "");
+    el.title = f.freshness_message || "";
+  });
 }
 
 function updateSyncPill(sync) {
@@ -4073,16 +4107,35 @@ function comboInput({ name, value, options, placeholder, id }) {
 
 // Tiny inline sparkline — no library, no axes. It exists to answer "is this
 // getting worse", which a number in a table cannot.
-function sparkline(values, { width = 90, height = 18, color = "currentColor" } = {}) {
+function sparkline(values, { width = 90, height = 18, color = "currentColor",
+                             cls = "", title = "" } = {}) {
   const nums = (values || []).map(v => Number(v) || 0);
   if (!nums.length) return "";
   const max = Math.max(1, ...nums);
   const step = nums.length > 1 ? width / (nums.length - 1) : width;
   const points = nums.map((v, i) =>
     `${(i * step).toFixed(1)},${(height - (v / max) * (height - 2) - 1).toFixed(1)}`).join(" ");
-  return `<svg class="spark" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"
-      preserveAspectRatio="none" aria-hidden="true"><polyline points="${points}"
+  // Titled sparks get a real accessible name; untitled ones stay decorative,
+  // because a shape with no label read aloud is noise.
+  const label = title
+    ? `role="img" aria-label="${esc(title)}"` : 'aria-hidden="true"';
+  return `<svg class="spark ${esc(cls)}" width="${width}" height="${height}"
+      viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" ${label}>${
+      title ? `<title>${esc(title)}</title>` : ""}<polyline points="${points}"
       fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+
+// A campaign's daily send volume, from the `daily` array the table already
+// asked for -- no second request. Shape only: it answers "steady, spiking or
+// stopped", and the columns beside it answer everything quantitative.
+function campaignSpark(days) {
+  if (!days || days.length < 2) return "";
+  const sent = days.map(d => d.sent || 0);
+  const peak = Math.max(...sent);
+  if (!peak) return "";
+  return sparkline(sent, { width: 64, height: 14, cls: "inline",
+    title: `${fmt(sent.reduce((a, b) => a + b, 0))} sent over ${sent.length} days, `
+      + `peak ${fmt(peak)} on ${days[sent.indexOf(peak)].date}` });
 }
 
 // Every slide-in pane has a stable id and a printed breadcrumb. Panes were
@@ -4601,7 +4654,8 @@ async function loadCampaigns() {
   const dailyQs = [dailyCampaign ? `campaign_id=${dailyCampaign}` : "", sched]
     .filter(Boolean).join("&");
   const [audit, daily] = await Promise.all([
-    getR("/api/campaigns?" + [sched, anchor, auditQs.toString()].filter(Boolean).join("&")),
+    getR("/api/campaigns?" + [sched, anchor, "by_day=1", auditQs.toString()]
+      .filter(Boolean).join("&")),
     getR("/api/campaigns/daily" + (dailyQs ? `?${dailyQs}` : "")),
   ]).catch(e => { toast(e.message); return [null, null]; });
   if (!audit) return;
@@ -4623,7 +4677,7 @@ async function loadCampaigns() {
         + "their meetings are counted against the campaign that earned them." : ""));
   $("campaigns-note").textContent = notes.filter(Boolean).join(" ");
   renderTable("campaigns", [
-    { key: "name", label: "Campaign", render: r => esc(r.name)
+    { key: "name", label: "Campaign", render: r => esc(r.name) + campaignSpark(r.daily)
         + (r.is_unattributed
             ? ' <span class="flag warn" title="Meetings and replies we could not trace back to any campaign. Shown so excluding scheduling tools never silently loses a booking.">unattributed</span>'
             : r.is_scheduling

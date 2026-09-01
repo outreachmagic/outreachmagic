@@ -59,6 +59,11 @@ def register_query_parser(sub) -> None:
     q.add_argument("--file", help="Read SQL from a file (outreachmagic/imports/ or absolute path)")
     q.add_argument("--limit", type=int, default=read_queries.DEFAULT_ROW_LIMIT,
                    help="Row cap for --sql/--file (0 = no cap)")
+    q.add_argument("--timeout", type=int, default=read_queries.DEFAULT_TIMEOUT_SEC,
+                   help="Wall-clock seconds before the query is cancelled "
+                        f"(default: {read_queries.DEFAULT_TIMEOUT_SEC}; 0 = no ceiling)")
+    q.add_argument("--explain", action="store_true",
+                   help="Print the query plan and shape warnings without running it")
     q.add_argument("--json", action="store_true", help="JSON output for agents")
     q.add_argument("--quiet", action="store_true",
                    help="Suppress the stderr freshness line (machine consumers)")
@@ -80,6 +85,11 @@ def register_sql_parser(sub) -> None:
         help="Scope helper CTEs to a workspace: ws_leads, ws_campaigns, ws_events, "
              "ws_sender_accounts, ws_workspace (leads have no workspace_id column)",
     )
+    p.add_argument("--timeout", type=int, default=read_queries.DEFAULT_TIMEOUT_SEC,
+                   help="Wall-clock seconds before the query is cancelled "
+                        f"(default: {read_queries.DEFAULT_TIMEOUT_SEC}; 0 = no ceiling)")
+    p.add_argument("--explain", action="store_true",
+                   help="Print the query plan and shape warnings without running it")
     p.add_argument("--json", action="store_true", help="JSON output for agents")
     p.add_argument("--quiet", action="store_true",
                    help="Suppress the stderr freshness line (machine consumers)")
@@ -203,7 +213,37 @@ def _parse_params(raw: Optional[str]) -> list[Any]:
     return parsed
 
 
+def _sql_text(args) -> Optional[str]:
+    """The raw SQL this invocation would run, whichever way it was supplied."""
+    if getattr(args, "sql", None):
+        return args.sql
+    if getattr(args, "file", None):
+        return resolve_project_path(args.file, kind="input").read_text(encoding="utf-8")
+    return None
+
+
 def cmd_query(args) -> None:
+    if getattr(args, "explain", False):
+        sql = _sql_text(args)
+        if not sql:
+            print("--explain applies to --sql / --file, not to a preset.", file=sys.stderr)
+            sys.exit(2)
+        try:
+            plan = read_queries.explain_plan(
+                sql, _parse_params(getattr(args, "params", None)),
+                workspace=getattr(args, "workspace", None))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+            return
+        if getattr(args, "json", False):
+            print(json.dumps(plan, indent=2))
+        else:
+            for step in plan["plan"]:
+                print(f"  {step}")
+            for warning in plan["warnings"]:
+                print(f"WARNING: {warning}", file=sys.stderr)
+        return
     try:
         if args.preset == "engagement":
             types = None
@@ -267,6 +307,7 @@ def cmd_query(args) -> None:
                 args.sql,
                 params=params,
                 limit=getattr(args, "limit", read_queries.DEFAULT_ROW_LIMIT),
+                timeout_sec=getattr(args, "timeout", read_queries.DEFAULT_TIMEOUT_SEC),
                 workspace=getattr(args, "workspace", None),
             )
         elif getattr(args, "file", None):
@@ -277,6 +318,7 @@ def cmd_query(args) -> None:
                 sql,
                 params=params,
                 limit=getattr(args, "limit", read_queries.DEFAULT_ROW_LIMIT),
+                timeout_sec=getattr(args, "timeout", read_queries.DEFAULT_TIMEOUT_SEC),
                 workspace=getattr(args, "workspace", None),
             )
             result["file"] = str(path)
@@ -289,7 +331,7 @@ def cmd_query(args) -> None:
             )
             sys.exit(2)
             return
-    except ValueError as exc:
+    except (ValueError, read_queries.QueryTimeout) as exc:
         if getattr(args, "json", False):
             print(json.dumps({"error": str(exc)}))
         else:
@@ -300,6 +342,11 @@ def cmd_query(args) -> None:
     last_pull = _pipeline.get_last_pull() if _pipeline else None
     if not _quiet(args):
         print_freshness_stderr(last_pull)
+    for warning in (result.get("warnings") or []) if isinstance(result, dict) else []:
+        # Advisory, and printed after the fact on purpose: the query already
+        # answered, and the warning says why the answer may not mean what it
+        # looks like. `--explain` is the before-the-fact version.
+        print(f"WARNING: {warning}", file=sys.stderr)
     if isinstance(result, dict) and result.get("truncated"):
         # Silent truncation at the row cap is the second-most common cause of a
         # confidently wrong answer, after reading a stale pull.

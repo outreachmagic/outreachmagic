@@ -73,9 +73,15 @@ class AttributeAuditTests(unittest.TestCase):
 
         self.recent = om.add_lead("Dana Reyes", company="Acme",
                                   email="dana@acme-example.com", title="Director")["id"]
+        # A second Director, so at least one group holds more than one lead --
+        # without that, every group is size 1 and a min-sample floor of 1 and 2
+        # are indistinguishable, which is how the HAVING bug survived a test
+        # that was supposedly checking exactly it.
+        self.peer = om.add_lead("Rowan Diaz", company="Acme",
+                                email="rowan@acme-example.com", title="Director")["id"]
         self.old = om.add_lead("Kim Alvarez", company="Acme",
                                email="kim@acme-example.com", title="Coordinator")["id"]
-        for lead_id in (self.recent, self.old):
+        for lead_id in (self.recent, self.peer, self.old):
             lead_actions.log_event_scoped(
                 lead_id, "email_sent", workspace_slug="alpha", subject="Hi",
                 metadata={"campaign": CAMPAIGN})
@@ -146,13 +152,35 @@ class AttributeAuditTests(unittest.TestCase):
         self.assertEqual(first["rows"][0]["positive"], 1)
         self.assertEqual(current["rows"][0]["positive"], 0)
 
-    def test_min_sample_drops_thin_rows(self):
-        self.assertEqual(json.loads(_run(min_sample=5))["rows"], [])
+    def test_min_sample_counts_the_group_not_a_single_lead(self):
+        """The floor is on the GROUP's contacted count, both with and without
+        a window.
+
+        This test used to assert only that a high floor returns nothing, which
+        it did -- for the wrong reason. In the windowed query `contacted` is
+        both a lead_activity column (a per-lead 0/1 flag) and an output alias,
+        and SQLite's HAVING resolves source columns before output aliases. So
+        `HAVING contacted >= n` tested the flag: it passed at 1 and matched
+        nothing at 2, whatever the group actually held. On live data a group of
+        370 contacted leads vanished at --min-sample 2.
+        """
+        for window in ({}, {"since": "14d"}):
+            rows = json.loads(_run(min_sample=1, **window))["rows"]
+            self.assertTrue(rows, window)
+            biggest = max(r["contacted"] for r in rows)
+            kept = json.loads(_run(min_sample=biggest, **window))["rows"]
+            self.assertTrue(
+                kept, f"a floor equal to the largest group dropped it ({window})")
+            self.assertTrue(all(r["contacted"] >= biggest for r in kept))
+            self.assertEqual(
+                json.loads(_run(min_sample=biggest + 1, **window))["rows"], [],
+                f"a floor above every group should return nothing ({window})")
 
     def test_reply_rate_is_replied_over_contacted_in_window(self):
         row = json.loads(_run(since="14d"))["rows"][0]
-        self.assertEqual((row["contacted"], row["replied"]), (1, 1))
-        self.assertEqual(row["reply_rate"], 1.0)
+        self.assertEqual((row["contacted"], row["replied"]), (2, 1),
+                         "two Directors reached, one replied")
+        self.assertEqual(row["reply_rate"], 0.5)
 
     def test_an_unknown_field_names_the_valid_ones(self):
         with self.assertRaises(SystemExit):

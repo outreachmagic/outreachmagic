@@ -682,11 +682,16 @@ def _attribute_window_ctes(
     positive_range, positive_params = _range_clause(since, until, anchor_column)
     return (
         cte + f""",
+        -- was_contacted / did_reply, NOT contacted / replied. A CTE column
+        -- sharing a name with an output alias is a trap in SQLite: HAVING
+        -- resolves against SOURCE columns before output aliases, so
+        -- `HAVING contacted >= ?` silently tested this per-lead 0/1 flag
+        -- instead of the group's SUM -- passing at 1 and matching nothing at 2.
         lead_activity AS (
             SELECT lead_id,
-                   ({sent_expr}) > 0 AS contacted,
+                   ({sent_expr}) > 0 AS was_contacted,
                    SUM(({reply_event_sql_condition()}){
-                       _scope_clause(kind, "lead_id")}) > 0 AS replied
+                       _scope_clause(kind, "lead_id")}) > 0 AS did_reply
               FROM ws_events GROUP BY lead_id
         ),
         lead_positive AS (
@@ -761,9 +766,10 @@ def attribute_performance(
             JOIN lead_activity a ON a.lead_id = wl.lead_id
             LEFT JOIN lead_positive p ON p.lead_id = wl.lead_id"""
         counts = """COUNT(*) AS leads,
-               SUM(a.contacted) AS contacted,
-               SUM(a.replied) AS replied,
+               SUM(a.was_contacted) AS contacted,
+               SUM(a.did_reply) AS replied,
                SUM(p.lead_id IS NOT NULL) AS positive"""
+        having = "SUM(a.was_contacted)"
     else:
         source = """FROM workspace_leads wl
             JOIN leads l ON l.id = wl.lead_id"""
@@ -771,6 +777,7 @@ def attribute_performance(
                SUM(wl.email_sent_count > 0 OR wl.linkedin_sent_count > 0) AS contacted,
                SUM(wl.total_replies_count > 0) AS replied,
                SUM(lower(COALESCE(wl.current_status_sentiment, '')) = 'positive') AS positive"""
+        having = "contacted"
 
     # Group case-insensitively ("Career Services Coordinator" == "career
     # services coordinator"); display the first variant in case-sensitive
@@ -790,7 +797,7 @@ def attribute_performance(
             WHERE wl.workspace_id = ?
               AND {expr} IS NOT NULL AND TRIM({expr}) != ''{campaign_filter}{lead_filter}
             GROUP BY {group_sql}
-            HAVING contacted >= ?
+            HAVING {having} >= ?
             ORDER BY {order_sql}""",
         params,
     ).fetchall()

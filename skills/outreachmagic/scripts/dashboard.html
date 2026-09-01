@@ -761,10 +761,6 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       </div>
       <div id="campaigns"></div>
     </div>
-    <div class="card" id="subjects-card" hidden>
-      <h2>Subject lines &amp; copy <span class="sub" id="subjects-sub">expand a row to audit the exact copy sent</span></h2>
-      <div id="subjects"></div>
-    </div>
   </section>
 
   <section id="tab-attributes" hidden>
@@ -1533,7 +1529,7 @@ function setRangeToDay(dateStr) {
 // per-tab, and a helper that closes "whatever detail cards exist" should not
 // depend on which tab is mounted.
 function closeDetails() {
-  for (const id of ["subjects-card", "domain-detail-card", "stage-leads-card"]) {
+  for (const id of ["domain-detail-card", "stage-leads-card"]) {
     const el = $(id);
     if (el) el.hidden = true;
   }
@@ -4045,7 +4041,6 @@ const PANES = {
   "deliverability.domain":     "Deliverability › Sending domain detail",
   "deliverability.blacklist":  "Deliverability › Blacklist report",
   "deliverability.bounce":     "Deliverability › Bounce detail",
-  "campaign.subjects":         "Campaigns › Subject lines & copy",
   "quality.bucket":            "Data quality › Bucket detail",
   "sync.outbox":               "Sync › Outbox item detail",
 };
@@ -4606,13 +4601,12 @@ async function loadCampaigns() {
     // second lead list underneath. There was only ever one question being asked
     // of both — "who replied, out of which campaign" — and two tables answering
     // it separately meant scrolling past the answer to reach a copy of it.
-    onRowClick: r => selectCampaign(r.id, r.name) });
+    onRowClick: r => selectCampaign(r.id) });
 }
 
-function selectCampaign(campaignId, name) {
+function selectCampaign(campaignId) {
   $("replies-campaign").value = campaignId;
   loadReplies();
-  showSubjects(campaignId, name);
   $("replies-table").closest(".card").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -4798,15 +4792,7 @@ for (const id of ["replies-sentiment", "replies-status", "replies-kind"]) $(id).
   repliesSel.clear();
   loadReplies();
 };
-// The dropdown and the campaigns table set the same selection, so they move the
-// copy-audit card the same way. Back to "All campaigns" means there is no one
-// campaign whose copy to show.
-$("replies-campaign").onchange = () => {
-  const sel = $("replies-campaign");
-  loadReplies();
-  if (sel.value) showSubjects(sel.value, sel.selectedOptions[0].textContent);
-  else $("subjects-card").hidden = true;
-};
+$("replies-campaign").onchange = () => loadReplies();
 
 // A campaign attributed through a colleague is a weaker claim than the lead's
 // own, so it says so and names who — "Acme Q3" that actually came from Mary
@@ -4956,53 +4942,6 @@ function renderDaily(d) {
 document.querySelectorAll('input[name="outcomescale"]').forEach(el => {
   el.onchange = () => { if (state.daily) renderDaily(state.daily); };
 });
-
-const campaignSubjects = { campaignId: null, name: "" };
-
-// The campaigns table's row click filters the replies above; the copy audit is
-// the one thing that list cannot show, so it stays — as its own card that
-// follows the same selection.
-async function showSubjects(campaignId, name) {
-  campaignSubjects.campaignId = campaignId;
-  campaignSubjects.name = name;
-  $("subjects-card").hidden = false;
-  $("subjects-sub").textContent = `${name} — expand a row to audit the exact copy sent`;
-  $("subjects").innerHTML = '<div class="stale">Loading…</div>';
-  const d = await get(`/api/campaigns/subjects?campaign_id=${campaignId}&limit=25`)
-    .catch(e => { toast(e.message); return null; });
-  if (!d) { $("subjects").innerHTML = ""; return; }
-  renderSubjects(d);
-}
-
-function renderSubjects(d) {
-  if (!d) return;
-  renderTable("subjects", [
-    { key: "subject", label: "Subject", wrap: true },
-    { key: "sends", label: "Sends", num: true, render: r => fmt(r.sends) },
-    { key: "replies", label: "Replies", num: true, render: r => fmt(r.replies) },
-    { key: "reply_rate", label: "Reply rate", num: true, render: r => pct(r.reply_rate) },
-    { key: "sample_event_id", label: "Copy", sortVal: () => 0,
-      render: r => r.sample_event_id
-        ? `<button class="small" onclick="toggleCopy(this, ${r.sample_event_id})">View full copy</button>` : "–" },
-  ], d.subjects, { empty: "No subjects recorded for this campaign." });
-}
-
-window.toggleCopy = async function (btn, eventId) {
-  const tr = btn.closest("tr");
-  const existing = tr.nextElementSibling;
-  if (existing && existing.classList.contains("copy-row")) { existing.remove(); btn.textContent = "View full copy"; return; }
-  btn.textContent = "Loading…";
-  try {
-    const d = await api(`/api/events/${eventId}/body`);
-    const row = document.createElement("tr");
-    row.className = "copy-row";
-    row.innerHTML = `<td colspan="${tr.children.length}" class="wrap">
-      <div class="copy-body">${esc(d.body || "(empty body)")}</div>
-      <div class="stale">${esc(d.event_type)} · ${dt(d.created_at)} UTC · from ${esc(d.sender ?? "?")}${d.body_truncated ? " · (stored copy truncated)" : ""}</div></td>`;
-    tr.after(row);
-    btn.textContent = "Hide copy";
-  } catch (e) { toast(e.message); btn.textContent = "View full copy"; }
-};
 
 /* ---------- attributes ---------- */
 async function loadAttributes() {

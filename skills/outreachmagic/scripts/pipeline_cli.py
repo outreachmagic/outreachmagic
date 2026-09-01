@@ -1985,43 +1985,6 @@ def main():
     hist_p.add_argument("--limit", type=int, default=50, help="Max events to show")
     hist_p.add_argument("--json", action="store_true")
 
-    copy_p = sub.add_parser(
-        "copy-insights",
-        help="Show full copy for positive leads and rank best-performing templates",
-    )
-    copy_p.add_argument(
-        "--lead-status",
-        default="interested",
-        help="Current lead status to treat as positive (default: interested)",
-    )
-    copy_p.add_argument("--limit", type=int, default=200, help="Max positive leads to include")
-    copy_p.add_argument("--workspace", help="Filter by workspace name or slug")
-    copy_p.add_argument("--json", action="store_true")
-
-    segment_p = sub.add_parser(
-        "segment-insights",
-        help="Rank best converting title/industry/headcount segments from positive leads",
-    )
-    segment_p.add_argument(
-        "--positive-lead-status",
-        default="interested",
-        help="Current lead status to treat as positive (default: interested)",
-    )
-    segment_p.add_argument(
-        "--positive-sentiment",
-        choices=("positive", "negative", "autoreply", "invalid", "neutral"),
-        help="Optional sentiment to combine with --positive-lead-status",
-    )
-    segment_p.add_argument(
-        "--fields",
-        default="title,industry,headcount",
-        help="Comma-separated segment fields (title,industry,headcount)",
-    )
-    segment_p.add_argument("--min-sent", type=int, default=2, help="Minimum sent leads per value")
-    segment_p.add_argument("--top", type=int, default=12, help="Top values per field")
-    segment_p.add_argument("--workspace", help="Filter by workspace name or slug")
-    segment_p.add_argument("--json", action="store_true")
-
     ws_p = sub.add_parser("workspace", help="List or create workspaces")
     ws_sub = ws_p.add_subparsers(dest="workspace_cmd")
     ws_list = ws_sub.add_parser("list", help="List workspaces")
@@ -5098,31 +5061,6 @@ def main():
             print(json.dumps({"lead": lead, "events": events}, indent=2))
         else:
             print(_pipeline.format_event_timeline(lead, events))
-    elif args.command == "copy-insights":
-        try:
-            insights = _pipeline.get_copy_insights(
-                lead_status=args.lead_status,
-                limit=args.limit,
-                workspace=getattr(args, "workspace", None),
-            )
-        except ValueError as e:
-            print(str(e))
-            sys.exit(1)
-        print(json.dumps(insights, indent=2) if args.json else _pipeline.format_copy_insights(insights))
-    elif args.command == "segment-insights":
-        try:
-            insights = _pipeline.get_segment_insights(
-                positive_lead_status=args.positive_lead_status,
-                positive_sentiment=args.positive_sentiment,
-                fields=args.fields,
-                min_sent=args.min_sent,
-                top=args.top,
-                workspace=getattr(args, "workspace", None),
-            )
-        except ValueError as e:
-            print(str(e))
-            sys.exit(1)
-        print(json.dumps(insights, indent=2) if args.json else _pipeline.format_segment_insights(insights))
     elif args.command == "workspace":
         if args.workspace_cmd == "summary":
             summary = _pipeline.get_workspace_summary(

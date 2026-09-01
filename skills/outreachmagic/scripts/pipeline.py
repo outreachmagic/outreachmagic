@@ -166,7 +166,6 @@ from bounces import (
     leads_needing_verification,
 )
 from constants import (
-    ATTRIBUTE_INSIGHT_FIELDS,
     BILLING_UPGRADE_URL,
     MAX_EVENT_BODY_STORAGE_CHARS,
     PIPELINE_STAGES,
@@ -207,11 +206,9 @@ from db_conn import (
 from shared import PIPELINE_CHUNK_SIZE as IMPORT_CHUNK_SIZE
 from formatters import (
     format_campaign_stats,
-    format_copy_insights,
     format_event_timeline,
     format_lead_table,
     format_pipeline_table,
-    format_segment_insights,
     format_stats,
 )
 from event_classification import normalize_campaign_event_type
@@ -5665,8 +5662,7 @@ from pipeline_tags import (
     log_event, get_lead_events, export_leads, get_pipeline, get_stats,
     get_campaign_stats, get_stage_counts, get_lead_by_email,
     load_json_array_from_cli, load_lead_ids_from_cli, load_profile_rows_from_file,
-    enrich_lead_rows, query_leads_for_export, get_copy_insights,
-    get_segment_insights,
+    enrich_lead_rows, query_leads_for_export,
     # Re-exports for lazy-import callers (pipeline_migration, workspace routing):
     backfill_campaigns_from_events, backfill_plusvibe_status_metadata,
     ensure_campaign, _decode_event_metadata, cap_event_body,

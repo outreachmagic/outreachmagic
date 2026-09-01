@@ -277,17 +277,6 @@ def test_campaign_audit_and_subjects():
     assert c["bounces"] == 0
     assert beta["campaigns"] == []
 
-    conn = _conn()
-    try:
-        subjects = dq.campaign_subjects(conn, WS["alpha"], c["id"])
-    finally:
-        conn.close()
-    assert len(subjects["subjects"]) == 1
-    subj = subjects["subjects"][0]
-    assert subj["subject"] == "Quick question"  # "Re:" merged in
-    assert subj["sends"] == 2
-    assert subj["replies"] == 1
-
 
 def test_activity_feed_pagination_and_isolation():
     l1 = _add_lead("Mia M", "mia@m-example.com")

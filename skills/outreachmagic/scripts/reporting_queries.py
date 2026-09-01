@@ -1396,48 +1396,6 @@ def campaign_audit(
     }
 
 
-_SUBJECT_PREFIX = re.compile(r"^\s*((re|fwd?|aw)\s*:\s*)+", re.IGNORECASE)
-
-
-def normalize_subject(subject: str) -> str:
-    return _SUBJECT_PREFIX.sub("", subject or "").strip()
-
-
-def campaign_subjects(
-    conn: sqlite3.Connection,
-    workspace_id: str,
-    campaign_id: int,
-    limit: int = 10,
-) -> dict:
-    cte, _ = _ws_events(None)
-    rows = conn.execute(
-        cte + f"""
-        SELECT subject,
-               SUM(event_type = 'email_sent') AS sends,
-               SUM({reply_event_sql_condition()}) AS replies,
-               MAX(CASE WHEN event_type = 'email_sent' THEN id END) AS sample_event_id
-        FROM ws_events
-        WHERE campaign_id = ? AND subject IS NOT NULL AND TRIM(subject) != ''
-        GROUP BY subject""",
-        (workspace_id, campaign_id),
-    ).fetchall()
-    merged: dict[str, dict] = {}
-    for r in rows:
-        key = normalize_subject(r["subject"])
-        if not key:
-            continue
-        agg = merged.setdefault(
-            key, {"subject": key, "sends": 0, "replies": 0, "sample_event_id": None})
-        agg["sends"] += r["sends"] or 0
-        agg["replies"] += r["replies"] or 0
-        if r["sample_event_id"] and not agg["sample_event_id"]:
-            agg["sample_event_id"] = r["sample_event_id"]
-    subjects = sorted(merged.values(), key=lambda s: (s["sends"], s["replies"]), reverse=True)
-    for s in subjects:
-        s["reply_rate"] = round(s["replies"] / s["sends"], 4) if s["sends"] else None
-    return {"campaign_id": campaign_id, "subjects": subjects[:limit]}
-
-
 # Attribution priority for "which campaign is this lead from", lowest wins:
 #   0  this lead replied in it        2  a colleague replied in it
 #   1  this lead was sent it          3  a colleague was sent it

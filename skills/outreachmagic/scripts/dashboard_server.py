@@ -729,15 +729,6 @@ def handle_campaign_leads(conn, ws_id, match, query):
 
 
 @_workspace_scoped
-def handle_campaign_subjects(conn, ws_id, match, query):
-    campaign_id = _q(query, "campaign_id")
-    if not campaign_id:
-        raise ValueError("campaign_id query parameter is required")
-    return reporting_queries.campaign_subjects(
-        conn, ws_id, int(campaign_id), limit=_int_q(query, "limit", 10, lo=1, hi=100))
-
-
-@_workspace_scoped
 def handle_campaign_replies(conn, ws_id, match, query):
     # campaign_id is optional here: omitted = all campaigns for the range.
     campaign_id = _q(query, "campaign_id")
@@ -1102,7 +1093,6 @@ ROUTES = [
     ("GET", re.compile(r"^/api/pipeline/leads$"), handle_pipeline_leads),
     ("GET", re.compile(r"^/api/attributes$"), handle_attributes),
     ("GET", re.compile(r"^/api/campaigns$"), handle_campaigns),
-    ("GET", re.compile(r"^/api/campaigns/subjects$"), handle_campaign_subjects),
     ("GET", re.compile(r"^/api/campaigns/replies$"), handle_campaign_replies),
     ("GET", re.compile(r"^/api/campaigns/daily$"), handle_campaign_daily),
     ("GET", re.compile(r"^/api/campaigns/detail$"), handle_campaign_detail),

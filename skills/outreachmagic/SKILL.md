@@ -257,7 +257,7 @@ python3 scripts/pipeline.py pull --kind events       # webhook events only
 | Lead rows / pipeline detail | `show` / `lead-table` (use `--limit`) |
 | All-time totals | `stats` / `campaigns --json` |
 | Tag / LinkedIn connection counts | `workspace summary --workspace <slug> --json` |
-| Message bodies / copy winners | `history`, `copy-insights` |
+| Message bodies | `history` |
 | Fresh webhook events | `pull` or `pull --kind events` |
 | Dashboard / connection health | `status` / `connections` |
 
@@ -285,7 +285,6 @@ pipeline.py campaigns                             # per-campaign counts
 pipeline.py query engagement --workspace W --since 48h --json
 pipeline.py query replies --workspace W --since 7d --json
 pipeline.py workspace summary --workspace W --json
-pipeline.py copy-insights --lead-status interested --json
 pipeline.py phone list --lead-id 42                # numbers on a lead (or --company-id)
 pipeline.py phone add --lead-id 42 --phone "612-555-0143" --label mobile --source apollo
 pipeline.py status                                # dashboard overview

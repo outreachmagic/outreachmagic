@@ -2277,7 +2277,15 @@ _DAILY_COLUMNS_SQL = "\n    " + _daily_columns_sql() + "\n"
 # sales-outcome overlay now, not a reporting axis). These four are what the
 # campaigns matrix, the Replies list, and the summary tile all count, each
 # one-row-per-lead on date(current_sentiment_since).
-SENTIMENT_KEYS = ("positive", "negative", "invalid", "autoreply")
+# `neutral` is here because it is a real verdict a sequencer can send, not a
+# placeholder for "no sentiment yet" -- pipeline_lead_review, the CLI's
+# --sentiment filters, the GHL driver and the Sheets export have all accepted it
+# since 73bc2fc. Leaving it out of the reporting keys meant a lead sitting at
+# neutral was counted nowhere on the Campaigns page while the spreadsheet export
+# showed it: one sentiment, two answers. Rare (single digits on a live database
+# of ~9,700 classified leads) and cheap to carry, and a column that reads zero
+# is information -- a lead vanishing is not.
+SENTIMENT_KEYS = ("positive", "negative", "invalid", "autoreply", "neutral")
 DAILY_EVENT_KEYS = (
     "email_sent", "email_received", "dm_sent", "dm_received",
     "connects_sent", "connects_accepted", "meetings",

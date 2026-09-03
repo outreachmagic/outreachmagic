@@ -4973,13 +4973,14 @@ function renderLastKnownCampaign(r) {
 const DAILY_COLUMN_ORDER = [
   "email_sent", "email_received", "dm_sent", "dm_received",
   "connects_sent", "connects_accepted",
-  "positive", "negative", "invalid", "autoreply", "meetings",
+  "positive", "negative", "invalid", "autoreply", "neutral", "meetings",
 ];
 const DAILY_LABELS = {
   email_sent: "Email sent", email_received: "Email received",
   dm_sent: "DM sent", dm_received: "DM received",
   connects_sent: "Connects sent", connects_accepted: "Connects accepted",
   positive: "Positive", negative: "Negative", invalid: "Invalid", autoreply: "Autoreply",
+  neutral: "Neutral",
   meetings: "Meetings",
 };
 
@@ -5016,6 +5017,7 @@ const OUTCOME_SERIES = [
   { key: "negative", label: "Negative", css: "--status-critical" },
   { key: "invalid", label: "Invalid", css: "--warn-text" },
   { key: "autoreply", label: "Autoreply", css: "--series-4" },
+  { key: "neutral", label: "Neutral", css: "--series-6" },
   { key: "meetings", label: "Meetings", css: "--series-5" },
 ];
 

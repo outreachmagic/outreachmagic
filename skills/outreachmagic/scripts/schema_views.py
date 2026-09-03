@@ -16,6 +16,19 @@ not flatten, and that is the shape that took one campaign query from 1.4s to
 
 from campaign_stats import reply_kind_case_sql
 from platform_registry import reply_event_sql_condition, reply_event_types_sql_list
+from reporting_queries import BOUNCE_EVENT_TYPES_SQL
+
+def _qualify(condition: str, alias: str = "e") -> str:
+    """Point the reply condition's bare column names at one table.
+
+    `reply_event_sql_condition()` is written unqualified so it can drop into a
+    single-table query. Inside a view that joins events to
+    workspace_lead_events, both tables carry `event_type`, so the bare form is
+    ambiguous and SQLite refuses the view outright.
+    """
+    return (condition.replace("event_type", f"{alias}.event_type")
+                     .replace("direction", f"{alias}.direction"))
+
 
 # Legacy view: every inbound event, campaign-joined.
 V_INBOUND_EVENTS_BY_CAMPAIGN = """
@@ -64,8 +77,7 @@ FROM workspace_lead_events wle
 JOIN events e ON e.id = wle.event_id
 LEFT JOIN campaigns c ON c.id = e.campaign_id
 WHERE wle.event_type IN ({reply_event_types_sql_list()})
-  AND ({reply_event_sql_condition()
-        .replace("event_type", "e.event_type").replace("direction", "e.direction")});
+  AND ({_qualify(reply_event_sql_condition())});
 """
 
 # One row per lead carrying a sentiment, with both anchors named. Which column
@@ -87,10 +99,42 @@ FROM workspace_leads wl
 WHERE wl.current_status_sentiment IS NOT NULL;
 """
 
+# Per-campaign lead activity, flat. This is the answer to "how many sends did
+# THIS campaign make to THIS lead" -- the question workspace_leads.email_sent_count
+# looks like it answers and does not: that column is a lifetime, workspace-wide
+# counter, and reading it per-campaign once reported 15,565 sends for a campaign
+# that had sent 106.
+#
+#   SELECT lead_id, SUM(is_send) AS sends, SUM(is_reply) AS replies
+#     FROM v_campaign_lead_events
+#    WHERE campaign_id = ? AND event_at >= ?
+#    GROUP BY lead_id;
+#
+# Flat and unaggregated on purpose (see the module docstring): the caller's
+# campaign_id and date predicates flatten into the view, which is the
+# difference between a fast query and a full scan of every event ever ingested.
+V_CAMPAIGN_LEAD_EVENTS = f"""
+CREATE VIEW v_campaign_lead_events AS
+SELECT
+    wle.workspace_id,
+    wle.lead_id,
+    wle.event_at,
+    e.campaign_id,
+    e.id AS event_id,
+    e.event_type,
+    (e.event_type = 'email_sent') AS is_send,
+    ({_qualify(reply_event_sql_condition())}) AS is_reply,
+    (e.event_type IN {BOUNCE_EVENT_TYPES_SQL}) AS is_bounce
+FROM workspace_lead_events wle
+JOIN events e ON e.id = wle.event_id
+WHERE e.campaign_id IS NOT NULL;
+"""
+
 _VIEWS = {
     "v_inbound_events_by_campaign": V_INBOUND_EVENTS_BY_CAMPAIGN,
     "v_reply_events": V_REPLY_EVENTS,
     "v_lead_sentiment": V_LEAD_SENTIMENT,
+    "v_campaign_lead_events": V_CAMPAIGN_LEAD_EVENTS,
 }
 
 

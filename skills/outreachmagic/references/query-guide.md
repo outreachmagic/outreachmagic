@@ -2,6 +2,11 @@
 
 Read-only analytics against your local SQLite database. Prefer **`pipeline.py query`** presets; use `query --sql` only when presets do not fit. **Writes** stay on mutation commands (`add-lead`, `import-profiles`, `sync`, etc.).
 
+Ad-hoc SQL is capped at **10 seconds** and 500 rows, and warns about query
+shapes known to give wrong answers on this schema. Read
+[sql-pitfalls.md](sql-pitfalls.md) before writing a join across three or more
+tables — it is short, and every rule in it is a bug that has already happened.
+
 ## Discover the schema first (do not guess)
 
 ```bash
@@ -73,7 +78,9 @@ Canonical DDL: [`scripts/schema.py`](../scripts/schema.py) (`SCHEMA_SQL`). Views
 | Replies, engagement, campaign breakdowns, timelines | **`events`** + `campaigns` |
 | Lead list with stage / sentiment filters | `pipeline.py show` or `lead-table` |
 | Tag counts, LinkedIn connected-by-sender | `pipeline.py workspace summary --json` (add `--tags-only` on large workspaces) |
-| Full message bodies / copy winners | `pipeline.py history`, `copy-insights` |
+| Full message bodies | `pipeline.py history` |
+| Which sending domains drove a window | `pipeline.py deliverability --workspace acme --since 14d` |
+| Best-performing lead attributes | `pipeline.py attribute-audit --workspace acme --since 14d --field title` |
 | Workspace ingest audit (rare) | `workspace_lead_events` — **not** for volume analytics |
 
 `workspace_lead_events` is a workspace-scoped ingest subset. Relay volume and agent timelines live in **`events`**.

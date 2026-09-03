@@ -11,7 +11,8 @@ import json
 import re
 import sqlite3
 import time
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from db_conn import get_conn
@@ -48,7 +49,22 @@ WITH ranked_status AS (
 """
 
 DEFAULT_ROW_LIMIT = 500
-DEFAULT_TIMEOUT_SEC = 30
+
+#: Wall-clock ceiling on one ad-hoc query. SQLite has no native statement
+#: timeout, so a join with no row-reducing predicate on `events` runs until the
+#: user kills the process -- which is exactly what happened on a 4-way join over
+#: a 5 GB database. Ten seconds is far past any query worth waiting for
+#: interactively; `--timeout 0` opts out for a deliberate long scan.
+DEFAULT_TIMEOUT_SEC = 10
+
+#: Lock-wait budget. Unrelated to the statement timeout above: this is how long
+#: we wait to START, that is how long we allow to FINISH.
+BUSY_TIMEOUT_SEC = 30
+
+
+class QueryTimeout(RuntimeError):
+    """An ad-hoc query ran past its wall-clock budget and was cancelled."""
+
 
 _FORBIDDEN_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|ATTACH|DETACH|PRAGMA\s+\w+\s*=)\b",
@@ -74,6 +90,51 @@ def normalize_since(since: Optional[str]) -> Optional[str]:
     if m:
         return f"datetime('now', '-{int(m.group(1)) * 7} days')"
     return raw
+
+
+def resolve_window(since: Optional[str], until: Optional[str] = None) -> dict:
+    """The UTC bounds a since/until pair actually resolves to, right now.
+
+    Echoed in reporting payloads so a consumer never has to re-derive "what does
+    14d mean" -- and so two answers taken minutes apart can be told apart. UTC
+    because that is what SQLite's datetime('now') compares against; `until` is
+    inclusive of its whole day, matching _range_clause.
+    """
+    now = datetime.now(timezone.utc)
+    start: Optional[datetime] = None
+    raw = (since or "").strip().lower()
+    if raw and raw != "all":
+        if raw == "today":
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif m := re.match(r"^(\d+)\s*h(?:ours?)?$", raw):
+            start = now - timedelta(hours=int(m.group(1)))
+        elif m := re.match(r"^(\d+)\s*d(?:ays?)?$", raw):
+            start = now - timedelta(days=int(m.group(1)))
+        elif m := re.match(r"^(\d+)\s*w(?:eeks?)?$", raw):
+            start = now - timedelta(weeks=int(m.group(1)))
+        else:
+            try:
+                start = datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
+            except ValueError:
+                start = None
+    end = now
+    if until and until.strip():
+        try:
+            end = (datetime.fromisoformat(until.strip()).replace(tzinfo=timezone.utc)
+                   + timedelta(days=1))
+        except ValueError:
+            pass
+
+    def _iso(dt: Optional[datetime]) -> Optional[str]:
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
+
+    return {
+        "since": since,
+        "until": until,
+        "since_resolved_utc": _iso(start),
+        "until_resolved_utc": _iso(end),
+        "window_days": round((end - start).total_seconds() / 86400, 4) if start else None,
+    }
 
 
 def workspace_campaign_prefix(workspace: Optional[str], campaign_prefix: Optional[str]) -> str:
@@ -464,6 +525,128 @@ def with_workspace_ctes(sql: str, workspace_id: str) -> str:
     return f"WITH {ctes}\n{text}"
 
 
+#: sqlite3 calls the progress handler every N virtual-machine instructions.
+#: 5,000 is frequent enough that a runaway scan is cut within milliseconds of
+#: its deadline and rare enough that the callback costs nothing measurable.
+_PROGRESS_INSTRUCTIONS = 5_000
+
+
+@contextmanager
+def _statement_timeout(conn: sqlite3.Connection, timeout_sec: float, start: float):
+    """Abort the statement running on `conn` once `timeout_sec` has elapsed.
+
+    SQLite has no statement timeout, but it does call a progress handler mid-
+    execution, and a non-zero return from that handler cancels the statement --
+    the standard-library way to bound a query. It needs no signals, so it works
+    off the main thread and inside the dashboard server, and it leaves the
+    connection usable afterwards. `timeout_sec = 0` disables the ceiling for a
+    deliberate long scan.
+    """
+    if not timeout_sec or timeout_sec <= 0:
+        yield
+        return
+    deadline = start + float(timeout_sec)
+    conn.set_progress_handler(lambda: 1 if time.perf_counter() > deadline else 0,
+                              _PROGRESS_INSTRUCTIONS)
+    try:
+        yield
+    except sqlite3.OperationalError as exc:
+        # "interrupted" is what the cancelled statement surfaces as; anything
+        # else is a real SQL error and must not be relabelled as a timeout.
+        if "interrupt" not in str(exc).lower():
+            raise
+        raise QueryTimeout(
+            f"Query exceeded the {timeout_sec:g}s timeout and was cancelled. "
+            "Add a WHERE filter on the largest table, pre-filter `events` in a "
+            "CTE, or use a canonical command (campaign-audit / attribute-audit / "
+            "deliverability). Raise the ceiling with --timeout N, or --timeout 0 "
+            "for no ceiling. See references/sql-pitfalls.md."
+        ) from exc
+    finally:
+        conn.set_progress_handler(None, 0)
+
+
+#: Tables big enough that scanning one unfiltered is the difference between a
+#: query that answers and a query that hangs.
+_LARGE_TABLES = ("events", "relay_ingested", "workspace_lead_events")
+
+_TIME_PREDICATE = re.compile(
+    r"\b(created_at|event_at|sent_at|occurred_at|campaign_id|lead_id)\b", re.IGNORECASE)
+
+
+def lint_sql(sql: str) -> list[str]:
+    """Advisory warnings about a query's shape. Never blocks.
+
+    Every rule here corresponds to a way this schema has actually produced a
+    wrong or non-terminating answer. They are warnings and not errors on
+    purpose: a deliberate full scan is legitimate, and a tool that refuses
+    legitimate queries gets routed around rather than fixed.
+    """
+    text = " ".join((sql or "").split())
+    low = text.lower()
+    out: list[str] = []
+
+    if re.search(r"\bcross\s+join\b", low):
+        out.append(
+            "CROSS JOIN: every row of each side is paired with every row of the "
+            "other. If you meant a relationship, name it in an ON clause.")
+
+    joins = len(re.findall(r"\bjoin\b", low))
+    if joins >= 3 and not re.search(r"\bwhere\b", low):
+        out.append(
+            f"{joins} joins and no WHERE: nothing reduces the row count before "
+            "the join. Pre-filter the largest table in a CTE first.")
+
+    for table in _LARGE_TABLES:
+        if not re.search(rf"\b(from|join)\s+{table}\b", low):
+            continue
+        # The workspace CTEs (ws_events) are pre-scoped, so a query using those
+        # is not the pattern being warned about.
+        if not _TIME_PREDICATE.search(text):
+            out.append(
+                f"`{table}` is joined with no date, campaign or lead predicate. "
+                "On a large workspace that is a full scan; filter it in a CTE "
+                "before joining.")
+
+    if re.search(r"\b(campaigns|workspace_leads)\b", low) and "workspace_id" not in low:
+        out.append(
+            "`campaigns` / `workspace_leads` without a workspace_id filter counts "
+            "every workspace at once. Pass --workspace to get the ws_* CTEs.")
+
+    # The trap that turned 106 sends into 15,565: a lifetime, workspace-wide
+    # counter read as if it were per-campaign.
+    if "email_sent_count" in low and "campaign" in low:
+        out.append(
+            "workspace_leads.email_sent_count is a LIFETIME, WORKSPACE-WIDE "
+            "counter -- it is not sends in this campaign. For per-campaign "
+            "sends use `campaign-audit` or the v_campaign_lead_events view.")
+
+    return out
+
+
+def explain_plan(sql: str, params: Optional[list[Any]] = None,
+                 workspace: Optional[str] = None) -> dict[str, Any]:
+    """`EXPLAIN QUERY PLAN` for a query, plus lint warnings. Does not run it."""
+    query = validate_readonly_sql(sql)
+    workspace_id = None
+    if workspace:
+        workspace_id = resolve_workspace_id(workspace)
+        query = with_workspace_ctes(query, workspace_id)
+    conn = get_conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA query_only = ON")
+        rows = conn.execute(f"EXPLAIN QUERY PLAN {query}", params or []).fetchall()
+    finally:
+        conn.close()
+    return {
+        "plan": [r["detail"] for r in rows],
+        "warnings": lint_sql(query),
+        "sql": query.strip(),
+        "workspace_id": workspace_id,
+    }
+
+
 def run_readonly_sql(
     sql: str,
     *,
@@ -489,13 +672,14 @@ def run_readonly_sql(
     conn = get_conn()
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute(f"PRAGMA query_only = ON")
-        conn.execute(f"PRAGMA busy_timeout = {int(timeout_sec * 1000)}")
+        conn.execute("PRAGMA query_only = ON")
+        conn.execute(f"PRAGMA busy_timeout = {int(BUSY_TIMEOUT_SEC * 1000)}")
         start = time.perf_counter()
-        cur = conn.execute(bounded, params or [])
-        rows = [dict(r) for r in cur.fetchall()]
+        with _statement_timeout(conn, timeout_sec, start):
+            cur = conn.execute(bounded, params or [])
+            rows = [dict(r) for r in cur.fetchall()]
+            columns = [d[0] for d in (cur.description or [])]
         elapsed_ms = int((time.perf_counter() - start) * 1000)
-        columns = [d[0] for d in (cur.description or [])]
         return {
             "columns": columns,
             "rows": rows,
@@ -504,6 +688,8 @@ def run_readonly_sql(
             "sql": query.strip(),
             "truncated": bool(limit) and len(rows) >= limit,
             "limit": limit,
+            "timeout_sec": timeout_sec,
+            "warnings": lint_sql(query),
             "workspace_id": workspace_id,
         }
     finally:
@@ -577,6 +763,47 @@ TABLE_PURPOSE: dict[str, str] = {
     "public_emails": "Published email addresses found on a company's site.",
     "campaign_workspace_rules": "Name/pattern rules routing campaigns to workspaces.",
 }
+
+
+#: Columns whose NAME does not tell you what they mean, keyed (table, column).
+#: Rendered into references/schema.md and printed by `pipeline.py schema
+#: <table>`, so the warning reaches whoever is about to use the column rather
+#: than living in a docstring nobody opens.
+#:
+#: Every entry here is a wrong answer that has already been shipped. Reading
+#: email_sent_count as "sends in this campaign" once reported 15,565 sends for
+#: a campaign that had sent 106.
+COLUMN_NOTE: dict[tuple[str, str], str] = {
+    ("workspace_leads", "email_sent_count"):
+        "LIFETIME and WORKSPACE-WIDE — not sends in one campaign. "
+        "For per-campaign sends use `campaign-audit` or the v_campaign_lead_events view.",
+    ("workspace_leads", "linkedin_sent_count"):
+        "LIFETIME and WORKSPACE-WIDE, like email_sent_count.",
+    ("workspace_leads", "total_replies_count"):
+        "LIFETIME and WORKSPACE-WIDE — not replies in one campaign or window.",
+    ("workspace_leads", "current_sentiment_since"):
+        "When the status LAST CHANGED. Not first contact, not first positive. "
+        "Windowing on this to find recent positives silently drops every lead "
+        "whose status has not moved since; use first_positive_at.",
+    ("workspace_leads", "current_status_sentiment"):
+        "The lead's sentiment RIGHT NOW. A lead that went positive and later "
+        "cold is not counted here; `campaign-audit --positive-anchor first` "
+        "answers the historical question.",
+    ("workspace_leads", "first_positive_at"):
+        "First time this lead ever turned positive — the anchor behind "
+        "`--positive-anchor first`, and the column to window on.",
+    ("workspace_leads", "last_activity_at"):
+        "Any event in any campaign, inbound or outbound.",
+    ("events", "campaign_id"):
+        "The campaign the PLATFORM stamped on the event. A booking webhook "
+        "stamps the calendar slot, so meetings counted off this column credit "
+        "the calendar rather than the sequence that earned them.",
+}
+
+
+def column_note(table: str, column: str) -> Optional[str]:
+    return COLUMN_NOTE.get((table, column))
+
 
 #: How each entity is scoped to a workspace. The single most common wrong first
 #: guess is `leads.workspace_id`, which does not exist.
@@ -671,7 +898,8 @@ def table_schema(table: str) -> dict[str, Any]:
         "purpose": TABLE_PURPOSE.get(table, "TODO — undocumented table"),
         "workspace_scoping": WORKSPACE_SCOPING.get(table),
         "columns": [
-            {"name": c[1], "type": c[2], "notnull": bool(c[3]), "default": c[4], "pk": bool(c[5])}
+            {"name": c[1], "type": c[2], "notnull": bool(c[3]), "default": c[4],
+             "pk": bool(c[5]), "note": COLUMN_NOTE.get((table, c[1]))}
             for c in cols
         ],
         "foreign_keys": fks,

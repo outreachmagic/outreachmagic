@@ -156,6 +156,8 @@ them).
 pipeline.py campaign-audit --workspace acme --since 30d --json
 pipeline.py campaign-audit --workspace acme --since 30d --kind human --json
 pipeline.py campaign-audit --workspace acme --exclude-tag existing_customer --sort positive
+pipeline.py campaign-audit --workspace acme --since 14d --by-day --json
+pipeline.py campaign-audit --workspace acme --since 14d --compare-previous-window
 ```
 
 One row per campaign — sends, replies, the four sentiments, meetings, bounces
@@ -167,6 +169,48 @@ dashboard's Campaigns table calls, so the numbers cannot differ.
 | `--kind` | replies + sentiment columns only; `sent` is always counted in full |
 | `--tag` / `--tags-all` / `--exclude-tag` | every column, including sends |
 | `--positive-anchor first` (default) | dated from when a lead FIRST turned positive, so history stops moving |
+| `--by-day` | adds `daily[]` (`date`, `sent`, `replies`, `bounces`, `meetings`) to every row — reach for this instead of writing the breakdown as SQL |
+| `--compare-previous-window` | adds `previous` per campaign and `previous_totals`: the same-length window immediately before this one |
+
+Every response echoes `since_resolved_utc` / `until_resolved_utc` / `window_days`,
+so "what does 14d mean" never has to be re-derived. `daily[].meetings` is counted
+once per lead per day and the row total once per lead per range, so a lead who
+books on two days adds two to one and one to the other; every other column sums
+exactly.
+
+## Tag vocabulary, scoped
+
+```bash
+pipeline.py tag list --workspace acme                        # every tag there is
+pipeline.py tag list --workspace acme --since 14d            # only tags on leads reached in the window
+pipeline.py tag list --workspace acme --campaign-id 42
+```
+
+The unscoped list is the right vocabulary for filtering contacts. For filtering
+a campaigns table it is the wrong one: most of those tags sit on leads no
+campaign in the window reached, so picking one returns nothing.
+
+## Best-performing lead attributes
+
+```bash
+pipeline.py attribute-audit --workspace acme --since 14d --field title --json
+pipeline.py attribute-audit --workspace acme --field industry --min-sample 30
+pipeline.py attribute-audit --workspace acme --since 30d --kind human --exclude-tag existing_customer
+```
+
+The Campaigns table's sibling: the same window, the same tag and kind filters,
+the same definition of a send and a reply — grouped by an attribute of the LEAD
+(`industry`, `title`, `headcount`, `location_country`, `source`) instead of by
+campaign.
+
+With `--since`, every column is recomputed from events in the window: contacted
+means reached in it, replied means replied in it, positive means the lead FIRST
+turned positive in it. Without `--since`, the columns are lifetime counters and
+the answer is an all-time one — `window` in the payload says which you got.
+
+This is an **activity** window, not a cohort one: a lead contacted on day 13 who
+replies on day 16 is in the denominator and not the numerator. Deliberate — it
+is what the Campaigns table means by a date range too.
 
 ## Replies, split by kind
 

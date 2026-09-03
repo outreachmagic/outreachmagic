@@ -18,11 +18,12 @@ import re
 import sqlite3
 import time
 from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Optional
 
 from constants import COMPANY_DOMAIN_SQL, PIPELINE_STAGES, SCHEDULING_PLATFORMS_SQL_LIST
 from platform_registry import reply_event_sql_condition, reply_event_types_sql_list
-from read_queries import _since_clause
+from read_queries import _since_clause, resolve_window
 from workspace_routing import DEFAULT_ORG_ID, get_org_routing_config
 
 BOUNCE_EVENT_TYPES_SQL = "('email_bounce', 'email_bounced')"
@@ -95,14 +96,30 @@ ATTRIBUTE_ORDER_OVERRIDES = {"headcount": headcount_band_order_sql()}
 MAILBOX_BOUNCE_RATE_THRESHOLD = 0.05
 
 
+#: A bare calendar date, as opposed to a timestamp.
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def _range_clause(
     since: Optional[str], until: Optional[str], column: str,
 ) -> tuple[str, list]:
-    """Parameterized date-range filter. `until` is inclusive of its whole day."""
+    """Parameterized date-range filter.
+
+    A bare `until` date is inclusive of its whole day -- "--until 2026-08-14"
+    means through the end of the 14th, which is what anyone typing a date
+    means. A full timestamp is an exact upper bound instead: back-to-back
+    windows are computed from timestamps (campaign_audit_compared), and rounding
+    those up to the end of the day would make each window overlap the next by
+    24 hours and count the same sends twice.
+    """
     clause, params = _since_clause(since, column=column)
-    if until and until.strip():
-        clause += f" AND {column} < datetime(?, '+1 day')"
-        params.append(until.strip())
+    bound = (until or "").strip()
+    if bound:
+        if _DATE_ONLY.match(bound):
+            clause += f" AND {column} < datetime(?, '+1 day')"
+        else:
+            clause += f" AND {column} < datetime(?)"
+        params.append(bound)
     return clause, params
 
 
@@ -640,26 +657,128 @@ def pipeline_leads(
     }
 
 
+def _attribute_window_ctes(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str], until: Optional[str],
+    scope: Optional["_LeadScope"], kind: Optional["_LeadScope"],
+    positive_anchor: Optional[str],
+) -> tuple[str, list]:
+    """CTEs giving each lead its in-window facts: active, contacted, replied,
+    turned positive.
+
+    Every definition is lifted from campaign_audit rather than restated: a send
+    is the send the Campaigns table counts, a reply is the reply it counts, and
+    a positive is dated from `first_positive_at` under the default anchor. Two
+    panes on one page that disagree about "the last 14 days" are worse than
+    either definition on its own.
+    """
+    cte, params = _ws_events(since, until, scope)
+    sent_expr = " + ".join(
+        _DAILY_COLUMN_EXPRESSIONS[k] for k in ("email_sent", "dm_sent", "connects_sent"))
+    # `first` by default here, not `current`: a performance table whose history
+    # moves when a lead later goes cold is not a performance table. Same default
+    # the Campaigns page uses.
+    anchor_column, anchor_predicate = positive_anchor_sql(positive_anchor or "first")
+    positive_range, positive_params = _range_clause(since, until, anchor_column)
+    return (
+        cte + f""",
+        -- was_contacted / did_reply, NOT contacted / replied. A CTE column
+        -- sharing a name with an output alias is a trap in SQLite: HAVING
+        -- resolves against SOURCE columns before output aliases, so
+        -- `HAVING contacted >= ?` silently tested this per-lead 0/1 flag
+        -- instead of the group's SUM -- passing at 1 and matching nothing at 2.
+        lead_activity AS (
+            SELECT lead_id,
+                   ({sent_expr}) > 0 AS was_contacted,
+                   SUM(({reply_event_sql_condition()}){
+                       _scope_clause(kind, "lead_id")}) > 0 AS did_reply
+              FROM ws_events GROUP BY lead_id
+        ),
+        lead_positive AS (
+            SELECT wl.lead_id AS lead_id
+              FROM workspace_leads wl
+             WHERE wl.workspace_id = ? AND {anchor_predicate}{positive_range}
+        )""",
+        [workspace_id, *params, workspace_id, *positive_params],
+    )
+
+
 def attribute_performance(
     conn: sqlite3.Connection,
     workspace_id: str,
     field: str = "industry",
     min_sample: int = 20,
     campaign_id: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    reply_kind: Optional[str] = None,
+    positive_anchor: Optional[str] = None,
+    tags_any: Optional[list] = None,
+    tags_all: Optional[list] = None,
+    tags_none: Optional[list] = None,
 ) -> dict:
+    """Which lead attributes actually produce replies -- campaign_audit's
+    population, grouped by an attribute instead of by campaign.
+
+    With no `since`, the columns are lifetime counters and the answer is an
+    all-time one. With a window, every column is recomputed from events inside
+    it: contacted means reached in the window, replied means replied in the
+    window, positive means the lead FIRST turned positive in the window. This
+    is an ACTIVITY window, not a cohort one -- a lead contacted on day 13 who
+    replies on day 16 is in the denominator and not the numerator -- which is
+    the same thing the Campaigns table means by a date range, deliberately.
+
+    One difference from campaign_audit, and it is unavoidable: positives are
+    counted per LEAD here, not per conversation. Two people in one forwarded
+    thread have two titles, so collapsing them to a conversation root would
+    credit an attribute one of them does not have.
+    """
     expr = ATTRIBUTE_FIELDS.get(field)
     if expr is None:
         raise ValueError(
             f"Unknown attribute field: {field}. Valid: {', '.join(sorted(ATTRIBUTE_FIELDS))}"
         )
+    windowed = bool((since or "").strip() or (until or "").strip())
+    scope = tag_scope(conn, workspace_id, tags_any=tags_any, tags_all=tags_all,
+                      tags_none=tags_none)
+    kind = kind_scope(conn, workspace_id, reply_kind, since, until) if windowed else None
+
     campaign_filter = ""
-    params: list = [workspace_id]
+    lead_filter = _scope_clause(scope, "wl.lead_id")
+    prefix, params = "", []
+    if windowed:
+        prefix, params = _attribute_window_ctes(
+            conn, workspace_id, since, until, scope, kind, positive_anchor)
+    params.append(workspace_id)
     if campaign_id is not None:
         campaign_filter = (
             " AND wl.lead_id IN (SELECT lead_id FROM campaign_leads WHERE campaign_id = ?)"
         )
         params.append(int(campaign_id))
     params.append(max(min_sample, 1))
+
+    if windowed:
+        # `leads` is leads with ANY activity in the window, not everyone who
+        # carries the attribute: a lifetime population beside three windowed
+        # columns is the mislabel this whole change exists to remove.
+        source = """FROM workspace_leads wl
+            JOIN leads l ON l.id = wl.lead_id
+            JOIN lead_activity a ON a.lead_id = wl.lead_id
+            LEFT JOIN lead_positive p ON p.lead_id = wl.lead_id"""
+        counts = """COUNT(*) AS leads,
+               SUM(a.was_contacted) AS contacted,
+               SUM(a.did_reply) AS replied,
+               SUM(p.lead_id IS NOT NULL) AS positive"""
+        having = "SUM(a.was_contacted)"
+    else:
+        source = """FROM workspace_leads wl
+            JOIN leads l ON l.id = wl.lead_id"""
+        counts = """COUNT(*) AS leads,
+               SUM(wl.email_sent_count > 0 OR wl.linkedin_sent_count > 0) AS contacted,
+               SUM(wl.total_replies_count > 0) AS replied,
+               SUM(lower(COALESCE(wl.current_status_sentiment, '')) = 'positive') AS positive"""
+        having = "contacted"
+
     # Group case-insensitively ("Career Services Coordinator" == "career
     # services coordinator"); display the first variant in case-sensitive
     # order so the shown label is deterministic.
@@ -671,17 +790,14 @@ def attribute_performance(
     order_sql = (f"{ATTRIBUTE_ORDER_OVERRIDES[field]} ASC" if banded
                  else "CAST(replied AS REAL) / contacted DESC, contacted DESC")
     rows = conn.execute(
-        f"""SELECT {value_sql} AS value,
-               COUNT(*) AS leads,
-               SUM(wl.email_sent_count > 0 OR wl.linkedin_sent_count > 0) AS contacted,
-               SUM(wl.total_replies_count > 0) AS replied,
-               SUM(lower(COALESCE(wl.current_status_sentiment, '')) = 'positive') AS positive
-            FROM workspace_leads wl
-            JOIN leads l ON l.id = wl.lead_id
+        f"""{prefix}
+            SELECT {value_sql} AS value,
+               {counts}
+            {source}
             WHERE wl.workspace_id = ?
-              AND {expr} IS NOT NULL AND TRIM({expr}) != ''{campaign_filter}
+              AND {expr} IS NOT NULL AND TRIM({expr}) != ''{campaign_filter}{lead_filter}
             GROUP BY {group_sql}
-            HAVING contacted >= ?
+            HAVING {having} >= ?
             ORDER BY {order_sql}""",
         params,
     ).fetchall()
@@ -699,7 +815,22 @@ def attribute_performance(
             "reply_rate": round(replied / contacted, 4) if contacted else None,
             "positive_rate": round(positive / contacted, 4) if contacted else None,
         })
-    return {"field": field, "min_sample": min_sample, "campaign_id": campaign_id, "rows": out}
+    return {
+        "field": field,
+        "fields": sorted(ATTRIBUTE_FIELDS),
+        "min_sample": min_sample,
+        "campaign_id": campaign_id,
+        # "activity" says what a date range means here, so nobody has to infer
+        # it from the numbers; "lifetime" says there is no range at all.
+        "window": "activity" if windowed else "lifetime",
+        **resolve_window(since, until),
+        "positive_anchor": (positive_anchor or "first") if windowed else None,
+        "reply_kind": reply_kind or "all",
+        "tags_any": _tag_list(tags_any) or None,
+        "tags_all": _tag_list(tags_all) or None,
+        "tags_none": _tag_list(tags_none) or None,
+        "rows": out,
+    }
 
 
 # A campaign whose every event came from a booking tool is a calendar, not
@@ -721,6 +852,51 @@ _SCHEDULING_CAMPAIGN_IDS_SQL = f"""
     HAVING SUM(CASE WHEN LOWER(COALESCE(json_extract(e.metadata_json, '$.platform'), ''))
                          IN ({SCHEDULING_PLATFORMS_SQL_LIST}) THEN 0 ELSE 1 END) = 0
 """
+
+
+def tags_in_scope(
+    conn: sqlite3.Connection,
+    workspace_id: str,
+    campaign_id: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    include_scheduling: bool = False,
+) -> dict:
+    """Tags actually carried by leads the campaigns in view reached.
+
+    The workspace-wide tag list is the right suggestion set for the Contacts
+    page, which filters every lead there is. It is the wrong one for the
+    Campaigns table: most of those tags are on leads no campaign in this window
+    touched, so picking one empties the table and looks like a broken filter.
+
+    With no campaign and no range this is the workspace list, so the caller can
+    pass the scope through unconditionally.
+    """
+    range_sql, params = _range_clause(since, until, "wle.event_at")
+    campaign_sql = ""
+    if campaign_id is not None:
+        campaign_sql = " AND e.campaign_id = ?"
+        params.append(int(campaign_id))
+    elif not include_scheduling:
+        campaign_sql = (" AND (e.campaign_id IS NULL OR e.campaign_id NOT IN"
+                        f" ({_SCHEDULING_CAMPAIGN_IDS_SQL}))")
+    rows = conn.execute(
+        f"""SELECT t.tag AS tag, COUNT(DISTINCT t.lead_id) AS lead_count
+              FROM workspace_lead_tags t
+             WHERE t.workspace_id = ?
+               AND t.lead_id IN (
+                   SELECT wle.lead_id FROM workspace_lead_events wle
+                     JOIN events e ON e.id = wle.event_id
+                    WHERE wle.workspace_id = ?{range_sql}{campaign_sql})
+          GROUP BY t.tag ORDER BY lead_count DESC, t.tag""",
+        (workspace_id, workspace_id, *params),
+    ).fetchall()
+    return {
+        "campaign_id": campaign_id,
+        "scope": "campaigns" if (campaign_id is not None or params) else "workspace",
+        **resolve_window(since, until),
+        "tags": [dict(r) for r in rows],
+    }
 
 
 def scheduling_campaign_ids(conn: sqlite3.Connection) -> set:
@@ -1236,6 +1412,97 @@ def _campaign_totals(rows: list) -> dict:
     return totals
 
 
+#: The per-day columns on a `--by-day` campaign row. Deliberately the four the
+#: Campaigns table itself leads with, not all of DAILY_COLUMN_KEYS: the array is
+#: repeated once per campaign, and a fourteen-column matrix per day per campaign
+#: is a payload nobody reads. Sentiment is absent on purpose -- it is anchored on
+#: first_positive_at / current_sentiment_since, not on the event stream, so a
+#: per-day sentiment column beside per-day events would invite summing two
+#: different things together.
+BY_DAY_KEYS = ("sent", "replies", "bounces", "meetings")
+
+
+def _meeting_days(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str], until: Optional[str],
+    scope: Optional["_LeadScope"] = None,
+) -> list[tuple[Optional[int], str]]:
+    """(campaign_id, day) for every meeting in range, one per lead per day.
+
+    The campaign is resolved through last-known-campaign, not read off
+    events.campaign_id -- a booking webhook carries the calendar slot, so the
+    raw column credits "30 Minute Meeting" for what a sequence earned. See
+    _meetings_by_campaign. A meeting that resolves to nothing keeps a None
+    campaign rather than being dropped: it still happened.
+    """
+    range_sql, range_params = _range_clause(since, until, "wle.event_at")
+    rows = conn.execute(
+        f"""SELECT DISTINCT wle.lead_id AS lead_id, l.company_id AS company_id,
+                   date(wle.event_at) AS day
+              FROM workspace_lead_events wle
+              JOIN events e ON e.id = wle.event_id
+              JOIN leads l ON l.id = wle.lead_id
+             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}"""
+        + _scope_clause(scope, "wle.lead_id"),
+        (workspace_id, *range_params),
+    ).fetchall()
+    if not rows:
+        return []
+    resolved = resolve_last_known_campaigns(
+        conn, workspace_id, [{"lead_id": r["lead_id"], "company_id": r["company_id"]}
+                             for r in rows])
+    return [(resolved.get(int(r["lead_id"]), _EMPTY_CAMPAIGN)["campaign_id"], r["day"])
+            for r in rows if r["day"]]
+
+
+def _by_day_by_campaign(
+    conn: sqlite3.Connection, workspace_id: str,
+    since: Optional[str], until: Optional[str],
+    scope: Optional["_LeadScope"], kind: Optional["_LeadScope"],
+) -> dict:
+    """{campaign_id: [{date, sent, replies, bounces, meetings}, ...]}.
+
+    Exactly campaign_audit's own metric query with `date(event_at)` added to the
+    grouping, and its meetings resolved the same way -- so a campaign's daily
+    rows and its totals cannot come from two different definitions of a send.
+
+    One caveat, stated because the numbers show it: `meetings` is counted once
+    per lead per DAY here and once per lead per RANGE in the totals (a lead who
+    books twice in an afternoon moved once). A lead who books on two different
+    days therefore adds two to the daily sum and one to the total. Every other
+    column sums exactly.
+    """
+    cte, params = _ws_events(since, until, scope)
+    rows = conn.execute(
+        cte + f"""
+        SELECT campaign_id, date(event_at) AS day,
+               {_DAILY_COLUMN_EXPRESSIONS["email_sent"]} AS sent,
+               SUM(({reply_event_sql_condition()}){
+                   _scope_clause(kind, "lead_id")}) AS replies,
+               SUM(event_type IN {BOUNCE_EVENT_TYPES_SQL}) AS bounces
+        FROM ws_events
+        WHERE campaign_id IS NOT NULL AND event_at IS NOT NULL
+        GROUP BY campaign_id, day""",
+        (workspace_id, *params),
+    ).fetchall()
+
+    days: dict = defaultdict(dict)
+    for r in rows:
+        days[r["campaign_id"]][r["day"]] = {
+            "date": r["day"], "sent": r["sent"] or 0,
+            "replies": r["replies"] or 0, "bounces": r["bounces"] or 0,
+            "meetings": 0,
+        }
+    for campaign_id, day in _meeting_days(conn, workspace_id, since, until, scope):
+        key = UNATTRIBUTED_SCHEDULING_ID if campaign_id is None else campaign_id
+        row = days[key].get(day)
+        if row is None:
+            row = {"date": day, "sent": 0, "replies": 0, "bounces": 0, "meetings": 0}
+            days[key][day] = row
+        row["meetings"] += 1
+    return {cid: [by_day[d] for d in sorted(by_day)] for cid, by_day in days.items()}
+
+
 def campaign_audit(
     conn: sqlite3.Connection,
     workspace_id: str,
@@ -1247,6 +1514,7 @@ def campaign_audit(
     tags_any: Optional[list] = None,
     tags_all: Optional[list] = None,
     tags_none: Optional[list] = None,
+    by_day: bool = False,
 ) -> dict:
     """Per-campaign activity, in the same columns as the daily-activity matrix.
 
@@ -1270,6 +1538,12 @@ def campaign_audit(
 
     `totals` is the all-campaigns row, computed here rather than by each
     consumer -- see _campaign_totals.
+
+    `by_day` attaches a `daily` array to every row: the same window, the same
+    filters, the same send and reply definitions, grouped by day as well as by
+    campaign. It exists so nobody writes that breakdown by hand -- the last
+    attempt was a four-way join that never returned. See _by_day_by_campaign
+    for the one column whose daily sum can exceed its total, and why.
     """
     scope = tag_scope(conn, workspace_id, tags_any=tags_any, tags_all=tags_all,
                       tags_none=tags_none)
@@ -1375,9 +1649,14 @@ def campaign_audit(
                      *(k for k in DAILY_EVENT_KEYS if k != "meetings"))
     out = [c for c in out if any(c.get(k) for k in activity_keys)]
     out.sort(key=lambda c: (c.get("is_unattributed", False), -c["sent"], -c["meetings"]))
+
+    if by_day:
+        daily = _by_day_by_campaign(conn, workspace_id, since, until, scope, kind)
+        for row in out:
+            row["daily"] = daily.get(row["id"], [])
+
     return {
-        "since": since,
-        "until": until,
+        **resolve_window(since, until),
         "campaigns": out,
         # The all-campaigns row. Computed once here so the dashboard footer, the
         # CLI's TOTAL line and an agent reading the JSON cannot each sum it
@@ -1393,49 +1672,42 @@ def campaign_audit(
         "tags_any": _tag_list(tags_any) or None,
         "tags_all": _tag_list(tags_all) or None,
         "tags_none": _tag_list(tags_none) or None,
+        "by_day": by_day,
+        "by_day_columns": list(BY_DAY_KEYS) if by_day else None,
     }
 
 
-_SUBJECT_PREFIX = re.compile(r"^\s*((re|fwd?|aw)\s*:\s*)+", re.IGNORECASE)
-
-
-def normalize_subject(subject: str) -> str:
-    return _SUBJECT_PREFIX.sub("", subject or "").strip()
-
-
-def campaign_subjects(
-    conn: sqlite3.Connection,
-    workspace_id: str,
-    campaign_id: int,
-    limit: int = 10,
+def campaign_audit_compared(
+    conn: sqlite3.Connection, workspace_id: str, **kwargs,
 ) -> dict:
-    cte, _ = _ws_events(None)
-    rows = conn.execute(
-        cte + f"""
-        SELECT subject,
-               SUM(event_type = 'email_sent') AS sends,
-               SUM({reply_event_sql_condition()}) AS replies,
-               MAX(CASE WHEN event_type = 'email_sent' THEN id END) AS sample_event_id
-        FROM ws_events
-        WHERE campaign_id = ? AND subject IS NOT NULL AND TRIM(subject) != ''
-        GROUP BY subject""",
-        (workspace_id, campaign_id),
-    ).fetchall()
-    merged: dict[str, dict] = {}
-    for r in rows:
-        key = normalize_subject(r["subject"])
-        if not key:
-            continue
-        agg = merged.setdefault(
-            key, {"subject": key, "sends": 0, "replies": 0, "sample_event_id": None})
-        agg["sends"] += r["sends"] or 0
-        agg["replies"] += r["replies"] or 0
-        if r["sample_event_id"] and not agg["sample_event_id"]:
-            agg["sample_event_id"] = r["sample_event_id"]
-    subjects = sorted(merged.values(), key=lambda s: (s["sends"], s["replies"]), reverse=True)
-    for s in subjects:
-        s["reply_rate"] = round(s["replies"] / s["sends"], 4) if s["sends"] else None
-    return {"campaign_id": campaign_id, "subjects": subjects[:limit]}
+    """`campaign_audit` for the requested window and for the one before it.
+
+    The previous window is the same LENGTH, ending where this one starts, so
+    "14d vs prior 14d" compares like with like. Two calls to one function
+    rather than a second query shape: whatever the current window counts, the
+    previous window counts the same way.
+    """
+    window = resolve_window(kwargs.get("since"), kwargs.get("until"))
+    if not window["since_resolved_utc"]:
+        raise ValueError(
+            "--compare-previous-window needs a bounded window; pass --since.")
+    current = campaign_audit(conn, workspace_id, **kwargs)
+    start = datetime.strptime(window["since_resolved_utc"], "%Y-%m-%dT%H:%M:%SZ")
+    prior_start = start - timedelta(days=window["window_days"])
+    prior = campaign_audit(conn, workspace_id, **{
+        **kwargs,
+        "since": prior_start.strftime("%Y-%m-%d %H:%M:%S"),
+        "until": start.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    by_id = {c["id"]: c for c in prior["campaigns"]}
+    for row in current["campaigns"]:
+        row["previous"] = by_id.get(row["id"])
+    current["previous_totals"] = prior["totals"]
+    current["previous_window"] = {
+        "since_resolved_utc": prior_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "until_resolved_utc": window["since_resolved_utc"],
+    }
+    return current
 
 
 # Attribution priority for "which campaign is this lead from", lowest wins:
@@ -2005,7 +2277,15 @@ _DAILY_COLUMNS_SQL = "\n    " + _daily_columns_sql() + "\n"
 # sales-outcome overlay now, not a reporting axis). These four are what the
 # campaigns matrix, the Replies list, and the summary tile all count, each
 # one-row-per-lead on date(current_sentiment_since).
-SENTIMENT_KEYS = ("positive", "negative", "invalid", "autoreply")
+# `neutral` is here because it is a real verdict a sequencer can send, not a
+# placeholder for "no sentiment yet" -- pipeline_lead_review, the CLI's
+# --sentiment filters, the GHL driver and the Sheets export have all accepted it
+# since 73bc2fc. Leaving it out of the reporting keys meant a lead sitting at
+# neutral was counted nowhere on the Campaigns page while the spreadsheet export
+# showed it: one sentiment, two answers. Rare (single digits on a live database
+# of ~9,700 classified leads) and cheap to carry, and a column that reads zero
+# is information -- a lead vanishing is not.
+SENTIMENT_KEYS = ("positive", "negative", "invalid", "autoreply", "neutral")
 DAILY_EVENT_KEYS = (
     "email_sent", "email_received", "dm_sent", "dm_received",
     "connects_sent", "connects_accepted", "meetings",

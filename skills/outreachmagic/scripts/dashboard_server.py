@@ -373,19 +373,28 @@ def handle_attributes(conn, ws_id, match, query):
         conn, ws_id,
         field=_q(query, "field", "industry"),
         min_sample=_int_q(query, "min_sample", 20, lo=1, hi=10_000),
-        campaign_id=int(campaign_id) if campaign_id else None)
+        campaign_id=int(campaign_id) if campaign_id else None,
+        since=_q(query, "since"), until=_q(query, "until"),
+        reply_kind=_q(query, "kind"),
+        positive_anchor=_q(query, "positive_anchor"),
+        tags_any=_list_q(query, "tags_any"),
+        tags_all=_list_q(query, "tags_all"),
+        tags_none=_list_q(query, "tags_none"))
 
 
 @_workspace_scoped
 def handle_campaigns(conn, ws_id, match, query):
-    return reporting_queries.campaign_audit(
+    audit = (reporting_queries.campaign_audit_compared
+             if _bool_q(query, "compare") else reporting_queries.campaign_audit)
+    return audit(
         conn, ws_id, since=_q(query, "since"), until=_q(query, "until"),
         include_scheduling=_bool_q(query, "include_scheduling"),
         positive_anchor=_q(query, "positive_anchor"),
         reply_kind=_q(query, "kind"),
         tags_any=_list_q(query, "tags_any"),
         tags_all=_list_q(query, "tags_all"),
-        tags_none=_list_q(query, "tags_none"))
+        tags_none=_list_q(query, "tags_none"),
+        by_day=_bool_q(query, "by_day"))
 
 
 @_workspace_scoped
@@ -559,9 +568,18 @@ def handle_contacts_stats(conn, ws_id, match, query):
 
 @_workspace_scoped
 def handle_tags(conn, ws_id, match, query):
-    # Existing workspace tags, for the bulk add/remove tag type-ahead.
+    # Unscoped: every tag in the workspace, for the Contacts type-ahead.
+    # Scoped by campaign or date range: only the tags on leads those campaigns
+    # reached, so the Campaigns filter offers values that can actually match.
+    campaign_id = _q(query, "campaign_id")
+    if campaign_id or _q(query, "since") or _q(query, "until"):
+        return reporting_queries.tags_in_scope(
+            conn, ws_id,
+            campaign_id=int(campaign_id) if campaign_id else None,
+            since=_q(query, "since"), until=_q(query, "until"),
+            include_scheduling=_bool_q(query, "include_scheduling"))
     import pipeline_tags
-    return {"tags": pipeline_tags.tag_list(ws_id, conn=conn)}
+    return {"scope": "workspace", "tags": pipeline_tags.tag_list(ws_id, conn=conn)}
 
 
 @_workspace_scoped
@@ -729,15 +747,6 @@ def handle_campaign_leads(conn, ws_id, match, query):
 
 
 @_workspace_scoped
-def handle_campaign_subjects(conn, ws_id, match, query):
-    campaign_id = _q(query, "campaign_id")
-    if not campaign_id:
-        raise ValueError("campaign_id query parameter is required")
-    return reporting_queries.campaign_subjects(
-        conn, ws_id, int(campaign_id), limit=_int_q(query, "limit", 10, lo=1, hi=100))
-
-
-@_workspace_scoped
 def handle_campaign_replies(conn, ws_id, match, query):
     # campaign_id is optional here: omitted = all campaigns for the range.
     campaign_id = _q(query, "campaign_id")
@@ -851,7 +860,34 @@ def handle_leads_link(match, query, body):
             conn, int(from_lead), int(to_lead),
             kind=body.get("kind") or "forwarded_to", note=body.get("note"))
     except lead_links.LeadLinkError as exc:
-        return 400, {"error": str(exc)}
+        # 409, and the context travels with it: "would close a loop" is only
+        # actionable if the surface can name the link standing in the way and
+        # offer to remove it.
+        return 409, {"error": str(exc), **getattr(exc, "context", {})}
+    finally:
+        conn.close()
+
+
+def handle_leads_unlink(match, query, body):
+    """Undo a link. The library and the CLI have always had this; the dashboard
+    did not, so one wrong click was unrecoverable without dropping to a shell."""
+    import lead_links
+
+    body = body or {}
+    from_lead = body.get("from_lead_id")
+    to_lead = body.get("to_lead_id")
+    if not from_lead or not to_lead:
+        return 400, {"error": "from_lead_id and to_lead_id are required"}
+    conn = get_conn()
+    try:
+        # "Unlink these two" from a surface means whichever direction exists;
+        # the library stays directional because the CLI wants to say which.
+        result = lead_links.unlink_leads(
+            conn, int(from_lead), int(to_lead), kind=body.get("kind"))
+        if not result["removed"]:
+            result = lead_links.unlink_leads(
+                conn, int(to_lead), int(from_lead), kind=body.get("kind"))
+        return 200, result
     finally:
         conn.close()
 
@@ -1037,7 +1073,15 @@ def handle_crm_sync(match, query, body):
 
 
 def handle_sync_status(match, query, body):
-    return 200, dashboard_actions.sync_manager.status()
+    # Freshness rides along with sync state because that is what the operator
+    # is actually asking when they look at the pill: not "is a pull running"
+    # but "how old is what I am reading". The same fields every CLI read
+    # command already attaches, from the same helper.
+    from data_freshness import attach_freshness
+    from pipeline_update import get_last_pull
+
+    return 200, attach_freshness(
+        dashboard_actions.sync_manager.status(), last_pull=get_last_pull())
 
 
 def handle_sync_log(match, query, body):
@@ -1102,7 +1146,6 @@ ROUTES = [
     ("GET", re.compile(r"^/api/pipeline/leads$"), handle_pipeline_leads),
     ("GET", re.compile(r"^/api/attributes$"), handle_attributes),
     ("GET", re.compile(r"^/api/campaigns$"), handle_campaigns),
-    ("GET", re.compile(r"^/api/campaigns/subjects$"), handle_campaign_subjects),
     ("GET", re.compile(r"^/api/campaigns/replies$"), handle_campaign_replies),
     ("GET", re.compile(r"^/api/campaigns/daily$"), handle_campaign_daily),
     ("GET", re.compile(r"^/api/campaigns/detail$"), handle_campaign_detail),
@@ -1156,6 +1199,7 @@ ROUTES = [
     ("POST", re.compile(r"^/api/leads/(\d+)/identity$"), handle_lead_identity),
     ("POST", re.compile(r"^/api/serper/apply$"), handle_serper_apply),
     ("POST", re.compile(r"^/api/leads/link$"), handle_leads_link),
+    ("POST", re.compile(r"^/api/leads/unlink$"), handle_leads_unlink),
     ("GET", re.compile(r"^/api/leads/(\d+)/conversation$"), handle_lead_conversation),
     ("POST", re.compile(r"^/api/leads/merge/preview$"), handle_leads_merge_preview),
     ("POST", re.compile(r"^/api/leads/merge$"), handle_leads_merge),

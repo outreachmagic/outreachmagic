@@ -41,7 +41,8 @@ def _args(**kw):
     base = dict(workspace="alpha", since=None, until=None, kind="all",
                 tags_any=None, tags_all=None, tags_none=None,
                 include_scheduling=False, positive_anchor="first",
-                sort="sent", limit=0, json=True, quiet=True)
+                sort="sent", limit=0, json=True, quiet=True,
+                by_day=False, compare=False)
     base.update(kw)
     return argparse.Namespace(command="campaign-audit", **base)
 
@@ -143,6 +144,99 @@ class CampaignAuditCliTests(unittest.TestCase):
         self.assertEqual(args.tags_none, ["existing_customer"])
         self.assertIn("register_campaign_audit_parser",
                       Path(pipeline_cli.__file__).read_text())
+
+
+class CampaignAuditByDayTests(CampaignAuditCliTests):
+    """`--by-day` exists so nobody writes the daily breakdown as SQL again.
+
+    The last hand-written attempt was a four-way join with no row-reducing
+    predicate on `events`; it never returned. The flag has to give the same
+    answer as the totals it sits beside, or it just moves the problem.
+    """
+
+    def _spread_events_over_days(self):
+        """Back-date the fixture's activity across three days."""
+        conn = om.get_conn()
+        try:
+            ids = [r[0] for r in conn.execute(
+                "SELECT event_id FROM workspace_lead_events ORDER BY event_id").fetchall()]
+            for offset, event_id in enumerate(ids):
+                conn.execute(
+                    "UPDATE workspace_lead_events SET event_at = "
+                    "datetime('now', ?) WHERE event_id = ?",
+                    (f"-{offset % 3} days", event_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_daily_rows_sum_to_the_totals(self):
+        self._spread_events_over_days()
+        payload = json.loads(_run(by_day=True, since="30d"))
+        self.assertTrue(payload["campaigns"])
+        for row in payload["campaigns"]:
+            self.assertIn("daily", row)
+            for column in ("sent", "replies", "bounces"):
+                self.assertEqual(
+                    sum(d[column] for d in row["daily"]), row[column],
+                    f"{column} disagrees with its daily rows on {row['name']}")
+        # Not asserted for `meetings`: it is counted once per lead per DAY in
+        # the array and once per lead per RANGE in the total, so a lead booking
+        # on two days legitimately adds two to one and one to the other. And
+        # not asserted for the four sentiment columns, which are anchored on
+        # first_positive_at rather than on the event stream -- summing those
+        # against per-day event counts would encode an invariant that is false.
+
+    def test_daily_rows_are_dated_and_ordered(self):
+        self._spread_events_over_days()
+        row = json.loads(_run(by_day=True, since="30d"))["campaigns"][0]
+        dates = [d["date"] for d in row["daily"]]
+        self.assertEqual(dates, sorted(dates))
+        self.assertGreater(len(dates), 1, "the fixture spans three days")
+        self.assertEqual(set(row["daily"][0]), {"date", *dq.BY_DAY_KEYS})
+
+    def test_no_daily_array_without_the_flag(self):
+        row = json.loads(_run())["campaigns"][0]
+        self.assertNotIn("daily", row)
+        self.assertIsNone(json.loads(_run())["by_day_columns"])
+
+    def test_the_window_is_resolved_in_the_payload(self):
+        payload = json.loads(_run(since="14d"))
+        self.assertEqual(payload["since"], "14d")
+        self.assertTrue(payload["since_resolved_utc"].endswith("Z"))
+        self.assertEqual(payload["window_days"], 14.0)
+
+    def test_compare_previous_window_returns_both_halves(self):
+        payload = json.loads(_run(compare=True, since="7d"))
+        self.assertIn("previous_totals", payload)
+        self.assertEqual(payload["previous_totals"]["sent"], 0,
+                         "the fixture has no activity in the prior week")
+        self.assertEqual(payload["totals"]["sent"], 3)
+        self.assertEqual(payload["previous_window"]["until_resolved_utc"],
+                         payload["since_resolved_utc"])
+
+    def test_the_two_windows_do_not_overlap(self):
+        """Back-to-back, not overlapping — the same send must not be in both.
+
+        The previous window's upper bound is a timestamp, and a timestamp is an
+        exact bound; rounding it up to the end of its day (which is right for a
+        bare `--until 2026-08-14`) would hand the same 24 hours to both halves.
+        """
+        conn = om.get_conn()
+        try:
+            conn.execute("UPDATE workspace_lead_events SET event_at = "
+                         "datetime('now', '-10 days')")
+            conn.commit()
+        finally:
+            conn.close()
+        payload = json.loads(_run(compare=True, since="7d"))
+        self.assertEqual(payload["totals"]["sent"], 0,
+                         "everything is older than 7 days")
+        self.assertEqual(payload["previous_totals"]["sent"], 3,
+                         "and lands in the 7 days before that")
+
+    def test_compare_needs_a_window(self):
+        with self.assertRaises(SystemExit):
+            _run(compare=True, since=None)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ if str(SCRIPTS) not in sys.path:
 import om_paths  # noqa: E402
 import pipeline as om  # noqa: E402
 import query_cli  # noqa: E402
+import read_queries  # noqa: E402
 
 
 class QueryCliInProcessTests(unittest.TestCase):
@@ -100,6 +101,8 @@ class QueryCliInProcessTests(unittest.TestCase):
             "params": None,
             "file": None,
             "limit": 500,
+            "timeout": read_queries.DEFAULT_TIMEOUT_SEC,
+            "explain": False,
             "json": True,
             "command": "query",
         }
@@ -213,6 +216,69 @@ class QueryCliInProcessTests(unittest.TestCase):
                 query_cli.cmd_tag_summary(self._tag_summary_args(workspace="does-not-exist"))
         data = json.loads(buf.getvalue())
         self.assertIn("does-not-exist", data["error"])
+
+
+class SqlGuardRailTests(QueryCliInProcessTests):
+    """The ad-hoc SQL shell must not hang, and must say when it is misleading.
+
+    Both failures these guard against were observed on a live workspace: a
+    4-way join that ran until the operator killed it, and a per-campaign
+    aggregation built on a lifetime counter that inflated 106 into 15,565.
+    """
+
+    #: Counts to 200 million in SQLite. Guaranteed to outlast any sane timeout,
+    #: with no dependence on how much data the fixture happens to hold.
+    RUNAWAY = ("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c "
+               "WHERE x < 200000000) SELECT count(*) FROM c")
+
+    def test_runaway_query_is_cancelled(self):
+        with self.assertRaises(read_queries.QueryTimeout) as caught:
+            read_queries.run_readonly_sql(self.RUNAWAY, timeout_sec=1)
+        self.assertIn("sql-pitfalls", str(caught.exception))
+
+    def test_timeout_zero_disables_the_ceiling(self):
+        # Not the runaway query -- just proof the guard is off and a normal
+        # query still returns rather than being cancelled at zero seconds.
+        result = read_queries.run_readonly_sql("SELECT 1 AS a", timeout_sec=0)
+        self.assertEqual(result["rows"], [{"a": 1}])
+
+    def test_connection_survives_a_cancelled_query(self):
+        with self.assertRaises(read_queries.QueryTimeout):
+            read_queries.run_readonly_sql(self.RUNAWAY, timeout_sec=1)
+        self.assertEqual(
+            read_queries.run_readonly_sql("SELECT 2 AS a")["rows"], [{"a": 2}])
+
+    def test_lifetime_counter_in_a_campaign_query_warns(self):
+        warnings = read_queries.lint_sql(
+            "SELECT c.name FROM campaigns c JOIN workspace_leads wl "
+            "ON wl.workspace_id = 'ws1' WHERE wl.email_sent_count > 0")
+        self.assertTrue(any("LIFETIME" in w for w in warnings), warnings)
+
+    def test_unfiltered_large_table_warns(self):
+        warnings = read_queries.lint_sql("SELECT count(*) FROM events e JOIN leads l")
+        self.assertTrue(any("full scan" in w for w in warnings), warnings)
+
+    def test_a_scoped_query_is_not_warned_about(self):
+        self.assertEqual(
+            read_queries.lint_sql(
+                "SELECT count(*) FROM events WHERE campaign_id = 1"), [])
+
+    def test_explain_prints_a_plan_without_running(self):
+        buf, err = StringIO(), StringIO()
+        with patch("sys.stdout", buf), patch("sys.stderr", err):
+            query_cli.cmd_query(self._args(
+                sql="SELECT count(*) FROM events e JOIN leads l", explain=True, json=False))
+        self.assertIn("SCAN", buf.getvalue())
+        self.assertIn("WARNING", err.getvalue())
+
+    def test_truncation_warns_on_stderr_even_when_quiet(self):
+        buf, err = StringIO(), StringIO()
+        with patch("sys.stdout", buf), patch("sys.stderr", err):
+            query_cli.cmd_query(self._args(sql="SELECT id FROM leads", limit=1, quiet=True))
+        self.assertTrue(json.loads(buf.getvalue())["truncated"])
+        self.assertIn("1-row limit", err.getvalue())
+        # --quiet suppresses the freshness line and nothing else.
+        self.assertNotIn("Data as of", err.getvalue())
 
 
 if __name__ == "__main__":

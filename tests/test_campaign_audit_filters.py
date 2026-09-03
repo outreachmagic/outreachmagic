@@ -250,3 +250,38 @@ def test_payload_states_what_it_counted():
     assert payload["tags_none"] == ["existing_customer"]
     assert "positive" in payload["kind_scoped_columns"]
     assert "sent" not in payload["kind_scoped_columns"]
+
+
+def test_kind_scopes_exactly_the_columns_the_payload_claims():
+    """The contract, pinned: --kind narrows KIND_SCOPED_COLUMNS and nothing else.
+
+    Believed true and never asserted as a whole. The failure it guards against
+    is silent and bad in both directions: a kind filter reaching `sent` would
+    collapse every denominator, and one failing to reach a sentiment column
+    would report human positives that include auto-replies.
+    """
+    _seed_two_kinds()
+    everything = _row(_audit())
+    human = _row(_audit(reply_kind="human"))
+
+    untouched = [k for k in everything if k not in dq.KIND_SCOPED_COLUMNS
+                 and isinstance(everything[k], (int, float))]
+    for column in untouched:
+        assert human[column] == everything[column], (
+            f"--kind changed `{column}`, which is not in kind_scoped_columns")
+
+    # And it must actually bite on the columns it claims: the status-only lead
+    # is positive with no human reply behind it.
+    assert everything["positive"] == 2
+    assert human["positive"] == 1
+    assert human["sent"] == everything["sent"] == 2
+
+
+def test_kind_reaches_the_by_day_replies_too():
+    """The daily array is the same query grouped by day; a filter that applied
+    to one and not the other would put two populations on one screen."""
+    _seed_two_kinds()
+    for kind in ("all", "human"):
+        row = _row(_audit(reply_kind=kind, since="30d", by_day=True))
+        assert sum(d["replies"] for d in row["daily"]) == row["replies"]
+        assert sum(d["sent"] for d in row["daily"]) == row["sent"]

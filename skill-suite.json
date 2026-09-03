@@ -18,6 +18,10 @@
         "SECURITY.md",
         "references/command-reference.md",
         "references/agent-triage.md",
+        "references/sql-pitfalls.md",
+        "references/query-guide.md",
+        "references/schema.md",
+        "references/dashboard-panes.md",
         "scripts/dashboard.html"
       ],
       "install_required": []

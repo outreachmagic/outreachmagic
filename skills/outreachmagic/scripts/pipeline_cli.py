@@ -660,6 +660,13 @@ def main():
     tag_list_p = tag_sub.add_parser("list", help="List tags in a workspace")
     tag_list_p.add_argument("--workspace", required=True)
     tag_list_p.add_argument("--lead-id", type=int, help="Optional: filter to one lead")
+    # Scoping the list is what makes it useful as a FILTER vocabulary: the
+    # workspace-wide list is mostly tags no campaign in the window touched, and
+    # picking one of those empties the table.
+    tag_list_p.add_argument("--since", help="Only tags on leads reached in this range")
+    tag_list_p.add_argument("--until", help="End of range: YYYY-MM-DD")
+    tag_list_p.add_argument("--campaign-id", dest="campaign_id", type=int,
+                            help="Only tags on leads this campaign reached")
     tag_bulk_p = tag_sub.add_parser("bulk", help="Add/remove tags across multiple leads")
     tag_bulk_p.add_argument("--workspace", required=True)
     tag_bulk_p.add_argument("--lead-ids", help="Comma-separated lead IDs")
@@ -1422,6 +1429,7 @@ def main():
     deliverability_cli.register_deliverability_parser(sub)
     deliverability_cli.register_campaign_replies_parser(sub)
     deliverability_cli.register_campaign_audit_parser(sub)
+    deliverability_cli.register_attribute_audit_parser(sub)
     query_cli.register_query_parser(sub)
     query_cli.register_sql_parser(sub)
     query_cli.register_schema_parser(sub)
@@ -1984,43 +1992,6 @@ def main():
 
     hist_p.add_argument("--limit", type=int, default=50, help="Max events to show")
     hist_p.add_argument("--json", action="store_true")
-
-    copy_p = sub.add_parser(
-        "copy-insights",
-        help="Show full copy for positive leads and rank best-performing templates",
-    )
-    copy_p.add_argument(
-        "--lead-status",
-        default="interested",
-        help="Current lead status to treat as positive (default: interested)",
-    )
-    copy_p.add_argument("--limit", type=int, default=200, help="Max positive leads to include")
-    copy_p.add_argument("--workspace", help="Filter by workspace name or slug")
-    copy_p.add_argument("--json", action="store_true")
-
-    segment_p = sub.add_parser(
-        "segment-insights",
-        help="Rank best converting title/industry/headcount segments from positive leads",
-    )
-    segment_p.add_argument(
-        "--positive-lead-status",
-        default="interested",
-        help="Current lead status to treat as positive (default: interested)",
-    )
-    segment_p.add_argument(
-        "--positive-sentiment",
-        choices=("positive", "negative", "autoreply", "invalid", "neutral"),
-        help="Optional sentiment to combine with --positive-lead-status",
-    )
-    segment_p.add_argument(
-        "--fields",
-        default="title,industry,headcount",
-        help="Comma-separated segment fields (title,industry,headcount)",
-    )
-    segment_p.add_argument("--min-sent", type=int, default=2, help="Minimum sent leads per value")
-    segment_p.add_argument("--top", type=int, default=12, help="Top values per field")
-    segment_p.add_argument("--workspace", help="Filter by workspace name or slug")
-    segment_p.add_argument("--json", action="store_true")
 
     ws_p = sub.add_parser("workspace", help="List or create workspaces")
     ws_sub = ws_p.add_subparsers(dest="workspace_cmd")
@@ -3314,6 +3285,8 @@ def main():
         deliverability_cli.cmd_campaign_replies(args)
     elif args.command == "campaign-audit":
         deliverability_cli.cmd_campaign_audit(args)
+    elif args.command == "attribute-audit":
+        deliverability_cli.cmd_attribute_audit(args)
     elif args.command == "tag-summary":
         query_cli.cmd_tag_summary(args)
     elif args.command == "sheets" and getattr(args, "sheets_command", None) == "campaign-stats":
@@ -3660,7 +3633,20 @@ def main():
             tags_list = _pipeline._parse_cli_tags(args.tags)
             print(json.dumps(_pipeline.tag_set(ws_id, args.lead_id, tags_list)))
         elif action == "list":
-            print(json.dumps(_pipeline.tag_list(ws_id, lead_id=getattr(args, "lead_id", None))))
+            if (getattr(args, "since", None) or getattr(args, "until", None)
+                    or getattr(args, "campaign_id", None)):
+                import reporting_queries
+
+                conn = _pipeline.get_conn()
+                try:
+                    print(json.dumps(reporting_queries.tags_in_scope(
+                        conn, ws_id, campaign_id=getattr(args, "campaign_id", None),
+                        since=getattr(args, "since", None),
+                        until=getattr(args, "until", None)), indent=2))
+                finally:
+                    conn.close()
+            else:
+                print(json.dumps(_pipeline.tag_list(ws_id, lead_id=getattr(args, "lead_id", None))))
         elif action == "bulk":
             tags_list = _pipeline._parse_cli_tags(args.tags)
             identity_type = getattr(args, "identity_type", None)
@@ -5098,31 +5084,6 @@ def main():
             print(json.dumps({"lead": lead, "events": events}, indent=2))
         else:
             print(_pipeline.format_event_timeline(lead, events))
-    elif args.command == "copy-insights":
-        try:
-            insights = _pipeline.get_copy_insights(
-                lead_status=args.lead_status,
-                limit=args.limit,
-                workspace=getattr(args, "workspace", None),
-            )
-        except ValueError as e:
-            print(str(e))
-            sys.exit(1)
-        print(json.dumps(insights, indent=2) if args.json else _pipeline.format_copy_insights(insights))
-    elif args.command == "segment-insights":
-        try:
-            insights = _pipeline.get_segment_insights(
-                positive_lead_status=args.positive_lead_status,
-                positive_sentiment=args.positive_sentiment,
-                fields=args.fields,
-                min_sent=args.min_sent,
-                top=args.top,
-                workspace=getattr(args, "workspace", None),
-            )
-        except ValueError as e:
-            print(str(e))
-            sys.exit(1)
-        print(json.dumps(insights, indent=2) if args.json else _pipeline.format_segment_insights(insights))
     elif args.command == "workspace":
         if args.workspace_cmd == "summary":
             summary = _pipeline.get_workspace_summary(

@@ -114,6 +114,10 @@ tr.clickable:hover td { background: color-mix(in srgb, var(--series-1) 7%, trans
   border-radius: 6px; max-height: 260px; overflow: auto; white-space: pre-wrap;
   word-break: break-word; font-size: 12px; margin: 0; }
 .spark { display: block; }
+/* Inline beside a table cell's text, rather than on its own line. */
+.spark.inline { display: inline-block; vertical-align: middle; margin-left: 6px;
+  opacity: .45; }
+.spark.inline:hover { opacity: .9; }
 /* timeline (lead history) */
 .timeline { border-top: 1px solid var(--grid); }
 .tl-event { padding: 9px 2px; border-bottom: 1px solid var(--grid); }
@@ -286,6 +290,22 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           <button class="small" id="merge-contacts-cancel">Cancel</button>
           <button class="small" id="contact-merge-prompt-btn" title="Copy a prompt for your AI agent to work the whole conflict queue">Copy agent prompt</button>
           <span class="msg" id="merge-contacts-msg"></span>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="link-conversation" style="border:1px solid var(--grid);border-radius:10px;padding:0;max-width:620px;width:92vw">
+      <div style="padding:14px 16px">
+        <h2 style="margin:0 0 2px;font-size:15px">One conversation, two people</h2>
+        <div class="stale" style="font-size:12px;margin-bottom:10px">
+          Both records stay whole and individually visible. Only the COUNT collapses —
+          two positives in one thread become one opportunity. Direction matters:
+          the person contacted first is the conversation's origin, and the
+          campaign's outcome is credited to them.
+        </div>
+        <div id="link-conversation-body"></div>
+        <div class="controls" style="margin-top:12px">
+          <button class="small" id="link-conversation-cancel">Cancel</button>
+          <span class="msg" id="link-conversation-msg"></span>
         </div>
       </div>
     </dialog>
@@ -741,6 +761,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           </select>
         </label>
         <span class="spacer"></span>
+        <span data-freshness class="flag" title="How old the local data is"></span>
         <span id="campaigns-note" class="stale"></span>
       </div>
       <!-- Same tag bar as Contacts (makeTagBar), so "exclude existing_customer"
@@ -749,8 +770,9 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <div class="controls" style="margin-top:6px;align-items:center">
         <span class="stale" style="font-size:12px">Tags:</span>
         <span id="campaigns-tag-chips" style="display:flex;gap:5px;flex-wrap:wrap"></span>
-        <input id="campaigns-tag-add" list="campaigns-all-tags" placeholder="+ add tag…" style="width:170px">
-        <datalist id="campaigns-all-tags"></datalist>
+        <select id="campaigns-tag-add" style="width:200px" title="Tags carried by leads these campaigns reached in the selected range">
+          <option value="">+ add tag…</option>
+        </select>
         <label style="font-size:12px" title="Applies to included tags only">
           <input type="radio" name="camptagmode" value="any" checked> any
         </label>
@@ -761,15 +783,11 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       </div>
       <div id="campaigns"></div>
     </div>
-    <div class="card" id="subjects-card" hidden>
-      <h2>Subject lines &amp; copy <span class="sub" id="subjects-sub">expand a row to audit the exact copy sent</span></h2>
-      <div id="subjects"></div>
-    </div>
   </section>
 
   <section id="tab-attributes" hidden>
     <div class="card">
-      <h2>Best-performing lead attributes <span class="sub">case-insensitive grouping</span></h2>
+      <h2>Best-performing lead attributes <span class="sub" id="attr-sub">case-insensitive grouping</span></h2>
       <div class="controls">
         <label>Attribute
           <select id="attr-field">
@@ -784,6 +802,8 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
           <select id="attr-campaign"><option value="">All campaigns</option></select>
         </label>
         <label>Min contacted <input id="attr-min" type="number" value="20" min="1" style="width:70px"></label>
+        <span class="spacer"></span>
+        <span data-freshness class="flag" title="How old the local data is"></span>
       </div>
       <div id="attributes"></div>
     </div>
@@ -1374,7 +1394,34 @@ async function refreshSummary() {
     $("staleness").textContent = s.latest_event_at
       ? "latest event: " + dt(s.latest_event_at) + " UTC" : "no events pulled yet";
     updateSyncPill(sync);
+    // Kept on state, not only in the header: a date-range answer read off
+    // stale data is wrong in a way the numbers themselves cannot show, so the
+    // window-setting panes say it too.
+    state.freshness = sync;
+    paintFreshness();
   } catch (e) { /* transient poll error; pill shows state */ }
+}
+
+// "Last pulled 40 minutes ago" belongs next to whoever is choosing a window,
+// not only in the page header they scrolled past. Rendered into every element
+// carrying data-freshness.
+function paintFreshness() {
+  const f = state.freshness;
+  if (!f) return;
+  const mins = f.stale_minutes;
+  const text = f.last_pull == null ? "never pulled"
+    : mins == null ? ""
+    : mins < 1 ? "pulled just now"
+    : mins < 60 ? `pulled ${Math.round(mins)}m ago`
+    : mins < 1440 ? `pulled ${Math.round(mins / 60)}h ago`
+    : `pulled ${Math.round(mins / 1440)}d ago`;
+  document.querySelectorAll("[data-freshness]").forEach(el => {
+    el.textContent = text;
+    // Over an hour old is where a "last 14 days" answer starts quietly
+    // missing today, which is the case worth a colour.
+    el.className = "flag" + (f.last_pull == null || (mins ?? 0) >= 60 ? " warn" : "");
+    el.title = f.freshness_message || "";
+  });
 }
 
 function updateSyncPill(sync) {
@@ -1490,6 +1537,10 @@ function resetWorkspaceScopedState() {
   // differ), so a switch mid-configure would offer the wrong columns.
   const exportPanel = $("contacts-export");
   if (exportPanel?.open) exportPanel.close();
+  // Same reasoning for the link dialog: it names two leads from the workspace
+  // being left behind.
+  const linkPanel = $("link-conversation");
+  if (linkPanel?.open) linkPanel.close();
   closeDetails();
 }
 
@@ -1533,7 +1584,7 @@ function setRangeToDay(dateStr) {
 // per-tab, and a helper that closes "whatever detail cards exist" should not
 // depend on which tab is mounted.
 function closeDetails() {
-  for (const id of ["subjects-card", "domain-detail-card", "stage-leads-card"]) {
+  for (const id of ["domain-detail-card", "stage-leads-card"]) {
     const el = $(id);
     if (el) el.hidden = true;
   }
@@ -1577,7 +1628,9 @@ function loadTab() {
      contacts: () => { loadContacts(); loadSuppression(); contactsTags.fillOptions(); },
      companies: () => { loadCompaniesStats(); loadCompanies(); },
      quality: loadQuality,
-     campaigns: loadCampaigns,
+     // The tag vocabulary is scoped to the campaigns and window on screen, so
+     // it is refetched with them rather than once at startup.
+     campaigns: () => { loadCampaigns(); campaignsTags.fillOptions(); },
      attributes: loadAttributes, crm: loadCrm,
      activity: () => loadActivity(true), sync: loadOutbox })[state.tab]();
   markRefreshed();
@@ -2443,17 +2496,29 @@ function contactsFilterParams() {
 // One tag filter bar, shared by Contacts and Campaigns. Click a chip to flip it
 // between include and exclude; the any/all switch governs the include chips
 // only, since exclusions can only ever mean "none of". The component owns the
-// chips, the expression line and the datalist — the caller only says where its
-// elements live and what to reload when the selection changes. Two hand-rolled
-// tag bars would be two tag filters that never quite agreed.
+// chips, the expression line and the option list — the caller only says where
+// its elements live and what to reload when the selection changes. Two
+// hand-rolled tag bars would be two tag filters that never quite agreed.
+//
+// `picker` chooses how the vocabulary is offered. "typeahead" is a datalist on
+// a text input: right for Contacts, where the workspace can hold hundreds of
+// tags and you already know the one you want. "select" is a dropdown listing
+// every offered tag with its count: right for Campaigns, where the useful
+// vocabulary is small, scoped to what is on screen, and worth browsing rather
+// than recalling. `optionsUrl` says which vocabulary to ask for.
 function makeTagBar({ chips: chipsId, input: inputId, list: listId,
-                      mode: modeName, expr: exprId, onChange }) {
+                      mode: modeName, expr: exprId, onChange,
+                      picker = "typeahead", optionsUrl = () => "/api/tags" }) {
   const chips = [];
   const mode = () => {
     const el = document.querySelector(`input[name="${modeName}"]:checked`);
     return el ? el.value : "any";
   };
-  const changed = () => { render(); onChange(); };
+  const changed = () => {
+    render();
+    if (picker === "select") fillOptions();
+    onChange();
+  };
   function render() {
     const host = $(chipsId);
     if (!host) return;
@@ -2496,14 +2561,34 @@ function makeTagBar({ chips: chipsId, input: inputId, list: listId,
     chips.filter(c => c.exclude).forEach(c => p.append("tags_none", c.tag));
     return p;
   };
-  // Suggestions only — a tag not yet in the workspace is still a legal filter.
+  // Suggestions only — a tag not yet in the workspace is still a legal filter,
+  // and a scoped list is a vocabulary, not a constraint.
   const fillOptions = async () => {
-    const d = await get("/api/tags").catch(() => null);
-    if (!d || !d.tags || !$(listId)) return;
-    $(listId).innerHTML = d.tags.map(t => `<option value="${esc(t.tag ?? t)}">`).join("");
+    const d = await get(optionsUrl()).catch(() => null);
+    if (!d || !d.tags) return;
+    const rows = d.tags.filter(x => !chips.some(c => c.tag === (x.tag ?? x)));
+    if (picker === "select") {
+      const sel = $(inputId);
+      if (!sel) return;
+      sel.innerHTML = rows.length
+        ? `<option value="">+ add tag…</option>` + rows.map(x =>
+            `<option value="${esc(x.tag ?? x)}">${esc(x.tag ?? x)}${
+              x.lead_count != null ? ` (${fmt(x.lead_count)})` : ""}</option>`).join("")
+        : `<option value="">no tags in view</option>`;
+      sel.disabled = !rows.length;
+      return;
+    }
+    if (!$(listId)) return;
+    $(listId).innerHTML = rows.map(x => `<option value="${esc(x.tag ?? x)}">`).join("");
   };
   if ($(inputId)) {
-    $(inputId).onchange = () => { add($(inputId).value); $(inputId).value = ""; };
+    $(inputId).onchange = () => {
+      add($(inputId).value);
+      $(inputId).value = "";
+      // A dropdown has to drop what was taken, or the same tag stays offered
+      // after it has been added.
+      if (picker === "select") fillOptions();
+    };
   }
   document.querySelectorAll(`input[name="${modeName}"]`).forEach(r => {
     r.onchange = changed;
@@ -2517,9 +2602,13 @@ const contactsTags = makeTagBar({
   onChange: () => { contactsState.offset = 0; loadContacts(); loadContactsStats(); },
 });
 
+// A dropdown, and scoped to the campaigns on screen: the workspace-wide tag
+// list is mostly tags no campaign in this window touched, so picking one
+// emptied the table and read as a broken filter.
 const campaignsTags = makeTagBar({
-  chips: "campaigns-tag-chips", input: "campaigns-tag-add", list: "campaigns-all-tags",
+  chips: "campaigns-tag-chips", input: "campaigns-tag-add",
   mode: "camptagmode", expr: "campaigns-tag-expression",
+  picker: "select", optionsUrl: () => withRange("/api/tags"),
   onChange: () => loadCampaigns(),
 });
 
@@ -4018,16 +4107,35 @@ function comboInput({ name, value, options, placeholder, id }) {
 
 // Tiny inline sparkline — no library, no axes. It exists to answer "is this
 // getting worse", which a number in a table cannot.
-function sparkline(values, { width = 90, height = 18, color = "currentColor" } = {}) {
+function sparkline(values, { width = 90, height = 18, color = "currentColor",
+                             cls = "", title = "" } = {}) {
   const nums = (values || []).map(v => Number(v) || 0);
   if (!nums.length) return "";
   const max = Math.max(1, ...nums);
   const step = nums.length > 1 ? width / (nums.length - 1) : width;
   const points = nums.map((v, i) =>
     `${(i * step).toFixed(1)},${(height - (v / max) * (height - 2) - 1).toFixed(1)}`).join(" ");
-  return `<svg class="spark" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"
-      preserveAspectRatio="none" aria-hidden="true"><polyline points="${points}"
+  // Titled sparks get a real accessible name; untitled ones stay decorative,
+  // because a shape with no label read aloud is noise.
+  const label = title
+    ? `role="img" aria-label="${esc(title)}"` : 'aria-hidden="true"';
+  return `<svg class="spark ${esc(cls)}" width="${width}" height="${height}"
+      viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" ${label}>${
+      title ? `<title>${esc(title)}</title>` : ""}<polyline points="${points}"
       fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+
+// A campaign's daily send volume, from the `daily` array the table already
+// asked for -- no second request. Shape only: it answers "steady, spiking or
+// stopped", and the columns beside it answer everything quantitative.
+function campaignSpark(days) {
+  if (!days || days.length < 2) return "";
+  const sent = days.map(d => d.sent || 0);
+  const peak = Math.max(...sent);
+  if (!peak) return "";
+  return sparkline(sent, { width: 64, height: 14, cls: "inline",
+    title: `${fmt(sent.reduce((a, b) => a + b, 0))} sent over ${sent.length} days, `
+      + `peak ${fmt(peak)} on ${days[sent.indexOf(peak)].date}` });
 }
 
 // Every slide-in pane has a stable id and a printed breadcrumb. Panes were
@@ -4045,7 +4153,6 @@ const PANES = {
   "deliverability.domain":     "Deliverability › Sending domain detail",
   "deliverability.blacklist":  "Deliverability › Blacklist report",
   "deliverability.bounce":     "Deliverability › Bounce detail",
-  "campaign.subjects":         "Campaigns › Subject lines & copy",
   "quality.bucket":            "Data quality › Bucket detail",
   "sync.outbox":               "Sync › Outbox item detail",
 };
@@ -4547,7 +4654,8 @@ async function loadCampaigns() {
   const dailyQs = [dailyCampaign ? `campaign_id=${dailyCampaign}` : "", sched]
     .filter(Boolean).join("&");
   const [audit, daily] = await Promise.all([
-    getR("/api/campaigns?" + [sched, anchor, auditQs.toString()].filter(Boolean).join("&")),
+    getR("/api/campaigns?" + [sched, anchor, "by_day=1", auditQs.toString()]
+      .filter(Boolean).join("&")),
     getR("/api/campaigns/daily" + (dailyQs ? `?${dailyQs}` : "")),
   ]).catch(e => { toast(e.message); return [null, null]; });
   if (!audit) return;
@@ -4569,7 +4677,7 @@ async function loadCampaigns() {
         + "their meetings are counted against the campaign that earned them." : ""));
   $("campaigns-note").textContent = notes.filter(Boolean).join(" ");
   renderTable("campaigns", [
-    { key: "name", label: "Campaign", render: r => esc(r.name)
+    { key: "name", label: "Campaign", render: r => esc(r.name) + campaignSpark(r.daily)
         + (r.is_unattributed
             ? ' <span class="flag warn" title="Meetings and replies we could not trace back to any campaign. Shown so excluding scheduling tools never silently loses a booking.">unattributed</span>'
             : r.is_scheduling
@@ -4606,13 +4714,12 @@ async function loadCampaigns() {
     // second lead list underneath. There was only ever one question being asked
     // of both — "who replied, out of which campaign" — and two tables answering
     // it separately meant scrolling past the answer to reach a copy of it.
-    onRowClick: r => selectCampaign(r.id, r.name) });
+    onRowClick: r => selectCampaign(r.id) });
 }
 
-function selectCampaign(campaignId, name) {
+function selectCampaign(campaignId) {
   $("replies-campaign").value = campaignId;
   loadReplies();
-  showSubjects(campaignId, name);
   $("replies-table").closest(".card").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -4697,23 +4804,72 @@ $("replies-merge").onclick = () => {
 // Merging destroys a record; linking does not. Two people who both replied in
 // one thread are not one record to be reconciled -- they are two people and one
 // opportunity, and only the count needs fixing.
+// A confirm() is a two-state dialog, and this is a three-state question: A
+// first, B first, or neither. Cancel used to mean "B first", which is
+// indistinguishable from dismissing the box, and there was no way at all to
+// undo a wrong choice — the reverse direction then reads as a cycle and is
+// refused, which is where this got stuck.
 $("replies-link").onclick = async () => {
   const ids = [...repliesSel];
   const byId = Object.fromEntries((state.replies || []).map(r => [r.lead_id, r]));
-  const name = id => byId[id]?.lead_name || `#${id}`;
-  // Direction matters: the root of the conversation is who the campaign
-  // actually reached, and that is who its outcome gets credited to.
-  const forward = confirm(
-    `Who was contacted FIRST?\n\nOK = ${name(ids[0])}\nCancel = ${name(ids[1])}`);
-  const [from, to] = forward ? ids : [ids[1], ids[0]];
+  const name = id => byId[id]?.lead_name || byId[id]?.email || `#${id}`;
+  const dlg = $("link-conversation");
+  $("link-conversation-msg").textContent = "";
+
+  // Whatever already joins these two, shown before the choice rather than as
+  // the error after it.
+  let existing = null;
   try {
-    await post("/api/leads/link", { from_lead_id: from, to_lead_id: to });
-    toast(`${name(from)} → ${name(to)} — now counted as one conversation`);
+    const convo = await api(`/api/leads/${ids[0]}/conversation`);
+    existing = (convo.links || []).find(
+      l => ids.includes(l.from_lead_id) && ids.includes(l.to_lead_id)) || null;
+  } catch (e) { /* the choice still stands without it */ }
+
+  $("link-conversation-body").innerHTML = existing
+    ? `<div class="banner">Already linked: <b>${esc(name(existing.from_lead_id))}</b> →
+         <b>${esc(name(existing.to_lead_id))}</b>.</div>
+       <div class="controls" style="margin-top:10px">
+         <button class="small" data-unlink="1">Unlink them</button>
+       </div>`
+    : `<div class="controls" style="flex-direction:column;align-items:stretch;gap:6px">
+         ${ids.map(id => `<button class="small" data-from="${id}">
+             <b>${esc(name(id))}</b> was contacted first</button>`).join("")}
+       </div>`;
+
+  const finish = (message) => {
+    dlg.close();
+    toast(message);
     repliesSel.clear();
     syncRepliesSel();
+    loadReplies();
     loadCampaigns();
-  } catch (e) { toast(e.message); }
+  };
+
+  $("link-conversation-body").querySelectorAll("button").forEach(b => {
+    b.onclick = async () => {
+      try {
+        if (b.dataset.unlink) {
+          await post("/api/leads/unlink",
+                     { from_lead_id: ids[0], to_lead_id: ids[1] });
+          finish("Unlinked — they count separately again");
+          return;
+        }
+        const from = +b.dataset.from;
+        const to = ids.find(id => id !== from);
+        const r = await post("/api/leads/link", { from_lead_id: from, to_lead_id: to });
+        finish(r.status === "exists"
+          ? `${name(from)} → ${name(to)} — already linked, nothing changed`
+          : `${name(from)} → ${name(to)} — now counted as one conversation`);
+      } catch (e) {
+        // The server's message names the link in the way and what to do about
+        // it, so show it verbatim and leave the dialog open to act on.
+        $("link-conversation-msg").textContent = e.message;
+      }
+    };
+  });
+  dlg.showModal();
 };
+$("link-conversation-cancel").onclick = () => $("link-conversation").close();
 
 // The facets come back computed BEFORE the sentiment/status filters apply, so
 // each dropdown keeps offering every value available for the current campaign
@@ -4798,15 +4954,7 @@ for (const id of ["replies-sentiment", "replies-status", "replies-kind"]) $(id).
   repliesSel.clear();
   loadReplies();
 };
-// The dropdown and the campaigns table set the same selection, so they move the
-// copy-audit card the same way. Back to "All campaigns" means there is no one
-// campaign whose copy to show.
-$("replies-campaign").onchange = () => {
-  const sel = $("replies-campaign");
-  loadReplies();
-  if (sel.value) showSubjects(sel.value, sel.selectedOptions[0].textContent);
-  else $("subjects-card").hidden = true;
-};
+$("replies-campaign").onchange = () => loadReplies();
 
 // A campaign attributed through a colleague is a weaker claim than the lead's
 // own, so it says so and names who — "Acme Q3" that actually came from Mary
@@ -4825,13 +4973,14 @@ function renderLastKnownCampaign(r) {
 const DAILY_COLUMN_ORDER = [
   "email_sent", "email_received", "dm_sent", "dm_received",
   "connects_sent", "connects_accepted",
-  "positive", "negative", "invalid", "autoreply", "meetings",
+  "positive", "negative", "invalid", "autoreply", "neutral", "meetings",
 ];
 const DAILY_LABELS = {
   email_sent: "Email sent", email_received: "Email received",
   dm_sent: "DM sent", dm_received: "DM received",
   connects_sent: "Connects sent", connects_accepted: "Connects accepted",
   positive: "Positive", negative: "Negative", invalid: "Invalid", autoreply: "Autoreply",
+  neutral: "Neutral",
   meetings: "Meetings",
 };
 
@@ -4868,6 +5017,7 @@ const OUTCOME_SERIES = [
   { key: "negative", label: "Negative", css: "--status-critical" },
   { key: "invalid", label: "Invalid", css: "--warn-text" },
   { key: "autoreply", label: "Autoreply", css: "--series-4" },
+  { key: "neutral", label: "Neutral", css: "--series-6" },
   { key: "meetings", label: "Meetings", css: "--series-5" },
 ];
 
@@ -4957,53 +5107,6 @@ document.querySelectorAll('input[name="outcomescale"]').forEach(el => {
   el.onchange = () => { if (state.daily) renderDaily(state.daily); };
 });
 
-const campaignSubjects = { campaignId: null, name: "" };
-
-// The campaigns table's row click filters the replies above; the copy audit is
-// the one thing that list cannot show, so it stays — as its own card that
-// follows the same selection.
-async function showSubjects(campaignId, name) {
-  campaignSubjects.campaignId = campaignId;
-  campaignSubjects.name = name;
-  $("subjects-card").hidden = false;
-  $("subjects-sub").textContent = `${name} — expand a row to audit the exact copy sent`;
-  $("subjects").innerHTML = '<div class="stale">Loading…</div>';
-  const d = await get(`/api/campaigns/subjects?campaign_id=${campaignId}&limit=25`)
-    .catch(e => { toast(e.message); return null; });
-  if (!d) { $("subjects").innerHTML = ""; return; }
-  renderSubjects(d);
-}
-
-function renderSubjects(d) {
-  if (!d) return;
-  renderTable("subjects", [
-    { key: "subject", label: "Subject", wrap: true },
-    { key: "sends", label: "Sends", num: true, render: r => fmt(r.sends) },
-    { key: "replies", label: "Replies", num: true, render: r => fmt(r.replies) },
-    { key: "reply_rate", label: "Reply rate", num: true, render: r => pct(r.reply_rate) },
-    { key: "sample_event_id", label: "Copy", sortVal: () => 0,
-      render: r => r.sample_event_id
-        ? `<button class="small" onclick="toggleCopy(this, ${r.sample_event_id})">View full copy</button>` : "–" },
-  ], d.subjects, { empty: "No subjects recorded for this campaign." });
-}
-
-window.toggleCopy = async function (btn, eventId) {
-  const tr = btn.closest("tr");
-  const existing = tr.nextElementSibling;
-  if (existing && existing.classList.contains("copy-row")) { existing.remove(); btn.textContent = "View full copy"; return; }
-  btn.textContent = "Loading…";
-  try {
-    const d = await api(`/api/events/${eventId}/body`);
-    const row = document.createElement("tr");
-    row.className = "copy-row";
-    row.innerHTML = `<td colspan="${tr.children.length}" class="wrap">
-      <div class="copy-body">${esc(d.body || "(empty body)")}</div>
-      <div class="stale">${esc(d.event_type)} · ${dt(d.created_at)} UTC · from ${esc(d.sender ?? "?")}${d.body_truncated ? " · (stored copy truncated)" : ""}</div></td>`;
-    tr.after(row);
-    btn.textContent = "Hide copy";
-  } catch (e) { toast(e.message); btn.textContent = "View full copy"; }
-};
-
 /* ---------- attributes ---------- */
 async function loadAttributes() {
   if (!state.campaigns.length) {
@@ -5012,9 +5115,17 @@ async function loadAttributes() {
   const field = $("attr-field").value, min = $("attr-min").value || 1;
   const cid = $("attr-campaign").value;
   skeleton("attributes");
-  const d = await get(`/api/attributes?field=${field}&min_sample=${min}${cid ? `&campaign_id=${cid}` : ""}`)
+  const d = await getR(`/api/attributes?field=${field}&min_sample=${min}${cid ? `&campaign_id=${cid}` : ""}`)
     .catch(e => { toast(e.message); return null; });
   if (!d) return;
+  // Say which window, and which KIND of window. An activity window counts the
+  // send and the reply inside the same range, so a lead contacted on day 13
+  // who replies on day 16 sits in the denominator and not the numerator —
+  // exactly what the Campaigns table means by a date range. Two panes on one
+  // page disagreeing about "the last 14 days" would be worse than either.
+  $("attr-sub").textContent = d.window === "activity"
+    ? `${rangeLabel()} — contacted and replied both counted inside the range`
+    : "all time — lifetime counters, unaffected by the date range";
   renderTable("attributes", [
     { key: "value", label: "Value", wrap: true },
     { key: "contacted", label: "Contacted", num: true, render: r => fmt(r.contacted) },

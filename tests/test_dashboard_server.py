@@ -585,3 +585,55 @@ def test_export_route_accepts_a_large_id_selection(base_url):
         body={"fields": ["name", "email"], "lead_ids": ids}, headers=CSRF)
     assert status == 202, payload
     assert len(json.dumps({"lead_ids": ids})) > dashboard_server.MAX_BODY_BYTES
+
+
+def test_linking_a_conversation_can_be_undone_and_reversed(base_url):
+    """The dashboard had a way to link and no way to unlink.
+
+    Picking the wrong origin was therefore unrecoverable without a shell: the
+    reverse direction reads as a cycle and is refused. The refusal now names
+    the link standing in the way, and /api/leads/unlink removes it.
+    """
+    alice = om.add_lead("Alice Origin", company="Acme Corp",
+                        email="alice@acme-example.com")["id"]
+    bob = om.add_lead("Bob Forwarded", company="Acme Corp",
+                      email="bob@acme-example.com")["id"]
+
+    status, payload = _request(base_url, "/api/leads/link", method="POST",
+                               body={"from_lead_id": alice, "to_lead_id": bob},
+                               headers=CSRF)
+    assert status == 200, payload
+    assert payload["status"] == "linked"
+
+    # Same direction again is a no-op, and says so rather than reporting success.
+    status, payload = _request(base_url, "/api/leads/link", method="POST",
+                               body={"from_lead_id": alice, "to_lead_id": bob},
+                               headers=CSRF)
+    assert (status, payload["status"]) == (200, "exists")
+
+    # The other direction is refused, with the way out in the payload.
+    status, payload = _request(base_url, "/api/leads/link", method="POST",
+                               body={"from_lead_id": bob, "to_lead_id": alice},
+                               headers=CSRF)
+    assert status == 409, payload
+    assert payload["reason"] == "reverse_exists"
+    assert "Alice Origin" in payload["error"] and "Bob Forwarded" in payload["error"]
+
+    # Unlink takes the pair in either order -- "unlink these two" from a
+    # surface does not carry a direction.
+    status, payload = _request(base_url, "/api/leads/unlink", method="POST",
+                               body={"from_lead_id": bob, "to_lead_id": alice},
+                               headers=CSRF)
+    assert (status, payload["removed"]) == (200, 1)
+
+    status, payload = _request(base_url, "/api/leads/link", method="POST",
+                               body={"from_lead_id": bob, "to_lead_id": alice},
+                               headers=CSRF)
+    assert (status, payload["status"]) == (200, "linked")
+
+
+def test_unlink_requires_both_leads(base_url):
+    status, payload = _request(base_url, "/api/leads/unlink", method="POST",
+                               body={"from_lead_id": 1}, headers=CSRF)
+    assert status == 400
+    assert "required" in payload["error"]

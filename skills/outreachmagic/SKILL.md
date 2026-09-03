@@ -4,7 +4,7 @@ description: >
   Your agent goes blind after send. Sync sequencer webhooks, research leads
   via Serper, and find/verify emails — all in one local SQLite DB your agent
   queries directly.
-version: 1.7.1
+version: 1.8.0
 author: Outreach Magic
 license: MIT
 platforms: [macos, linux]
@@ -100,7 +100,7 @@ Config keys: `data_root` (share DB across agents), `api_base_url`, `dev_repo`.
 ## Platform install
 
 ```bash
-OM_VERSION=v1.7.1
+OM_VERSION=v1.8.0
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"
@@ -223,6 +223,9 @@ The Campaigns table is a command too — reach for it before writing reply SQL:
 # "positive human replies in the last 30 days, by campaign"
 python3 scripts/pipeline.py campaign-audit --workspace acme --since 30d --kind human --json
 python3 scripts/pipeline.py campaign-audit --workspace acme --exclude-tag existing_customer
+# per-day sends and replies, and this window against the one before it
+python3 scripts/pipeline.py campaign-audit --workspace acme --since 14d --by-day --json
+python3 scripts/pipeline.py campaign-audit --workspace acme --since 14d --compare-previous-window
 ```
 
 `campaign-audit` returns one row per campaign plus a `totals` row. `--kind`
@@ -230,7 +233,19 @@ narrows the reply and sentiment columns only (sends stay whole, or the rates
 describe a population that does not exist); `--tag` / `--exclude-tag` narrow
 every column. Hand-writing the reply condition is how the date filter gets
 swallowed by operator precedence and a 30-day question returns all-time totals —
-see `references/query-guide.md`.
+see `references/query-guide.md`. `--by-day` covers the daily breakdown, so that
+is not a reason to write SQL either; `references/sql-pitfalls.md` lists the rest.
+
+"Which titles / industries actually reply" is a command too:
+
+```bash
+python3 scripts/pipeline.py attribute-audit --workspace acme --since 14d --field title --json
+```
+
+Same window and filters as `campaign-audit`, grouped by a lead attribute.
+Positives are dated from `first_positive_at`, not `current_sentiment_since` —
+that column is when the status LAST changed, so windowing on it drops every
+lead whose status has not moved since.
 
 A DNSBL result of `check_failed` means the list refused or timed out — **it is not a
 listing**. Report it as "could not check", never as blacklisted.
@@ -257,7 +272,7 @@ python3 scripts/pipeline.py pull --kind events       # webhook events only
 | Lead rows / pipeline detail | `show` / `lead-table` (use `--limit`) |
 | All-time totals | `stats` / `campaigns --json` |
 | Tag / LinkedIn connection counts | `workspace summary --workspace <slug> --json` |
-| Message bodies / copy winners | `history`, `copy-insights` |
+| Message bodies | `history` |
 | Fresh webhook events | `pull` or `pull --kind events` |
 | Dashboard / connection health | `status` / `connections` |
 
@@ -285,7 +300,6 @@ pipeline.py campaigns                             # per-campaign counts
 pipeline.py query engagement --workspace W --since 48h --json
 pipeline.py query replies --workspace W --since 7d --json
 pipeline.py workspace summary --workspace W --json
-pipeline.py copy-insights --lead-status interested --json
 pipeline.py phone list --lead-id 42                # numbers on a lead (or --company-id)
 pipeline.py phone add --lead-id 42 --phone "612-555-0143" --label mobile --source apollo
 pipeline.py status                                # dashboard overview

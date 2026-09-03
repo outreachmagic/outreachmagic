@@ -40,8 +40,6 @@ STAGE_EMOJI = {
     "not_interested": "✖", "lost": "🚫",
 }
 
-ATTRIBUTE_INSIGHT_FIELDS = ("title", "industry", "headcount")
-
 # Phone numbers carry two orthogonal facts, kept in two columns so neither can
 # be read as the other:
 #   label  — what KIND of number it is (who picks up)

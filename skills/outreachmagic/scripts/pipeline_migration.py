@@ -285,8 +285,8 @@ def ensure_derived_lead_stage(conn: sqlite3.Connection) -> None:
 
     Pipeline stage is per-workspace (workspace_leads.status): the same lead can be
     `replied` in one workspace and `prospecting` in another, so an org-wide stage
-    is ill-defined by construction. But formatters.py, the stats breakdown,
-    copy-insights and merge all read leads.stage, and rewriting every org-wide
+    is ill-defined by construction. But formatters.py, the stats breakdown
+    and merge all read leads.stage, and rewriting every org-wide
     report to be workspace-scoped is a much bigger change than this one.
 
     So: workspace_leads.status is the single source of truth and the only thing on

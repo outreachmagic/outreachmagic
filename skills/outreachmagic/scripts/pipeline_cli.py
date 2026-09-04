@@ -1429,6 +1429,7 @@ def main():
 
     deliverability_cli.register_deliverability_parser(sub)
     deliverability_cli.register_campaign_replies_parser(sub)
+    deliverability_cli.register_campaign_role_parser(sub)
     deliverability_cli.register_campaign_audit_parser(sub)
     deliverability_cli.register_attribute_audit_parser(sub)
     query_cli.register_query_parser(sub)
@@ -3284,6 +3285,8 @@ def main():
         deliverability_cli.cmd_deliverability(args)
     elif args.command == "campaign-replies":
         deliverability_cli.cmd_campaign_replies(args)
+    elif args.command == "campaign-role":
+        deliverability_cli.cmd_campaign_role(args)
     elif args.command == "campaign-audit":
         deliverability_cli.cmd_campaign_audit(args)
     elif args.command == "attribute-audit":

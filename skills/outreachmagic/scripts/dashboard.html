@@ -686,13 +686,67 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
   </section>
 
   <section id="tab-campaigns" hidden>
-    <div class="card">
-      <h2>Daily activity <span class="sub">every event type per day (UTC)</span></h2>
+    <!-- One bar, one state object, one query string. Everything below reads
+         from it: the charts, the leads list and the campaigns table are three
+         views of one filtered population, not three populations that happen to
+         share a page. Controls that select the POPULATION live here; controls
+         that select a PRESENTATION (the positives anchor, the chart's axis)
+         stay with the view they affect -- a global bar that silently swallowed
+         those would trade one confusion for another. -->
+    <div class="card" id="campaigns-filterbar">
+      <h2>Filters <span class="sub">apply to the chart, the leads list and the campaigns table below</span></h2>
       <div class="controls">
         <label>Campaign
-          <select id="daily-campaign"><option value="">All campaigns</option></select>
+          <select id="cf-campaign"><option value="">All campaigns</option></select>
         </label>
+        <label title="A booking, a bounce and an out-of-office all set a lead's sentiment, so all of them land in these numbers unless you say which you meant. Narrows replies and sentiment columns only — sends are always counted in full, or the rates would describe a population that does not exist.">Kind
+          <select id="cf-kind">
+            <option value="all">All kinds</option>
+            <option value="meeting">Meetings</option>
+            <option value="human">Replies (human)</option>
+            <option value="auto_reply">Auto-replies</option>
+            <option value="bounce">Bounced</option>
+            <option value="status_only">Status only</option>
+          </select>
+        </label>
+        <label>Sentiment
+          <select id="cf-sentiment"><option value="">All</option></select>
+        </label>
+        <label>Lead status
+          <select id="cf-status"><option value="">All</option></select>
+        </label>
+        <span class="spacer"></span>
+        <span data-freshness class="flag" title="How old the local data is"></span>
       </div>
+      <div class="controls" style="margin-top:6px;align-items:center">
+        <span class="stale" style="font-size:12px">Tags:</span>
+        <span id="campaigns-tag-chips" style="display:flex;gap:5px;flex-wrap:wrap"></span>
+        <select id="campaigns-tag-add" style="width:200px" title="Tags carried by leads these campaigns reached in the selected range">
+          <option value="">+ add tag…</option>
+        </select>
+        <label style="font-size:12px" title="Applies to included tags only">
+          <input type="radio" name="camptagmode" value="any" checked> any
+        </label>
+        <label style="font-size:12px">
+          <input type="radio" name="camptagmode" value="all"> all
+        </label>
+        <span id="campaigns-tag-expression" class="stale" style="font-size:12px"></span>
+      </div>
+      <div class="controls" style="margin-top:6px;align-items:center">
+        <span class="stale" style="font-size:12px">Include:</span>
+        <label title="Booking tools publish the calendar slot (&quot;30 Minute Meeting&quot;) as the campaign on every scheduled-meeting webhook. That is a slot on your calendar, not outbound you can judge, and counting it put the same lead in two campaigns.">
+          <input type="checkbox" id="cf-scheduling"> scheduling tools (Calendly &amp; co)
+        </label>
+        <label title="Campaigns you have marked as not-outreach — a customer check-in sequence, say. Their events still ingest and still show on the contact; they are only kept out of these numbers. Tick to see them, with an 'excluded' chip.">
+          <input type="checkbox" id="cf-excluded"> excluded campaigns
+        </label>
+        <span class="spacer"></span>
+        <span id="cf-active" class="stale"></span>
+        <button class="small" id="cf-clear" hidden>Clear all</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Daily activity <span class="sub" id="daily-sub">every event type per day (UTC)</span></h2>
       <div class="chart-wrap"><canvas id="daily-chart"></canvas></div>
       <div class="controls" style="margin-top:6px">
         <span class="stale">Outcomes</span>
@@ -708,26 +762,15 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <div id="daily-matrix"></div>
     </div>
     <div class="card">
-      <h2>Replies <span class="sub">one row per lead by current sentiment — matches the daily columns for the selected range</span></h2>
+      <!-- DOM ids stay `replies-*` and the endpoint stays /api/campaigns/replies:
+           the heading changed because the list did, and renaming ~40 sites buys
+           nothing. A meeting booked in range now lists here too -- the card is
+           not a reply list and has not been one since the LinkedIn fallback. -->
+      <h2>Leads <span class="sub">one row per lead active in this range — replies, bookings, bounces and status changes, matching the daily columns</span></h2>
+      <!-- Campaign / sentiment / lead status / kind moved to the tab's filter
+           bar. They were asked here AND there, and the two answers did not have
+           to agree. -->
       <div class="controls">
-        <label>Campaign
-          <select id="replies-campaign"><option value="">All campaigns</option></select>
-        </label>
-        <label>Sentiment
-          <select id="replies-sentiment"><option value="">All</option></select>
-        </label>
-        <label>Lead status
-          <select id="replies-status"><option value="">All</option></select>
-        </label>
-        <label title="A bounce and an out-of-office both set a sentiment, so all three land in this list. This is how you ask for the one you meant.">Show
-          <select id="replies-kind">
-            <option value="all">Everything</option>
-            <option value="human">Human replies only</option>
-            <option value="auto_reply">Auto-replies / OOO only</option>
-            <option value="human,auto_reply">Replies + auto-replies</option>
-            <option value="bounce">Bounces only</option>
-          </select>
-        </label>
         <span class="spacer"></span>
         <span id="replies-sel" class="stale"></span>
         <button class="small" id="replies-clear" hidden>Clear selection</button>
@@ -740,46 +783,19 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
       <div id="replies-table"></div>
     </div>
     <div class="card">
-      <h2>Campaigns <span class="sub">click a campaign to filter the replies above to it</span></h2>
+      <h2>Campaigns <span class="sub">click a campaign to filter this whole tab to it</span></h2>
+      <!-- Only the positives anchor stays here: it selects how THIS table's
+           column is dated, not which leads are in scope. Population filters
+           live in the bar at the top of the tab. -->
       <div class="controls">
-        <label title="Booking tools publish the calendar slot (&quot;30 Minute Meeting&quot;) as the campaign on every scheduled-meeting webhook. That is a slot on your calendar, not outbound you can judge, and counting it put the same lead in two campaigns.">
-          <input type="checkbox" id="campaigns-scheduling"> Include scheduling tools (Calendly &amp; co)
-        </label>
         <label title="First positive: counts a lead in the period it FIRST turned positive, and keeps it there even if it later goes cold — so a past month's number stops moving. Currently positive: who is warm right now, dated from the start of their current run.">Positives
           <select id="campaigns-anchor">
             <option value="first">First turned positive</option>
             <option value="current">Currently positive</option>
           </select>
         </label>
-        <label title="A bounce is not a reply and an out-of-office is not a human. All three set a lead's sentiment, so all three land in these columns unless you say which you meant. Narrows the reply and sentiment columns only — sends are always counted in full, or the rates would describe a population that does not exist.">Show
-          <select id="campaigns-kind">
-            <option value="all">All kinds</option>
-            <option value="human">Replies (human)</option>
-            <option value="auto_reply">Auto-replies</option>
-            <option value="bounce">Bounced</option>
-            <option value="status_only">Status only</option>
-          </select>
-        </label>
         <span class="spacer"></span>
-        <span data-freshness class="flag" title="How old the local data is"></span>
         <span id="campaigns-note" class="stale"></span>
-      </div>
-      <!-- Same tag bar as Contacts (makeTagBar), so "exclude existing_customer"
-           means the same thing on both pages. Tags describe the lead, so unlike
-           the kind filter they narrow every column including sends. -->
-      <div class="controls" style="margin-top:6px;align-items:center">
-        <span class="stale" style="font-size:12px">Tags:</span>
-        <span id="campaigns-tag-chips" style="display:flex;gap:5px;flex-wrap:wrap"></span>
-        <select id="campaigns-tag-add" style="width:200px" title="Tags carried by leads these campaigns reached in the selected range">
-          <option value="">+ add tag…</option>
-        </select>
-        <label style="font-size:12px" title="Applies to included tags only">
-          <input type="radio" name="camptagmode" value="any" checked> any
-        </label>
-        <label style="font-size:12px">
-          <input type="radio" name="camptagmode" value="all"> all
-        </label>
-        <span id="campaigns-tag-expression" class="stale" style="font-size:12px"></span>
       </div>
       <div id="campaigns"></div>
     </div>
@@ -1545,11 +1561,17 @@ function resetWorkspaceScopedState() {
   Object.assign(qualityState, { bucket: null, missing: null, offset: 0, total: 0, rows: [], summary: null });
   qualityState.sel = new Set();
   for (const id of ["contacts-campaign", "contacts-tag", "contacts-sender",
-                    "daily-campaign", "attr-campaign", "replies-campaign",
-                    "replies-sentiment", "replies-status"]) {
+                    "attr-campaign"]) {
     const el = $(id);
     if (el) el.value = "";
   }
+  // Campaign ids are per-workspace, so carrying one across a switch filters the
+  // new workspace by a campaign it does not have. Inclusion toggles are
+  // preferences about how to read numbers, so those survive.
+  Object.assign(campaignsFilter,
+                { campaign_id: "", kind: "all", sentiment: "", status_label: "" });
+  campaignsFilter.toInputs();
+  campaignsFilter.persist();
   // The export dialog's column list is per-workspace (personalization fields
   // differ), so a switch mid-configure would offer the wrong columns.
   const exportPanel = $("contacts-export");
@@ -1647,7 +1669,14 @@ function loadTab() {
      quality: loadQuality,
      // The tag vocabulary is scoped to the campaigns and window on screen, so
      // it is refetched with them rather than once at startup.
-     campaigns: () => { loadCampaigns(); campaignsTags.fillOptions(); },
+     campaigns: () => {
+       if (!$("campaigns-filterbar").dataset.restored) {
+         campaignsFilter.load();
+         $("campaigns-filterbar").dataset.restored = "1";
+       }
+       refreshCampaignsTab();
+       campaignsTags.fillOptions();
+     },
      attributes: loadAttributes, crm: loadCrm,
      activity: () => loadActivity(true), sync: loadOutbox })[state.tab]();
   markRefreshed();
@@ -2636,7 +2665,7 @@ const campaignsTags = makeTagBar({
   chips: "campaigns-tag-chips", input: "campaigns-tag-add",
   mode: "camptagmode", expr: "campaigns-tag-expression",
   picker: "select", optionsUrl: () => withRange("/api/tags"),
-  onChange: () => loadCampaigns(),
+  onChange: () => refreshCampaignsTab(),
 });
 
 function contactsQuery() {
@@ -4180,6 +4209,7 @@ const PANES = {
   "deliverability.domain":     "Deliverability › Sending domain detail",
   "deliverability.blacklist":  "Deliverability › Blacklist report",
   "deliverability.bounce":     "Deliverability › Bounce detail",
+  "campaigns.role":            "Campaigns › Campaign reporting role",
   "quality.bucket":            "Data quality › Bucket detail",
   "sync.outbox":               "Sync › Outbox item detail",
 };
@@ -4652,42 +4682,139 @@ async function previewEmptyLeads(scope) {
 $("empty-preview-btn").onclick = () => previewEmptyLeads("workspace");
 $("empty-preview-org-btn").onclick = () => previewEmptyLeads("org");
 
-/* ---------- campaigns ---------- */
+/* ---------- campaigns: one filter state for the whole tab ---------- */
+// Campaign was asked in three places and the three answers did not have to
+// agree, which is why loadCampaigns used to apologise in prose that "the daily
+// chart above is unfiltered". One object, one query string, every view.
+//
+// The line this draws: a filter here selects the POPULATION, so every view
+// honours it. A control that selects a PRESENTATION -- how the positives column
+// is dated, whether the chart plots counts or rates -- stays with its own view.
+// Sweeping those in here would trade one confusion for another.
+const CAMPAIGN_FILTER_KEY = "om.campaignsFilter";
+const campaignsFilter = {
+  campaign_id: "", kind: "all", sentiment: "", status_label: "",
+  include_scheduling: false, include_excluded: false,
+
+  load() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(CAMPAIGN_FILTER_KEY) || "null"); }
+    catch { saved = null; }
+    if (!saved) {
+      // Read-old / write-new for one release, so an existing browser keeps the
+      // toggles it had. Delete this branch in 1.10.0 (see CHANGELOG).
+      saved = {
+        include_scheduling: localStorage.getItem("om.includeScheduling") === "1",
+        kind: localStorage.getItem("om.campaignKind") || "all",
+      };
+    }
+    Object.assign(this, saved);
+    // A link beats a saved preference: someone opened this exact view on purpose.
+    const hash = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+    for (const k of ["campaign_id", "kind", "sentiment", "status_label"]) {
+      if (hash.has(k)) this[k] = hash.get(k);
+    }
+    for (const k of ["include_scheduling", "include_excluded"]) {
+      if (hash.has(k)) this[k] = hash.get(k) === "1";
+    }
+    this.toInputs();
+  },
+  toInputs() {
+    $("cf-campaign").value = this.campaign_id || "";
+    $("cf-kind").value = this.kind || "all";
+    $("cf-sentiment").value = this.sentiment || "";
+    $("cf-status").value = this.status_label || "";
+    $("cf-scheduling").checked = !!this.include_scheduling;
+    $("cf-excluded").checked = !!this.include_excluded;
+  },
+  fromInputs() {
+    this.campaign_id = $("cf-campaign").value;
+    this.kind = $("cf-kind").value;
+    this.sentiment = $("cf-sentiment").value;
+    this.status_label = $("cf-status").value;
+    this.include_scheduling = $("cf-scheduling").checked;
+    this.include_excluded = $("cf-excluded").checked;
+  },
+  set(patch = {}) {
+    Object.assign(this, patch);
+    this.toInputs();
+    this.persist();
+    refreshCampaignsTab();
+  },
+  persist() {
+    const { campaign_id, kind, sentiment, status_label,
+            include_scheduling, include_excluded } = this;
+    const plain = { campaign_id, kind, sentiment, status_label,
+                    include_scheduling, include_excluded };
+    try { localStorage.setItem(CAMPAIGN_FILTER_KEY, JSON.stringify(plain)); } catch {}
+    // The state IS the URL, so a filtered view is a link someone can send and a
+    // browser Back away. That is the whole reason this shape is standard.
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(plain)) {
+      if (v === "" || v === false || v == null) continue;
+      p.set(k, v === true ? "1" : v);
+    }
+    const next = p.toString();
+    if (next !== (location.hash || "").replace(/^#/, "")) {
+      history.replaceState(null, "", next ? `#${next}` : location.pathname + location.search);
+    }
+  },
+  // Population filters only. Tags are appended by campaignsTags, which owns them.
+  params(p = new URLSearchParams()) {
+    if (this.campaign_id) p.set("campaign_id", this.campaign_id);
+    if (this.include_scheduling) p.set("include_scheduling", "1");
+    if (this.include_excluded) p.set("include_excluded", "1");
+    return campaignsTags.params(p);
+  },
+  active() {
+    const out = [];
+    if (this.campaign_id) {
+      const c = (state.campaigns || []).find(c => String(c.id) === String(this.campaign_id));
+      out.push(`campaign: ${c ? c.name : this.campaign_id}`);
+    }
+    if (this.kind && this.kind !== "all") out.push(`kind: ${REPLY_KIND_LABELS[this.kind] || this.kind}`);
+    if (this.sentiment) out.push(`sentiment: ${this.sentiment}`);
+    if (this.status_label) out.push(`status: ${this.status_label}`);
+    if (this.include_scheduling) out.push("+ scheduling tools");
+    if (this.include_excluded) out.push("+ excluded campaigns");
+    if (campaignsTags.has()) out.push("tags");
+    return out;
+  },
+  clear() {
+    this.set({ campaign_id: "", kind: "all", sentiment: "", status_label: "",
+               include_scheduling: false, include_excluded: false });
+    campaignsTags.clear();
+  },
+};
+
+function refreshCampaignsTab() {
+  const chips = campaignsFilter.active();
+  $("cf-active").textContent = chips.length
+    ? `${chips.length} filter${chips.length === 1 ? "" : "s"}: ${chips.join(" · ")}`
+    : "no filters — the whole workspace for this date range";
+  $("cf-clear").hidden = !chips.length;
+  loadCampaigns();
+}
+
 async function loadCampaigns() {
   skeleton("campaigns", "daily-matrix");
-  // One toggle, both requests: the matrix and the table must agree on whether a
-  // Calendly slot counts as a campaign, or their totals stop reconciling.
-  // Restored once per page load, before the first read of .checked.
-  if (!$("campaigns-scheduling").dataset.restored) {
-    $("campaigns-scheduling").checked = localStorage.getItem("om.includeScheduling") === "1";
-    $("campaigns-scheduling").dataset.restored = "1";
-  }
   if (!$("campaigns-anchor").dataset.restored) {
     $("campaigns-anchor").value = localStorage.getItem("om.positiveAnchor") || "first";
     $("campaigns-anchor").dataset.restored = "1";
   }
-  if (!$("campaigns-kind").dataset.restored) {
-    $("campaigns-kind").value = localStorage.getItem("om.campaignKind") || "all";
-    $("campaigns-kind").dataset.restored = "1";
-  }
-  const sched = $("campaigns-scheduling").checked ? "include_scheduling=1" : "";
   // Only the campaigns table reads the anchor: the daily matrix is a per-day
   // series, and "first turned positive" is already the day it plots.
   const anchor = `positive_anchor=${encodeURIComponent($("campaigns-anchor").value)}`;
-  const kind = $("campaigns-kind").value;
-  // Kind and tags go to the table only. The daily matrix has no kind concept —
-  // wiring one in is a separate change, and letting it silently ignore the
-  // control would put two different populations on the same screen. The note
-  // line below says so whenever a filter is active.
-  const auditQs = campaignsTags.params(new URLSearchParams());
+  const kind = campaignsFilter.kind;
+  // Both requests take the same population filters, so the chart and the table
+  // can no longer describe two different sets of leads under one bar.
+  const auditQs = campaignsFilter.params();
   if (kind && kind !== "all") auditQs.set("kind", kind);
-  const dailyCampaign = $("daily-campaign").value;
-  const dailyQs = [dailyCampaign ? `campaign_id=${dailyCampaign}` : "", sched]
-    .filter(Boolean).join("&");
+  const dailyQs = campaignsFilter.params();
   const [audit, daily] = await Promise.all([
-    getR("/api/campaigns?" + [sched, anchor, "by_day=1", auditQs.toString()]
+    getR("/api/campaigns?" + [anchor, "by_day=1", auditQs.toString()]
       .filter(Boolean).join("&")),
-    getR("/api/campaigns/daily" + (dailyQs ? `?${dailyQs}` : "")),
+    getR("/api/campaigns/daily?" + dailyQs.toString()),
   ]).catch(e => { toast(e.message); return [null, null]; });
   if (!audit) return;
   state.campaigns = audit.campaigns;
@@ -4696,19 +4823,37 @@ async function loadCampaigns() {
   renderDaily(daily);
   loadReplies();
   const scheduling = audit.scheduling_excluded || 0;
+  const roleExcluded = audit.role_excluded || 0;
+  // Kind and sentiment genuinely do not apply to a per-day event matrix. Say so
+  // rather than faking it -- a stated exception is not confusing, a silent one is.
+  const chartScope = ["campaign", campaignsTags.has() && "tags", "date"]
+    .filter(Boolean).join(", ");
+  $("daily-sub").textContent =
+    `every event type per day (UTC) — filtered by ${chartScope}`
+    + (kind && kind !== "all" || campaignsFilter.sentiment
+        ? "; kind and sentiment apply to the tables below" : "");
   const notes = [];
   if (kind && kind !== "all") {
     notes.push(`Showing ${REPLY_KIND_LABELS[kind] || kind} only — replies and sentiment columns; `
-      + "sends are counted in full. The daily chart above is unfiltered.");
+      + "sends are counted in full.");
   }
   if (campaignsTags.has()) notes.push("Tag filter applies to every column.");
-  notes.push($("campaigns-scheduling").checked
+  notes.push(campaignsFilter.include_scheduling
     ? "Scheduling tools included — a booked slot may appear as its own campaign."
     : (scheduling ? `${fmt(scheduling)} scheduling campaign${scheduling === 1 ? "" : "s"} hidden; `
         + "their meetings are counted against the campaign that earned them." : ""));
+  if (!campaignsFilter.include_excluded && roleExcluded) {
+    notes.push(`${fmt(roleExcluded)} campaign${roleExcluded === 1 ? "" : "s"} excluded from `
+      + "these stats — their events are still on the contact.");
+  }
   $("campaigns-note").textContent = notes.filter(Boolean).join(" ");
   renderTable("campaigns", [
     { key: "name", label: "Campaign", render: r => esc(r.name) + campaignSpark(r.daily)
+        + (r.reporting_role === "excluded"
+            ? ' <span class="flag warn" title="Marked as not outreach — kept out of these numbers by default. Its events are still on the contact.">excluded</span>'
+            : "")
+        + ` <button class="small" data-role-campaign="${r.id}" data-role-name="${esc(r.name)}"
+             title="Mark this campaign outbound / booking tool / not-outreach">⋯</button>`
         + (r.is_unattributed
             ? ' <span class="flag warn" title="Meetings and replies we could not trace back to any campaign. Shown so excluding scheduling tools never silently loses a booking.">unattributed</span>'
             : r.is_scheduling
@@ -4745,47 +4890,99 @@ async function loadCampaigns() {
     // second lead list underneath. There was only ever one question being asked
     // of both — "who replied, out of which campaign" — and two tables answering
     // it separately meant scrolling past the answer to reach a copy of it.
-    onRowClick: r => selectCampaign(r.id) });
+    onRowClick: r => selectCampaign(r.id),
+    onDraw: el => {
+      el.querySelectorAll("[data-role-campaign]").forEach(b => b.onclick = (e) => {
+        e.stopPropagation();          // marking is not selecting
+        openCampaignRole(+b.dataset.roleCampaign, b.dataset.roleName);
+      });
+    } });
 }
 
+// Excluding a campaign is reversible and visible: the row keeps an "excluded"
+// chip whenever the bar's toggle is on, so a hidden thing can always be found
+// and put back. A hidden thing with no way to see it is the failure mode of
+// every exclusion feature.
+function openCampaignRole(campaignId, name) {
+  const current = (state.campaigns || [])
+    .find(c => c.id === campaignId)?.reporting_role || "auto";
+  openEditPanel(esc(name), "campaign reporting role", "campaigns.role");
+  $("edit-body").innerHTML = `
+    <h3 style="font-size:13px;margin:0 0 6px">How should reporting treat this campaign?</h3>
+    <div class="sub" style="font-weight:400;color:var(--ink-muted);margin-bottom:8px">
+      Events keep arriving and keep showing on the contact either way. This only
+      decides whether the campaign counts towards the numbers on this page.</div>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      ${[["auto", "Derive it (default)",
+          "A campaign whose every event came from a booking tool is treated as a calendar."],
+         ["outbound", "Outbound campaign",
+          "Always count it, even if it looks like a calendar."],
+         ["scheduling", "Booking tool",
+          "A calendar, not outbound — governed by the “scheduling tools” toggle."],
+         ["excluded", "Not outreach — exclude from stats",
+          "A customer check-in or similar. Kept out of every chart, table and rate."]]
+        .map(([v, label, help]) => `<label style="cursor:pointer">
+          <input type="radio" name="camprole" value="${v}"${current === v ? " checked" : ""}>
+          <b>${esc(label)}</b>
+          <div class="sub" style="font-weight:400;color:var(--ink-muted);margin-left:20px">${help}</div>
+        </label>`).join("")}
+    </div>
+    <div class="row" style="margin-top:10px"><button class="primary" id="camprole-save">Save</button></div>
+    <div class="msg" id="camprole-msg"></div>`;
+  $("camprole-save").onclick = () => {
+    const role = document.querySelector('input[name="camprole"]:checked')?.value || "auto";
+    formResult("camprole-msg",
+      post("/api/campaigns/role", { campaign_id: campaignId, role }),
+      () => { dismissPanels(); refreshCampaignsTab(); });
+  };
+}
+
+// Clicking a campaign row sets the tab's filter -- the chart, the leads list
+// and the table all narrow to it together. It used to filter one card, which is
+// how the page ended up asking "which campaign" in three places.
 function selectCampaign(campaignId) {
-  $("replies-campaign").value = campaignId;
-  loadReplies();
+  campaignsFilter.set({ campaign_id: String(campaignId) });
   $("replies-table").closest(".card").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function fillCampaignSelects() {
-  for (const id of ["daily-campaign", "attr-campaign", "replies-campaign"]) {
-    const sel = $(id), cur = sel.value;
+  for (const id of ["cf-campaign", "attr-campaign"]) {
+    const sel = $(id);
+    if (!sel) continue;
+    const cur = id === "cf-campaign" ? (campaignsFilter.campaign_id || "") : sel.value;
     sel.innerHTML = '<option value="">All campaigns</option>' + state.campaigns.map(c =>
-      `<option value="${c.id}">${esc(c.name)}</option>`).join("");
+      `<option value="${c.id}">${esc(c.name)}${c.reporting_role === "excluded" ? " (excluded)" : ""}</option>`).join("");
     sel.value = cur;
   }
 }
-$("daily-campaign").onchange = loadCampaigns;
+
+for (const id of ["cf-campaign", "cf-kind", "cf-sentiment", "cf-status"]) {
+  $(id).onchange = () => { repliesSel.clear(); campaignsFilter.fromInputs(); campaignsFilter.set(); };
+}
+for (const id of ["cf-scheduling", "cf-excluded"]) {
+  $(id).onchange = () => { campaignsFilter.fromInputs(); campaignsFilter.set(); };
+}
+$("cf-clear").onclick = () => campaignsFilter.clear();
 $("campaigns-anchor").onchange = () => {
   localStorage.setItem("om.positiveAnchor", $("campaigns-anchor").value);
-  loadCampaigns();
-};
-$("campaigns-kind").onchange = () => {
-  localStorage.setItem("om.campaignKind", $("campaigns-kind").value);
-  loadCampaigns();
-};
-$("campaigns-scheduling").onchange = () => {
-  localStorage.setItem("om.includeScheduling", $("campaigns-scheduling").checked ? "1" : "");
   loadCampaigns();
 };
 
 const SENTIMENT_FLAG = { positive: "ok", negative: "bad", autoreply: "warn", invalid: "warn", neutral: "" };
 
-// A bounce is not a reply and an out-of-office is not a human. All three set a
-// lead's sentiment, so all three arrive in this list; the column says which is
-// which, and the "Show" control filters without ever hiding the total.
+// A bounce is not a reply, an out-of-office is not a human, and a booked
+// meeting is neither. All of them put a lead on this list; the column says
+// which is which, and the "Show" control filters without ever hiding the total.
 const REPLY_KIND_LABELS = {
-  human: "reply", auto_reply: "auto-reply", bounce: "bounced", status_only: "status only",
+  meeting: "meeting", human: "reply", auto_reply: "auto-reply",
+  bounce: "bounced", status_only: "status only",
 };
-const REPLY_KIND_FLAG = { human: "ok", auto_reply: "warn", bounce: "bad", status_only: "" };
-const REPLY_KIND_ORDER_LIST = ["human", "auto_reply", "bounce", "status_only"];
+const REPLY_KIND_FLAG = {
+  meeting: "ok", human: "ok", auto_reply: "warn", bounce: "bad", status_only: "",
+};
+// A booking outranks a reply: it is the strongest thing a lead can do, and a
+// lead whose only event in range is one used to read as an empty "status only".
+const REPLY_KIND_ORDER_LIST = ["meeting", "human", "auto_reply", "bounce", "status_only"];
 const REPLY_KIND_ORDER = Object.fromEntries(REPLY_KIND_ORDER_LIST.map((k, i) => [k, i]));
 
 function renderReplyKind(kind) {
@@ -4795,14 +4992,10 @@ function renderReplyKind(kind) {
 }
 
 // Default is everything -- the fix for "this looks like four replies" is a
-// column that says otherwise, not a filter that quietly drops rows. The choice
-// is remembered per browser.
+// column that says otherwise, not a filter that quietly drops rows. The kind
+// selection now lives in the tab's filter bar (campaignsFilter.kind), so the
+// list and the campaigns table can never be showing two different kinds.
 const repliesSel = new Set();
-function repliesKind() {
-  const sel = $("replies-kind");
-  if (!sel.value) sel.value = localStorage.getItem("om.repliesKind") || "all";
-  return sel.value;
-}
 function syncRepliesSel() {
   $("replies-sel").textContent = repliesSel.size ? `${repliesSel.size} selected` : "";
   $("replies-clear").hidden = !repliesSel.size;
@@ -4915,19 +5108,21 @@ function fillReplyFacet(id, rows) {
 }
 
 async function loadReplies() {
-  const qs = new URLSearchParams();
-  const cid = $("replies-campaign").value;
-  if (cid) qs.set("campaign_id", cid);
-  if ($("replies-sentiment").value) qs.set("sentiment", $("replies-sentiment").value);
-  if ($("replies-status").value) qs.set("status_label", $("replies-status").value);
-  qs.set("reply_kind", repliesKind());
+  // Reads the tab's filter bar. It used to carry its own copies of campaign,
+  // sentiment, lead status and kind, which could disagree with the table's.
+  const qs = campaignsFilter.params();
+  if (campaignsFilter.sentiment) qs.set("sentiment", campaignsFilter.sentiment);
+  if (campaignsFilter.status_label) qs.set("status_label", campaignsFilter.status_label);
+  if (campaignsFilter.kind && campaignsFilter.kind !== "all") {
+    qs.set("reply_kind", campaignsFilter.kind);
+  }
   $("replies-table").innerHTML = '<div class="stale">Loading…</div>';
   const d = await getR("/api/campaigns/replies" + (qs.toString() ? `?${qs}` : ""))
     .catch(e => { toast(e.message); return null; });
   if (!d) { $("replies-table").innerHTML = ""; $("replies-count").textContent = ""; return; }
   state.replies = d.replies;
-  fillReplyFacet("replies-sentiment", d.facets?.sentiment || []);
-  fillReplyFacet("replies-status", d.facets?.status_label || []);
+  fillReplyFacet("cf-sentiment", d.facets?.sentiment || []);
+  fillReplyFacet("cf-status", d.facets?.status_label || []);
   // The split is always stated in full, whichever kind is being shown -- the
   // original complaint was a card headed "Replies" that was mostly bounces.
   const counts = d.kind_counts || {};
@@ -4962,7 +5157,13 @@ async function loadReplies() {
     // "Since" is the sentiment anchor — it is what makes this list reconcile
     // with the daily sentiment columns. "Last activity" is the lead's most
     // recent event of any kind. They answer different questions.
-    { key: "event_at", label: "Since", render: r => dt(r.event_at), sortVal: r => r.event_at || "" },
+    // Two clocks used to share one date picker: a lead positive since July that
+    // booked today was counted in today's meeting column and missing from this
+    // list. It lists now, and this column says which fact put it here -- while
+    // the Sentiment column still truthfully reads "positive since July".
+    { key: "event_at", label: "In range because", sortVal: r => r.event_at || "",
+      render: r => `${dt(r.event_at)} <span class="stale">· ${
+        esc(REPLY_KIND_LABELS[r.reply_kind] || r.reply_kind || "")}</span>` },
     { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
   ], d.replies, { empty: "Nothing in this range for the selected kind.", pageSize: DEFAULT_PAGE_SIZE,
     onRowClick: r => openLead(r.lead_id),
@@ -4980,12 +5181,8 @@ async function loadReplies() {
     } });
   syncRepliesSel();
 }
-for (const id of ["replies-sentiment", "replies-status", "replies-kind"]) $(id).onchange = () => {
-  if (id === "replies-kind") localStorage.setItem("om.repliesKind", $(id).value);
-  repliesSel.clear();
-  loadReplies();
-};
-$("replies-campaign").onchange = () => loadReplies();
+// Sentiment / lead status / kind / campaign moved to the tab's filter bar --
+// see campaignsFilter. Their change handlers live there.
 
 // A campaign attributed through a colleague is a weaker claim than the lead's
 // own, so it says so and names who — "Acme Q3" that actually came from Mary

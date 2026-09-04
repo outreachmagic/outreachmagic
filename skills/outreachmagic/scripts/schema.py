@@ -58,6 +58,13 @@ CREATE TABLE IF NOT EXISTS campaigns (
     description     TEXT,
     status          TEXT NOT NULL DEFAULT 'active',
     workspace_id    TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+    -- How reporting should treat this campaign. NULL = derive it (a campaign
+    -- whose every event came from a booking tool is a calendar, not outbound).
+    -- 'outbound' / 'scheduling' override that derivation; 'excluded' means not
+    -- outreach at all -- a customer check-in sequence, say. An excluded
+    -- campaign's events still ingest and still show on the lead's history; it
+    -- is only kept out of the stats, and only by default.
+    reporting_role  TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

@@ -844,14 +844,42 @@ def attribute_performance(
 # scheduling event must not be reclassified as a calendar. (Confirmed against
 # the live database: no campaign mixes the two, so the two rules agree today --
 # "all" is the one that stays correct if that ever stops being true.)
-_SCHEDULING_CAMPAIGN_IDS_SQL = f"""
-    SELECT e.campaign_id
+_DERIVED_SCHEDULING_IDS_SQL = f"""
+    SELECT e.campaign_id AS campaign_id
       FROM events e
      WHERE e.campaign_id IS NOT NULL
   GROUP BY e.campaign_id
     HAVING SUM(CASE WHEN LOWER(COALESCE(json_extract(e.metadata_json, '$.platform'), ''))
                          IN ({SCHEDULING_PLATFORMS_SQL_LIST}) THEN 0 ELSE 1 END) = 0
 """
+
+# A campaign carrying an explicit reporting_role has been judged by hand, and a
+# hand judgement outranks a derivation. Anything else and the two disagree --
+# the operator marks a campaign 'outbound' and the derivation keeps hiding it.
+_MANUAL_ROLE_IDS_SQL = """
+    SELECT id FROM campaigns
+     WHERE reporting_role IS NOT NULL AND TRIM(reporting_role) != ''
+"""
+
+#: Campaigns to treat as booking tools: those explicitly marked, plus the
+#: derived ones that carry no manual role of their own.
+_SCHEDULING_CAMPAIGN_IDS_SQL = f"""
+    SELECT id AS campaign_id FROM campaigns
+     WHERE LOWER(COALESCE(reporting_role, '')) = 'scheduling'
+    UNION
+    SELECT campaign_id FROM ({_DERIVED_SCHEDULING_IDS_SQL})
+     WHERE campaign_id NOT IN ({_MANUAL_ROLE_IDS_SQL})
+"""
+
+#: Campaigns that are not outreach at all. Their events still ingest and still
+#: appear on the lead; they are only kept out of the stats, and only by default.
+_EXCLUDED_CAMPAIGN_IDS_SQL = """
+    SELECT id AS campaign_id FROM campaigns
+     WHERE LOWER(COALESCE(reporting_role, '')) = 'excluded'
+"""
+
+#: The four states of campaigns.reporting_role. NULL means "derive".
+CAMPAIGN_REPORTING_ROLES = ("outbound", "scheduling", "excluded")
 
 
 def tags_in_scope(
@@ -861,6 +889,7 @@ def tags_in_scope(
     since: Optional[str] = None,
     until: Optional[str] = None,
     include_scheduling: bool = False,
+    include_excluded: bool = False,
 ) -> dict:
     """Tags actually carried by leads the campaigns in view reached.
 
@@ -877,9 +906,13 @@ def tags_in_scope(
     if campaign_id is not None:
         campaign_sql = " AND e.campaign_id = ?"
         params.append(int(campaign_id))
-    elif not include_scheduling:
-        campaign_sql = (" AND (e.campaign_id IS NULL OR e.campaign_id NOT IN"
-                        f" ({_SCHEDULING_CAMPAIGN_IDS_SQL}))")
+    else:
+        if not include_scheduling:
+            campaign_sql += (" AND (e.campaign_id IS NULL OR e.campaign_id NOT IN"
+                             f" ({_SCHEDULING_CAMPAIGN_IDS_SQL}))")
+        if not include_excluded:
+            campaign_sql += (" AND (e.campaign_id IS NULL OR e.campaign_id NOT IN"
+                             f" ({_EXCLUDED_CAMPAIGN_IDS_SQL}))")
     rows = conn.execute(
         f"""SELECT t.tag AS tag, COUNT(DISTINCT t.lead_id) AS lead_count
               FROM workspace_lead_tags t
@@ -911,6 +944,55 @@ def _scheduling_filter(include_scheduling: bool, column: str = "campaign_id") ->
     return f" AND {column} NOT IN ({_SCHEDULING_CAMPAIGN_IDS_SQL})"
 
 
+def excluded_campaign_ids(conn: sqlite3.Connection) -> set:
+    """Campaign ids marked `reporting_role = 'excluded'` -- not outreach.
+
+    Deliberately no synthetic catch-all row, unlike the scheduling exclusion:
+    that row exists so re-attributing a booking never *loses* a meeting, whereas
+    here losing it is the entire point. Re-surfacing an excluded campaign's
+    numbers under a placeholder would recreate the confusion it was set to end.
+    """
+    return {r["campaign_id"] for r in conn.execute(_EXCLUDED_CAMPAIGN_IDS_SQL).fetchall()}
+
+
+def _excluded_filter(include_excluded: bool, column: str = "campaign_id") -> str:
+    """SQL fragment dropping excluded campaigns, or '' when they're wanted."""
+    if include_excluded:
+        return ""
+    return f" AND {column} NOT IN ({_EXCLUDED_CAMPAIGN_IDS_SQL})"
+
+
+def set_campaign_reporting_role(
+    conn: sqlite3.Connection, campaign_id: int, role: Optional[str],
+) -> dict:
+    """Set (or clear, with None/'auto') a campaign's manual reporting role."""
+    normalized = (role or "").strip().lower()
+    if normalized in ("", "auto", "none", "null"):
+        normalized = None
+    elif normalized not in CAMPAIGN_REPORTING_ROLES:
+        raise ValueError(
+            f"unknown reporting role: {role}. "
+            f"Valid: {', '.join(CAMPAIGN_REPORTING_ROLES)}, or 'auto' to derive")
+    row = conn.execute(
+        "SELECT id, name FROM campaigns WHERE id = ?", (int(campaign_id),)).fetchone()
+    if not row:
+        raise ValueError(f"unknown campaign id: {campaign_id}")
+    conn.execute("UPDATE campaigns SET reporting_role = ? WHERE id = ?",
+                 (normalized, int(campaign_id)))
+    conn.commit()
+    return {"status": "ok", "campaign_id": row["id"], "name": row["name"],
+            "reporting_role": normalized or "auto"}
+
+
+def campaign_reporting_roles(conn: sqlite3.Connection) -> dict:
+    """Every campaign carrying a manual role -- the audit trail for the stats."""
+    rows = conn.execute(
+        """SELECT id, name, reporting_role FROM campaigns
+            WHERE reporting_role IS NOT NULL AND TRIM(reporting_role) != ''
+            ORDER BY reporting_role, name""").fetchall()
+    return {"campaigns": [dict(r) for r in rows]}
+
+
 # The synthetic row that catches meetings we could not trace to a campaign.
 # Without it, "exclude scheduling tools" would silently drop meetings entirely,
 # which trades a double count for a missing one.
@@ -921,6 +1003,7 @@ UNATTRIBUTED_SCHEDULING_NAME = "Unattributed (scheduling)"
 def _meetings_by_day(
     conn: sqlite3.Connection, workspace_id: str,
     campaign_id: Optional[int], since: Optional[str], until: Optional[str],
+    excluded_ids: Optional[set] = None,
 ) -> dict[str, int]:
     """{day: meetings} for the daily matrix, attributed like _meetings_by_campaign.
 
@@ -956,10 +1039,15 @@ def _meetings_by_day(
         # Scoped to one campaign: only the meetings that campaign earned. Across
         # the workspace: every meeting, traced or not -- an untraceable meeting
         # still happened, and dropping it is the bug this replaced.
-        if campaign_id is not None:
-            got = resolved.get(int(r["lead_id"]), _EMPTY_CAMPAIGN)["campaign_id"]
-            if got != campaign_id:
-                continue
+        got = resolved.get(int(r["lead_id"]), _EMPTY_CAMPAIGN)["campaign_id"]
+        # A meeting earned by an excluded campaign is not outreach either. It
+        # is dropped rather than re-attributed -- re-attributing it is what the
+        # scheduling exclusion does, and doing it here would put a customer
+        # check-in's booking on an outbound campaign's row.
+        if excluded_ids and got in excluded_ids:
+            continue
+        if campaign_id is not None and got != campaign_id:
+            continue
         out[r["day"]] += 1
     return dict(out)
 
@@ -968,6 +1056,7 @@ def _meetings_by_campaign(
     conn: sqlite3.Connection, workspace_id: str,
     since: Optional[str], until: Optional[str],
     scope: Optional["_LeadScope"] = None,
+    excluded_ids: Optional[set] = None,
 ) -> tuple[dict, int]:
     """{campaign_id: meetings} attributed to the campaign that EARNED the meeting.
 
@@ -999,6 +1088,11 @@ def _meetings_by_campaign(
     unattributed = 0
     for row in rows:
         campaign_id = resolved.get(int(row["lead_id"]), _EMPTY_CAMPAIGN)["campaign_id"]
+        # Dropped, not re-attributed and not counted as unattributed: a meeting
+        # an excluded campaign earned is not outreach, and surfacing it under
+        # the synthetic row would put it straight back into the totals.
+        if excluded_ids and campaign_id in excluded_ids:
+            continue
         if campaign_id is None:
             unattributed += 1
         else:
@@ -1050,7 +1144,9 @@ def positive_count_in_range(
 # scope. Both live here, once, so the Campaigns table, the Replies list and the
 # CLI cannot drift the way the three definitions of "positive" did.
 
-REPLY_KINDS = ("human", "auto_reply", "bounce", "status_only")
+#: Re-exported, not redefined: campaign_stats owns the classification, and a
+#: second tuple here is exactly how the two would drift apart.
+from campaign_stats import REPLY_KINDS  # noqa: E402
 
 
 def last_reply_join_sql(wl_alias: str = "wl", alias: str = "lr") -> str:
@@ -1204,10 +1300,11 @@ def kind_scope(
         conn, "_campaign_kind_scope", [r["lead_id"] for r in rows])
 
 
-def _reply_kind_case(alias: str, sentiment_col: str) -> str:
+def _reply_kind_case(alias: str, sentiment_col: str,
+                     meeting_col: Optional[str] = None) -> str:
     from campaign_stats import reply_kind_case_sql
 
-    return reply_kind_case_sql(alias, sentiment_col)
+    return reply_kind_case_sql(alias, sentiment_col, meeting_col)
 
 
 def _scope_clause(scope: Optional[_LeadScope], column: str) -> str:
@@ -1509,6 +1606,7 @@ def campaign_audit(
     since: Optional[str] = None,
     until: Optional[str] = None,
     include_scheduling: bool = False,
+    include_excluded: bool = False,
     positive_anchor: Optional[str] = None,
     reply_kind: Optional[str] = None,
     tags_any: Optional[list] = None,
@@ -1520,6 +1618,12 @@ def campaign_audit(
 
     `include_scheduling` brings booking-tool event types back into the list. Off
     by default: a Calendly slot is a calendar, not a campaign you can judge.
+
+    `include_excluded` brings back campaigns marked `reporting_role = 'excluded'`
+    -- ones judged by hand to be something other than outreach, such as a
+    customer check-in sequence. Off by default, and unlike the scheduling
+    exclusion their meetings are not re-attributed anywhere: an excluded
+    campaign contributes nothing to any number on the page.
 
     Two filters, with deliberately different reach:
 
@@ -1573,11 +1677,12 @@ def campaign_audit(
     metrics = {r["campaign_id"]: r for r in metric_rows}
 
     scheduling_ids = scheduling_campaign_ids(conn)
+    excluded_ids = set() if include_excluded else excluded_campaign_ids(conn)
 
     # Campaigns assigned to the workspace, plus any that actually produced
     # events here (assignment is nullable and routing rules are name-based).
     campaigns = conn.execute(
-        """SELECT id, name, status FROM campaigns
+        """SELECT id, name, status, reporting_role FROM campaigns
            WHERE workspace_id = ? OR id IN ({ids})
            ORDER BY name""".format(
             ids=",".join(str(int(cid)) for cid in metrics) or "-1"
@@ -1588,7 +1693,7 @@ def campaign_audit(
     # Meetings take the tag scope but not the kind scope: a booked meeting is
     # not a reply, so "show me human replies only" must not delete it.
     meetings_by_campaign, meetings_unattributed = _meetings_by_campaign(
-        conn, workspace_id, since, until, scope)
+        conn, workspace_id, since, until, scope, excluded_ids=excluded_ids)
     sentiment_by_campaign, sentiment_unattributed = _sentiment_by_campaign(
         conn, workspace_id, since, until, positive_anchor, scope, kind)
 
@@ -1621,6 +1726,10 @@ def campaign_audit(
 
     out = []
     for c in campaigns:
+        # An excluded campaign is not outreach: it leaves the table entirely,
+        # with no synthetic row catching its numbers. See excluded_campaign_ids.
+        if c["id"] in excluded_ids:
+            continue
         is_scheduling = c["id"] in scheduling_ids
         if is_scheduling and not include_scheduling:
             continue
@@ -1632,6 +1741,9 @@ def campaign_audit(
             sentiment_by_campaign.get(c["id"], {}),
         )
         row["is_scheduling"] = is_scheduling
+        # Echoed so the UI can show the override that produced this row (and
+        # offer to change it) without a second round trip.
+        row["reporting_role"] = c["reporting_role"]
         out.append(row)
 
     # Meetings and sentiment that resolved to no campaign at all. Surfaced as one
@@ -1664,6 +1776,8 @@ def campaign_audit(
         "totals": _campaign_totals(out),
         "include_scheduling": include_scheduling,
         "scheduling_excluded": sum(1 for c in campaigns if c["id"] in scheduling_ids),
+        "include_excluded": include_excluded,
+        "role_excluded": sum(1 for c in campaigns if c["id"] in excluded_ids),
         "columns": list(DAILY_COLUMN_KEYS),
         # Echoed so every consumer can state what is actually being counted.
         "positive_anchor": positive_anchor or "current",
@@ -1926,6 +2040,7 @@ def campaign_replies(
     tags_any: Optional[list] = None,
     tags_all: Optional[list] = None,
     tags_none: Optional[list] = None,
+    include_excluded: bool = False,
 ) -> dict:
     """One row per lead that currently carries a sentiment, anchored on the day
     it entered that sentiment (current_sentiment_since) — NOT one row per reply
@@ -1984,12 +2099,26 @@ def campaign_replies(
            AND {reply_cond.replace('event_type', 'e_r.event_type').replace('direction', 'e_r.direction')}
       GROUP BY wle_r.lead_id
     )"""
-    last_reply_join = " LEFT JOIN last_reply lrx ON lrx.lead_id = wl.lead_id"
+    # A meeting booked inside the window is activity inside the window, whatever
+    # the lead's sentiment has said since July. Its own CTE and its own range
+    # clause, so the branch stays indexed like the other two -- see the sargable
+    # note below; a COALESCE over all three took this query 0.4s -> 5.8s.
+    last_meeting_cte = """last_meeting AS (
+        SELECT wle_m.lead_id AS lead_id, MAX(wle_m.event_at) AS meeting_at
+          FROM workspace_lead_events wle_m
+         WHERE wle_m.workspace_id = ?
+           AND wle_m.event_type = 'meeting_booked'
+      GROUP BY wle_m.lead_id
+    )"""
+    last_reply_join = (" LEFT JOIN last_reply lrx ON lrx.lead_id = wl.lead_id"
+                       " LEFT JOIN last_meeting lmx ON lmx.lead_id = wl.lead_id")
     # A lead is on this list from the day it entered its current sentiment, or
     # -- lacking one -- the day it last replied. Sentiment still wins where it
     # exists, so nothing that used to reconcile with the daily sentiment
     # columns stops reconciling.
-    anchor_sql = "COALESCE(wl.current_sentiment_since, lrx.reply_at)"
+    # Display only. The WHERE clause filters each branch on its own column --
+    # a range predicate over a COALESCE is not sargable.
+    anchor_sql = "COALESCE(wl.current_sentiment_since, lrx.reply_at, lmx.meeting_at)"
 
     # The date filter is applied to each branch on its OWN column rather than
     # once to the COALESCE. A range predicate over COALESCE(a, b) is not
@@ -2000,22 +2129,44 @@ def campaign_replies(
     # on its reply time, which is exactly what the COALESCE selected anyway.
     sent_range, sent_params = _range_clause(since, until, "wl.current_sentiment_since")
     reply_range, reply_params = _range_clause(since, until, "lrx.reply_at")
+    meeting_range, meeting_params = _range_clause(since, until, "lmx.meeting_at")
 
-    # The CTE is scoped to the range too: a lead whose last reply falls outside
+    # The CTEs are scoped to the range too: a lead whose last reply falls outside
     # it can only qualify through the sentiment branch, which does not read this.
     cte_range, cte_params = _range_clause(since, until, "wle_r.event_at")
     last_reply_cte = last_reply_cte.replace(
         "      GROUP BY wle_r.lead_id",
         cte_range + "\n      GROUP BY wle_r.lead_id")
+    m_cte_range, m_cte_params = _range_clause(since, until, "wle_m.event_at")
+    last_meeting_cte = last_meeting_cte.replace(
+        "      GROUP BY wle_m.lead_id",
+        m_cte_range + "\n      GROUP BY wle_m.lead_id")
+    # One WITH, both CTEs. Every query below interpolates this same string, so
+    # the two stay in lockstep with the parameter order immediately after it.
+    last_reply_cte = f"{last_reply_cte},\n    {last_meeting_cte}"
 
-    # The CTE takes the workspace and its range first, then the outer query's.
-    base_params: list = [workspace_id, *cte_params, workspace_id,
-                         *sent_params, *reply_params]
+    # Parameter order is load-bearing and NOT checked by SQLite: the CTEs bind
+    # first, in declaration order (reply, then meeting), then the outer query.
+    # Getting this wrong returns the wrong rows rather than raising.
+    base_params: list = [workspace_id, *cte_params,
+                         workspace_id, *m_cte_params,
+                         workspace_id,
+                         *sent_params, *reply_params, *meeting_params]
     # Materialized, so it costs no bind parameters and cannot disturb the
     # carefully ordered list above.
     scope = tag_scope(conn, workspace_id, tags_any=tags_any, tags_all=tags_all,
                       tags_none=tags_none)
     camp = _scope_clause(scope, "wl.lead_id")
+    if campaign_id is None and not include_excluded:
+        # Leads whose only campaign-bearing activity is an excluded campaign.
+        # Selecting an excluded campaign by id is an explicit request to see it,
+        # so the filter only applies to the unfiltered list.
+        camp += (" AND wl.lead_id NOT IN ("
+                 "SELECT cl.lead_id FROM campaign_leads cl"
+                 f" WHERE cl.campaign_id IN ({_EXCLUDED_CAMPAIGN_IDS_SQL})"
+                 "   AND NOT EXISTS (SELECT 1 FROM campaign_leads cl2"
+                 f"    WHERE cl2.lead_id = cl.lead_id"
+                 f"      AND cl2.campaign_id NOT IN ({_EXCLUDED_CAMPAIGN_IDS_SQL})))")
     if campaign_id is not None:
         if (attribution or "last_known") == "membership":
             camp += (" AND wl.lead_id IN (SELECT lead_id FROM campaign_leads"
@@ -2051,7 +2202,8 @@ def campaign_replies(
           AND ((wl.current_status_sentiment IS NOT NULL
                 AND wl.current_sentiment_since IS NOT NULL{sent_range})
                OR (wl.current_status_sentiment IS NULL
-                   AND lrx.reply_at IS NOT NULL{reply_range})){camp}"""
+                   AND lrx.reply_at IS NOT NULL{reply_range})
+               OR (lmx.meeting_at IS NOT NULL{meeting_range})){camp}"""
 
     facets = {
         key: [
@@ -2081,7 +2233,7 @@ def campaign_replies(
     # reply_kind is computed in SQL so the filter runs BEFORE the row cap.
     # Classifying the fetched page instead meant asking for human replies on a
     # page that happened to hold five bounces returned nothing at all.
-    kind_sql = _reply_kind_case("lr", "wl.current_status_sentiment")
+    kind_sql = _reply_kind_case("lr", "wl.current_status_sentiment", "lmx.meeting_at")
     kind_filter, kind_params = reply_kind_filter(reply_kind)
 
     inner = f"""
@@ -2089,6 +2241,7 @@ def campaign_replies(
                wl.current_status_sentiment AS sentiment,
                wl.current_status_label AS status_label,
                {anchor_sql} AS event_at,
+               lmx.meeting_at AS meeting_at,
                wl.last_activity_at AS last_activity_at,
                l.name AS lead_name, l.company_id AS company_id,
                l.company AS company, l.title AS title, l.email AS email,
@@ -2398,6 +2551,10 @@ def campaign_daily(
     since: str = "30d",
     until: Optional[str] = None,
     include_scheduling: bool = False,
+    include_excluded: bool = False,
+    tags_any: Optional[list] = None,
+    tags_all: Optional[list] = None,
+    tags_none: Optional[list] = None,
 ) -> dict:
     """Per-day event-type matrix for the workspace, optionally one campaign.
 
@@ -2412,9 +2569,19 @@ def campaign_daily(
     if campaign_id is not None:
         campaign_sql = " AND e.campaign_id = ?"
         params.append(int(campaign_id))
-    elif not include_scheduling:
-        campaign_sql = (" AND (e.campaign_id IS NULL OR e.campaign_id NOT IN"
-                        f" ({_SCHEDULING_CAMPAIGN_IDS_SQL}))")
+    else:
+        if not include_scheduling:
+            campaign_sql += (" AND (e.campaign_id IS NULL OR e.campaign_id NOT IN"
+                             f" ({_SCHEDULING_CAMPAIGN_IDS_SQL}))")
+        if not include_excluded:
+            campaign_sql += (" AND (e.campaign_id IS NULL OR e.campaign_id NOT IN"
+                             f" ({_EXCLUDED_CAMPAIGN_IDS_SQL}))")
+    # Tags describe the lead, so unlike kind they narrow every column. The chart
+    # used to ignore them while the table below it did not, which put two
+    # different populations on one screen under one filter bar.
+    tag_scope_ = tag_scope(conn, workspace_id, tags_any=tags_any,
+                           tags_all=tags_all, tags_none=tags_none)
+    campaign_sql += _scope_clause(tag_scope_, "wle.lead_id")
     # Own CTE (not ws_events) because the matrix also needs metadata_json,
     # and bare event_type/direction must be unambiguous for the SUM exprs.
     rows = conn.execute(
@@ -2439,7 +2606,9 @@ def campaign_daily(
     # Resolved through last-known-campaign rather than taken from the event, so
     # the scheduling-tool toggle governs which CAMPAIGNS are listed, not whether
     # meetings exist. See _meetings_by_day.
-    meetings_by_day = _meetings_by_day(conn, workspace_id, campaign_id, since, until)
+    meetings_by_day = _meetings_by_day(
+        conn, workspace_id, campaign_id, since, until,
+        excluded_ids=None if include_excluded else excluded_campaign_ids(conn))
     all_days = sorted(
         set(event_by_day)
         | set(meetings_by_day)

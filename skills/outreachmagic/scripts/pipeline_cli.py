@@ -779,7 +779,8 @@ def main():
     vc_p.add_argument("--workspace", required=True)
     vc_p.add_argument("--max-age", type=int, default=30, dest="max_age")
     vc_p.add_argument("--skip-mv-days", type=int, default=7, dest="skip_mv_days")
-    vc_p.add_argument("--limit", type=int, default=5000)
+    vc_p.add_argument("--limit", type=int, default=5000,
+                      help="max candidates; 0 = no cap")
     vc_p.add_argument("--tag", nargs="+", dest="tags", help="Only leads carrying any of these workspace tags")
     vc_p.add_argument(
         "--never-contacted",

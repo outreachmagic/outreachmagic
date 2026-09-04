@@ -540,6 +540,12 @@ email_finder.py verify-bulk --workspace acme --tag assisted_living --poll
 
 `--tag` scopes to leads carrying any of those workspace tags (OR, deduped). MillionVerifier bills per email, so a campaign usually wants to verify the segment it is about to send to rather than every address in the workspace — on one real workspace that is 80 versus 339. Always `--dry-run` first: it reports credits required against credits remaining without submitting.
 
+Scope flags on both commands: `--limit N` (**`0` = no cap**, default 5000), `--include-valid` (ignore the age filters), `--include-mv-attempted` (re-submit addresses already tried), and `--all` (= the last two together; it does **not** lift `--limit`). Candidate results carry `limit` and `truncated`, so a capped answer is never mistaken for a complete one.
+
+```bash
+email_finder.py verify-bulk --workspace acme --all --limit 0 --dry-run   # price it
+```
+
 ## Dedup (batch)
 
 ```bash

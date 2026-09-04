@@ -613,6 +613,10 @@ def leads_needing_verification(
     `tags` narrows to leads carrying any of those workspace tags -- verification
     is billed per email, so a campaign usually wants to verify the segment it is
     about to send to, not every address in the workspace.
+
+    `limit` caps the candidate set; **0 means no cap**. The result always
+    carries `limit` and `truncated` so a caller can tell a complete answer from
+    a capped one.
     """
     from workspace_routing import resolve_workspace_identity
 
@@ -642,6 +646,10 @@ def leads_needing_verification(
                  )
             """
             segment_params = list(tags)
+        # 0 (or any non-positive) means no cap. Omitting the clause entirely
+        # keeps the SQL text honest -- `LIMIT -1` reads as a bug in a log.
+        limit_sql = "" if limit <= 0 else "LIMIT ?"
+        limit_params: list = [] if limit <= 0 else [limit]
         tag_filter = ""
         if skip_mv_attempted_tag:
             # Org-wide lead_provider_attempts (not workspace-scoped) is the
@@ -676,14 +684,14 @@ def leads_needing_verification(
                  {segment_filter}
                  {contact_filter}
                ORDER BY l.updated_at DESC
-               LIMIT ?""",
+               {limit_sql}""",
             (
                 ws_id,
                 f"-{max_age_days} days",
                 f"-{skip_mv_days} days",
                 *([ws_id] if skip_mv_attempted_tag else []),
                 *segment_params,
-                limit,
+                *limit_params,
             ),
         ).fetchall()
         leads = [dict(r) for r in rows]
@@ -692,6 +700,12 @@ def leads_needing_verification(
             "workspace": workspace,
             "tags": list(tags) if tags else None,
             "count": len(leads),
+            # A capped result says so. This used to truncate at the caller's
+            # default in silence, which is how "verify-bulk stops at 5000"
+            # went unexplained for so long -- the number was never wrong, it
+            # was just never mentioned.
+            "limit": limit,
+            "truncated": limit > 0 and len(leads) == limit,
             "leads": leads,
         }
     finally:

@@ -22,6 +22,8 @@
         "references/query-guide.md",
         "references/schema.md",
         "references/dashboard-panes.md",
+        "references/email-finder.md",
+        "references/email-finding-research.md",
         "scripts/dashboard.html"
       ],
       "install_required": []

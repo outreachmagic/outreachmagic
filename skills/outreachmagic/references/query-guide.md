@@ -232,3 +232,27 @@ Presets accept: `48h`, `7d`, `2w`, `today`, or `YYYY-MM-DD`.
 Local analytics do **not** require `pull` first. Read commands print `Data as of … (N minutes ago)` on stderr and include `last_pull` / `stale_minutes` in `--json`.
 
 Run `pull` when the user needs the latest webhook events or says “refresh.” Use `pull --if-stale 5m` to skip redundant network round-trips in the same session.
+
+## Campaigns excluded from reporting
+
+`campaigns.reporting_role` marks a campaign as something other than outbound —
+most often `'excluded'`, meaning "not outreach at all" (a customer check-in
+sequence, say). The dashboard and every `campaign-*` command drop those by
+default, so **hand-written campaign SQL that ignores this column will disagree
+with every number on the Campaigns page**:
+
+```sql
+-- wrong: counts campaigns the operator has excluded from reporting
+SELECT c.name, COUNT(*) FROM events e JOIN campaigns c ON c.id = e.campaign_id
+ GROUP BY c.name;
+
+-- right: same exclusion the dashboard applies
+SELECT c.name, COUNT(*) FROM events e JOIN campaigns c ON c.id = e.campaign_id
+ WHERE LOWER(COALESCE(c.reporting_role, '')) != 'excluded'
+ GROUP BY c.name;
+```
+
+Better still, don't write it: `pipeline.py campaign-audit --json` already applies
+this, the scheduling-tool exclusion, the tag scope and the reply-kind scope
+together. `pipeline.py campaign-role --list` shows every manual override.
+

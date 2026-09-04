@@ -84,7 +84,7 @@
     "references/agent-triage.md": "e8fc8cbe84b30fd1ce691ece1eed18fd3e3d0b243a369c86e7352135660ea910",
     "references/command-reference.md": "586b93ecc5a9f62f18d8ef296f207b9447a869bb013593e9fac2d598c2a4c231",
     "references/dashboard-panes.md": "769e71329f411449f601c2890899ed51a5d5c766c2bc1324b8e7c2a07e57659a",
-    "references/query-guide.md": "4239fe972096d3c0076a653fa38a51e4fcc2e1573db4716d51b6f29fc343cc82",
+    "references/query-guide.md": "5afc36926e846716d37bb5e4143e9f599033ee8b2ea8d438e3a08211f293f5b1",
     "references/schema.md": "2982cfabd047aa0da8a8f6321edeb7e7cda184526f2c7e56a6db189e3bc58db5",
     "references/sql-pitfalls.md": "32ef41a679f35d1a985e2d3e8d8ab849cb58d5789a3ce409745ec05d13846a13",
     "relay_extractors.py": "350ddf42a0a0e880a7f020305ebe5260d9ea9f0cb598253a4f7e59b76d20bade",

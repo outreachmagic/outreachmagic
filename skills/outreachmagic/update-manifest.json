@@ -25,7 +25,7 @@
     "crm_drivers/ghl.py": "3d6caa9d337a9b23509b7cfea039e68ac386d96a95107b43548b7fc1d62b7f66",
     "crm_drivers/hubspot.py": "e6575b237fb409eae33cedd9785587a3f1b7c30e4f2cb9e5ebd3f9c81e362caa",
     "crm_sync.py": "f8960e0d743bd3f1541d0c85a1d4c0047867cffc50641ee6c1fd1aca36a1536b",
-    "dashboard.html": "6e6d2f1d1855eeec21c8d7d62dba0ff8257fe5fe327e3fc60e2a0f99f2dab9b5",
+    "dashboard.html": "c3858eaae9009fad4afd4c3013f5ebd687196b1345de65446e5d112595645a50",
     "dashboard_actions.py": "6ed3d094a3da511e0eaa9d52c071d560a9995ec9c55f5fdde5bb8e1b65a5e1dd",
     "dashboard_server.py": "e934dfe4f5773a11e4326150689b860ceef8c28dca906d59b76b0d3f61659375",
     "data_freshness.py": "ec3dc68995a90f997a106ebd05e75355347b185a013838164faff14f9a97d8dd",

@@ -5064,6 +5064,14 @@ const REPLY_KIND_FLAG = {
 const REPLY_KIND_ORDER_LIST = ["meeting", "human", "auto_reply", "bounce", "status_only"];
 const REPLY_KIND_ORDER = Object.fromEntries(REPLY_KIND_ORDER_LIST.map((k, i) => [k, i]));
 
+// The date of whichever fact put this lead in the selected range. Sentiment
+// wins the anchor server-side (so the list keeps reconciling with the daily
+// sentiment columns), but a lead listed for a booking has to be dated by the
+// booking or the column contradicts itself.
+function inRangeAt(r) {
+  return (r.reply_kind === "meeting" && r.meeting_at) ? r.meeting_at : r.event_at;
+}
+
 function renderReplyKind(kind) {
   const label = REPLY_KIND_LABELS[kind] || kind || "—";
   const flag = REPLY_KIND_FLAG[kind];
@@ -5238,10 +5246,15 @@ async function loadReplies() {
     // recent event of any kind. They answer different questions.
     // Two clocks used to share one date picker: a lead positive since July that
     // booked today was counted in today's meeting column and missing from this
-    // list. It lists now, and this column says which fact put it here -- while
-    // the Sentiment column still truthfully reads "positive since July".
-    { key: "event_at", label: "In range because", sortVal: r => r.event_at || "",
-      render: r => `${dt(r.event_at)} <span class="stale">· ${
+    // list. It lists now, and this column names the fact that put it here.
+    //
+    // It must show THAT fact's date, not the sentiment anchor: the anchor for a
+    // lead positive since July is July, and printing July under a column headed
+    // "In range because" while the range is one day in September is worse than
+    // the omission it replaced. A meeting row is anchored on its booking, which
+    // the range-scoped CTE guarantees is inside the window.
+    { key: "event_at", label: "In range because", sortVal: r => inRangeAt(r),
+      render: r => `${dt(inRangeAt(r))} <span class="stale">· ${
         esc(REPLY_KIND_LABELS[r.reply_kind] || r.reply_kind || "")}</span>` },
     { key: "last_activity_at", label: "Last activity", render: r => dt(r.last_activity_at) || "–" },
   ], d.replies, { empty: "Nothing in this range for the selected kind.", pageSize: DEFAULT_PAGE_SIZE,

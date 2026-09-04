@@ -602,10 +602,13 @@ def build_campaign_stats_payload(
 # it. Two implementations is how the numbers start disagreeing.
 # ---------------------------------------------------------------------------
 
-#: The reply kinds, in the order a human reads them.
-REPLY_KINDS = ("human", "auto_reply", "bounce", "status_only")
+#: The reply kinds, in the order a human reads them. `meeting` leads: a booking
+#: is the strongest thing a lead can do, and a lead whose only event is one used
+#: to classify as `status_only` -- which read as a ghost row on the list.
+REPLY_KINDS = ("meeting", "human", "auto_reply", "bounce", "status_only")
 
 REPLY_KIND_LABELS = {
+    "meeting": "meeting",
     "human": "reply",
     "auto_reply": "auto-reply",
     "bounce": "bounced",
@@ -616,17 +619,27 @@ REPLY_KIND_LABELS = {
 AUTO_REPLY_SQL = "CAST(json_extract({alias}.metadata_json, '$.is_auto_reply') AS INTEGER) = 1"
 
 
-def reply_kind_case_sql(event_alias: str = "e", sentiment_col: Optional[str] = None) -> str:
+def reply_kind_case_sql(
+    event_alias: str = "e",
+    sentiment_col: Optional[str] = None,
+    meeting_col: Optional[str] = None,
+) -> str:
     """CASE expression returning a reply_kind for a joined reply event.
 
     `sentiment_col` (e.g. wl.current_status_sentiment) lets a row with no reply
     event still be classified from the sentiment that produced it -- that is
     what separates `bounce` and `status_only` from "no data".
+
+    `meeting_col` (e.g. lmx.meeting_at) marks a lead that booked inside the
+    window. It wins over every other kind: a booking is the strongest signal a
+    lead can send, and a lead whose only event in range is one was previously
+    classified `status_only` and read as an empty row.
     """
     auto = AUTO_REPLY_SQL.format(alias=event_alias)
     sentiment = sentiment_col or "NULL"
+    meeting = f"WHEN {meeting_col} IS NOT NULL THEN 'meeting'\n        " if meeting_col else ""
     return f"""CASE
-        WHEN {event_alias}.id IS NOT NULL AND {auto} THEN 'auto_reply'
+        {meeting}WHEN {event_alias}.id IS NOT NULL AND {auto} THEN 'auto_reply'
         WHEN LOWER(COALESCE({sentiment}, '')) IN ('autoreply', 'auto_reply') THEN 'auto_reply'
         WHEN LOWER(COALESCE({sentiment}, '')) IN ('invalid', 'bounced', 'bounce') THEN 'bounce'
         WHEN {event_alias}.id IS NOT NULL THEN 'human'
@@ -641,14 +654,18 @@ def classify_reply_kind(
     has_bounce: bool = False,
     sentiment: Optional[str] = None,
     event_type: Optional[str] = None,
+    has_meeting: bool = False,
 ) -> str:
     """Python twin of reply_kind_case_sql, for rows already in memory.
 
     A bounce wins over a plain inbound event: a bounce notification IS an
     inbound message, and calling it a reply is the exact confusion this fixes.
+    A meeting wins over everything -- see reply_kind_case_sql.
     """
     import bounces
 
+    if has_meeting:
+        return "meeting"
     if event_type and bounces.is_bounce_event_type(event_type):
         return "bounce"
     if has_bounce:

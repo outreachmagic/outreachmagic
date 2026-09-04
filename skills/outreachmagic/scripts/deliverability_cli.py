@@ -22,15 +22,19 @@ from db_conn import get_conn
 
 
 def register_campaign_replies_parser(sub) -> None:
-    """`campaign-replies` — the Replies card, with its kinds separated.
+    """`campaign-replies` — the Leads card, with its kinds separated.
 
     A bounce and an out-of-office both set a lead's sentiment, so a list built
     on sentiment alone reports all three as replies. --kind is how you ask for
     the one you meant; the counts for every kind come back either way.
+
+    A lead that booked a meeting inside the range is listed too, as `meeting`,
+    even when its sentiment started months earlier -- `--kind meeting` is the
+    list behind the daily Meetings column, and the two reconcile exactly.
     """
     p = sub.add_parser(
         "campaign-replies",
-        help="Leads by current sentiment, split into replies / auto-replies / bounces",
+        help="Leads active in a range, split into meetings / replies / auto-replies / bounces",
     )
     p.add_argument("--workspace", help="Workspace slug (or set OM_WORKSPACE)")
     p.add_argument("--campaign-id", dest="campaign_id", type=int)
@@ -38,11 +42,14 @@ def register_campaign_replies_parser(sub) -> None:
     p.add_argument("--until", help="End of range: YYYY-MM-DD")
     p.add_argument(
         "--kind", default="all",
-        help="all (default) | human | auto_reply | bounce | status_only "
+        help="all (default) | meeting | human | auto_reply | bounce | status_only "
              "(comma-separate to combine)")
     p.add_argument("--sentiment")
     p.add_argument("--status-label", dest="status_label")
     p.add_argument("--limit", type=int, default=200)
+    p.add_argument("--include-excluded", dest="include_excluded", action="store_true",
+                   help="Include leads whose only campaign is marked "
+                        "reporting_role=excluded (see `campaign-role`)")
     p.add_argument("--json", action="store_true")
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(command="campaign-replies")
@@ -60,6 +67,7 @@ def cmd_campaign_replies(args) -> None:
             sentiment=getattr(args, "sentiment", None),
             status_label=getattr(args, "status_label", None),
             reply_kind=getattr(args, "kind", "all"),
+            include_excluded=bool(getattr(args, "include_excluded", False)),
         )
     except ValueError as exc:
         if getattr(args, "json", False):
@@ -84,6 +92,73 @@ def cmd_campaign_replies(args) -> None:
         return "\n".join(lines)
 
     _emit(args, payload, text)
+
+
+def register_campaign_role_parser(sub) -> None:
+    """`campaign-role` — how reporting should treat one campaign.
+
+    The derivation only calls a campaign a booking tool when *every* event on it
+    came from one, so a genuine multi-event campaign that is nonetheless not
+    outreach -- a customer check-in sequence, say -- correctly fails that test
+    and needs to be said by hand. An excluded campaign still ingests events and
+    still shows them on the lead; it is only kept out of the stats.
+    """
+    p = sub.add_parser(
+        "campaign-role",
+        help="Mark a campaign outbound / scheduling / excluded, or list the overrides",
+    )
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--id", dest="campaign_id", type=int, help="Campaign id")
+    g.add_argument("--name", help="Campaign name (exact)")
+    p.add_argument("--role", choices=("outbound", "scheduling", "excluded", "auto"),
+                   help="auto clears the override and derives it again")
+    p.add_argument("--list", dest="list_roles", action="store_true",
+                   help="List every campaign carrying a manual role")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--quiet", action="store_true")
+    p.set_defaults(command="campaign-role")
+
+
+def cmd_campaign_role(args) -> None:
+    conn = get_conn()
+    try:
+        if getattr(args, "list_roles", False) or not getattr(args, "role", None):
+            payload = reporting_queries.campaign_reporting_roles(conn)
+
+            def text(pl):
+                rows = pl["campaigns"]
+                if not rows:
+                    return "No campaigns carry a manual reporting role."
+                return "\n".join(
+                    f"  [{r['id']:>5}] {r['reporting_role']:<10} {r['name']}"
+                    for r in rows)
+
+            _emit(args, payload, text)
+            return
+
+        campaign_id = getattr(args, "campaign_id", None)
+        if campaign_id is None:
+            name = getattr(args, "name", None)
+            if not name:
+                raise ValueError("pass --id or --name")
+            row = conn.execute(
+                "SELECT id FROM campaigns WHERE name = ?", (name,)).fetchone()
+            if not row:
+                raise ValueError(f"unknown campaign name: {name}")
+            campaign_id = row["id"]
+        payload = reporting_queries.set_campaign_reporting_role(
+            conn, int(campaign_id), args.role)
+    except ValueError as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(str(exc), file=sys.stderr)
+        sys.exit(1)
+        return
+    finally:
+        conn.close()
+    _emit(args, payload,
+          lambda pl: f"{pl['name']} → {pl['reporting_role']}")
 
 
 def register_campaign_audit_parser(sub) -> None:
@@ -119,6 +194,10 @@ def register_campaign_audit_parser(sub) -> None:
                    help="Drop leads carrying this tag, from every column (repeatable)")
     p.add_argument("--include-scheduling", action="store_true",
                    help="Include booking-tool calendars as campaigns")
+    p.add_argument("--include-excluded", dest="include_excluded", action="store_true",
+                   help="Include campaigns marked reporting_role=excluded "
+                        "(see `campaign-role`) -- off by default, so a customer "
+                        "check-in sequence does not sit in the outbound numbers")
     p.add_argument("--positive-anchor", dest="positive_anchor",
                    choices=("current", "first"), default="first",
                    help="first (default): dated from when a lead FIRST turned "
@@ -151,6 +230,7 @@ def cmd_campaign_audit(args) -> None:
             conn, ws["id"],
             since=getattr(args, "since", None), until=getattr(args, "until", None),
             include_scheduling=bool(getattr(args, "include_scheduling", False)),
+            include_excluded=bool(getattr(args, "include_excluded", False)),
             positive_anchor=getattr(args, "positive_anchor", None),
             reply_kind=getattr(args, "kind", "all"),
             tags_any=getattr(args, "tags_any", None),
@@ -376,8 +456,18 @@ def register_deliverability_parser(sub) -> None:
     bounces_p.add_argument("--bounce-type", dest="bounce_type",
                            choices=("hard", "soft", "unknown"))
     bounces_p.add_argument("--group-by", dest="group_by", default="signature",
-                           choices=("signature", "type", "mailbox", "domain", "campaign", "none"),
+                           choices=("signature", "type", "mailbox", "domain",
+                                    "recipient_domain", "campaign", "none"),
                            help="How to group (default: signature)")
+    # The same three filters the dashboard's drill-down uses, under the same
+    # names -- selecting a group there is exactly one of these on the CLI.
+    bounces_p.add_argument("--signature",
+                           help="Only bounces whose failure signature matches this "
+                                "group key exactly (copy it from --group-by signature)")
+    bounces_p.add_argument("--recipient-domain", dest="recipient_domain",
+                           help="Only bounces to this recipient domain")
+    bounces_p.add_argument("--smtp-code", dest="smtp_code",
+                           help="Only bounces carrying this SMTP code")
     bounces_p.add_argument("--limit", type=int, default=200)
     bounces_p.add_argument("--offset", type=int, default=0)
 
@@ -540,6 +630,9 @@ def _dispatch(args, action: str, conn):
             domain=getattr(args, "domain", None), mailbox=getattr(args, "mailbox", None),
             campaign_id=getattr(args, "campaign_id", None),
             bounce_type=getattr(args, "bounce_type", None),
+            signature=getattr(args, "signature", None),
+            recipient_domain=getattr(args, "recipient_domain", None),
+            smtp_code=getattr(args, "smtp_code", None),
             group_by=(None if args.group_by == "none" else args.group_by),
             limit=args.limit, offset=args.offset)
 
@@ -549,6 +642,14 @@ def _dispatch(args, action: str, conn):
                 lines.append(f"\ngrouped by {p['group_by']}:")
                 for g in p["groups"]:
                     lines.append(f"  {g['bounces']:>6}  {g['key']}")
+            if p["bounces"]:
+                lines.append("\ncontacts:")
+                for b in p["bounces"]:
+                    lines.append(
+                        f"  {(b.get('lead_email') or '—')[:38]:<38} "
+                        f"{(b.get('sending_domain') or '—')[:22]:<22} "
+                        f"{(b.get('provider') or '—')[:16]:<16} "
+                        f"{(b.get('reseller') or '—')[:16]:<16}")
             return "\n".join(lines)
         return payload, text
 

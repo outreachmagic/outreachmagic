@@ -171,6 +171,8 @@ dashboard's Campaigns table calls, so the numbers cannot differ.
 | `--positive-anchor first` (default) | dated from when a lead FIRST turned positive, so history stops moving |
 | `--by-day` | adds `daily[]` (`date`, `sent`, `replies`, `bounces`, `meetings`) to every row — reach for this instead of writing the breakdown as SQL |
 | `--compare-previous-window` | adds `previous` per campaign and `previous_totals`: the same-length window immediately before this one |
+| `--include-scheduling` | brings booking-tool calendars back in as campaigns |
+| `--include-excluded` | brings back campaigns marked `reporting_role = 'excluded'` |
 
 Every response echoes `since_resolved_utc` / `until_resolved_utc` / `window_days`,
 so "what does 14d mean" never has to be re-derived. `daily[].meetings` is counted
@@ -539,6 +541,55 @@ email_finder.py verify-bulk --workspace acme --tag assisted_living --poll
 ```
 
 `--tag` scopes to leads carrying any of those workspace tags (OR, deduped). MillionVerifier bills per email, so a campaign usually wants to verify the segment it is about to send to rather than every address in the workspace — on one real workspace that is 80 versus 339. Always `--dry-run` first: it reports credits required against credits remaining without submitting.
+
+Scope flags on both commands: `--limit N` (**`0` = no cap**, default 5000), `--include-valid` (ignore the age filters), `--include-mv-attempted` (re-submit addresses already tried), and `--all` (= the last two together; it does **not** lift `--limit`). Candidate results carry `limit` and `truncated`, so a capped answer is never mistaken for a complete one.
+
+```bash
+email_finder.py verify-bulk --workspace acme --all --limit 0 --dry-run   # price it
+```
+
+## Campaigns that are not outreach
+
+The derivation only calls a campaign a booking tool when **every** event on it
+came from one, so a genuine multi-event campaign that is nonetheless not
+outreach — a customer check-in sequence — correctly fails that test. Say so by
+hand:
+
+```bash
+pipeline.py campaign-role --name "Acme Quarterly Check-In" --role excluded
+pipeline.py campaign-role --list --json          # every manual override
+pipeline.py campaign-role --id 56 --role auto    # clear it, derive again
+```
+
+| Role | Meaning |
+|------|---------|
+| *(unset)* | Derive it: every-event-from-a-booking-tool ⇒ scheduling, else outbound |
+| `outbound` | Always count it, even if it looks like a calendar |
+| `scheduling` | A calendar — governed by `--include-scheduling` |
+| `excluded` | Not outreach. Out of every chart, table, facet and rate by default |
+
+An excluded campaign still ingests events and still shows them on the contact;
+only the statistics change. Its meetings are **dropped**, not re-attributed —
+unlike the scheduling exclusion, whose whole purpose is to re-credit a booking
+to the campaign that earned it.
+
+**Writing campaign SQL by hand?** Filter `campaigns.reporting_role` or your
+numbers will disagree with the dashboard's. This is the same class of drift the
+2026-09-01 changes were written about — prefer `campaign-audit`.
+
+## Bounces: grouped, then drilled into
+
+```bash
+pipeline.py deliverability bounces --group-by signature --json
+pipeline.py deliverability bounces --signature "<a group key>" --json
+pipeline.py deliverability bounces --recipient-domain acme.com --smtp-code 5.1.1
+```
+
+`--group-by` collapses thousands of bounces into a few dozen distinct failures;
+`--signature` / `--recipient-domain` / `--smtp-code` then select one group's
+contacts. A group's count and its filtered rows are the same set. Rows carry
+`sending_domain`, `provider` and `reseller` — the three facts that decide
+whether you pause one mailbox, one domain, or a reseller's whole batch.
 
 ## Dedup (batch)
 

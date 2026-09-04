@@ -423,6 +423,20 @@ def set_sender_account_workspaces(
         if not sender_account_id:
             return {"status": "error", "error": f"unknown sender account: {email}"}
         _reconcile_workspace_links(conn, sender_account_id, wanted)
+        # Membership lives in workspace_sender_accounts, which SYNC_MAP does not
+        # cover -- so this write fired no outbox trigger and never reached the
+        # relay, while build_sender_account_sync_payload DOES send
+        # workspace_slugs and the inbound path reconciles from it. The local
+        # edit was therefore overwritten by the relay's stale set on the next
+        # pull: the change looked applied and then silently reverted. Touching
+        # the parent row enqueues it through the existing sender_account push.
+        # Done here and NOT in _reconcile_workspace_links, which the inbound
+        # sync path also calls -- marking dirty there would echo the relay's own
+        # write straight back at it.
+        conn.execute(
+            "UPDATE sender_accounts SET updated_at = datetime('now') WHERE id = ?",
+            (sender_account_id,),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -442,7 +456,8 @@ def set_domain_workspaces(
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT email FROM sender_accounts WHERE LOWER(email_domain) = LOWER(?)",
+            "SELECT email FROM sender_accounts"
+            " WHERE LOWER(TRIM(COALESCE(email_domain, ''))) = LOWER(TRIM(?))",
             (domain.strip(),),
         ).fetchall()
         emails = [r["email"] for r in rows]
@@ -473,12 +488,13 @@ def domain_workspace_summary(domain: str) -> dict:
                  FROM sender_accounts sa
                  JOIN workspace_sender_accounts wsa ON wsa.sender_account_id = sa.id
                  JOIN workspaces w ON w.id = wsa.workspace_id
-                WHERE LOWER(sa.email_domain) = LOWER(?)
+                WHERE LOWER(TRIM(COALESCE(sa.email_domain, ''))) = LOWER(TRIM(?))
                 GROUP BY w.slug ORDER BY mailboxes DESC, w.slug""",
             (domain.strip(),),
         ).fetchall()
         total = conn.execute(
-            "SELECT COUNT(*) n FROM sender_accounts WHERE LOWER(email_domain) = LOWER(?)",
+            "SELECT COUNT(*) n FROM sender_accounts"
+            " WHERE LOWER(TRIM(COALESCE(email_domain, ''))) = LOWER(TRIM(?))",
             (domain.strip(),),
         ).fetchone()["n"]
     finally:

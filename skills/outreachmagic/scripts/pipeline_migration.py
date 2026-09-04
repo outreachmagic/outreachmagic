@@ -1796,6 +1796,22 @@ def _install_provenance_transport_guard(conn: sqlite3.Connection) -> None:
             """)
 
 
+def _add_campaigns_reporting_role(conn: sqlite3.Connection) -> None:
+    """Manual override for how reporting treats a campaign.
+
+    The derivation (`_SCHEDULING_CAMPAIGN_IDS_SQL`) classifies a campaign as a
+    booking tool only when *every* event on it came from one. A genuine
+    multi-event campaign that is nonetheless not outreach -- a customer
+    check-in sequence -- correctly fails that test and there was nowhere to say
+    so. One nullable column, four states, no join: NULL derives, 'outbound' and
+    'scheduling' force the derivation's two answers, and 'excluded' keeps the
+    campaign out of the stats while leaving its events on the lead.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(campaigns)").fetchall()}
+    if "reporting_role" not in cols:
+        conn.execute("ALTER TABLE campaigns ADD COLUMN reporting_role TEXT")
+
+
 def _add_campaigns_workspace_id(conn: sqlite3.Connection) -> None:
     """Add workspace_id FK to campaigns and backfill from the name prefix.
 
@@ -2459,6 +2475,7 @@ def migrate_db(conn=None):
             "INSERT INTO migration_flags (name) VALUES ('bounce_events_backfill')"
         )
     _add_campaigns_workspace_id(conn)
+    _add_campaigns_reporting_role(conn)
     from pipeline import maybe_backfill_null_campaign_quarantine
 
     maybe_backfill_null_campaign_quarantine(quiet=True, conn=conn)

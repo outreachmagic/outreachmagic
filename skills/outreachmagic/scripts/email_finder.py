@@ -27,6 +27,8 @@ MillionVerifier (bulk email verification):
     email_finder.py verify EMAIL
     email_finder.py verify-bulk [--workspace W [--tag T ...] | --file emails.csv] [--poll]
                                  [--output PATH] [--dry-run] [--force] [--max-age N] [--skip-mv-days N]
+                                 [--limit N] [--all] [--include-valid] [--include-mv-attempted]
+                                 (--limit 0 = no cap; billed per address, so --dry-run first)
     email_finder.py verify-status --file-id ID
     email_finder.py verify-list
     email_finder.py verify-download --file-id ID [--workspace W]
@@ -750,6 +752,7 @@ def _collect_verify_emails(
     skip_mv_attempted_tag: bool = True,
     cfg: Optional[dict[str, Any]] = None,
     tags: Optional[list] = None,
+    limit: int = 5000,
 ) -> tuple[list[str], dict[str, Any]]:
     emails: list[str] = []
     candidate_meta: dict[str, Any] = {}
@@ -773,6 +776,7 @@ def _collect_verify_emails(
                 include_mv_attempted=not skip_mv_attempted_tag,
                 skill_dir=_find_skill_dir(),
                 tags=tags,
+                limit=limit,
             )
         except RuntimeError as e:
             return [], {"error": str(e)}
@@ -829,13 +833,20 @@ def cmd_verify_bulk(
     dry_run: bool = False,
     force: bool = False,
     verify_all: bool = False,
+    include_valid: bool = False,
+    include_mv_attempted: bool = False,
     max_age_days: int = 30,
     skip_mv_days: int = 7,
     tags: Optional[list] = None,
+    limit: int = 5000,
 ) -> None:
-    if verify_all:
+    # One behaviour with three names, not three behaviours: --all is exactly
+    # --include-valid plus --include-mv-attempted. `limit` is orthogonal to all
+    # three -- it says how many to submit, not which ones qualify.
+    if verify_all or include_valid:
         max_age_days = 0
         skip_mv_days = 0
+    skip_attempted = not (verify_all or include_mv_attempted)
     cfg = load_config()
     mv = _mv_provider(cfg)
     emails, candidate_meta = _collect_verify_emails(
@@ -843,9 +854,10 @@ def cmd_verify_bulk(
         file_path=file_path,
         max_age_days=max_age_days,
         skip_mv_days=skip_mv_days,
-        skip_mv_attempted_tag=not verify_all,
+        skip_mv_attempted_tag=skip_attempted,
         cfg=cfg,
         tags=tags,
+        limit=limit,
     )
     if candidate_meta.get("error"):
         print(json.dumps({"error": candidate_meta["error"]}))
@@ -863,6 +875,8 @@ def cmd_verify_bulk(
         plan["unique_lead_ids"] = candidate_meta.get("unique_lead_ids")
         plan["status"] = "dry_run"
         plan["candidates"] = candidate_meta.get("count")
+        plan["limit"] = candidate_meta.get("limit")
+        plan["truncated"] = candidate_meta.get("truncated")
         print_verify_bulk_plan(plan)
         print(json.dumps(plan, indent=2))
         return
@@ -1509,10 +1523,15 @@ def main() -> None:
             dry_run = "--dry-run" in sys.argv
             force = "--force" in sys.argv
             verify_all = "--all" in sys.argv
+            include_valid = "--include-valid" in sys.argv
+            include_attempted = "--include-mv-attempted" in sys.argv
             max_age = 30
             skip_mv = 7
+            limit = 5000
             tags: list[str] = []
-            args = [a for a in sys.argv[2:] if a not in ("--poll", "--dry-run", "--force", "--all")]
+            args = [a for a in sys.argv[2:] if a not in (
+                "--poll", "--dry-run", "--force", "--all",
+                "--include-valid", "--include-mv-attempted")]
             i = 0
             while i < len(args):
                 if args[i] == "--tag" and i + 1 < len(args):
@@ -1554,6 +1573,12 @@ def main() -> None:
                 elif args[i].startswith("--skip-mv-days="):
                     skip_mv = int(args[i].split("=", 1)[1])
                     i += 1
+                elif args[i] == "--limit" and i + 1 < len(args):
+                    limit = int(args[i + 1])
+                    i += 2
+                elif args[i].startswith("--limit="):
+                    limit = int(args[i].split("=", 1)[1])
+                    i += 1
                 else:
                     i += 1
             cmd_verify_bulk(
@@ -1564,8 +1589,11 @@ def main() -> None:
                 dry_run=dry_run,
                 force=force,
                 verify_all=verify_all,
+                include_valid=include_valid,
+                include_mv_attempted=include_attempted,
                 max_age_days=max_age,
                 skip_mv_days=skip_mv,
+                limit=limit,
                 tags=tags or None,
             )
         elif cmd == "verify-status":

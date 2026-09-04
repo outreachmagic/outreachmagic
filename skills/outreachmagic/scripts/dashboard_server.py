@@ -137,6 +137,9 @@ def handle_bounces(conn, ws_id, match, query):
         domain=_q(query, "domain"), mailbox=_q(query, "mailbox"),
         campaign_id=_q(query, "campaign_id"),
         bounce_type=_q(query, "bounce_type"),
+        signature=_q(query, "signature"),
+        recipient_domain=_q(query, "recipient_domain"),
+        smtp_code=_q(query, "smtp_code"),
         group_by=None if group_by == "none" else group_by,
         limit=_int_q(query, "limit", 200), offset=_int_q(query, "offset", 0, hi=1000000),
     )
@@ -389,6 +392,7 @@ def handle_campaigns(conn, ws_id, match, query):
     return audit(
         conn, ws_id, since=_q(query, "since"), until=_q(query, "until"),
         include_scheduling=_bool_q(query, "include_scheduling"),
+        include_excluded=_bool_q(query, "include_excluded"),
         positive_anchor=_q(query, "positive_anchor"),
         reply_kind=_q(query, "kind"),
         tags_any=_list_q(query, "tags_any"),
@@ -404,7 +408,13 @@ def handle_campaign_daily(conn, ws_id, match, query):
         conn, ws_id,
         campaign_id=int(campaign_id) if campaign_id else None,
         since=_q(query, "since", "30d"), until=_q(query, "until"),
-        include_scheduling=_bool_q(query, "include_scheduling"))
+        include_scheduling=_bool_q(query, "include_scheduling"),
+        include_excluded=_bool_q(query, "include_excluded"),
+        # Tags describe the lead, so the chart takes the same tag filter the
+        # table below it does -- otherwise one filter bar drives two populations.
+        tags_any=_list_q(query, "tags_any"),
+        tags_all=_list_q(query, "tags_all"),
+        tags_none=_list_q(query, "tags_none"))
 
 
 @_workspace_scoped
@@ -577,7 +587,8 @@ def handle_tags(conn, ws_id, match, query):
             conn, ws_id,
             campaign_id=int(campaign_id) if campaign_id else None,
             since=_q(query, "since"), until=_q(query, "until"),
-            include_scheduling=_bool_q(query, "include_scheduling"))
+            include_scheduling=_bool_q(query, "include_scheduling"),
+            include_excluded=_bool_q(query, "include_excluded"))
     import pipeline_tags
     return {"scope": "workspace", "tags": pipeline_tags.tag_list(ws_id, conn=conn)}
 
@@ -757,6 +768,7 @@ def handle_campaign_replies(conn, ws_id, match, query):
         limit=_int_q(query, "limit", 200, lo=1, hi=500),
         sentiment=_q(query, "sentiment"), status_label=_q(query, "status_label"),
         reply_kind=_q(query, "reply_kind"),
+        include_excluded=_bool_q(query, "include_excluded"),
         attribution=_q(query, "attribution"),
         tags_any=_list_q(query, "tags_any"),
         tags_all=_list_q(query, "tags_all"),
@@ -934,6 +946,26 @@ def handle_sender_workspaces_set(match, query, body):
         raise ValueError("email is required")
     # The full membership set, not a delta -- see set_sender_account_workspaces.
     return 200, psa.set_sender_account_workspaces(email, body.get("workspaces") or [])
+
+
+@_workspace_scoped
+def handle_campaign_roles(conn, ws_id, match, query):
+    """Every campaign carrying a manual reporting role -- the stats' audit trail."""
+    return reporting_queries.campaign_reporting_roles(conn)
+
+
+def handle_campaign_role_set(match, query, body):
+    """Pass-through to reporting_queries.set_campaign_reporting_role."""
+    body = body or {}
+    campaign_id = body.get("campaign_id")
+    if campaign_id is None:
+        raise ValueError("campaign_id is required")
+    conn = get_conn()
+    try:
+        return 200, reporting_queries.set_campaign_reporting_role(
+            conn, int(campaign_id), body.get("role"))
+    finally:
+        conn.close()
 
 
 def handle_domain_workspaces(match, query, body):
@@ -1147,6 +1179,7 @@ ROUTES = [
     ("GET", re.compile(r"^/api/attributes$"), handle_attributes),
     ("GET", re.compile(r"^/api/campaigns$"), handle_campaigns),
     ("GET", re.compile(r"^/api/campaigns/replies$"), handle_campaign_replies),
+    ("GET", re.compile(r"^/api/campaigns/roles$"), handle_campaign_roles),
     ("GET", re.compile(r"^/api/campaigns/daily$"), handle_campaign_daily),
     ("GET", re.compile(r"^/api/campaigns/detail$"), handle_campaign_detail),
     ("GET", re.compile(r"^/api/campaigns/leads$"), handle_campaign_leads),
@@ -1206,6 +1239,7 @@ ROUTES = [
     ("POST", re.compile(r"^/api/leads/delete$"), handle_delete_leads),
     ("POST", re.compile(r"^/api/leads/(\d+)/record-type$"), handle_record_type),
     ("POST", re.compile(r"^/api/leads/(\d+)/contact-order$"), handle_contact_order),
+    ("POST", re.compile(r"^/api/campaigns/role$"), handle_campaign_role_set),
     ("POST", re.compile(r"^/api/senders/workspaces$"), handle_sender_workspaces_set),
     ("POST", re.compile(r"^/api/domains/workspaces$"), handle_domain_workspaces_set),
     ("POST", re.compile(r"^/api/leads/(\d+)/custom-fields$"), handle_lead_custom_field_set),

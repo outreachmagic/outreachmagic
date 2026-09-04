@@ -779,7 +779,8 @@ def main():
     vc_p.add_argument("--workspace", required=True)
     vc_p.add_argument("--max-age", type=int, default=30, dest="max_age")
     vc_p.add_argument("--skip-mv-days", type=int, default=7, dest="skip_mv_days")
-    vc_p.add_argument("--limit", type=int, default=5000)
+    vc_p.add_argument("--limit", type=int, default=5000,
+                      help="max candidates; 0 = no cap")
     vc_p.add_argument("--tag", nargs="+", dest="tags", help="Only leads carrying any of these workspace tags")
     vc_p.add_argument(
         "--never-contacted",
@@ -1428,6 +1429,7 @@ def main():
 
     deliverability_cli.register_deliverability_parser(sub)
     deliverability_cli.register_campaign_replies_parser(sub)
+    deliverability_cli.register_campaign_role_parser(sub)
     deliverability_cli.register_campaign_audit_parser(sub)
     deliverability_cli.register_attribute_audit_parser(sub)
     query_cli.register_query_parser(sub)
@@ -3283,6 +3285,8 @@ def main():
         deliverability_cli.cmd_deliverability(args)
     elif args.command == "campaign-replies":
         deliverability_cli.cmd_campaign_replies(args)
+    elif args.command == "campaign-role":
+        deliverability_cli.cmd_campaign_role(args)
     elif args.command == "campaign-audit":
         deliverability_cli.cmd_campaign_audit(args)
     elif args.command == "attribute-audit":

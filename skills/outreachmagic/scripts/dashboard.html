@@ -941,7 +941,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
 </aside>
 <aside id="editPanel">
   <button style="float:right" onclick="dismissPanels()">✕</button>
-  <button id="company-back" class="small" style="display:none;margin-bottom:8px" onclick="navBack()">← Back</button>
+  <button id="panel-back" class="small" style="display:none;margin-bottom:8px" onclick="navBack()">← Back</button>
   <div class="pane-crumb" id="edit-crumb"></div>
   <h2 id="edit-title"></h2>
   <div class="meta" id="edit-meta"></div>
@@ -1022,7 +1022,24 @@ function rangeLabel() {
               "30d": "last 30 days", "90d": "last 90 days", all: "all time" };
   return m[state.since] || `since ${state.since}`;
 }
-const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body) });
+// A 200 carrying {"status":"error"} is still a failure. Several write
+// endpoints answer that way rather than with an HTTP error -- the domain →
+// workspace bulk assign does it when any mailbox fails -- and `api` only
+// rejects on HTTP status, so `formResult` printed "Saved." over the top of a
+// rejected write. That is why reassigning a sending domain looked like it
+// worked and then didn't. Writes only: some read endpoints legitimately return
+// a status field their own caller inspects.
+const post = async (path, body) => {
+  const payload = await api(path, { method: "POST", body: JSON.stringify(body) });
+  if (payload && payload.status === "error") {
+    const err = new Error(payload.error
+      || (payload.errors || []).filter(Boolean).join("; ")
+      || "the server rejected this change");
+    err.payload = payload;
+    throw err;
+  }
+  return payload;
+};
 
 function toast(msg) {
   const el = $("toast");
@@ -2286,6 +2303,9 @@ async function renderDomainWorkspaces(domain) {
   if (!summary) { el.innerHTML = ""; return; }
   // A domain has no membership of its own; its mailboxes do. So this half is
   // read-only and derived, and the only write is an explicit bulk edit.
+  // The boxes start on the current membership: this submits the whole set, so
+  // a blank form does not mean "no change", it means "remove from everywhere".
+  const memberSlugs = new Set((summary.workspaces || []).map(w => w.slug));
   const current = (summary.workspaces || []).length
     ? summary.workspaces.map(w => `${esc(w.slug)} <span class="stale">(${w.mailboxes})</span>`).join(", ")
     : '<span class="stale">none</span>';
@@ -2294,7 +2314,8 @@ async function renderDomainWorkspaces(domain) {
     <div style="margin-bottom:6px">${current}</div>
     <div style="display:flex;flex-direction:column;gap:3px">
       ${((wsList?.workspaces) || []).map(w => `<label style="cursor:pointer">
-        <input type="checkbox" class="domain-ws-cb" value="${esc(w.slug)}"> ${esc(w.slug)}
+        <input type="checkbox" class="domain-ws-cb" value="${esc(w.slug)}"${
+          memberSlugs.has(w.slug) ? " checked" : ""}> ${esc(w.slug)}
       </label>`).join("")}
     </div>
     <div class="row" style="margin-top:6px"><button class="small" id="domain-ws-save">Assign all mailboxes</button></div>
@@ -2305,7 +2326,13 @@ async function renderDomainWorkspaces(domain) {
       + `${workspaces.length ? workspaces.join(", ") : "none"}? This replaces their current membership.`)) return;
     formResult("domain-ws-msg",
       post("/api/domains/workspaces", { domain, workspaces }),
-      loadDeliverability);
+      () => {
+        // The domain may have just left this workspace, so a filter still
+        // pinned to it would re-render the page around a row that is gone.
+        delivDomainFilter = null;
+        dismissPanels();
+        loadDeliverability();
+      });
   };
 }
 
@@ -4171,6 +4198,10 @@ function openEditPanel(title, meta, paneId) {
   $("edit-body").innerHTML = "";
   $("overlay").style.display = "block";
   $("editPanel").style.display = "block";
+  // The panel is open now, so the back-stack can be reflected. Without this the
+  // display:none left by the previous close survived every reopen and the
+  // button never appeared -- on any pane, not just this one.
+  updateBackBtns();
 }
 function closeEditPanel() {
   $("editPanel").style.display = "none";
@@ -5879,7 +5910,7 @@ function navBack() {
 }
 function updateBackBtns() {
   const has = state.navStack.length > 0;
-  const lb = $("lead-back"), cb = $("company-back");
+  const lb = $("lead-back"), cb = $("panel-back");
   if (lb) lb.style.display = ($("slideover").style.display === "block" && has) ? "" : "none";
   if (cb) cb.style.display = ($("editPanel").style.display === "block" && has) ? "" : "none";
 }

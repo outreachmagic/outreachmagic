@@ -17,7 +17,8 @@ directly: `deliverability.bounce`.
 | `deliverability.mailbox` | Deliverability › Mailbox detail | a mailbox row, or a "trending down" flag | provider, limits, warmup, and the daily sends/bounces behind the trend verdict |
 | `deliverability.domain` | Deliverability › Sending domain detail | a sending-domain row | reseller, provider, cost, sending IP, registration date, mailboxes |
 | `deliverability.blacklist` | Deliverability › Blacklist report | the Blacklist cell on a domain row | every DNSBL checked, its verdict, and when — including lists that refused |
-| `deliverability.bounce` | Deliverability › Bounce detail | a bounce row in the Bounces card | the full bounce message, what we sent before it, and three sibling sets: **same campaign**, **same sender**, **same sending domain** |
+| `deliverability.bounce` | Deliverability › Bounce detail | a **contact** row in the Bounces card | the full bounce message, what we sent before it, **this contact's recent history**, and three buttons that filter the explorer to every related bounce (same campaign / mailbox / sending domain) rather than showing a truncated sample of each |
+| `campaigns.role` | Campaigns › Campaign reporting role | the `⋯` button on a campaign row | whether reporting treats this campaign as derived, outbound, a booking tool, or not-outreach (`excluded`) |
 | `campaign.subjects` | Campaigns › Subject lines & copy | a campaign row | the exact copy sent, per subject line |
 | `quality.bucket` | Data quality › Bucket detail | a data-quality tile | the rows in that bucket |
 | `sync.outbox` | Sync › Outbox item detail | an outbox row on the Sync tab | queue metadata, the live record, and the exact payload that will push |
@@ -37,3 +38,20 @@ The ✕ and the overlay dismiss the whole stack.
 3. Add a row to the table above.
 4. If it links to another pane, call `navPush(type, id)` before opening the next
    one, and add `type` to `NAV_OPENERS`.
+
+## Deliverability › Bounces: two gestures
+
+Clicking a **group** row (a failure, an SMTP code, a recipient domain) filters
+the contact list below it to exactly that group and leaves the groups on screen
+— the counts in the group row and the rows below it are the same set, which is
+asserted in `tests/test_bounce_explorer_filters.py`. Clicking a **contact** row
+opens `deliverability.bounce` for that one bounce.
+
+Every pane in the edit panel now carries a `← Back` button whenever you arrived
+from another pane. The same filters are on the CLI:
+
+```bash
+pipeline.py deliverability bounces --group-by signature --json
+pipeline.py deliverability bounces --signature "<a group key>" --json
+pipeline.py deliverability bounces --recipient-domain acme.com --smtp-code 5.1.1
+```

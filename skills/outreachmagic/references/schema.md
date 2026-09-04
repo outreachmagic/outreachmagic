@@ -97,6 +97,7 @@ Campaign names and their workspace. events.campaign_id joins here.
 | `description` | TEXT |  |
 | `status` | TEXT | not null |
 | `workspace_id` | TEXT | → `workspaces.id` |
+| `reporting_role` | TEXT |  |
 | `created_at` | TEXT | not null |
 
 ### `companies`

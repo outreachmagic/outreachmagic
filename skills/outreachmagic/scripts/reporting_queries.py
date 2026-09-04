@@ -4516,8 +4516,31 @@ def bounce_signature(message: Optional[str], chars: int = BOUNCE_SIGNATURE_CHARS
     return (prefix + text)[:chars].strip()
 
 
+#: A bounce's sending domain, provider and reseller -- the three facts that
+#: decide whether you pause one mailbox, one domain, or a reseller's whole
+#: batch. LEFT JOIN: an unregistered sending domain must still list its bounces,
+#: the same reasoning as domain_health's join to sender_domains.
+_BOUNCE_SENDER_DOMAIN_EXPR = (
+    "lower(substr(b.sender_email, instr(b.sender_email, '@') + 1))")
+_BOUNCE_DOMAIN_JOIN = (
+    f" LEFT JOIN sender_domains sd ON lower(sd.domain) = {_BOUNCE_SENDER_DOMAIN_EXPR}")
+
+
+def _signature_key(row) -> str:
+    """The group key for a bounce's failure signature.
+
+    The no-diagnostic majority collapses to one honest row naming the platform,
+    rather than thousands of empty ones -- "your sequencer never sent us a
+    reason" is the finding. Shared by the grouping and the signature filter so a
+    group's count and its filtered rows can never disagree.
+    """
+    sig = bounce_signature(row["bounce_message"])
+    return sig or f"(no diagnostic message — {row['platform'] or 'unknown platform'})"
+
+
 def _bounce_filters(
     workspace_id: Optional[str], since, until, domain, mailbox, campaign_id, bounce_type,
+    recipient_domain=None, smtp_code=None,
 ) -> tuple[str, list]:
     where = ["1=1"]
     params: list = []
@@ -4542,6 +4565,13 @@ def _bounce_filters(
     if bounce_type:
         where.append("lower(b.bounce_type) = lower(?)")
         params.append(bounce_type)
+    if recipient_domain:
+        where.append(
+            "lower(substr(b.lead_email, instr(b.lead_email, '@') + 1)) = lower(?)")
+        params.append(recipient_domain)
+    if smtp_code:
+        where.append("COALESCE(b.smtp_code, '') = ?")
+        params.append(smtp_code)
     return " AND ".join(where), params
 
 
@@ -4555,32 +4585,60 @@ def bounce_explorer(
     mailbox: Optional[str] = None,
     campaign_id: Optional[int] = None,
     bounce_type: Optional[str] = None,
+    signature: Optional[str] = None,
+    recipient_domain: Optional[str] = None,
+    smtp_code: Optional[str] = None,
     group_by: str = "signature",
     limit: int = 200,
     offset: int = 0,
 ) -> dict:
-    """Bounces for a range, grouped for triage and paginated for reading."""
+    """Bounces for a range, grouped for triage and paginated for reading.
+
+    `signature`, `recipient_domain` and `smtp_code` make every group key
+    clickable: selecting a group narrows the contact list below it to exactly
+    the bounces in that group. Before this, a group row opened a drawer for one
+    example bounce -- "6 contacts, 6 events" and then one person's story.
+
+    `signature` is normalisation over `bounce_message`, not a column, so it is
+    matched the same way the grouping computes it: over the un-paginated scan
+    the grouping already does, then sliced for the page. If `bounce_events` ever
+    gains a stored signature column this becomes a plain WHERE clause.
+    """
     where, params = _bounce_filters(
-        workspace_id, since, until, domain, mailbox, campaign_id, bounce_type)
+        workspace_id, since, until, domain, mailbox, campaign_id, bounce_type,
+        recipient_domain, smtp_code)
 
-    total = conn.execute(
-        f"SELECT COUNT(*) c, COALESCE(SUM(occurrence_count), 0) occ FROM bounce_events b WHERE {where}",
-        params,
-    ).fetchone()
-
-    rows = conn.execute(
-        f"""SELECT b.id, b.lead_id, b.lead_email, b.sender_email, b.bounce_type,
+    select_cols = f"""b.id, b.lead_id, b.lead_email, b.sender_email, b.bounce_type,
                    b.bounce_message, b.smtp_code, b.recipient_mx, b.platform,
                    b.campaign_id, b.campaign_name, b.occurrence_count,
                    b.first_seen_at, b.last_seen_at,
-                   l.name AS lead_name, l.company AS company
-              FROM bounce_events b
-              LEFT JOIN leads l ON l.id = b.lead_id
+                   l.name AS lead_name, l.company AS company,
+                   {_BOUNCE_SENDER_DOMAIN_EXPR} AS sending_domain,
+                   sd.provider AS provider, sd.reseller AS reseller"""
+    from_sql = (" FROM bounce_events b LEFT JOIN leads l ON l.id = b.lead_id"
+                + _BOUNCE_DOMAIN_JOIN)
+
+    if signature:
+        # Signature is computed, so the page has to be taken after matching.
+        all_rows = conn.execute(
+            f"SELECT {select_cols}{from_sql} WHERE {where}"
+            " ORDER BY b.last_seen_at DESC", params).fetchall()
+        matched = [r for r in all_rows if _signature_key(r) == signature]
+        total_c = len(matched)
+        total_occ = sum(int(r["occurrence_count"] or 1) for r in matched)
+        rows = matched[int(offset):int(offset) + int(limit)]
+    else:
+        total = conn.execute(
+            f"SELECT COUNT(*) c, COALESCE(SUM(occurrence_count), 0) occ"
+            f" FROM bounce_events b WHERE {where}", params).fetchone()
+        total_c, total_occ = int(total["c"] or 0), int(total["occ"] or 0)
+        rows = conn.execute(
+            f"""SELECT {select_cols}{from_sql}
              WHERE {where}
              ORDER BY b.last_seen_at DESC
              LIMIT ? OFFSET ?""",
-        [*params, int(limit), int(offset)],
-    ).fetchall()
+            [*params, int(limit), int(offset)],
+        ).fetchall()
 
     items = []
     for r in rows:
@@ -4598,12 +4656,10 @@ def bounce_explorer(
             params,
         ).fetchall()
         for r in group_rows:
+            if signature and _signature_key(r) != signature:
+                continue
             if group_by == "signature":
-                sig = bounce_signature(r["bounce_message"])
-                # The no-diagnostic majority is one honest row saying so, not
-                # thousands of empty ones -- and it names the platform, because
-                # "your sequencer never sent us a reason" is the finding.
-                key = sig or f"(no diagnostic message — {r['platform'] or 'unknown platform'})"
+                key = _signature_key(r)
             elif group_by == "type":
                 key = r["bounce_type"] or "unknown"
             elif group_by == "mailbox":
@@ -4633,9 +4689,15 @@ def bounce_explorer(
                 entry["last_seen_at"] = r["last_seen_at"]
 
     return {
-        "total": int(total["c"] or 0),
-        "total_occurrences": int(total["occ"] or 0),
+        "total": total_c,
+        "total_occurrences": total_occ,
         "group_by": group_by,
+        # Echoed so the UI renders the active filter from the server's answer
+        # rather than from its own memory of what it asked for.
+        "filters": {"signature": signature, "recipient_domain": recipient_domain,
+                    "smtp_code": smtp_code, "domain": domain, "mailbox": mailbox,
+                    "bounce_type": bounce_type,
+                    "campaign_id": int(campaign_id) if campaign_id else None},
         "groups": sorted(groups.values(), key=lambda g: -g["bounces"]),
         "bounces": items,
         "limit": limit,

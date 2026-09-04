@@ -137,6 +137,9 @@ def handle_bounces(conn, ws_id, match, query):
         domain=_q(query, "domain"), mailbox=_q(query, "mailbox"),
         campaign_id=_q(query, "campaign_id"),
         bounce_type=_q(query, "bounce_type"),
+        signature=_q(query, "signature"),
+        recipient_domain=_q(query, "recipient_domain"),
+        smtp_code=_q(query, "smtp_code"),
         group_by=None if group_by == "none" else group_by,
         limit=_int_q(query, "limit", 200), offset=_int_q(query, "offset", 0, hi=1000000),
     )

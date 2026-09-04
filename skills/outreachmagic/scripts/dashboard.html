@@ -2014,24 +2014,52 @@ $("domains-check-btn").onclick = async () => {
 // The three "what else bounced" sections of the bounce detail pane. One
 // builder, because they differ only in their heading and their row list, and
 // three near-identical blocks would drift.
+// Three questions the pane used to answer with three truncated sample lists.
+// Each is now one button that filters the explorer, which answers the same
+// question completely -- and leaves the pane short enough to read.
 function siblingBounceSections(d) {
-  const table = (rows) => ({
-    cols: [
-      { key: "lead_email", label: "Contact", render: r => esc(r.lead_email || "—") },
-      { key: "sender_email", label: "From", render: r => esc(r.sender_email || "—") },
-      { key: "last_seen_at", label: "Seen", render: r => dt(r.last_seen_at) },
-    ], rows,
-    opts: { onRowClick: r => { navPush("bounce", d.bounce.id); openBounceDrawer(r.id); } },
-  });
-  return [
-    ["Other bounces in this campaign", d.same_campaign || [], null],
-    ["Other bounces from this sender", d.same_sender || [], d.sender_email],
-    ["Other bounces on this sending domain", d.same_domain || [], d.sending_domain],
-  ].map(([label, rows, subject]) => ({
-    heading: `${label}${subject ? ` — ${subject}` : ""} (${rows.length})`,
-    html: rows.length ? "" : '<div class="stale">None.</div>',
-    table: rows.length ? table(rows) : null,
-  }));
+  const b = d.bounce;
+  const jumps = [
+    ["campaign", `in this campaign${b.campaign_name ? ` — ${b.campaign_name}` : ""}`,
+     b.campaign_id ? { campaign_id: b.campaign_id } : null, (d.same_campaign || []).length],
+    ["sender", `from this mailbox — ${d.sender_email || b.sender_email || "?"}`,
+     b.sender_email ? { mailbox: b.sender_email } : null, (d.same_sender || []).length],
+    ["domain", `on this sending domain — ${d.sending_domain || "?"}`,
+     d.sending_domain ? { domain: d.sending_domain } : null, (d.same_domain || []).length],
+  ].filter(([, , filters]) => filters);
+  if (!jumps.length) return [];
+  return [{
+    heading: "See every related bounce",
+    html: `<div class="controls" style="flex-direction:column;align-items:stretch;gap:5px">
+      ${jumps.map(([id, label, , n]) => `<button class="small" data-jump="${id}"
+        style="text-align:left">All bounces ${esc(label)}${n ? ` (${n}+)` : ""}</button>`).join("")}
+    </div>`,
+    onDraw: (el) => el.querySelectorAll("[data-jump]").forEach(btn => {
+      const filters = jumps.find(j => j[0] === btn.dataset.jump)[2];
+      btn.onclick = () => { dismissPanels(); showBounces(filters); };
+    }),
+  }];
+}
+
+// "A way to easily see the history for those leads and what happened with
+// them" -- the bounce is one event in a story, and the pane showed only it.
+function bounceLeadHistorySection(leadId) {
+  return {
+    heading: "This contact's history",
+    html: leadId ? '<div class="stale" id="bounce-history">Loading…</div>'
+                 : '<div class="stale">No contact record linked to this bounce.</div>',
+    onDraw: async () => {
+      if (!leadId) return;
+      const host = $("bounce-history");
+      if (!host) return;
+      // get(), not api(): this route is workspace-scoped and 400s without one.
+      const h = await get(`/api/leads/${leadId}/history`).catch(() => null);
+      const events = (h?.events || []).slice(0, 12);
+      host.innerHTML = events.length
+        ? events.map(compactEventLine).join("")
+        : '<div class="stale">No events recorded for this contact.</div>';
+    },
+  };
 }
 
 /* ---------- deliverability drawers ---------- */
@@ -2155,48 +2183,98 @@ async function openTrendDrawer(mailbox) {
 // The bounce explorer. Grouping is what makes hundreds navigable: on real data
 // a few thousand bounces collapse to a few dozen distinct failures, and the
 // ones carrying no diagnostic at all become one honest row saying so.
-const bounceView = { group_by: "signature", domain: null, mailbox: null, offset: 0 };
+// Two gestures, two outcomes: clicking a GROUP narrows the contacts below it,
+// clicking a CONTACT opens that one bounce. A group row used to open a drawer
+// for one example bounce, so "6 contacts, 6 events" answered with one person's
+// story and three sibling lists nobody asked for.
+const BOUNCE_DRILL_KEYS = ["signature", "smtp_code", "recipient_domain",
+                           "bounce_type", "domain", "mailbox"];
+const bounceView = {
+  group_by: "signature", domain: null, mailbox: null, offset: 0,
+  signature: null, smtp_code: null, recipient_domain: null, bounce_type: null,
+};
 
 async function showBounces(filters = {}) {
-  Object.assign(bounceView, { domain: null, mailbox: null, offset: 0 }, filters);
+  Object.assign(bounceView,
+    { domain: null, mailbox: null, offset: 0,
+      signature: null, smtp_code: null, recipient_domain: null, bounce_type: null },
+    filters);
   $("bounces-card").hidden = false;
   await loadBounces();
   $("bounces-card").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+// The group key IS the filter value, so the column you grouped by is the one
+// that gets set. "Don't group" and mailbox/domain groupings that already have
+// their own filter fall through to the drawer.
+const BOUNCE_GROUP_FILTER = {
+  signature: "signature", type: "bounce_type", mailbox: "mailbox",
+  domain: "domain", recipient_domain: "recipient_domain",
+};
+
 async function loadBounces() {
   const el = $("bounces-body");
   el.innerHTML = '<div class="stale">Loading…</div>';
   const qs = new URLSearchParams({ group_by: bounceView.group_by, limit: "200" });
-  if (bounceView.domain) qs.set("domain", bounceView.domain);
-  if (bounceView.mailbox) qs.set("mailbox", bounceView.mailbox);
+  for (const k of BOUNCE_DRILL_KEYS) if (bounceView[k]) qs.set(k, bounceView[k]);
   const d = await getR("/api/bounces?" + qs).catch(e => { toast(e.message); return null; });
   if (!d) { el.innerHTML = ""; return; }
-  const scope = [bounceView.domain && `domain ${bounceView.domain}`,
-                 bounceView.mailbox && `mailbox ${bounceView.mailbox}`].filter(Boolean).join(" · ");
+  // Rendered from the server's echo, not from what we remember asking for.
+  const f = d.filters || {};
+  const LABEL = { signature: "Failure", smtp_code: "SMTP code",
+                  recipient_domain: "Recipient domain", bounce_type: "Type",
+                  domain: "Sending domain", mailbox: "Mailbox" };
+  const active = BOUNCE_DRILL_KEYS.filter(k => f[k]);
   $("bounces-count").textContent =
-    `${fmt(d.total)} bounces · ${fmt(d.total_occurrences)} occurrences${scope ? " · " + scope : ""}`;
-  el.innerHTML = '<div id="bounce-groups"></div><div id="bounce-rows" style="margin-top:12px"></div>';
+    `${fmt(d.total)} bounces · ${fmt(d.total_occurrences)} occurrences`;
+  $("bounces-clear").hidden = !active.length;
+  el.innerHTML =
+    (active.length ? `<div class="controls" id="bounce-chips" style="margin-bottom:8px">
+        <span class="stale" style="font-size:12px">Filtered to:</span>
+        ${active.map(k => `<button class="small" data-drop="${k}"
+            title="Click to remove">${esc(LABEL[k])}: ${esc(String(f[k]).slice(0, 70))}
+            <span style="opacity:.6">×</span></button>`).join("")}
+      </div>` : "")
+    + '<div id="bounce-groups"></div><div id="bounce-rows" style="margin-top:12px"></div>';
+  el.querySelectorAll("[data-drop]").forEach(b => b.onclick = () => {
+    bounceView[b.dataset.drop] = null;
+    loadBounces();
+  });
+
   if (d.groups?.length) {
+    const filterKey = BOUNCE_GROUP_FILTER[bounceView.group_by];
     renderTable("bounce-groups", [
-      { key: "key", label: "Failure", wrap: true, render: r => esc(r.key) },
+      { key: "key", label: "Failure", wrap: true,
+        render: r => esc(r.key)
+          + (filterKey && bounceView[filterKey] === r.key
+              ? ' <span class="flag ok">showing</span>' : "") },
       { key: "bounces", label: "Contacts", num: true, render: r => fmt(r.bounces) },
       { key: "occurrences", label: "Events", num: true, render: r => fmt(r.occurrences) },
       { key: "bounce_type", label: "Type", render: r => esc(r.bounce_type || "unknown") },
       { key: "last_seen_at", label: "Last seen", render: r => dt(r.last_seen_at) },
     ], d.groups, { empty: "No bounces in this range.", pageSize: DEFAULT_PAGE_SIZE,
-      onRowClick: r => openBounceDrawer(r.example_id) });
+      // Filters in place rather than opening one example bounce. The contacts
+      // table below becomes exactly the contacts in this group.
+      onRowClick: r => {
+        if (!filterKey) { openBounceDrawer(r.example_id); return; }
+        bounceView[filterKey] = bounceView[filterKey] === r.key ? null : r.key;
+        loadBounces();
+      } });
   }
+  // Type and code are gone: once you have filtered BY a failure they say the
+  // same thing on every row. Sending domain / provider / reseller are the three
+  // facts that decide whether you pause a mailbox, a domain, or a whole batch.
   renderTable("bounce-rows", [
     { key: "lead_name", label: "Contact", render: r => esc(r.lead_name || r.lead_email || "—") },
     { key: "lead_email", label: "Email", render: r => r.lead_email ? copyableCell(r.lead_email) : "—" },
     { key: "sender_email", label: "Mailbox", render: r => esc(r.sender_email || "—") },
-    { key: "bounce_type", label: "Type", render: r => esc(r.bounce_type || "unknown") },
-    { key: "smtp_code", label: "Code", render: r => esc(r.smtp_code || "—") },
+    { key: "sending_domain", label: "Sending domain", render: r => esc(r.sending_domain || "—") },
+    { key: "provider", label: "Provider", render: r => esc(r.provider || "—") },
+    { key: "reseller", label: "Reseller", render: r => esc(r.reseller || "—") },
     { key: "campaign_name", label: "Campaign", render: r => esc(r.campaign_name || "—") },
     { key: "occurrence_count", label: "Times", num: true, render: r => fmt(r.occurrence_count || 1) },
     { key: "last_seen_at", label: "Last seen", render: r => dt(r.last_seen_at) },
-  ], d.bounces, { empty: "No bounces in this range.", pageSize: DEFAULT_PAGE_SIZE,
+  ], d.bounces, { empty: "No bounces match these filters.", pageSize: DEFAULT_PAGE_SIZE,
     onRowClick: r => openBounceDrawer(r.id) });
 }
 
@@ -2233,6 +2311,7 @@ async function openBounceDrawer(bounceId) {
       // domain implicates everything on it — which is the one that decides
       // whether you pause a sender or pause the whole domain.
       ...siblingBounceSections(d),
+      bounceLeadHistorySection(b.lead_id),
       { heading: "Contact",
         html: b.lead_id
           ? `<button class="small" id="bounce-open-lead">Open contact</button>` : "",

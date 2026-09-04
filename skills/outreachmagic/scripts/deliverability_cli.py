@@ -456,8 +456,18 @@ def register_deliverability_parser(sub) -> None:
     bounces_p.add_argument("--bounce-type", dest="bounce_type",
                            choices=("hard", "soft", "unknown"))
     bounces_p.add_argument("--group-by", dest="group_by", default="signature",
-                           choices=("signature", "type", "mailbox", "domain", "campaign", "none"),
+                           choices=("signature", "type", "mailbox", "domain",
+                                    "recipient_domain", "campaign", "none"),
                            help="How to group (default: signature)")
+    # The same three filters the dashboard's drill-down uses, under the same
+    # names -- selecting a group there is exactly one of these on the CLI.
+    bounces_p.add_argument("--signature",
+                           help="Only bounces whose failure signature matches this "
+                                "group key exactly (copy it from --group-by signature)")
+    bounces_p.add_argument("--recipient-domain", dest="recipient_domain",
+                           help="Only bounces to this recipient domain")
+    bounces_p.add_argument("--smtp-code", dest="smtp_code",
+                           help="Only bounces carrying this SMTP code")
     bounces_p.add_argument("--limit", type=int, default=200)
     bounces_p.add_argument("--offset", type=int, default=0)
 
@@ -620,6 +630,9 @@ def _dispatch(args, action: str, conn):
             domain=getattr(args, "domain", None), mailbox=getattr(args, "mailbox", None),
             campaign_id=getattr(args, "campaign_id", None),
             bounce_type=getattr(args, "bounce_type", None),
+            signature=getattr(args, "signature", None),
+            recipient_domain=getattr(args, "recipient_domain", None),
+            smtp_code=getattr(args, "smtp_code", None),
             group_by=(None if args.group_by == "none" else args.group_by),
             limit=args.limit, offset=args.offset)
 
@@ -629,6 +642,14 @@ def _dispatch(args, action: str, conn):
                 lines.append(f"\ngrouped by {p['group_by']}:")
                 for g in p["groups"]:
                     lines.append(f"  {g['bounces']:>6}  {g['key']}")
+            if p["bounces"]:
+                lines.append("\ncontacts:")
+                for b in p["bounces"]:
+                    lines.append(
+                        f"  {(b.get('lead_email') or '—')[:38]:<38} "
+                        f"{(b.get('sending_domain') or '—')[:22]:<22} "
+                        f"{(b.get('provider') or '—')[:16]:<16} "
+                        f"{(b.get('reseller') or '—')[:16]:<16}")
             return "\n".join(lines)
         return payload, text
 

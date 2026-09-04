@@ -1018,13 +1018,16 @@ def _meetings_by_day(
     once, which is the same thing the per-campaign view counts.
     """
     range_sql, range_params = _range_clause(since, until, "wle.event_at")
+    # The booking's OWN campaign, before attribution redirects it.
+    excluded_sql = _excluded_filter(not excluded_ids, "COALESCE(e.campaign_id, -1)")
     rows = conn.execute(
         f"""SELECT DISTINCT wle.lead_id AS lead_id, l.company_id AS company_id,
                    date(wle.event_at) AS day
               FROM workspace_lead_events wle
               JOIN events e ON e.id = wle.event_id
               JOIN leads l ON l.id = wle.lead_id
-             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}""",
+             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}
+                   {excluded_sql}""",
         (workspace_id, *range_params),
     ).fetchall()
     if not rows:
@@ -1077,7 +1080,8 @@ def _meetings_by_campaign(
               FROM workspace_lead_events wle
               JOIN events e ON e.id = wle.event_id
               JOIN leads l ON l.id = wle.lead_id
-             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}"""
+             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}
+                   {_excluded_filter(not excluded_ids, "COALESCE(e.campaign_id, -1)")}"""
         + _scope_clause(scope, "wle.lead_id"),
         (workspace_id, *range_params),
     ).fetchall()
@@ -1523,6 +1527,7 @@ def _meeting_days(
     conn: sqlite3.Connection, workspace_id: str,
     since: Optional[str], until: Optional[str],
     scope: Optional["_LeadScope"] = None,
+    excluded_ids: Optional[set] = None,
 ) -> list[tuple[Optional[int], str]]:
     """(campaign_id, day) for every meeting in range, one per lead per day.
 
@@ -1533,13 +1538,16 @@ def _meeting_days(
     campaign rather than being dropped: it still happened.
     """
     range_sql, range_params = _range_clause(since, until, "wle.event_at")
+    # The booking's OWN campaign, before attribution redirects it.
+    excluded_sql = _excluded_filter(not excluded_ids, "COALESCE(e.campaign_id, -1)")
     rows = conn.execute(
         f"""SELECT DISTINCT wle.lead_id AS lead_id, l.company_id AS company_id,
                    date(wle.event_at) AS day
               FROM workspace_lead_events wle
               JOIN events e ON e.id = wle.event_id
               JOIN leads l ON l.id = wle.lead_id
-             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}"""
+             WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}
+                   {excluded_sql}"""
         + _scope_clause(scope, "wle.lead_id"),
         (workspace_id, *range_params),
     ).fetchall()
@@ -1556,6 +1564,7 @@ def _by_day_by_campaign(
     conn: sqlite3.Connection, workspace_id: str,
     since: Optional[str], until: Optional[str],
     scope: Optional["_LeadScope"], kind: Optional["_LeadScope"],
+    excluded_ids: Optional[set] = None,
 ) -> dict:
     """{campaign_id: [{date, sent, replies, bounces, meetings}, ...]}.
 
@@ -1590,7 +1599,8 @@ def _by_day_by_campaign(
             "replies": r["replies"] or 0, "bounces": r["bounces"] or 0,
             "meetings": 0,
         }
-    for campaign_id, day in _meeting_days(conn, workspace_id, since, until, scope):
+    for campaign_id, day in _meeting_days(conn, workspace_id, since, until, scope,
+                                          excluded_ids=excluded_ids):
         key = UNATTRIBUTED_SCHEDULING_ID if campaign_id is None else campaign_id
         row = days[key].get(day)
         if row is None:
@@ -1763,7 +1773,8 @@ def campaign_audit(
     out.sort(key=lambda c: (c.get("is_unattributed", False), -c["sent"], -c["meetings"]))
 
     if by_day:
-        daily = _by_day_by_campaign(conn, workspace_id, since, until, scope, kind)
+        daily = _by_day_by_campaign(conn, workspace_id, since, until, scope, kind,
+                                    excluded_ids=excluded_ids)
         for row in out:
             row["daily"] = daily.get(row["id"], [])
 

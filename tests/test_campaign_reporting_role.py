@@ -183,3 +183,67 @@ def test_manual_outbound_beats_the_scheduling_derivation():
     rq.set_campaign_reporting_role(conn, cid, "outbound")
     assert cid not in rq.scheduling_campaign_ids(conn)
     conn.close()
+
+
+def test_meeting_booked_through_an_excluded_campaign_is_not_outreach():
+    """The case the feature exists for, and the one a resolved-campaign check misses.
+
+    A booking webhook carries the check-in campaign on the EVENT. Attribution
+    then resolves the meeting through last-known-campaign, which for this shape
+    lands back on the check-in campaign -- so the booking was counted in the
+    workspace's meeting total even though the campaign it came from is not
+    outreach. Excluding by the resolved campaign alone was not enough: the
+    event's own campaign has to be filtered in SQL, before attribution runs.
+    """
+    conn, ws, ids = _seed()
+    outbound = ids["Acme Outbound Q3"]
+    checkin = ids["Acme Quarterly Check-In"]
+
+    # Outreach came from the outbound campaign; the booking came through the
+    # check-in sequence -- the shape that produced the complaint.
+    lead = om.resolve_lead(name="Crossover Lead", source="csv",
+                           allow_weak_identity=True, conn=conn)
+    conn.execute("UPDATE leads SET email = ? WHERE id = ?",
+                 (f"lead{lead['id']}@acme.com", lead["id"]))
+    om.upsert_workspace_lead(conn, om.DEFAULT_ORG_ID, ws, lead["id"])
+    conn.execute(
+        "INSERT OR IGNORE INTO campaign_leads (campaign_id, lead_id) VALUES (?, ?)",
+        (outbound, lead["id"]))
+    for et, direction, campaign in (("email_sent", "outbound", outbound),
+                                    ("meeting_booked", "inbound", checkin)):
+        cur = conn.execute(
+            """INSERT INTO events (lead_id, event_type, direction, channel,
+                                   campaign_id, created_at)
+               VALUES (?, ?, ?, 'email', ?, ?)""",
+            (lead["id"], et, direction, campaign, f"{DAY} 10:00:00"))
+        conn.execute(
+            """INSERT INTO workspace_lead_events
+                   (org_id, workspace_id, lead_id, event_id, event_type,
+                    event_at, idempotency_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (om.DEFAULT_ORG_ID, ws, lead["id"], cur.lastrowid, et,
+             f"{DAY} 10:00:00", f"idem_x_{cur.lastrowid}"))
+    conn.commit()
+
+    before = rq.campaign_audit(conn, ws, since=DAY, until=DAY)
+    rq.set_campaign_reporting_role(conn, checkin, "excluded")
+    after = rq.campaign_audit(conn, ws, since=DAY, until=DAY)
+
+    # The check-in's own bookings leave the totals -- 2 seeded plus this one.
+    assert after["totals"]["meetings"] == before["totals"]["meetings"] - 3
+
+    # And nothing absorbs them: the outbound campaign must not gain a meeting.
+    out_before = next(c["meetings"] for c in before["campaigns"] if c["id"] == outbound)
+    out_after = next(c["meetings"] for c in after["campaigns"] if c["id"] == outbound)
+    assert out_after == out_before, "an excluded booking must not be re-credited"
+
+    # The chart and the table have to agree about the smaller number too.
+    daily = rq.campaign_daily(conn, ws, since=DAY, until=DAY)
+    day = next(d for d in daily["days"] if d["date"] == DAY)
+    assert day["meetings"] == after["totals"]["meetings"]
+
+    # It is still on the lead's record -- excluded from the stats, not deleted.
+    assert conn.execute(
+        "SELECT COUNT(*) n FROM workspace_lead_events WHERE lead_id = ?"
+        " AND event_type = 'meeting_booked'", (lead["id"],)).fetchone()["n"] == 1
+    conn.close()

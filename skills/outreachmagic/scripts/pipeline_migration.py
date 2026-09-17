@@ -2061,6 +2061,7 @@ def migrate_db(conn=None):
             current_status_label TEXT,
             current_status_sentiment TEXT,
             current_sentiment_since TEXT,
+            current_status_at TEXT,
             first_positive_at TEXT,
             contact_priority INTEGER,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -2283,6 +2284,12 @@ def migrate_db(conn=None):
         pass
     try:
         conn.execute("ALTER TABLE workspace_leads ADD COLUMN first_positive_at TEXT")
+    except sqlite3.OperationalError:
+        pass
+    # Event time of the fact behind current_status_*: the latest-wins guard in
+    # workspace_routing.set_lead_status. Filled by `repair-lead-status`.
+    try:
+        conn.execute("ALTER TABLE workspace_leads ADD COLUMN current_status_at TEXT")
     except sqlite3.OperationalError:
         pass
     # The per-lead half is one-shot -- on a converged DB it walks all of leads to

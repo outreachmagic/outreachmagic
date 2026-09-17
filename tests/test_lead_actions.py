@@ -70,7 +70,7 @@ class TestChangeStageScoped:
             " FROM workspace_leads WHERE lead_id = ?", (lead_id,))[0]
         assert wl["status"] == "interested"
         assert wl["stage_entered_at"]
-        assert wl["current_status_label"] == "meeting requested"
+        assert wl["current_status_label"] == "meeting_requested"
         assert wl["current_status_sentiment"] == "positive"
 
     def test_logs_status_event_with_metadata(self):

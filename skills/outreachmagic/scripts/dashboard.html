@@ -1792,7 +1792,7 @@ function leadColumns() {
     linkedinColumn(),
     // The sequencer's reply label ("Interested", "Out of office"), not the
     // legacy stage machine. It is what you actually work the list by.
-    { key: "current_status_label", label: "Lead status", render: r => esc(r.current_status_label ?? "—") },
+    { key: "current_status_label", label: "Lead status", render: r => esc((r.current_status_label ?? "—").replaceAll("_", " ")) },
     { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
     { key: "tags", label: "Tags", maxw: 190, render: renderTagChips },
     // Same column, same renderer, same resolution rules as the Campaigns page.
@@ -3661,7 +3661,7 @@ function renderCompanyLeads(companyId, leads) {
     { key: "email_verification_status", label: "Verified",
       render: r => renderVerifyFlag(r.email_verification_status) },
     linkedinColumn(),
-    { key: "current_status_label", label: "Lead status", render: r => esc(r.current_status_label ?? "—") },
+    { key: "current_status_label", label: "Lead status", render: r => esc((r.current_status_label ?? "—").replaceAll("_", " ")) },
     { key: "current_status_sentiment", label: "Sentiment", render: r => esc(r.current_status_sentiment ?? "–") },
     { key: "record_type", label: "Record type", sortVal: r => r.record_type || "",
       render: r => `<select class="cl-rt" data-id="${r.lead_id}">${RECORD_TYPES.map(t =>

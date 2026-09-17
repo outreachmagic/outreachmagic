@@ -4,7 +4,7 @@ description: >
   Your agent goes blind after send. Sync sequencer webhooks, research leads
   via Serper, and find/verify emails — all in one local SQLite DB your agent
   queries directly.
-version: 1.9.0
+version: 1.9.1
 author: Outreach Magic
 license: MIT
 platforms: [macos, linux]
@@ -100,7 +100,7 @@ Config keys: `data_root` (share DB across agents), `api_base_url`, `dev_repo`.
 ## Platform install
 
 ```bash
-OM_VERSION=v1.9.0
+OM_VERSION=v1.9.1
 INSTALL_DIR=$(mktemp -d)
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/install.sh" -o "${INSTALL_DIR}/install.sh"
 curl -fsSL "https://github.com/outreachmagic/outreachmagic/releases/download/${OM_VERSION}/SHA256SUMS" -o "${INSTALL_DIR}/SHA256SUMS"
@@ -335,6 +335,10 @@ pipeline.py log-event --lead-id 1 --type email_sent --direction outbound \
 # Update stage
 pipeline.py update-stage --id 1 --stage replied --sentiment positive \
   --next-action "Send case study" --workspace W
+
+# A lead's status looks stale or wrong? Rebuild it from its latest status event
+pipeline.py repair-lead-status --workspace W --since 90d        # dry run
+pipeline.py repair-lead-status --workspace W --since 90d --apply
 
 # Bulk import CSV/JSON (preferred over repeated add-lead)
 pipeline.py import-profiles --file leads.csv --workspace W --dry-run

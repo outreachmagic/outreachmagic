@@ -21,6 +21,8 @@ from workspace_routing import (
     append_workspace_event,
     get_org_routing_config,
     resolve_workspace_identity,
+    normalize_status_label,
+    set_lead_status,
     upsert_workspace_lead,
 )
 
@@ -78,6 +80,7 @@ def change_stage_scoped(
     (from update_lead_stage) on an invalid stage.
     """
     ws_row = _resolve_workspace_scope(workspace_slug, "update-stage")
+    status_at = utc_now_for_storage()
 
     update_lead_stage(lead_id, stage, next_action)
 
@@ -85,34 +88,28 @@ def change_stage_scoped(
     if ws_row:
         conn = get_conn()
         ws_lead_id = upsert_workspace_lead(
-            conn, DEFAULT_ORG_ID, ws_row["id"], lead_id, status=stage,
-            current_status_label=label,
-            current_status_sentiment=sentiment)
+            conn, DEFAULT_ORG_ID, ws_row["id"], lead_id, status=stage)
         stage_ts = datetime.now(timezone.utc).isoformat()
-        update_sets = ["status = ?", "stage_entered_at = ?"]
-        update_params = [stage, stage_ts]
-        if sentiment:
-            update_sets.append("current_status_sentiment = ?")
-            update_params.append(sentiment)
-        if label:
-            update_sets.append("current_status_label = ?")
-            update_params.append(label)
-        update_params.append(ws_lead_id)
         conn.execute(
-            f"UPDATE workspace_leads SET {', '.join(update_sets)} WHERE id = ?",
-            update_params)
+            "UPDATE workspace_leads SET status = ?, stage_entered_at = ? WHERE id = ?",
+            (stage, stage_ts, ws_lead_id))
+        set_lead_status(conn, ws_lead_id, label=label, sentiment=sentiment,
+                        at=status_at)
         conn.commit()
         conn.close()
         result["workspace"] = ws_row["slug"]
 
+    # `stage` marks this as a manual change; `status_label` is present only when
+    # a label was actually written, which is what repair-lead-status replays.
     event_metadata = {
-        "lead_status_raw": stage,
-        "lead_status_display": stage.replace("_", " "),
+        "lead_status_raw": normalize_status_label(label) or stage,
+        "lead_status_display": (label or stage).replace("_", " "),
+        "stage": stage,
     }
+    if label:
+        event_metadata["status_label"] = normalize_status_label(label)
     if sentiment:
         event_metadata["lead_status_sentiment"] = sentiment
-    if label:
-        event_metadata["lead_status_display"] = label
     status_event_id = log_event(
         lead_id=lead_id,
         event_type="lead_status_updated",
@@ -128,7 +125,7 @@ def change_stage_scoped(
             conn, DEFAULT_ORG_ID, ws_row["id"], lead_id,
             event_id=status_event_id,
             event_type="lead_status_updated",
-            event_at=utc_now_for_storage(),
+            event_at=status_at,
             idempotency_key=(
                 f"agent_stage_{lead_id}_{datetime.now(timezone.utc).isoformat()}"
             ))

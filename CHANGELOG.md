@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-09-17
+
+### Fixed
+
+- **A lead's status could roll back to an older one after a pull.** A pull applies the event stream first and workspace snapshots after it, and the snapshot apply overwrote the status without looking at its age — so a snapshot pushed yesterday (including our own, echoed back by the relay) replaced the positive reply that arrived overnight with the out-of-office before it. Status is now written by one function, `set_lead_status`, and the latest fact wins by **event time**: a new `workspace_leads.current_status_at` records when the current status happened, anything older is ignored, and snapshots carry it as `status_at`. Snapshots from before this release carry no time and may only fill a blank status. Late-delivered webhook events get the same protection.
+- **Status labels were stored in two spellings** (`out_of_office` from webhooks, `out of office` from snapshots and imports), so the same status compared unequal and re-queued the row on every sync. Labels are stored snake_case; the dashboard displays them with spaces.
+- **A manual status change could not be rebuilt from its event.** `update-stage` logged the stage as `lead_status_raw` and the label only in the display field; the sheet review sync logged nothing at all. Both now log a `status_label`.
+
+### Added
+
+- **`pipeline.py repair-lead-status [--workspace W] [--since 90d|all] [--apply] [--json]`** — replays each lead's status events in time order and rewrites the current status, its run start and `current_status_at` wherever they disagree. Dry run by default; changed rows are queued for the next push.
+
 ## [1.9.0] — 2026-09-04
 
 ### Fixed

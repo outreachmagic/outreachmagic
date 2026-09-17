@@ -42,6 +42,7 @@ SYNC_PROFILE_FIELDS = (
 
 WORKSPACE_ACTIVITY_SELECT = """
     status, current_status_label, current_status_sentiment, current_sentiment_since,
+    current_status_at,
     contact_priority,
     COALESCE(last_contacted_at, last_activity_at) AS last_contacted_at,
     last_activity_at, email_sent_count, linkedin_sent_count, total_replies_count
@@ -307,6 +308,9 @@ def _assemble_lead_workspace_sync_payload(
         # restores the same anchor the campaigns view groups on.
         if wl_row["current_sentiment_since"]:
             payload["sentiment_since"] = wl_row["current_sentiment_since"]
+    if wl_row["current_status_at"] and (wl_row["current_status_label"]
+                                        or wl_row["current_status_sentiment"]):
+        payload["status_at"] = wl_row["current_status_at"]
     if wl_row["contact_priority"] is not None:
         payload["contact_order"] = wl_row["contact_priority"]
     if wl_row["status"]:
@@ -415,7 +419,8 @@ def _load_lead_sync_prefetch(
     membership_index: dict[tuple[int, str], dict] = {}
     for r in conn.execute(
         f"""SELECT wl.lead_id, wl.workspace_id, w.slug, wl.status, wl.current_status_label,
-                   wl.current_status_sentiment, wl.current_sentiment_since, wl.contact_priority,
+                   wl.current_status_sentiment, wl.current_sentiment_since, wl.current_status_at,
+                   wl.contact_priority,
                    COALESCE(wl.last_contacted_at, wl.last_activity_at) AS last_contacted_at,
                    wl.last_activity_at, wl.email_sent_count, wl.linkedin_sent_count,
                    wl.total_replies_count
@@ -1128,9 +1133,12 @@ def apply_agent_lead_workspace_payload(
     """Apply per-workspace pipeline state from relay lead_workspace_update."""
     from pipeline import parse_tags_value
 
-    status_label = (payload.get("lead_status") or "").strip().lower().replace("_", " ") or None
-    status_sentiment = (payload.get("lead_sentiment") or "").strip().lower() or None
+    status_label = payload.get("lead_status") or None
+    status_sentiment = payload.get("lead_sentiment") or None
     sentiment_since = (payload.get("sentiment_since") or "").strip() or None
+    # Snapshots built before status_at existed carry no time, so they may only
+    # fill a blank status -- never roll back one a newer event already set.
+    status_at = (payload.get("status_at") or "").strip() or None
     contact_pri = None
     if payload.get("contact_order") is not None:
         try:
@@ -1148,6 +1156,7 @@ def apply_agent_lead_workspace_payload(
         current_status_sentiment=status_sentiment,
         current_sentiment_since=sentiment_since,
         contact_priority=contact_pri,
+        status_at=status_at,
     )
     if "tags" in payload:
         conn.execute(

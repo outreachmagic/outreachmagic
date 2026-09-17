@@ -48,7 +48,7 @@ from relay_extractors import (
     extract_relay_identity,
     name_from_email,
 )
-from workspace_routing import DEFAULT_ORG_ID, extract_campaign_context
+from workspace_routing import DEFAULT_ORG_ID, extract_campaign_context, set_lead_status
 
 
 # --- --debug-sentiment tally -------------------------------------------------
@@ -1410,38 +1410,13 @@ def ingest_relay_event(
         status_label = metadata.get("lead_status_raw")
         status_sentiment = metadata.get("lead_status_sentiment")
         if status_label or status_sentiment:
-            mat_sets, mat_params = [], []
-            if status_label:
-                mat_sets.append("current_status_label = ?")
-                mat_params.append(status_label)
-            if status_sentiment:
-                mat_sets.append("current_status_sentiment = ?")
-                mat_params.append(status_sentiment)
-                # Stamp the entry time only when the sentiment actually changes
-                # (or was never set): a repeat of the same sentiment keeps the
-                # original run start, a flip back to it resets to this event. The
-                # CASE reads the OLD row because SQLite evaluates every SET RHS
-                # against the pre-update row.
-                sentiment_at = event_at or om.utc_now_for_storage()
-                mat_sets.append(
-                    "current_sentiment_since = CASE WHEN current_status_sentiment IS NULL "
-                    "OR lower(current_status_sentiment) <> lower(?) "
-                    "OR current_sentiment_since IS NULL THEN ? "
-                    "ELSE current_sentiment_since END"
-                )
-                mat_params.extend([status_sentiment, sentiment_at])
-                # Set once, never moved -- unlike current_sentiment_since, which
-                # tracks the CURRENT run and so rewrites history when a lead
-                # flips away and back, or drops it entirely when a lead cools.
-                # A campaign's July positives must not change in September.
-                if str(status_sentiment).strip().lower() == "positive":
-                    mat_sets.append(
-                        "first_positive_at = COALESCE(first_positive_at, ?)")
-                    mat_params.append(sentiment_at)
-            mat_sets.append("updated_at = datetime('now')")
-            mat_params.append(ws_lead_id)
-            conn.execute(
-                f"UPDATE workspace_leads SET {', '.join(mat_sets)} WHERE id = ?", mat_params
+            # Latest event wins by event time, not delivery order -- see
+            # set_lead_status for the run-anchor and first_positive_at rules.
+            set_lead_status(
+                conn, ws_lead_id,
+                label=status_label,
+                sentiment=status_sentiment,
+                at=event_at or om.utc_now_for_storage(),
             )
 
         # Non-human replies (autoreply, invalid) should never show as "replied".

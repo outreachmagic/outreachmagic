@@ -5538,8 +5538,9 @@ def import_profiles(
         ws_conn = get_conn()
         ensure_organization(ws_conn)
         for lead_id, extra in ws_pending:
-            status_label = (extra.get("lead_status") or "").strip().lower().replace("_", " ") or None
-            status_sentiment = (extra.get("lead_sentiment") or "").strip().lower() or None
+            # Untimed: an import only fills a blank status (set_lead_status).
+            status_label = extra.get("lead_status") or None
+            status_sentiment = extra.get("lead_sentiment") or None
             contact_pri = None
             if extra.get("contact_order"):
                 try:

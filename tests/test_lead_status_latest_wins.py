@@ -222,3 +222,20 @@ def test_push_payload_carries_status_at(lead):
     payload = om.build_lead_workspace_sync_payload(
         conn, DEFAULT_ORG_ID, lead["lead_id"], workspace_slug="alpha")
     assert payload["status_at"] == "2026-09-17 01:36:31"
+
+
+def test_canceled_meeting_does_not_change_status(lead):
+    conn = lead["conn"]
+    _log_status(conn, lead, _ts(2), _relay_meta("meeting_booked", "positive"))
+    # Stored before 1.9.1, a cancellation carried sentiment=negative.
+    _log_status(conn, lead, _ts(1), {"lead_status_raw": "canceled",
+                                     "lead_status_sentiment": "negative",
+                                     "platform": "calendly",
+                                     "webhook_event": "invitee.canceled"})
+    repair_lead_status(conn, dry_run=False)
+    row = _row(conn, lead["wl_id"])
+    assert (row["current_status_label"], row["current_status_sentiment"]) == (
+        "meeting_booked", "positive")
+    assert not set_lead_status(conn, lead["wl_id"], label="canceled",
+                               sentiment="negative", at=_ts(0))
+    assert _row(conn, lead["wl_id"])["current_status_sentiment"] == "positive"

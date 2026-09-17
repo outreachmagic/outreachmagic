@@ -181,9 +181,10 @@ def build_calendly_status_metadata(envelope_event_type: str) -> dict:
         meta["lead_status_display"] = "meeting booked"
         meta["lead_status_sentiment"] = "positive"
     elif et == "invitee.canceled":
+        # Recorded on the timeline, but no sentiment: a canceled meeting does
+        # not change where the lead stands (NOT_A_STATUS in workspace_routing).
         meta["lead_status_raw"] = "canceled"
         meta["lead_status_display"] = "canceled"
-        meta["lead_status_sentiment"] = "negative"
     return meta
 
 

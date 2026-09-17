@@ -1700,6 +1700,12 @@ def normalize_status_label(label: Optional[str]) -> Optional[str]:
     return (label or "").strip().lower().replace(" ", "_") or None
 
 
+#: Labels recorded on events that are not a lead status. A canceled meeting
+#: leaves the lead where it was; older events still carry sentiment=negative
+#: for it, so the writer and repair-lead-status both skip these outright.
+NOT_A_STATUS = frozenset({"canceled"})
+
+
 def set_lead_status(
     conn: sqlite3.Connection,
     ws_lead_id: str,
@@ -1722,6 +1728,8 @@ def set_lead_status(
     Returns True when the row changed.
     """
     label = normalize_status_label(label)
+    if label in NOT_A_STATUS:
+        return False
     sentiment = (sentiment or "").strip().lower() or None
     if not label and not sentiment and not since:
         return False

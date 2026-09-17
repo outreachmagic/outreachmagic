@@ -21,7 +21,7 @@ import re
 import sqlite3
 from typing import Any, Optional
 
-from workspace_routing import normalize_status_label
+from workspace_routing import NOT_A_STATUS, normalize_status_label
 
 _STATUS_EVENTS = """
     json_extract(e.metadata_json, '$.lead_status_sentiment') IS NOT NULL
@@ -64,6 +64,8 @@ def project(events: list[sqlite3.Row]) -> dict[str, Any]:
                            "status_at": None, "first_positive": None}
     for ev in events:
         meta = json.loads(ev["metadata_json"] or "{}")
+        if normalize_status_label(meta.get("lead_status_raw")) in NOT_A_STATUS:
+            continue
         at = ev["event_at"]
         label = event_label(meta, ev["event_type"])
         sentiment = (meta.get("lead_status_sentiment") or "").strip().lower() or None

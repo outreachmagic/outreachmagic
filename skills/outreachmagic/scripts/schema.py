@@ -233,6 +233,7 @@ CREATE TABLE IF NOT EXISTS workspace_leads (
     current_status_label     TEXT,
     current_status_sentiment TEXT,
     current_sentiment_since  TEXT,
+    current_status_at        TEXT,
     contact_priority         INTEGER,
     latest_sender            TEXT,
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),

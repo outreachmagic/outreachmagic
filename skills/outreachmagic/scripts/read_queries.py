@@ -785,6 +785,9 @@ COLUMN_NOTE: dict[tuple[str, str], str] = {
         "When the status LAST CHANGED. Not first contact, not first positive. "
         "Windowing on this to find recent positives silently drops every lead "
         "whose status has not moved since; use first_positive_at.",
+    ("workspace_leads", "current_status_at"):
+        "Event time of the fact behind the current status. A write older than "
+        "this is ignored, so a stale snapshot cannot roll the status back.",
     ("workspace_leads", "current_status_sentiment"):
         "The lead's sentiment RIGHT NOW. A lead that went positive and later "
         "cold is not counted here; `campaign-audit --positive-anchor first` "

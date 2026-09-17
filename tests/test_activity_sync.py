@@ -89,7 +89,7 @@ class ActivitySyncTests(unittest.TestCase):
         conn = om.get_conn()
         payload = om.build_lead_sync_payload(conn, DEFAULT_ORG_ID, lead_id, workspace_slug="default")
         conn.close()
-        self.assertEqual(payload.get("lead_status"), "information request")
+        self.assertEqual(payload.get("lead_status"), "information_request")
         activity = payload.get("activity") or {}
         self.assertEqual(activity.get("email_sent_count"), 2)
         self.assertEqual(activity.get("linkedin_sent_count"), 1)
@@ -149,7 +149,7 @@ class ActivitySyncTests(unittest.TestCase):
         self.assertEqual(wl["linkedin_sent_count"], 1)
         # A stored column, so it holds the comparable shape, not the input dialect.
         self.assertEqual(wl["last_activity_at"], "2026-02-23 21:35:48")
-        self.assertEqual(wl["current_status_label"], "information request")
+        self.assertEqual(wl["current_status_label"], "information_request")
 
     def test_refresh_activity_from_events(self):
         ws_id = self._workspace_id()

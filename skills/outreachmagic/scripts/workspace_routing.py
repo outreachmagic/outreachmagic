@@ -1658,6 +1658,7 @@ def upsert_workspace_lead(
     current_status_sentiment: Optional[str] = None,
     current_sentiment_since: Optional[str] = None,
     contact_priority: Optional[int] = None,
+    status_at: Optional[str] = None,
 ) -> str:
     # INSERT OR IGNORE is atomic — eliminates the SELECT→INSERT race that causes
     # "UNIQUE constraint failed: workspace_leads.id" when parallel pull batches
@@ -1666,58 +1667,109 @@ def upsert_workspace_lead(
     conn.execute(
         """INSERT OR IGNORE INTO workspace_leads (
                id, org_id, workspace_id, lead_id, status, owner_user_id,
-               current_status_label, current_status_sentiment, current_sentiment_since,
-               contact_priority,
                stage_entered_at, last_activity_at, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?,
-                     COALESCE(?, CASE WHEN ? IS NOT NULL THEN datetime('now') END), ?,
+           ) VALUES (?, ?, ?, ?, ?, ?,
                      datetime('now'), NULL, datetime('now'), datetime('now'))""",
-        # current_sentiment_since: an explicit anchor wins; otherwise, if a
-        # sentiment is being set on this fresh row, stamp now; else leave NULL.
-        (ws_lead_id, org_id, workspace_id, lead_id, status, owner_user_id,
-         current_status_label, current_status_sentiment,
-         current_sentiment_since, current_status_sentiment,
-         contact_priority),
+        (ws_lead_id, org_id, workspace_id, lead_id, status, owner_user_id),
     )
     row = conn.execute(
-        """SELECT id, current_status_label, current_status_sentiment,
-                  current_sentiment_since, contact_priority
-           FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?""",
+        "SELECT id, contact_priority FROM workspace_leads WHERE workspace_id = ? AND lead_id = ?",
         (workspace_id, lead_id),
     ).fetchone()
     if row is None:
         return ws_lead_id
-    # Only bump updated_at when a provided field actually differs from what's
-    # stored — an UPDATE that changes nothing is not a local change, and treating
-    # it as one is exactly the self-bump loop in bug-pending-sync-self-bump.md.
-    extra_sets: list[str] = []
-    extra_params: list = []
-    if current_status_label is not None and current_status_label != row["current_status_label"]:
-        extra_sets.append("current_status_label = ?")
-        extra_params.append(current_status_label)
-    if current_status_sentiment is not None and current_status_sentiment != row["current_status_sentiment"]:
-        extra_sets.append("current_status_sentiment = ?")
-        extra_params.append(current_status_sentiment)
-        # Sentiment changed: stamp the run start. Prefer an explicit since from
-        # the caller (a snapshot carrying it); otherwise anchor to now.
-        extra_sets.append("current_sentiment_since = COALESCE(?, datetime('now'))")
-        extra_params.append(current_sentiment_since)
-    elif (current_sentiment_since is not None
-          and current_sentiment_since != row["current_sentiment_since"]):
-        # Sentiment unchanged but the snapshot carries a corrected run start
-        # (e.g. an earlier, backfilled anchor) — apply it without a spurious flip.
-        extra_sets.append("current_sentiment_since = ?")
-        extra_params.append(current_sentiment_since)
+    set_lead_status(
+        conn, row["id"],
+        label=current_status_label,
+        sentiment=current_status_sentiment,
+        since=current_sentiment_since,
+        at=status_at,
+    )
+    # Only bump updated_at when the value actually differs -- an UPDATE that
+    # changes nothing is not a local change (bug-pending-sync-self-bump.md).
     if contact_priority is not None and contact_priority != row["contact_priority"]:
-        extra_sets.append("contact_priority = ?")
-        extra_params.append(contact_priority)
-    if extra_sets:
-        sets = "updated_at = datetime('now'), " + ", ".join(extra_sets)
         conn.execute(
-            f"UPDATE workspace_leads SET {sets} WHERE id = ?",
-            (*extra_params, row["id"]),
+            "UPDATE workspace_leads SET contact_priority = ?, updated_at = datetime('now') WHERE id = ?",
+            (contact_priority, row["id"]),
         )
     return row["id"]
+
+
+def normalize_status_label(label: Optional[str]) -> Optional[str]:
+    """Canonical stored form of a lead status label: lower snake_case."""
+    return (label or "").strip().lower().replace(" ", "_") or None
+
+
+def set_lead_status(
+    conn: sqlite3.Connection,
+    ws_lead_id: str,
+    *,
+    label: Optional[str] = None,
+    sentiment: Optional[str] = None,
+    at: Optional[str] = None,
+    since: Optional[str] = None,
+    force: bool = False,
+) -> bool:
+    """The one writer of workspace_leads.current_status_*. Latest fact wins.
+
+    `at` is the event time of the fact (storage shape, see pipeline_update.utc_now_for_storage).
+    A timed write older than the stored current_status_at is ignored, so a stale
+    snapshot or a late-delivered event can never roll the status back. An
+    untimed write (legacy snapshot, CSV import) only fills blank fields.
+    `force` skips the time guard (repair-lead-status recomputes from events).
+    `since` overrides the sentiment-run anchor (a snapshot carrying it).
+    Nothing is written -- and updated_at is not bumped -- unless a value changes.
+    Returns True when the row changed.
+    """
+    label = normalize_status_label(label)
+    sentiment = (sentiment or "").strip().lower() or None
+    if not label and not sentiment and not since:
+        return False
+    row = conn.execute(
+        """SELECT current_status_label, current_status_sentiment, current_sentiment_since,
+                  current_status_at, first_positive_at
+           FROM workspace_leads WHERE id = ?""",
+        (ws_lead_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    cur_sentiment = (row["current_status_sentiment"] or "").lower() or None
+    changes: dict = {}
+    if at is None:
+        if label and not row["current_status_label"]:
+            changes["current_status_label"] = label
+        if sentiment and not cur_sentiment:
+            changes["current_status_sentiment"] = sentiment
+        if not row["current_sentiment_since"] and (sentiment or cur_sentiment):
+            anchor = since or (
+                datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                if "current_status_sentiment" in changes else None)
+            if anchor:
+                changes["current_sentiment_since"] = anchor
+    else:
+        if not force and row["current_status_at"] and at < row["current_status_at"]:
+            return False
+        if label and label != row["current_status_label"]:
+            changes["current_status_label"] = label
+        if sentiment and sentiment != cur_sentiment:
+            changes["current_status_sentiment"] = sentiment
+            changes["current_sentiment_since"] = since or at
+        elif since and since != row["current_sentiment_since"]:
+            changes["current_sentiment_since"] = since
+        elif (sentiment or cur_sentiment) and not row["current_sentiment_since"]:
+            changes["current_sentiment_since"] = at
+        if sentiment == "positive" and (not row["first_positive_at"] or at < row["first_positive_at"]):
+            changes["first_positive_at"] = at
+        if at != row["current_status_at"]:
+            changes["current_status_at"] = at
+    if not changes:
+        return False
+    conn.execute(
+        f"UPDATE workspace_leads SET {', '.join(f'{k} = ?' for k in changes)}, "
+        "updated_at = datetime('now') WHERE id = ?",
+        (*changes.values(), ws_lead_id),
+    )
+    return True
 
 
 def append_workspace_event(

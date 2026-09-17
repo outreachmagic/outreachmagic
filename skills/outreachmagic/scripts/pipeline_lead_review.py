@@ -1067,6 +1067,36 @@ def _set_linkedin_status(
     )
 
 
+def _write_manual_status(conn, org_id, workspace_id, lead_id, *, label, sentiment,
+                         upsert_workspace_lead_fn) -> None:
+    """A sheet edit is a manual status change: write it and log the event, the
+    same shape lead_actions.change_stage_scoped logs, so repair can replay it."""
+    from pipeline_tags import log_event
+    from pipeline_update import utc_now_for_storage
+    from workspace_routing import append_workspace_event, normalize_status_label, set_lead_status
+
+    now = utc_now_for_storage()
+    ws_lead_id = upsert_workspace_lead_fn(conn, org_id, workspace_id, lead_id)
+    if not set_lead_status(conn, ws_lead_id, label=label, sentiment=sentiment, at=now):
+        return
+    label = normalize_status_label(label)
+    meta: dict[str, Any] = {}
+    if label:
+        meta.update(lead_status_raw=label, status_label=label,
+                    lead_status_display=label.replace("_", " "))
+    if sentiment:
+        meta["lead_status_sentiment"] = sentiment.strip().lower()
+    event_id = log_event(
+        lead_id=lead_id, event_type="lead_status_updated", direction="inbound",
+        metadata=meta, event_at=now, conn=conn, commit=False, refresh_activity=False,
+    )
+    append_workspace_event(
+        conn, org_id, workspace_id, lead_id, event_id=event_id,
+        event_type="lead_status_updated", event_at=now,
+        idempotency_key=f"review_status_{lead_id}_{event_id}",
+    )
+
+
 def apply_lead_review_sync(
     conn: sqlite3.Connection,
     workspace_id: str,
@@ -1214,12 +1244,6 @@ def apply_lead_review_sync(
         if row_changes.get("workspace_stage"):
             ws_sets.append("status = ?")
             ws_params.append(row_changes["workspace_stage"])
-        if row_changes.get("lead_status"):
-            ws_sets.append("current_status_label = ?")
-            ws_params.append(row_changes["lead_status"])
-        if row_changes.get("lead_sentiment"):
-            ws_sets.append("current_status_sentiment = ?")
-            ws_params.append(row_changes["lead_sentiment"])
         if row_changes.get("contact_order") is not None:
             ws_sets.append("contact_priority = ?")
             ws_params.append(row_changes["contact_order"])
@@ -1236,6 +1260,13 @@ def apply_lead_review_sync(
                 (workspace_id, lead_id),
             ).fetchone():
                 upsert_workspace_lead_fn(conn, org_id, workspace_id, lead_id)
+        if row_changes.get("lead_status") or row_changes.get("lead_sentiment"):
+            _write_manual_status(
+                conn, org_id, workspace_id, lead_id,
+                label=row_changes.get("lead_status"),
+                sentiment=row_changes.get("lead_sentiment"),
+                upsert_workspace_lead_fn=upsert_workspace_lead_fn,
+            )
 
         lead_sets: list[str] = []
         lead_params: list[Any] = []

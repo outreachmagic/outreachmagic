@@ -34,7 +34,8 @@ SENTINEL_COLUMNS: dict[str, tuple[str, ...]] = {
 # Columns whose contents are compared lexicographically against
 # datetime('now', ...) and exported as dates.
 TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
-    "workspace_leads": ("last_activity_at", "last_contacted_at", "current_sentiment_since"),
+    "workspace_leads": ("last_activity_at", "last_contacted_at", "current_sentiment_since",
+                       "current_status_at"),
     "leads": ("last_contact_at",),
 }
 

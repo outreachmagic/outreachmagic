@@ -2333,6 +2333,15 @@ def main():
         "--yes", dest="confirm", action="store_true",
         help="Confirm a delete affecting more than 10 rows")
 
+    rls_p = sub.add_parser(
+        "repair-lead-status",
+        help="Rebuild each lead's current status from its latest status event (dry run by default)")
+    rls_p.add_argument("--workspace", help="Limit to one workspace slug")
+    rls_p.add_argument("--since", default="90d",
+                       help="Leads with a status event in this window, e.g. 90d, or 'all' (default 90d)")
+    rls_p.add_argument("--apply", action="store_true", help="Write the repairs (default is a dry run)")
+    rls_p.add_argument("--json", action="store_true")
+
     cleanup_rules_p = sub.add_parser("cleanup-rules", help="Remove invalid campaign mapping rules")
     cleanup_rules_p.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
     cleanup_rules_p.add_argument("--json", action="store_true")
@@ -5748,6 +5757,39 @@ def main():
             if dry and result["found"]:
                 print(f"\nRe-run with --apply to write. Corrected rows are queued "
                       f"for the next push, so the fix reaches the relay too.")
+
+    elif args.command == "repair-lead-status":
+        from lead_status_repair import repair_lead_status
+
+        conn = _pipeline.get_conn()
+        try:
+            ws_id = None
+            if args.workspace:
+                ws_row = _pipeline.resolve_workspace_identity(conn, args.workspace)
+                if not ws_row:
+                    print(f"Unknown workspace: {args.workspace}", file=sys.stderr)
+                    sys.exit(1)
+                ws_id = ws_row["id"]
+            result = repair_lead_status(
+                conn, workspace_id=ws_id, since=args.since, dry_run=not args.apply)
+        finally:
+            conn.close()
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            verb = "Would change" if result["status"] == "dry_run" else "Changed"
+            print(f"Checked {result['leads_checked']:,} leads (since {result['since']}). "
+                  f"{verb} {result['leads_changed']:,}, "
+                  f"{result['sentiment_changed']:,} with a different sentiment.")
+            for col, n in sorted(result["columns_changed"].items()):
+                print(f"  {col}: {n:,}")
+            for c in result["changed"][:20]:
+                if "current_status_sentiment" in c["to"]:
+                    print(f"  {c['email']} ({c['workspace']}): "
+                          f"{c['from'].get('current_status_sentiment')} -> "
+                          f"{c['to']['current_status_sentiment']}")
+            if result["status"] == "dry_run" and result["leads_changed"]:
+                print("\nRe-run with --apply to write. Changed rows are queued for the next push.")
 
     elif args.command == "cleanup-rules":
         result = _pipeline.cleanup_campaign_rules(dry_run=getattr(args, "dry_run", False))

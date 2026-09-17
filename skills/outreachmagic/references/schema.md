@@ -807,6 +807,7 @@ Per-workspace lead status, sentiment anchor and activity. The leads-to-workspace
 | `current_status_label` | TEXT |  |
 | `current_status_sentiment` | TEXT | **The lead's sentiment RIGHT NOW. A lead that went positive and later cold is not counted here; `campaign-audit --positive-anchor first` answers the historical question.** |
 | `current_sentiment_since` | TEXT | **When the status LAST CHANGED. Not first contact, not first positive. Windowing on this to find recent positives silently drops every lead whose status has not moved since; use first_positive_at.** |
+| `current_status_at` | TEXT | **Event time of the fact behind the current status. A write older than this is ignored, so a stale snapshot cannot roll the status back.** |
 | `contact_priority` | INTEGER |  |
 | `latest_sender` | TEXT |  |
 | `created_at` | TEXT | not null |

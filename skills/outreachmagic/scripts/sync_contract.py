@@ -138,7 +138,7 @@ SYNCED_COLUMNS: dict[str, frozenset[str]] = {
     }),
     "workspace_leads": frozenset({
         "status", "current_status_label", "current_status_sentiment",
-        "current_sentiment_since", "contact_priority",
+        "current_sentiment_since", "current_status_at", "contact_priority",
         "email_sent_count", "linkedin_sent_count", "total_replies_count", "last_contacted_at",
     }),
     "workspace_lead_tags": frozenset({"tag"}),

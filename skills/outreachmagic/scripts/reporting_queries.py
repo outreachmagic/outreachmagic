@@ -1004,6 +1004,7 @@ def _meetings_by_day(
     conn: sqlite3.Connection, workspace_id: str,
     campaign_id: Optional[int], since: Optional[str], until: Optional[str],
     excluded_ids: Optional[set] = None,
+    scope: Optional[_LeadScope] = None,
 ) -> dict[str, int]:
     """{day: meetings} for the daily matrix, attributed like _meetings_by_campaign.
 
@@ -1027,7 +1028,8 @@ def _meetings_by_day(
               JOIN events e ON e.id = wle.event_id
               JOIN leads l ON l.id = wle.lead_id
              WHERE wle.workspace_id = ? AND e.event_type = 'meeting_booked'{range_sql}
-                   {excluded_sql}""",
+                   {excluded_sql}"""
+        + _scope_clause(scope, "wle.lead_id"),
         (workspace_id, *range_params),
     ).fetchall()
     if not rows:
@@ -1304,6 +1306,55 @@ def kind_scope(
         conn, "_campaign_kind_scope", [r["lead_id"] for r in rows])
 
 
+def verdict_scope(
+    conn: sqlite3.Connection, workspace_id: str, *,
+    sentiment: Optional[str] = None,
+    status_label: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+) -> Optional[_LeadScope]:
+    """Lead ids matching sentiment / status_label, or None when neither is set.
+
+    Same window as the sentiment columns: current_sentiment_since in range.
+    Combined with kind_scope via AND, so "human + positive" is both. Same
+    reach as kind — replies and sentiment columns, never sends.
+    """
+    if not (sentiment or status_label):
+        return None
+    range_sql, range_params = _range_clause(since, until, "wl.current_sentiment_since")
+    extra = ""
+    params: list = [workspace_id, *range_params]
+    if sentiment:
+        extra += " AND lower(wl.current_status_sentiment) = lower(?)"
+        params.append(sentiment)
+    if status_label:
+        extra += " AND lower(COALESCE(wl.current_status_label, '')) = lower(?)"
+        params.append(status_label)
+    rows = conn.execute(
+        f"""SELECT wl.lead_id AS lead_id FROM workspace_leads wl
+             WHERE wl.workspace_id = ?
+               AND wl.current_status_sentiment IS NOT NULL
+               AND wl.current_sentiment_since IS NOT NULL{range_sql}{extra}""",
+        params,
+    ).fetchall()
+    return _materialize_lead_ids(
+        conn, "_campaign_verdict_scope", [r["lead_id"] for r in rows])
+
+
+def _outcome_scopes(
+    conn: sqlite3.Connection, workspace_id: str, *,
+    reply_kind=None, sentiment: Optional[str] = None,
+    status_label: Optional[str] = None,
+    since: Optional[str] = None, until: Optional[str] = None,
+) -> tuple[Optional[_LeadScope], Optional[_LeadScope]]:
+    """(kind_scope, verdict_scope) for the Campaigns tab's outcome filters."""
+    return (
+        kind_scope(conn, workspace_id, reply_kind, since, until),
+        verdict_scope(conn, workspace_id, sentiment=sentiment,
+                      status_label=status_label, since=since, until=until),
+    )
+
+
 def _reply_kind_case(alias: str, sentiment_col: str,
                      meeting_col: Optional[str] = None) -> str:
     from campaign_stats import reply_kind_case_sql
@@ -1322,6 +1373,7 @@ def _sentiment_by_campaign(
     positive_anchor: Optional[str] = None,
     scope: Optional[_LeadScope] = None,
     kind: Optional[_LeadScope] = None,
+    verdict: Optional[_LeadScope] = None,
 ) -> tuple[dict, dict]:
     """{campaign_id: {sentiment: n}} counting each lead exactly ONCE.
 
@@ -1334,11 +1386,13 @@ def _sentiment_by_campaign(
     Returns (per-campaign counts, unattributed counts).
     """
     range_sql, range_params = _range_clause(since, until, "wl.current_sentiment_since")
-    # Tags narrow the population; kind narrows which replies count as replies.
-    # Both are applied to the first-positive branch below as well -- forgetting
-    # one there would make --kind silently revert to unfiltered on the anchor
-    # the campaigns page actually defaults to.
-    narrow = _scope_clause(scope, "wl.lead_id") + _scope_clause(kind, "wl.lead_id")
+    # Tags narrow the population; kind / sentiment / status_label narrow which
+    # replies count as replies. All three are applied to the first-positive
+    # branch below as well -- forgetting one there would make --kind silently
+    # revert to unfiltered on the anchor the campaigns page actually defaults to.
+    narrow = (_scope_clause(scope, "wl.lead_id")
+              + _scope_clause(kind, "wl.lead_id")
+              + _scope_clause(verdict, "wl.lead_id"))
     rows = conn.execute(
         f"""SELECT wl.lead_id AS lead_id, l.company_id AS company_id,
                    lower(wl.current_status_sentiment) AS sentiment
@@ -1565,6 +1619,7 @@ def _by_day_by_campaign(
     since: Optional[str], until: Optional[str],
     scope: Optional["_LeadScope"], kind: Optional["_LeadScope"],
     excluded_ids: Optional[set] = None,
+    verdict: Optional["_LeadScope"] = None,
 ) -> dict:
     """{campaign_id: [{date, sent, replies, bounces, meetings}, ...]}.
 
@@ -1584,7 +1639,8 @@ def _by_day_by_campaign(
         SELECT campaign_id, date(event_at) AS day,
                {_DAILY_COLUMN_EXPRESSIONS["email_sent"]} AS sent,
                SUM(({reply_event_sql_condition()}){
-                   _scope_clause(kind, "lead_id")}) AS replies,
+                   _scope_clause(kind, "lead_id")}{
+                   _scope_clause(verdict, "lead_id")}) AS replies,
                SUM(event_type IN {BOUNCE_EVENT_TYPES_SQL}) AS bounces
         FROM ws_events
         WHERE campaign_id IS NOT NULL AND event_at IS NOT NULL
@@ -1619,6 +1675,8 @@ def campaign_audit(
     include_excluded: bool = False,
     positive_anchor: Optional[str] = None,
     reply_kind: Optional[str] = None,
+    sentiment: Optional[str] = None,
+    status_label: Optional[str] = None,
     tags_any: Optional[list] = None,
     tags_all: Optional[list] = None,
     tags_none: Optional[list] = None,
@@ -1650,6 +1708,11 @@ def campaign_audit(
     reply events of leads of that kind, so a human replier's stray
     out-of-office still lands in their event total.
 
+    `sentiment` / `status_label` have the same reach as `reply_kind`: they
+    describe the verdict, so they narrow KIND_SCOPED_COLUMNS and nothing else.
+    Both are the lead's current workspace state, the same fields the Leads list
+    filters on, so picking "positive" cannot leave negatives in the chart.
+
     `totals` is the all-campaigns row, computed here rather than by each
     consumer -- see _campaign_totals.
 
@@ -1661,7 +1724,9 @@ def campaign_audit(
     """
     scope = tag_scope(conn, workspace_id, tags_any=tags_any, tags_all=tags_all,
                       tags_none=tags_none)
-    kind = kind_scope(conn, workspace_id, reply_kind, since, until)
+    kind, verdict = _outcome_scopes(
+        conn, workspace_id, reply_kind=reply_kind, sentiment=sentiment,
+        status_label=status_label, since=since, until=until)
     cte, since_params = _ws_events(since, until, scope)
     # The same column expressions the daily matrix uses, grouped by campaign
     # instead of by day -- one definition, so "DMs sent" cannot mean one thing
@@ -1674,10 +1739,11 @@ def campaign_audit(
                -- event stream. Only ever shown for scheduling rows, which are
                -- opt-in -- so it cannot double-count the attributed figure.
                SUM(event_type = 'meeting_booked') AS meetings_on_calendar,
-               -- A kind filter narrows this column and the sentiments; it never
-               -- touches `sent`. See KIND_SCOPED_COLUMNS.
+               -- Kind / sentiment / status_label narrow this column and the
+               -- sentiments; they never touch `sent`. See KIND_SCOPED_COLUMNS.
                SUM(({reply_event_sql_condition()}){
-                   _scope_clause(kind, "lead_id")}) AS replies,
+                   _scope_clause(kind, "lead_id")}{
+                   _scope_clause(verdict, "lead_id")}) AS replies,
                SUM(event_type IN {BOUNCE_EVENT_TYPES_SQL}) AS bounces
         FROM ws_events
         WHERE campaign_id IS NOT NULL
@@ -1705,7 +1771,7 @@ def campaign_audit(
     meetings_by_campaign, meetings_unattributed = _meetings_by_campaign(
         conn, workspace_id, since, until, scope, excluded_ids=excluded_ids)
     sentiment_by_campaign, sentiment_unattributed = _sentiment_by_campaign(
-        conn, workspace_id, since, until, positive_anchor, scope, kind)
+        conn, workspace_id, since, until, positive_anchor, scope, kind, verdict)
 
     def _row(campaign_id, name, sent, m, meetings, sentiments):
         """One table row. `meetings` is the attributed count for a real campaign
@@ -1774,7 +1840,7 @@ def campaign_audit(
 
     if by_day:
         daily = _by_day_by_campaign(conn, workspace_id, since, until, scope, kind,
-                                    excluded_ids=excluded_ids)
+                                    excluded_ids=excluded_ids, verdict=verdict)
         for row in out:
             row["daily"] = daily.get(row["id"], [])
 
@@ -1793,6 +1859,8 @@ def campaign_audit(
         # Echoed so every consumer can state what is actually being counted.
         "positive_anchor": positive_anchor or "current",
         "reply_kind": reply_kind or "all",
+        "sentiment": sentiment,
+        "status_label": status_label,
         "kind_scoped_columns": list(KIND_SCOPED_COLUMNS),
         "tags_any": _tag_list(tags_any) or None,
         "tags_all": _tag_list(tags_all) or None,
@@ -2460,11 +2528,11 @@ DAILY_COLUMN_KEYS = (
     *SENTIMENT_KEYS, "meetings",
 )
 
-# Which campaign_audit columns a --kind selection narrows. A reply kind
-# describes a reply, so it filters the reply-classified surfaces only; `sent`
-# and the raw outbound event columns stay whole. Filtering sends by "this
-# lead's last reply was human" would collapse the denominator and turn every
-# rate into fiction.
+# Which campaign_audit columns a --kind / --sentiment / --status-label
+# selection narrows. Those filters describe a reply or a verdict, so they
+# filter the reply-classified surfaces only; `sent` and the raw outbound event
+# columns stay whole. Filtering sends by "this lead's last reply was human"
+# would collapse the denominator and turn every rate into fiction.
 KIND_SCOPED_COLUMNS = ("replies", "reply_rate", "positive_rate", *SENTIMENT_KEYS)
 
 
@@ -2527,10 +2595,14 @@ def _sentiment_by_day(
     campaign_id: Optional[int] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
+    scope: Optional[_LeadScope] = None,
+    kind: Optional[_LeadScope] = None,
+    verdict: Optional[_LeadScope] = None,
 ) -> dict[str, dict[str, int]]:
     """{sentiment: {date: count}} of leads counted once on the day they entered
     their current sentiment run (current_sentiment_since). Optionally scoped to
-    one campaign's leads and/or a date range."""
+    one campaign's leads and/or a date range. Tag / kind / sentiment filters
+    land here so the daily chart and the Campaigns table cannot disagree."""
     range_sql, range_params = _range_clause(since, until, "wl.current_sentiment_since")
     camp = ""
     params: list = [workspace_id, *range_params]
@@ -2538,6 +2610,9 @@ def _sentiment_by_day(
         camp = (" AND wl.lead_id IN (SELECT lead_id FROM campaign_leads"
                 " WHERE campaign_id = ?)")
         params.append(int(campaign_id))
+    camp += (_scope_clause(scope, "wl.lead_id")
+             + _scope_clause(kind, "wl.lead_id")
+             + _scope_clause(verdict, "wl.lead_id"))
     rows = conn.execute(
         f"""SELECT lower(wl.current_status_sentiment) AS sentiment,
                    date(wl.current_sentiment_since) AS day, COUNT(*) AS n
@@ -2566,6 +2641,9 @@ def campaign_daily(
     tags_any: Optional[list] = None,
     tags_all: Optional[list] = None,
     tags_none: Optional[list] = None,
+    reply_kind: Optional[str] = None,
+    sentiment: Optional[str] = None,
+    status_label: Optional[str] = None,
 ) -> dict:
     """Per-day event-type matrix for the workspace, optionally one campaign.
 
@@ -2573,6 +2651,11 @@ def campaign_daily(
     a meeting counted here under "30 Minute Meeting" is the same double count
     the Campaigns table had. Selecting a scheduling campaign explicitly still
     shows it; the exclusion is about the unfiltered view.
+
+    Tag filters describe the lead, so they narrow every column. Kind / sentiment
+    / status_label describe the reply, so they narrow the sentiment columns
+    only -- the same KIND_SCOPED_COLUMNS contract as campaign_audit. Volume
+    (sends, DMs, connects) stays whole so a rate still has a real denominator.
     """
     range_sql, range_params = _range_clause(since, until, "wle.event_at")
     campaign_sql = ""
@@ -2587,11 +2670,14 @@ def campaign_daily(
         if not include_excluded:
             campaign_sql += (" AND (e.campaign_id IS NULL OR e.campaign_id NOT IN"
                              f" ({_EXCLUDED_CAMPAIGN_IDS_SQL}))")
-    # Tags describe the lead, so unlike kind they narrow every column. The chart
-    # used to ignore them while the table below it did not, which put two
-    # different populations on one screen under one filter bar.
+    # Tags describe the lead, so unlike kind they narrow every column. Kind /
+    # sentiment / status_label then narrow the sentiment columns (and only
+    # those) so the outcomes chart tracks the same population as the tables.
     tag_scope_ = tag_scope(conn, workspace_id, tags_any=tags_any,
                            tags_all=tags_all, tags_none=tags_none)
+    kind, verdict = _outcome_scopes(
+        conn, workspace_id, reply_kind=reply_kind, sentiment=sentiment,
+        status_label=status_label, since=since, until=until)
     campaign_sql += _scope_clause(tag_scope_, "wle.lead_id")
     # Own CTE (not ws_events) because the matrix also needs metadata_json,
     # and bare event_type/direction must be unambiguous for the SUM exprs.
@@ -2613,13 +2699,18 @@ def campaign_daily(
     # state), grouped on the same range. A lead can enter a sentiment on a day
     # with no campaign-attributed events, so union the day sets from both sides.
     event_by_day = {r["day"]: r for r in rows}
-    sent_by_day = _sentiment_by_day(conn, workspace_id, campaign_id, since, until)
+    sent_by_day = _sentiment_by_day(
+        conn, workspace_id, campaign_id, since, until,
+        scope=tag_scope_, kind=kind, verdict=verdict)
     # Resolved through last-known-campaign rather than taken from the event, so
     # the scheduling-tool toggle governs which CAMPAIGNS are listed, not whether
-    # meetings exist. See _meetings_by_day.
+    # meetings exist. See _meetings_by_day. Tags apply here too: a tag filter
+    # is a population filter, so a meeting from a tagged-out lead must not
+    # appear on the chart while vanishing from the table.
     meetings_by_day = _meetings_by_day(
         conn, workspace_id, campaign_id, since, until,
-        excluded_ids=None if include_excluded else excluded_campaign_ids(conn))
+        excluded_ids=None if include_excluded else excluded_campaign_ids(conn),
+        scope=tag_scope_)
     all_days = sorted(
         set(event_by_day)
         | set(meetings_by_day)

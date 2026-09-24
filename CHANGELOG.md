@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Campaigns-tab filters now update the charts and daily metrics, not just the leads list.** Kind, sentiment and lead status already narrowed the Leads list (and kind already narrowed the Campaigns table's reply/sentiment columns). The daily-activity chart, the outcomes chart and the per-day matrix ignored them, so picking "replies (human)" or "sentiment: positive" left the charts showing every auto-reply and bounce. Those three filters now apply to the sentiment columns on every view; sends stay counted in full so rates still have a real denominator.
+
 ## [1.9.1] — 2026-09-17
 
 ### Fixed

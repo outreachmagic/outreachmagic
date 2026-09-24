@@ -186,6 +186,11 @@ def register_campaign_audit_parser(sub) -> None:
         help="all (default) | human | auto_reply | bounce | status_only "
              "(comma-separate to combine). Narrows replies and the sentiment "
              "columns only -- sends are always counted in full")
+    p.add_argument("--sentiment",
+                   help="Narrow replies and sentiment columns to this verdict "
+                        "(positive / negative / autoreply / invalid / neutral)")
+    p.add_argument("--status-label", dest="status_label",
+                   help="Narrow replies and sentiment columns to this lead status")
     p.add_argument("--tag", "--tags-any", dest="tags_any", action="append",
                    help="Only leads carrying any of these tags (repeatable)")
     p.add_argument("--tags-all", dest="tags_all", action="append",
@@ -233,6 +238,8 @@ def cmd_campaign_audit(args) -> None:
             include_excluded=bool(getattr(args, "include_excluded", False)),
             positive_anchor=getattr(args, "positive_anchor", None),
             reply_kind=getattr(args, "kind", "all"),
+            sentiment=getattr(args, "sentiment", None),
+            status_label=getattr(args, "status_label", None),
             tags_any=getattr(args, "tags_any", None),
             tags_all=getattr(args, "tags_all", None),
             tags_none=getattr(args, "tags_none", None),
@@ -261,6 +268,10 @@ def cmd_campaign_audit(args) -> None:
         scope = []
         if p.get("reply_kind") not in (None, "all"):
             scope.append(f"kind={p['reply_kind']} (replies & sentiments only)")
+        if p.get("sentiment"):
+            scope.append(f"sentiment={p['sentiment']} (replies & sentiments only)")
+        if p.get("status_label"):
+            scope.append(f"status={p['status_label']} (replies & sentiments only)")
         for key, label in (("tags_any", "tags"), ("tags_all", "tags-all"),
                            ("tags_none", "excluding")):
             if p.get(key):

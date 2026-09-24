@@ -285,3 +285,73 @@ def test_kind_reaches_the_by_day_replies_too():
         row = _row(_audit(reply_kind=kind, since="30d", by_day=True))
         assert sum(d["replies"] for d in row["daily"]) == row["replies"]
         assert sum(d["sent"] for d in row["daily"]) == row["sent"]
+
+
+def _daily(**kw):
+    conn = om.get_conn()
+    try:
+        return dq.campaign_daily(conn, WS["alpha"], **kw)
+    finally:
+        conn.close()
+
+
+def test_daily_chart_honours_kind_on_sentiment_columns():
+    """The outcomes chart used to ignore --kind while the table honoured it."""
+    _seed_two_kinds()
+    unfiltered = _daily(since="30d")
+    human = _daily(since="30d", reply_kind="human")
+    audit_human = _audit(reply_kind="human", since="30d")
+    assert unfiltered["totals"]["positive"] == 2
+    assert human["totals"]["positive"] == audit_human["totals"]["positive"] == 1
+    # Volume stays whole -- same KIND_SCOPED_COLUMNS contract as the table.
+    assert human["totals"]["email_sent"] == unfiltered["totals"]["email_sent"] == 2
+
+
+def test_sentiment_filter_narrows_sentiment_columns_not_sends():
+    _seed_two_kinds()
+    other = _lead("Nina Neg", "nina@n-example.com")
+    _send(other)
+    _reply(other)
+    _sentiment(other, "negative", stage="not_interested")
+
+    everything = _row(_audit())
+    positive_only = _row(_audit(sentiment="positive"))
+    assert everything["negative"] == 1
+    assert everything["positive"] == 2
+    assert positive_only["sent"] == everything["sent"] == 3
+    assert positive_only["positive"] == 2
+    assert positive_only["negative"] == 0
+
+
+def test_daily_chart_honours_sentiment_filter():
+    _seed_two_kinds()
+    other = _lead("Nina Neg", "nina@n-example.com")
+    _send(other)
+    _reply(other)
+    _sentiment(other, "negative", stage="not_interested")
+
+    unfiltered = _daily(since="30d")
+    positive_only = _daily(since="30d", sentiment="positive")
+    audit_pos = _audit(sentiment="positive", since="30d")
+    assert unfiltered["totals"]["negative"] == 1
+    assert positive_only["totals"]["negative"] == 0
+    assert positive_only["totals"]["positive"] == audit_pos["totals"]["positive"] == 2
+    assert positive_only["totals"]["email_sent"] == unfiltered["totals"]["email_sent"] == 3
+
+
+def test_status_label_filter_reaches_the_table_and_the_chart():
+    human, _silent = _seed_two_kinds()
+    conn = om.get_conn()
+    try:
+        conn.execute(
+            "UPDATE workspace_leads SET current_status_label = 'meeting_booked' "
+            "WHERE lead_id = ?",
+            (human,))
+        conn.commit()
+    finally:
+        conn.close()
+    booked = _row(_audit(status_label="meeting_booked"))
+    daily = _daily(since="30d", status_label="meeting_booked")
+    assert booked["positive"] == daily["totals"]["positive"] == 1
+    assert booked["sent"] == 2
+    assert daily["totals"]["email_sent"] == 2

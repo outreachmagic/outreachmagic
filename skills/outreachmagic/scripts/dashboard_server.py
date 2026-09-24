@@ -395,6 +395,8 @@ def handle_campaigns(conn, ws_id, match, query):
         include_excluded=_bool_q(query, "include_excluded"),
         positive_anchor=_q(query, "positive_anchor"),
         reply_kind=_q(query, "kind"),
+        sentiment=_q(query, "sentiment"),
+        status_label=_q(query, "status_label"),
         tags_any=_list_q(query, "tags_any"),
         tags_all=_list_q(query, "tags_all"),
         tags_none=_list_q(query, "tags_none"),
@@ -412,9 +414,14 @@ def handle_campaign_daily(conn, ws_id, match, query):
         include_excluded=_bool_q(query, "include_excluded"),
         # Tags describe the lead, so the chart takes the same tag filter the
         # table below it does -- otherwise one filter bar drives two populations.
+        # Kind / sentiment / status_label are the same outcome filters the
+        # campaigns table takes, applied to the sentiment columns only.
         tags_any=_list_q(query, "tags_any"),
         tags_all=_list_q(query, "tags_all"),
-        tags_none=_list_q(query, "tags_none"))
+        tags_none=_list_q(query, "tags_none"),
+        reply_kind=_q(query, "kind"),
+        sentiment=_q(query, "sentiment"),
+        status_label=_q(query, "status_label"))
 
 
 @_workspace_scoped

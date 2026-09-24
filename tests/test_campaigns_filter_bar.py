@@ -104,6 +104,12 @@ def _sent(daily):
     return sum(d.get("email_sent", 0) for d in daily["days"])
 
 
+def test_subtitle_no_longer_exempts_kind_from_the_chart():
+    """The chart used to say kind and sentiment 'apply to the tables below'."""
+    assert "kind and sentiment apply to the tables below" not in HTML
+    assert "outcomeParams" in HTML
+
+
 def test_chart_and_table_agree_under_the_same_filter():
     """One bar, one population -- the chart used to ignore the tag filter."""
     conn, ws, cid = _seed()

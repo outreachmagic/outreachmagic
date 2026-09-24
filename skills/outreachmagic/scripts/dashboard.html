@@ -4845,6 +4845,16 @@ const campaignsFilter = {
     if (this.include_excluded) p.set("include_excluded", "1");
     return campaignsTags.params(p);
   },
+  // Kind / sentiment / status live with the population filters in the bar, but
+  // they are outcome filters: they go on every request that draws a number, and
+  // the server applies them to KIND_SCOPED_COLUMNS only. Split from params() so
+  // the Leads list can keep sending `reply_kind` under its own name.
+  outcomeParams(p = this.params()) {
+    if (this.kind && this.kind !== "all") p.set("kind", this.kind);
+    if (this.sentiment) p.set("sentiment", this.sentiment);
+    if (this.status_label) p.set("status_label", this.status_label);
+    return p;
+  },
   active() {
     const out = [];
     if (this.campaign_id) {
@@ -4885,15 +4895,15 @@ async function loadCampaigns() {
   // series, and "first turned positive" is already the day it plots.
   const anchor = `positive_anchor=${encodeURIComponent($("campaigns-anchor").value)}`;
   const kind = campaignsFilter.kind;
-  // Both requests take the same population filters, so the chart and the table
-  // can no longer describe two different sets of leads under one bar.
-  const auditQs = campaignsFilter.params();
-  if (kind && kind !== "all") auditQs.set("kind", kind);
-  const dailyQs = campaignsFilter.params();
+  // One query string for both requests: the chart, the daily matrix and the
+  // campaigns table are three views of one filtered population. Kind used to
+  // go only to /api/campaigns, so the outcomes chart stayed unfiltered while
+  // the table moved.
+  const qs = campaignsFilter.outcomeParams();
+  const extra = qs.toString();
   const [audit, daily] = await Promise.all([
-    getR("/api/campaigns?" + [anchor, "by_day=1", auditQs.toString()]
-      .filter(Boolean).join("&")),
-    getR("/api/campaigns/daily?" + dailyQs.toString()),
+    getR("/api/campaigns?" + [anchor, "by_day=1", extra].filter(Boolean).join("&")),
+    getR("/api/campaigns/daily?" + extra),
   ]).catch(e => { toast(e.message); return [null, null]; });
   if (!audit) return;
   state.campaigns = audit.campaigns;
@@ -4903,14 +4913,16 @@ async function loadCampaigns() {
   loadReplies();
   const scheduling = audit.scheduling_excluded || 0;
   const roleExcluded = audit.role_excluded || 0;
-  // Kind and sentiment genuinely do not apply to a per-day event matrix. Say so
-  // rather than faking it -- a stated exception is not confusing, a silent one is.
-  const chartScope = ["campaign", campaignsTags.has() && "tags", "date"]
-    .filter(Boolean).join(", ");
+  const chartScope = [
+    "campaign",
+    kind && kind !== "all" && "kind",
+    campaignsFilter.sentiment && "sentiment",
+    campaignsFilter.status_label && "status",
+    campaignsTags.has() && "tags",
+    "date",
+  ].filter(Boolean).join(", ");
   $("daily-sub").textContent =
-    `every event type per day (UTC) — filtered by ${chartScope}`
-    + (kind && kind !== "all" || campaignsFilter.sentiment
-        ? "; kind and sentiment apply to the tables below" : "");
+    `every event type per day (UTC) — filtered by ${chartScope}`;
   const notes = [];
   if (kind && kind !== "all") {
     notes.push(`Showing ${REPLY_KIND_LABELS[kind] || kind} only — replies and sentiment columns; `

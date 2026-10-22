@@ -67,6 +67,9 @@ def _filter_replay_events(events: list[dict], event_types: Optional[set[str]]) -
         evt for evt in events
         if (evt.get("event_type") or "").strip().lower() in event_types
     ]
+
+
+def _normalize_ts(ts: Optional[str]) -> Optional[str]:
     """Normalize an ISO timestamp to UTC with timezone offset."""
     if not ts:
         return None

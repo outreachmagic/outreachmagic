@@ -21,7 +21,8 @@ set_data_root_override(Path(_tmp))
 
 import pipeline as om  # noqa: E402
 import relay_ingest as ri  # noqa: E402
-from platform_registry import resolve_event  # noqa: E402
+from platform_registry import PLATFORM_SPECS, resolve_event  # noqa: E402
+from relay_extractors import extract_relay_identity  # noqa: E402
 from workspace_routing import WORKSPACE_ROUTING_MULTI  # noqa: E402
 
 
@@ -364,3 +365,288 @@ def test_migrate_db_backfill_uses_shared_connection():
     om.save_config(cfg)
     om.migrate_db(conn)
     conn.close()
+
+
+# ── PlusVibe identity / Unibox (2026-09-24) ────────────────────────────────
+
+UNIBOX_PAYLOAD = {
+    "webhook_event": "UNIBOX_EMAIL_SENT",
+    "direction": "OUT",
+    "sent_via": "MANUAL_REPLY",
+    "email": "angie@prospect.edu",
+    "from_email": "mailbox@send.example",
+    "to_email": "colleague@prospect.edu",
+    "email_account_name": "mailbox@send.example",
+    "actual_replied_from": "angie@prospect.edu",
+    "first_name": "Angie",
+    "label": "OUT_OF_OFFICE",
+    "campaign_id": "camp-1",
+    "campaign_name": "Test Campaign",
+}
+
+REPLY_ALIAS_PAYLOAD = {
+    "webhook_event": "ALL_EMAIL_REPLIES",
+    "direction": "IN",
+    "email": "jane@acme.org",
+    "from_email": "jane.doe@school.org",
+    "to_email": "mailbox@send.example",
+    "email_account_name": "mailbox@send.example",
+    "actual_replied_from": "jane.doe@school.org",
+    "first_name": "Jane",
+    "label": "INTERESTED",
+    "campaign_id": "camp-1",
+    "campaign_name": "Test Campaign",
+}
+
+COLLEAGUE_REPLY_PAYLOAD = {
+    "webhook_event": "ALL_EMAIL_REPLIES",
+    "direction": "IN",
+    "email": "jordan@acme.org",
+    "from_email": "alex.rivera@acme.org",
+    "from": "Alex Rivera <alex.rivera@acme.org>",
+    "email_account_name": "mailbox@send.example",
+    "first_name": "Jordan",
+    "label": "INTERESTED",
+    "campaign_id": "camp-1",
+    "campaign_name": "Test Campaign",
+}
+
+EMAIL_SENT_PAYLOAD = {
+    "webhook_event": "EMAIL_SENT",
+    "lead_email": "lead@example.com",
+    "email": "lead@example.com",
+    "email_account_name": "mailbox@send.example",
+    "campaign_id": "camp-1",
+    "campaign_name": "Test Campaign",
+}
+
+
+def _pv_event(event_type: str, relay_id: int, payload: dict, *, envelope_lead: str) -> dict:
+    return {
+        "relay_id": relay_id,
+        "platform": "plusvibe",
+        "event_type": event_type,
+        "entity_key": envelope_lead,
+        "lead": envelope_lead,
+        "sender": payload.get("email_account_name") or "unknown",
+        "received_at": "2026-09-10T12:00:00Z",
+        "payload": dict(payload),
+    }
+
+
+def _lead_emails(conn, lead_id: int) -> set[str]:
+    primary = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    extras = conn.execute(
+        "SELECT email FROM lead_emails WHERE lead_id = ?", (lead_id,),
+    ).fetchall()
+    out = {primary["email"]} if primary and primary["email"] else set()
+    out.update(r["email"] for r in extras)
+    return {e.lower() for e in out}
+
+
+def _insert_sender_account(email: str) -> None:
+    conn = om.get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO sender_accounts (org_id, email, channel) VALUES (?, ?, 'email')",
+        (om.DEFAULT_ORG_ID, email.lower()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_unibox_lands_as_outbound_email_sent_on_campaign_contact():
+    _insert_sender_account("mailbox@send.example")
+    event = _pv_event(
+        "unibox_email_sent", 701, UNIBOX_PAYLOAD,
+        envelope_lead="mailbox@send.example",
+    )
+    lead_id = ri.ingest_relay_event(event, force_workspace_id="ws_pv-test")
+    assert lead_id is not None
+
+    conn = om.get_conn()
+    lead = conn.execute("SELECT email, name FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    evt = conn.execute(
+        """SELECT event_type, direction, sender, metadata_json FROM events
+           WHERE lead_id = ? ORDER BY id DESC LIMIT 1""",
+        (lead_id,),
+    ).fetchone()
+    stage = conn.execute(
+        "SELECT status FROM workspace_leads WHERE lead_id = ?", (lead_id,),
+    ).fetchone()
+    mailbox_leads = conn.execute(
+        "SELECT id FROM leads WHERE email = ?", ("mailbox@send.example",),
+    ).fetchall()
+    conn.close()
+
+    assert lead["email"] == "angie@prospect.edu"
+    assert "Angie" in (lead["name"] or "")
+    assert evt["event_type"] == "email_sent"
+    assert evt["direction"] == "outbound"
+    assert evt["sender"] == "mailbox@send.example"
+    assert stage["status"] == "contacted"
+    assert mailbox_leads == []
+    meta = json.loads(evt["metadata_json"])
+    assert meta["from_email"] == "mailbox@send.example"
+    assert meta["to_email"] == "colleague@prospect.edu"
+    assert meta["actual_replied_from"] == "angie@prospect.edu"
+    assert meta.get("is_auto_reply") is None
+    assert meta.get("lead_status_raw") in (None, "")
+
+
+def test_unibox_identity_ignores_from_email_even_if_in_path(monkeypatch):
+    spec = {
+        **PLATFORM_SPECS["plusvibe"],
+        "identity": {
+            "email": ("lead_email", "from_email", "email"),
+            "linkedin_url": ("linkedin_url",),
+        },
+    }
+    monkeypatch.setitem(PLATFORM_SPECS, "plusvibe", spec)
+    identity = extract_relay_identity(
+        "plusvibe", UNIBOX_PAYLOAD, envelope_lead="mailbox@send.example",
+    )
+    assert identity["email"] == "angie@prospect.edu"
+
+
+def test_unibox_same_message_id_dedupes():
+    payload = dict(UNIBOX_PAYLOAD, message_id="msg-unibox-1")
+    first = _pv_event("unibox_email_sent", 702, payload, envelope_lead="mailbox@send.example")
+    dup = _pv_event("unibox_email_sent", 703, payload, envelope_lead="mailbox@send.example")
+    assert ri.ingest_relay_event(first, force_workspace_id="ws_pv-test") is not None
+    assert ri.ingest_relay_event(dup, force_workspace_id="ws_pv-test") is None
+    conn = om.get_conn()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE event_type = 'email_sent'",
+    ).fetchone()[0]
+    conn.close()
+    assert count == 1
+
+
+def test_unibox_after_sequence_send_is_second_email_sent():
+    sent = _pv_event(
+        "email_sent", 704,
+        dict(EMAIL_SENT_PAYLOAD, email="angie@prospect.edu",
+             lead_email="angie@prospect.edu", message_id="msg-seq-1"),
+        envelope_lead="angie@prospect.edu",
+    )
+    unibox = _pv_event(
+        "unibox_email_sent", 705,
+        dict(UNIBOX_PAYLOAD, message_id="msg-unibox-2"),
+        envelope_lead="mailbox@send.example",
+    )
+    lead_a = ri.ingest_relay_event(sent, force_workspace_id="ws_pv-test")
+    lead_b = ri.ingest_relay_event(unibox, force_workspace_id="ws_pv-test")
+    assert lead_a is not None and lead_b == lead_a
+    conn = om.get_conn()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE lead_id = ? AND event_type = 'email_sent'",
+        (lead_a,),
+    ).fetchone()[0]
+    conn.close()
+    assert count == 2
+
+
+def test_email_sent_still_keys_on_lead_email_without_from_email():
+    event = _pv_event(
+        "email_sent", 706, EMAIL_SENT_PAYLOAD, envelope_lead="lead@example.com",
+    )
+    lead_id = ri.ingest_relay_event(event, force_workspace_id="ws_pv-test")
+    assert lead_id is not None
+    conn = om.get_conn()
+    lead = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    evt = conn.execute(
+        "SELECT event_type, direction FROM events WHERE lead_id = ?", (lead_id,),
+    ).fetchone()
+    conn.close()
+    assert lead["email"] == "lead@example.com"
+    assert evt["event_type"] == "email_sent"
+    assert evt["direction"] == "outbound"
+
+
+def test_reply_alias_keys_campaign_email_not_smtp_from():
+    event = _pv_event(
+        "all_email_replies", 707, REPLY_ALIAS_PAYLOAD,
+        envelope_lead="jane.doe@school.org",
+    )
+    lead_id = ri.ingest_relay_event(event, force_workspace_id="ws_pv-test")
+    assert lead_id is not None
+    conn = om.get_conn()
+    lead = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    evt = conn.execute(
+        "SELECT event_type, direction, metadata_json FROM events WHERE lead_id = ?",
+        (lead_id,),
+    ).fetchone()
+    emails = _lead_emails(conn, lead_id)
+    other = conn.execute(
+        "SELECT id FROM leads WHERE email = ?", ("jane.doe@school.org",),
+    ).fetchall()
+    conn.close()
+    assert lead["email"] == "jane@acme.org"
+    assert evt["event_type"] == "email_reply"
+    assert evt["direction"] == "inbound"
+    meta = json.loads(evt["metadata_json"])
+    assert meta["from_email"] == "jane.doe@school.org"
+    assert "jane.doe@school.org" in emails
+    assert other == []
+
+
+def test_colleague_reply_does_not_attach_from_as_identity():
+    event = _pv_event(
+        "all_email_replies", 708, COLLEAGUE_REPLY_PAYLOAD,
+        envelope_lead="alex.rivera@acme.org",
+    )
+    lead_id = ri.ingest_relay_event(event, force_workspace_id="ws_pv-test")
+    assert lead_id is not None
+    conn = om.get_conn()
+    lead = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    emails = _lead_emails(conn, lead_id)
+    evt = conn.execute(
+        "SELECT metadata_json FROM events WHERE lead_id = ?", (lead_id,),
+    ).fetchone()
+    colleague = conn.execute(
+        "SELECT id FROM leads WHERE email = ?", ("alex.rivera@acme.org",),
+    ).fetchall()
+    conn.close()
+    assert lead["email"] == "jordan@acme.org"
+    assert "alex.rivera@acme.org" not in emails
+    assert colleague == []
+    meta = json.loads(evt["metadata_json"])
+    assert meta["from_email"] == "alex.rivera@acme.org"
+
+
+def test_reply_from_our_mailbox_stays_on_campaign_lead():
+    _insert_sender_account("mailbox@send.example")
+    payload = dict(REPLY_ALIAS_PAYLOAD)
+    payload["from_email"] = "mailbox@send.example"
+    payload["actual_replied_from"] = "mailbox@send.example"
+    event = _pv_event(
+        "all_email_replies", 709, payload, envelope_lead="mailbox@send.example",
+    )
+    lead_id = ri.ingest_relay_event(event, force_workspace_id="ws_pv-test")
+    assert lead_id is not None
+    conn = om.get_conn()
+    lead = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    emails = _lead_emails(conn, lead_id)
+    mailbox_leads = conn.execute(
+        "SELECT id FROM leads WHERE email = ?", ("mailbox@send.example",),
+    ).fetchall()
+    conn.close()
+    assert lead["email"] == "jane@acme.org"
+    assert "mailbox@send.example" not in emails
+    assert mailbox_leads == []
+
+
+def test_reprocess_event_type_filter_keeps_unibox_and_replies():
+    from reprocess import _filter_replay_events, _parse_event_types
+
+    events = [
+        {"event_type": "email_sent", "relay_id": 1},
+        {"event_type": "unibox_email_sent", "relay_id": 2},
+        {"event_type": "all_email_replies", "relay_id": 3},
+        {"event_type": "EMAIL_SENT", "relay_id": 4},
+    ]
+    types = _parse_event_types("unibox_email_sent,all_email_replies")
+    out = _filter_replay_events(events, types)
+    assert [e["relay_id"] for e in out] == [2, 3]
+    assert _filter_replay_events(events, None) == events
+    assert _parse_event_types("  ") is None

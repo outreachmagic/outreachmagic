@@ -283,6 +283,7 @@ code { background: var(--page); border: 1px solid var(--grid); border-radius: 4p
         <div class="stale" style="font-size:12px;margin-bottom:10px">
           Pick which record survives. Any field it is missing is filled from the others.
           <b>Merging cannot be undone from here.</b>
+          <span id="merge-contacts-same-person" hidden> Same person? Merge, don't link.</span>
         </div>
         <div id="merge-contacts-body"></div>
         <div class="controls" style="margin-top:12px">
@@ -3859,6 +3860,10 @@ async function openMergeContacts(ids, contacts, companyId, onMerged) {
   // default below, since sorting by a field that is 0 for everyone is a no-op.
   mergeContacts.counts = null;
   mergeContacts.keepId = ids[0];
+  const firsts = contacts.map(c => String(c.name || "").trim().split(/\s+/)[0].toLowerCase()).filter(Boolean);
+  const samePerson = firsts.length >= 2 && firsts.every(f => f === firsts[0]);
+  const hint = $("merge-contacts-same-person");
+  if (hint) hint.hidden = !samePerson;
   renderMergeChoices();
   $("merge-contacts-msg").textContent = "";
   $("merge-contacts").showModal();
@@ -5717,14 +5722,15 @@ async function openLead(leadId) {
   renderLeadCustomFields(lead.id);
   renderLeadProviderRuns(lead.id);
   renderLeadSerper(lead.id);
-  // "to" side of each event: the lead's LinkedIn URL for LinkedIn events, else
-  // their email. Paired with the sender (the mailbox / from side).
+  // SMTP from/to live on event metadata when the sequencer sent them (PlusVibe
+  // Unibox / replies). Fall back to lead.email + sender when they are absent.
   const leadTo = ev => ev.channel === "linkedin"
     ? (lead.linkedin_display_url || lead.linkedin_url || "")
     : (lead.email || "");
   $("lead-history").innerHTML = d.events.length ? d.events.map(ev => {
-    const from = ev.direction === "inbound" ? (lead.email || ev.sender || "") : (ev.sender || "");
-    const to = ev.direction === "inbound" ? (ev.sender || "") : leadTo(ev);
+    const meta = ev.metadata || {};
+    const from = meta.from_email || (ev.direction === "inbound" ? (lead.email || ev.sender || "") : (ev.sender || ""));
+    const to = meta.to_email || (ev.direction === "inbound" ? (ev.sender || "") : leadTo(ev));
     const fromTo = (from || to)
       ? `<div class="stale" style="font-size:11px">from ${esc(from || "?")}${to ? ` → to ${esc(to)}` : ""}</div>` : "";
     return `

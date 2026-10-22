@@ -147,6 +147,27 @@ class TestResolveEvent(unittest.TestCase):
         self.assertEqual(resolved.direction, "inbound")
         self.assertEqual(resolved.reporting_bucket, "lead_tag_updated")
 
+    def test_plusvibe_unibox_email_sent_not_status_from_label(self):
+        resolved = pr.resolve_event(
+            "plusvibe", "unibox_email_sent", {"label": "interested"},
+        )
+        self.assertEqual(resolved.local_type, "email_sent")
+        self.assertEqual(resolved.direction, "outbound")
+        self.assertEqual(resolved.target_stage, "contacted")
+        self.assertEqual(resolved.reporting_bucket, "email_sent")
+
+    def test_plusvibe_unibox_ooo_label_still_email_sent(self):
+        resolved = pr.resolve_event(
+            "plusvibe", "unibox_email_sent", {"label": "out_of_office"},
+        )
+        self.assertEqual(resolved.local_type, "email_sent")
+        self.assertEqual(resolved.direction, "outbound")
+
+    def test_plusvibe_identity_spec_never_smtp_from(self):
+        spec = pr.PLATFORMS["plusvibe"].extractor_spec["identity"]
+        self.assertEqual(spec["email"], ("lead_email", "email"))
+        self.assertNotIn("from_email", spec["email"])
+
     def test_smartlead_email_reply(self):
         resolved = pr.resolve_event("smartlead", "email_reply", {})
         self.assertEqual(resolved.local_type, "email_reply")
@@ -247,6 +268,16 @@ class TestPlatformMapJson(unittest.TestCase):
         # Generic email types should also be present
         self.assertIn("email_sent", vendor_types)
         self.assertIn("email_bounced", vendor_types)
+
+    def test_plusvibe_unibox_mapping_in_map(self):
+        data = pr.platform_map_json("plusvibe")
+        pv = data["platforms"][0]
+        vendor_types = {m["vendor_type"] for m in pv["event_mappings"]}
+        self.assertIn("unibox_email_sent", vendor_types)
+        unibox = next(m for m in pv["event_mappings"] if m["vendor_type"] == "unibox_email_sent")
+        self.assertEqual(unibox["local_type"], "email_sent")
+        self.assertEqual(unibox["direction"], "outbound")
+        self.assertEqual(unibox["stage"], "contacted")
 
 
 class TestExtractReplyBody(unittest.TestCase):

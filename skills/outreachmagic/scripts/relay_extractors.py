@@ -65,6 +65,24 @@ def extract_relay_fields(platform: str, raw: dict | None) -> dict[str, dict[str,
     }
 
 
+def _plusvibe_mailbox(raw: dict | None) -> str:
+    """Our sending mailbox on a PlusVibe payload (never a lead identity)."""
+    if not raw or not isinstance(raw, dict):
+        return ""
+    return str(raw.get("email_account_name") or "").strip().lower()
+
+
+def _plusvibe_campaign_email(raw: dict | None, mailbox: str = "") -> str:
+    """First non-mailbox campaign-contact address on a PlusVibe payload."""
+    if not raw or not isinstance(raw, dict):
+        return ""
+    for key in ("lead_email", "email"):
+        val = str(raw.get(key) or "").strip()
+        if val and "@" in val and val.lower() != mailbox:
+            return val
+    return ""
+
+
 def extract_relay_identity(
     platform: str, raw: dict | None, envelope_lead: str = ""
 ) -> dict[str, str]:
@@ -78,10 +96,21 @@ def extract_relay_identity(
         # a non-email value masquerade as the lead's email address.
         identity.pop("email", None)
         identity.setdefault("linkedin_url", email)
+    plat = (platform or "").strip().lower()
+    mailbox = _plusvibe_mailbox(raw) if plat == "plusvibe" else ""
+    ident_email = (identity.get("email") or "").strip().lower()
+    if mailbox and ident_email == mailbox:
+        # Spec is lead_email then email, but if from_email is ever put back in
+        # the path (or the envelope is the mailbox), drop it and re-pick.
+        identity.pop("email", None)
+        campaign = _plusvibe_campaign_email(raw, mailbox)
+        if campaign:
+            identity["email"] = campaign
     env = (envelope_lead or "").strip()
     if env:
         if "@" in env:
-            identity.setdefault("email", env)
+            if not (mailbox and env.lower() == mailbox):
+                identity.setdefault("email", env)
         else:
             identity.setdefault("linkedin_url", env)
     return identity

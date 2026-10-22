@@ -2846,7 +2846,9 @@ def lead_history(
                c.name AS campaign_name,
                json_extract(e.metadata_json, '$.body') IS NOT NULL AS has_body,
                json_extract(e.metadata_json, '$.lead_status_display') AS status_display,
-               json_extract(e.metadata_json, '$.lead_status_sentiment') AS status_sentiment
+               json_extract(e.metadata_json, '$.lead_status_sentiment') AS status_sentiment,
+               json_extract(e.metadata_json, '$.from_email') AS from_email,
+               json_extract(e.metadata_json, '$.to_email') AS to_email
             FROM events e
             LEFT JOIN campaigns c ON c.id = e.campaign_id
             WHERE e.lead_id = ?{ws_sql}
@@ -2854,9 +2856,22 @@ def lead_history(
             LIMIT ?""",
         params,
     ).fetchall()
+    events_out = []
+    for e in events:
+        d = dict(e)
+        meta = {}
+        from_email = d.pop("from_email", None)
+        to_email = d.pop("to_email", None)
+        if from_email:
+            meta["from_email"] = from_email
+        if to_email:
+            meta["to_email"] = to_email
+        if meta:
+            d["metadata"] = meta
+        events_out.append(d)
     return {
         "lead": lead,
-        "events": [dict(e) for e in events],
+        "events": events_out,
     }
 
 

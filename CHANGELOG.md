@@ -6,6 +6,13 @@
 
 - **Campaigns-tab filters now update the charts and daily metrics, not just the leads list.** Kind, sentiment and lead status already narrowed the Leads list (and kind already narrowed the Campaigns table's reply/sentiment columns). The daily-activity chart, the outcomes chart and the per-day matrix ignored them, so picking "replies (human)" or "sentiment: positive" left the charts showing every auto-reply and bounce. Those three filters now apply to the sentiment columns on every view; sends stay counted in full so rates still have a real denominator.
 
+- **A PlusVibe Unibox send created a lead for the mailbox.** Manual replies (`UNIBOX_EMAIL_SENT`) no longer send `lead_email`, so we keyed on SMTP From — our mailbox — and treated the thread's interested/out-of-office label as a status change. Unibox is an outbound `email_sent` on the campaign contact (`email`), sender is the mailbox, and the thread label does not move stage.
+- **A PlusVibe reply from a different address created a second lead.** Inbound replies now key on the campaign contact (`email`), never SMTP From. From/To stay on the event; the timeline shows those addresses. A same-person alias is attached only when the From name contains the lead's first name — a colleague who replied on someone else's thread is not merged in.
+
+### Added
+
+- **`pipeline.py reprocess --event-type`** — comma-separated envelope types (e.g. `unibox_email_sent,all_email_replies`) so a reingest can skip the thousands of sequence sends that are already keyed correctly.
+
 ## [1.9.1] — 2026-09-17
 
 ### Fixed

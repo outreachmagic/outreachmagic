@@ -28,6 +28,13 @@ _HEYREACH_IDENTITY = {
     "linkedin_url": ("lead.profile_url", "lead.linkedin_url"),
 }
 
+# PlusVibe campaign contact is `lead_email` then `email`. SMTP From (`from_email`)
+# is the mailbox on Unibox and the person who hit send on inbound — never the lead.
+_PLUSVIBE_IDENTITY = {
+    "email": ("lead_email", "email"),
+    "linkedin_url": _IDENTITY_DEFAULT["linkedin_url"],
+}
+
 _PLUSVIBE_SPEC = {
     "lead": {
         "first_name": ("first_name",),
@@ -193,7 +200,7 @@ LINKEDIN_MESSAGE_REPLY_VENDOR = frozenset({
 PLUSVIBE_REPLY_EVENTS = frozenset({
     "all_email_replies", "first_email_replies", "all_positive_replies",
 })
-PLUSVIBE_SENT_EVENTS = frozenset({"email_sent"})
+PLUSVIBE_SENT_EVENTS = frozenset({"email_sent", "unibox_email_sent"})
 PLUSVIBE_BOUNCE_EVENTS = frozenset({"bounced_email"})
 PLUSVIBE_INTERESTED_STAGE_EVENTS = frozenset({
     "lead_marked_as_interested",
@@ -373,6 +380,8 @@ def _plusvibe_mappings() -> tuple[EventMapping, ...]:
         _em("all_positive_replies", "email_reply", "inbound", "replied", "email_reply",
             notes="Always co-fires with all_email_replies — do not enable"),
         _em("email_sent", "email_sent", "outbound", "contacted", "email_sent"),
+        _em("unibox_email_sent", "email_sent", "outbound", "contacted", "email_sent",
+            notes="Operator manual reply from PlusVibe Unibox — outbound send, not a status webhook"),
         _em("bounced_email", "email_bounce", "outbound", None, "email_bounce"),
         _em("lead_marked_as_meeting_booked", "meeting_booked", "inbound", "interested", "meeting_booked"),
         _em("lead_marked_as_meeting_completed", "meeting_completed", "inbound", "interested", "meeting_completed"),
@@ -420,7 +429,7 @@ PLATFORMS: dict[str, PlatformDef] = {
             "Leave 'Skip out of office replies' and 'Skip autoreplies' unchecked."
         ),
         linkedin_platform=False,
-        extractor_spec={**_PLUSVIBE_SPEC, "identity": _IDENTITY_DEFAULT},
+        extractor_spec={**_PLUSVIBE_SPEC, "identity": _PLUSVIBE_IDENTITY},
         bounce_spec=PLATFORM_BOUNCE_SPECS["plusvibe"],
         event_mappings=_plusvibe_mappings(),
         plusvibe_style=True,
@@ -621,6 +630,8 @@ def resolve_event(platform: str, vendor_type: str, raw: Optional[dict] = None) -
         label = (raw.get("label") or "").strip().lower()
         if et in PLUSVIBE_REPLY_EVENTS:
             return ResolvedEvent("email_reply", "inbound", "replied", "email_reply", et)
+        # Unibox and sequence sends: check before the label fallback so a thread
+        # tagged interested/OOO is still an outbound email_sent, not a status update.
         if et in PLUSVIBE_SENT_EVENTS:
             return ResolvedEvent("email_sent", "outbound", "contacted", "email_sent", et)
         if et in PLUSVIBE_BOUNCE_EVENTS:

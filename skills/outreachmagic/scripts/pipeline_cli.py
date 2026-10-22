@@ -2180,6 +2180,11 @@ def main():
                              help="Skip confirmation prompt")
     reprocess_p.add_argument("--reingest", action="store_true",
                              help="Delete and re-ingest events from relay replay (refreshes all data in ID range)")
+    reprocess_p.add_argument(
+        "--event-type",
+        default=None,
+        help="Comma-separated envelope event_type filter, e.g. unibox_email_sent,all_email_replies",
+    )
 
     pset = sub.add_parser("personalize-set", help="Write lead personalization (first_name, etc.)")
     pset.add_argument("--lead-id", type=int, help="Lead ID (single mode)")
@@ -3169,6 +3174,7 @@ def main():
                     from_id=args.from_id or 0,
                     to_id=args.to_id,
                     platform=args.platform,
+                    event_type=getattr(args, "event_type", None),
                     dry_run=args.dry_run,
                     verbose=args.verbose,
                     reingest=args.reingest,
@@ -3213,6 +3219,12 @@ def main():
                 f"   Platform:   {args.platform or 'all'}",
                 file=sys.stderr,
             )
+            event_type_filter = result.get("event_type")
+            if event_type_filter:
+                print(
+                    f"   Event type: {', '.join(event_type_filter)}",
+                    file=sys.stderr,
+                )
             print(
                 count_line,
                 file=sys.stderr,

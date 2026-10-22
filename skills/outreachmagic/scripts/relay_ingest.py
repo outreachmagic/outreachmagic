@@ -48,7 +48,14 @@ from relay_extractors import (
     extract_relay_identity,
     name_from_email,
 )
-from workspace_routing import DEFAULT_ORG_ID, extract_campaign_context, set_lead_status
+from workspace_routing import (
+    DEFAULT_ORG_ID,
+    extract_campaign_context,
+    find_lead_by_identity,
+    normalize_email,
+    set_lead_status,
+    upsert_identity_alias,
+)
 
 
 # --- --debug-sentiment tally -------------------------------------------------
@@ -170,6 +177,97 @@ def build_plusvibe_status_metadata(
         meta["auto_reply_type"] = "ooo"
 
     return meta
+
+
+def _is_sender_account_email(conn: sqlite3.Connection, email: str) -> bool:
+    """True if this address is one of our sending mailboxes."""
+    key = (email or "").strip().lower()
+    if not key or "@" not in key:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM sender_accounts WHERE LOWER(email) = ? LIMIT 1",
+        (key,),
+    ).fetchone()
+    return row is not None
+
+
+def _reject_plusvibe_mailbox_identity(
+    conn: sqlite3.Connection, identity: dict[str, str], payload: dict,
+) -> dict[str, str]:
+    """Drop identity email when it is our mailbox; prefer payload campaign contact."""
+    ident_email = (identity.get("email") or "").strip()
+    if not ident_email:
+        return identity
+    mailbox = str(payload.get("email_account_name") or "").strip().lower()
+    ident_key = ident_email.lower()
+    if ident_key != mailbox and not _is_sender_account_email(conn, ident_email):
+        return identity
+    identity = dict(identity)
+    identity.pop("email", None)
+    for key in ("lead_email", "email"):
+        val = str(payload.get(key) or "").strip()
+        if val and "@" in val and val.lower() != ident_key:
+            identity["email"] = val
+            break
+    return identity
+
+
+def _plusvibe_from_display_name(payload: dict) -> str:
+    raw_from = str(payload.get("from") or "").strip()
+    if raw_from:
+        if "<" in raw_from:
+            raw_from = raw_from.split("<", 1)[0]
+        return raw_from.strip().strip('"').lower()
+    from_email = str(payload.get("from_email") or "").strip()
+    if "@" in from_email:
+        local = from_email.split("@", 1)[0]
+        return local.replace(".", " ").replace("_", " ").replace("-", " ").lower()
+    return ""
+
+
+def _maybe_attach_plusvibe_from_alias(
+    conn: sqlite3.Connection,
+    *,
+    lead_id: int,
+    payload: dict,
+    lead_fields: dict,
+    direction: str,
+) -> None:
+    """Optional same-person alias: inbound From whose display name contains first_name.
+
+    Skip colleague replies (From display name does not contain first_name)
+    and addresses already owned by another lead.
+    """
+    if (direction or "").lower() != "inbound":
+        return
+    from_email = str(payload.get("from_email") or "").strip()
+    campaign = str(payload.get("email") or payload.get("lead_email") or "").strip()
+    if not from_email or not campaign or from_email.lower() == campaign.lower():
+        return
+    first_name = str(lead_fields.get("first_name") or payload.get("first_name") or "").strip().lower()
+    if not first_name:
+        return
+    display = _plusvibe_from_display_name(payload)
+    if first_name not in display:
+        return
+    from_norm = normalize_email(from_email)
+    if not from_norm:
+        return
+    if _is_sender_account_email(conn, from_norm):
+        return
+    owner = find_lead_by_identity(conn, DEFAULT_ORG_ID, "email", from_norm)
+    if owner and owner != lead_id:
+        return
+    try:
+        upsert_identity_alias(
+            conn, DEFAULT_ORG_ID, lead_id, "email", from_norm, source="plusvibe",
+        )
+    except ValueError:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO lead_emails (lead_id, email, is_primary) VALUES (?, ?, 0)",
+        (lead_id, from_norm),
+    )
 
 
 def build_calendly_status_metadata(envelope_event_type: str) -> dict:
@@ -372,6 +470,11 @@ def relay_target_stage(
     is_auto = metadata.get("is_auto_reply") or is_auto_reply_label(label)
     positive_labels = ("interested", "qc_interested", "meeting_booked", "meeting_completed", "qc_crm_only")
     negative_labels = ("not_interested", "not interested", "wrong_person", "closed")
+
+    # Unibox is the operator hitting send. The thread's label (interested/OOO)
+    # is not a status webhook — same stage as sequence EMAIL_SENT.
+    if platform in PLUSVIBE_PLATFORMS and et == "unibox_email_sent":
+        return "contacted"
 
     # Auto-replies never advance the pipeline stage (stays in contacted/prospecting).
     if is_auto:
@@ -948,10 +1051,13 @@ def ingest_relay_event(
         event_fields["_body_was_html"] = True
     signals = extracted.get("signals") or {}
     identity = extract_relay_identity(platform, payload, envelope_lead)
-
-    email_hint = identity.get("email") or (
-        envelope_lead if "@" in str(envelope_lead) else None
-    )
+    if platform in PLUSVIBE_PLATFORMS:
+        identity = _reject_plusvibe_mailbox_identity(conn, identity, payload)
+        email_hint = identity.get("email")
+    else:
+        email_hint = identity.get("email") or (
+            envelope_lead if "@" in str(envelope_lead) else None
+        )
     display_name = build_display_name(lead_fields, email_hint)
     if not display_name and email_hint and "@" in email_hint:
         display_name = name_from_email(email_hint)
@@ -1177,6 +1283,11 @@ def ingest_relay_event(
     resolved = resolve_event(platform, envelope_event_type, payload)
     local_type = resolved.local_type
     direction = resolved.direction
+    if platform in PLUSVIBE_PLATFORMS:
+        _maybe_attach_plusvibe_from_alias(
+            conn, lead_id=lead_id, payload=payload,
+            lead_fields=lead_fields, direction=direction,
+        )
 
     bounce_payload = None
     if local_type == "email_bounce":
@@ -1214,6 +1325,12 @@ def ingest_relay_event(
         metadata["relay_id"] = event["relay_id"]
     if event_fields.get("message_id"):
         metadata["message_id"] = event_fields["message_id"]
+    for smtp_key in ("from_email", "to_email", "actual_replied_from"):
+        smtp_val = payload.get(smtp_key)
+        if smtp_val:
+            smtp_text = str(smtp_val).strip()
+            if smtp_text:
+                metadata[smtp_key] = smtp_text
 
     reply_body = extract_reply_body(platform, local_type, payload, metadata, body_preview)
     if reply_body and reply_body != body:
@@ -1223,7 +1340,11 @@ def ingest_relay_event(
 
     # Store signal fields (label/sentiment/status) for all platforms.
     # PlusVibe has its own handler below with additional PlusVibe-specific logic.
-    if signals.get("label") or signals.get("sentiment"):
+    # Unibox is our send: the thread label is not a status webhook.
+    skip_unibox_status = (
+        platform in PLUSVIBE_PLATFORMS and envelope_event_type == "unibox_email_sent"
+    )
+    if not skip_unibox_status and (signals.get("label") or signals.get("sentiment")):
         if signals.get("label"):
             metadata["lead_status_raw"] = signals["label"]
             metadata["lead_status_display"] = normalize_lead_status_display(signals["label"])
@@ -1233,7 +1354,10 @@ def ingest_relay_event(
             metadata["lead_status_platform_status"] = signals["status"]
 
     if platform in PLUSVIBE_PLATFORMS:
-        metadata.update(build_plusvibe_status_metadata(payload, signals, envelope_event_type))
+        if skip_unibox_status:
+            metadata["plusvibe_webhook_event"] = envelope_event_type
+        else:
+            metadata.update(build_plusvibe_status_metadata(payload, signals, envelope_event_type))
     if platform == "calendly":
         metadata.update(build_calendly_status_metadata(envelope_event_type))
     if local_type == "email_bounce" and bounce_payload:

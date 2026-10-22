@@ -51,7 +51,22 @@ REPROCESS_PAGE_SIZE = 1000
 REPROCESS_HTTP_TIMEOUT = 120
 
 
-def _normalize_ts(ts: Optional[str]) -> Optional[str]:
+def _parse_event_types(event_type: Optional[str]) -> Optional[set[str]]:
+    """Comma-separated envelope event_type filter → lowercase set, or None."""
+    if not event_type:
+        return None
+    types = {part.strip().lower() for part in str(event_type).split(",") if part.strip()}
+    return types or None
+
+
+def _filter_replay_events(events: list[dict], event_types: Optional[set[str]]) -> list[dict]:
+    """Keep replay rows whose envelope event_type is in the filter set."""
+    if not event_types:
+        return events
+    return [
+        evt for evt in events
+        if (evt.get("event_type") or "").strip().lower() in event_types
+    ]
     """Normalize an ISO timestamp to UTC with timezone offset."""
     if not ts:
         return None
@@ -291,6 +306,12 @@ def _reprocess_events_batch(conn: sqlite3.Connection, events: list[dict], *, ver
             new_meta["subject"] = event_fields["subject"]
         if event_fields.get("message_id"):
             new_meta["message_id"] = event_fields["message_id"]
+        for smtp_key in ("from_email", "to_email", "actual_replied_from"):
+            smtp_val = payload.get(smtp_key)
+            if smtp_val:
+                smtp_text = str(smtp_val).strip()
+                if smtp_text:
+                    new_meta[smtp_key] = smtp_text
         body_text = event_fields.get("body")
         if body_text:
             new_meta["body"] = body_text
@@ -407,6 +428,7 @@ def reprocess_events(
     from_id: int = 0,
     to_id: Optional[int] = None,
     platform: Optional[str] = None,
+    event_type: Optional[str] = None,
     dry_run: bool = False,
     verbose: bool = False,
     reingest: bool = False,
@@ -417,13 +439,19 @@ def reprocess_events(
     When reingest=True, re-ingests all events from scratch (deletes existing
     local rows first, then re-runs full ingest pipeline) so metadata is refreshed
     from the latest D1 state.
+
+    event_type, when set, is a comma-separated list of envelope event_type
+    values (e.g. unibox_email_sent,all_email_replies). Matching happens after
+    each replay page is fetched, before delete/ingest.
     """
     own_conn = conn is None
     if own_conn:
         conn = get_conn()
 
+    event_types = _parse_event_types(event_type)
     total_updated = 0
     total_fetched = 0
+    total_scanned = 0
     error_count = 0
     after_id = from_id
     pages = 0
@@ -437,9 +465,11 @@ def reprocess_events(
             # First page gets total_count; subsequent pages skip it.
             first_page = pages == 0
             result = _fetch_replay_page(agent_key, "events", after_id, to_id, platform, with_total=first_page)
-            events = result.get("events") or []
-            if not events:
+            page_events = result.get("events") or []
+            if not page_events:
                 break
+            total_scanned += len(page_events)
+            events = _filter_replay_events(page_events, event_types)
             total_fetched += len(events)
 
             # Capture total_count from first response.
@@ -448,7 +478,7 @@ def reprocess_events(
                 if total_count:
                     estimated_pages = max(1, (total_count + REPROCESS_PAGE_SIZE - 1) // REPROCESS_PAGE_SIZE)
 
-            if not dry_run:
+            if not dry_run and events:
                 error_counter = [0]
                 updated = _reprocess_events_batch(
                     conn, events, verbose=verbose, reingest=reingest,
@@ -463,16 +493,18 @@ def reprocess_events(
             now = time.monotonic()
             if now - last_print >= 10 or not result.get("has_more"):
                 elapsed = now - started
-                rate = total_fetched / elapsed if elapsed > 0 else 0
+                rate = total_scanned / elapsed if elapsed > 0 else 0
                 page_info = f"page {pages}"
                 if estimated_pages:
                     page_info += f"/{estimated_pages}"
-                total_info = str(total_fetched)
+                total_info = str(total_scanned)
                 if total_count:
                     total_info += f"/{total_count}"
+                if event_types:
+                    total_info += f" ({total_fetched} matching)"
                 eta = ""
-                if rate > 0 and total_count and total_fetched < total_count:
-                    remaining = total_count - total_fetched
+                if rate > 0 and total_count and total_scanned < total_count:
+                    remaining = total_count - total_scanned
                     eta_sec = int(remaining / rate)
                     if eta_sec >= 60:
                         eta = f" · ~{eta_sec // 60}m{eta_sec % 60:02d}s remaining"
@@ -499,10 +531,12 @@ def reprocess_events(
         "kind": "events",
         "pages": pages,
         "fetched": total_fetched,
+        "scanned": total_scanned,
         "updated": total_updated,
         "errors": error_count,
         "dry_run": dry_run,
         "elapsed_s": round(elapsed, 1),
-        "rate": round(total_fetched / elapsed, 0) if elapsed > 0 else 0,
+        "rate": round(total_scanned / elapsed, 0) if elapsed > 0 else 0,
         "total_count": total_count,
+        "event_type": sorted(event_types) if event_types else None,
     }

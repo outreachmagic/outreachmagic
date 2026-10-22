@@ -64,6 +64,7 @@ Reached only when you have configured that provider's key in the portal, and onl
 | `app.icypeas.com` | Email finding | API key headers | Name + company domain for the leads being searched |
 | `api.millionverifier.com`, `bulkapi.millionverifier.com` | Email verification | API key in query/body | The email addresses being verified |
 | `api.scrubby.io` | Deep email verification | API key | The email addresses being verified |
+| `api.plusvibe.ai` | Not called by `pipeline.py`. Synced as `PLUSVIBE_API_KEY` so PlusVibe MCP / REST can use the vault | Bearer `PLUSVIBE_API_KEY` | Whatever the MCP sends — not sent by this skill |
 
 ### No automatic upload
 

@@ -30,6 +30,10 @@ API_KEY_PROVIDERS: tuple[dict[str, str], ...] = (
     # maps FIRECRAWL_API_KEY to this exact string, and on a mismatch the portal's
     # health chip renders nothing rather than erroring.
     {"provider": "firecrawl", "env_key": "FIRECRAWL_API_KEY", "skill": "contact-sourcing"},
+    # Vault slot for PlusVibe MCP / REST. pipeline.py does not call PlusVibe;
+    # sync-secrets writes PLUSVIBE_API_KEY so MCP can read the same env var.
+    # `provider` must match wbhk-app ENV_KEY_TO_RUNTIME_PROVIDER.
+    {"provider": "plusvibe", "env_key": "PLUSVIBE_API_KEY", "skill": "outreachmagic"},
 )
 
 _STATUS_FILENAME = "api_key_status.json"

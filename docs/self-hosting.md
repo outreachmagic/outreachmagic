@@ -2,70 +2,43 @@
 
 Outreach Magic has two parts:
 
-1. The open-source agent (this repo). A Python CLI with a local SQLite database.
-2. The managed relay service ([app.outreachmagic.io](https://app.outreachmagic.io)). Handles webhook ingestion, buffering, and multi-agent sync.
+1. The open-source agent (this repo). A Python CLI, a local SQLite database, and a local dashboard.
+2. The hosted relay ([app.outreachmagic.io](https://app.outreachmagic.io)). Always-on webhook ingest at `api.outreachmagic.io`, buffering, and restore when you `pull`.
 
-This guide covers running the agent on your own machine. The managed relay is a paid service (Free tier available) that makes setup simpler — paste a webhook URL and it just works. You can use the agent without a relay account, but you will need to import data through files or run the built-in webhook receiver.
+Live sequencer webhooks go through the hosted relay. That is the supported ingest path. There is no `pipeline.py serve` and no official “deploy your own worker.”
 
-## Quick start — try it with sample data
+You can still run the agent without a relay account: import CSVs and query the local database. That is offline use, not a second product.
+
+## Local dashboard
 
 ```bash
-git clone https://github.com/outreachmagic/outreachmagic
-cd outreachmagic
-pip install -e .
-pipeline.py demo
+python3 scripts/pipeline.py dashboard
 ```
 
-Seeds a local SQLite database with 3 workspaces, 48 leads, and over 200 events. No signup, no API key. Just Python 3 and Git.
+Opens `http://127.0.0.1:8765` against the same SQLite file the agent uses. Pick a workspace, inspect pipeline/replies/bounces, and run pull/sync from the UI. The dashboard binds loopback only; do not expose it on a shared network.
+
+Details: [references/command-reference.md](../skills/outreachmagic/references/command-reference.md#local-dashboard).
+
+## CSV import (offline, no relay)
+
+If you do not want live webhooks yet, export CSVs from your sequencers and import them:
 
 ```bash
-pipeline.py show           # explore the seeded pipeline
-pipeline.py stats          # quick stats summary
-pipeline.py demo           # re-run to start fresh
-```
-
-## Self-hosting the webhook receiver
-
-The agent includes a built-in webhook receiver. Start it on your machine:
-
-```bash
-pipeline.py serve --port 8080
-```
-
-This starts a lightweight HTTP server. Sequencer webhooks sent to `http://localhost:8080/webhook/{platform}` will be written to your local SQLite database.
-
-To receive webhooks from external sequencers, create a public tunnel:
-
-```bash
-ngrok http 8080
-# or use any other tunneling service
-
-# Then point your sequencers at:
-# https://your-tunnel-url/webhook/smartlead
-# https://your-tunnel-url/webhook/instantly
-```
-
-This approach is community-supported. Events only arrive while the process is running. Your machine goes to sleep, events are lost.
-
-## CSV import (no relay, no serve needed)
-
-If live webhooks are not required, import CSVs from your sequencers:
-
-```bash
-# Export CSV from Smartlead, Instantly, or HeyReach
-# Import to Outreach Magic
+# Export CSV from Smartlead, Instantly, HeyReach, or PlusVibe
 pipeline.py import-profiles --file smartlead_export.csv --workspace my-campaign
 
-# Check what came in
 pipeline.py show --workspace my-campaign
 pipeline.py stats
+pipeline.py dashboard
 ```
 
-Every sequencer exports CSVs. Import them directly and your agent can query the local database. No relay account, no tunnel, no running server.
+Every sequencer exports CSVs. Import them and the agent can query the local database. No relay account, no public URL, no process that has to stay running.
 
-## Using the managed relay
+## Using the hosted relay
 
-The managed relay at `api.outreachmagic.io` handles webhook ingestion for you. Point Smartlead, Instantly, HeyReach, and the rest at a webhook URL from [app.outreachmagic.io/connections](https://app.outreachmagic.io/connections). The relay buffers events, keeps them when your machine is offline, and delivers them when you sync.
+The hosted relay at `api.outreachmagic.io` is how live webhooks work. Sign up at [app.outreachmagic.io](https://app.outreachmagic.io), connect a sequencer, and paste the webhook URL from [Connections](https://app.outreachmagic.io/connections) into Smartlead, Instantly, HeyReach, PlusVibe, and the rest.
+
+The relay accepts events while your laptop is asleep, buffers them, and delivers them when you sync.
 
 ```bash
 # Sign in once (opens browser)
@@ -78,19 +51,21 @@ pipeline.py pull
 pipeline.py sync
 ```
 
-The relay does not store your full database. It buffers webhooks briefly and routes data between your agents. Your SQLite file is the source of truth.
+Your SQLite file is the working copy the agent queries. The relay is the remote buffer and restore path. New machine: `login` then `pull`.
 
-## Limitations compared to the managed relay
+Companion API keys (Serper, TryKitt, PlusVibe MCP, and the rest) live in the portal vault. `pipeline.py sync-secrets` writes them to `agent_secrets.env`.
 
-| Feature | Self-host | Managed relay |
-|---------|:---------:|:-------------:|
-| Setup | `git clone` + `pip install` + tunnel | Paste webhook URL into sequencer |
-| Webhook ingestion | Manual CSV import or `serve` + tunnel | Automatic, always-on |
-| Event buffering | No. Machine offline = events lost. | 30-day buffer, auto-retry |
-| Multi-agent sync | No. Each agent has its own DB. | Yes. Events route to all agents. |
+## Offline vs hosted relay
+
+| Feature | Offline (CSV + local dashboard) | Hosted relay |
+|---------|---------------------------------|--------------|
+| Setup | Clone / `npx skills add`, then import files | Paste webhook URL into sequencer |
+| Live webhooks | No | Always-on at `api.outreachmagic.io` |
+| Event buffering | No. Machine offline = nothing arrives. | Buffer while you are offline, delivered on `pull` |
+| Multi-agent restore | Copy the SQLite file | `login` + `pull` on the new machine |
 | Plan | Free | Free (1,000 webhook events/mo) or Pro ($9/mo for 50,000) |
 
-Running real campaigns that matter? Use the managed relay. Testing, evaluating, or just browsing? Self-host works fine.
+Running campaigns that should not miss replies? Use the hosted relay. Trying the skill or working from exports? CSV import and the local dashboard are enough.
 
 ## Data portability
 

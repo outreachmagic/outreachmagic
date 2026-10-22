@@ -25,6 +25,7 @@ CATALOG_ENV_KEYS = (
     "MILLIONVERIFIER_API_KEY",
     "SCRUBBY_API_KEY",
     "FIRECRAWL_API_KEY",
+    "PLUSVIBE_API_KEY",
 )
 
 def _parse_pool_env_key(key: str) -> tuple[str, int] | None:

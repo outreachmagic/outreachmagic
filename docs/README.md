@@ -4,7 +4,7 @@
 
 | Doc | Purpose |
 |-----|---------|
-| [self-hosting.md](./self-hosting.md) | Running the agent without the managed relay — CSV import, data portability, limitations |
+| [self-hosting.md](./self-hosting.md) | Local dashboard (`:8765`) and CSV import; hosted relay is how live webhooks work |
 | [AGENT-INTENTS.md](./AGENT-INTENTS.md) | What your agent can do with Outreach Magic — common queries and workflows |
 
 ## Operations (maintainers)

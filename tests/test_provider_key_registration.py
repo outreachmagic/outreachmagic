@@ -41,6 +41,7 @@ PROVIDER_HOSTS = {
     "MILLIONVERIFIER_API_KEY": "api.millionverifier.com",
     "SCRUBBY_API_KEY": "api.scrubby.io",
     "FIRECRAWL_API_KEY": "api.firecrawl.dev",
+    "PLUSVIBE_API_KEY": "api.plusvibe.ai",
 }
 
 
@@ -75,6 +76,12 @@ def test_firecrawl_provider_id_matches_the_portal():
     entry = next(p for p in api_key_pool.API_KEY_PROVIDERS
                  if p["env_key"] == "FIRECRAWL_API_KEY")
     assert entry["provider"] == "firecrawl"
+
+
+def test_plusvibe_provider_id_matches_the_portal():
+    entry = next(p for p in api_key_pool.API_KEY_PROVIDERS
+                 if p["env_key"] == "PLUSVIBE_API_KEY")
+    assert entry["provider"] == "plusvibe"
 
 
 @pytest.mark.parametrize("env_key", PROVIDER_ENV_KEYS)
